@@ -1,0 +1,12 @@
+[package]
+name = "prism-mux"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+prism-io = { path = "../prism-io" }
+prism-audio = { path = "../prism-audio" }
+
+[dev-dependencies]
+prism-gpu = { path = "../prism-gpu" }
+prism-audio = { path = "../prism-audio" }

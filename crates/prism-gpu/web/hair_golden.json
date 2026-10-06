@@ -1,0 +1,19 @@
+{
+  "_comment": "CPU 侧 golden vectors，由 `cargo test -p prism-rt emit_cpu_golden_vectors_for_gpu_parity` 生成。值为 f32 位模式（十六进制，无损）。勿手改。",
+  "source": "prism-rt/src/hair_scatter.rs::components_precise",
+  "format": "u32-hex-bit-pattern",
+  "vectors": [
+    {"name": "normal_incidence", "theta_i": 0, "phi_i": 0, "theta_o": 0, "phi_o": 0, "beta_m": 0.12, "k": 8, "eta": 1.55, "sigma_a": 0.2, "radius": 0.04, "r_bits": "0x3f5c4c1e", "tt_bits": "0x3d1e8bed", "trt_bits": "0x3f41f84f"},
+    {"name": "grazing_incidence", "theta_i": 1.5707, "phi_i": 0.3, "theta_o": 0.4, "phi_o": 0.9, "beta_m": 0.12, "k": 8, "eta": 1.55, "sigma_a": 0.2, "radius": 0.04, "r_bits": "0x410d1817", "tt_bits": "0x0001768f", "trt_bits": "0x00000001"},
+    {"name": "grazing_exit", "theta_i": 0.2, "phi_i": -0.4, "theta_o": 1.5707, "phi_o": 0.5, "beta_m": 0.12, "k": 8, "eta": 1.55, "sigma_a": 0.2, "radius": 0.04, "r_bits": "0x2f13725c", "tt_bits": "0x2eca4416", "trt_bits": "0x2f01eaee"},
+    {"name": "forward_scatter", "theta_i": 0.35, "phi_i": 0, "theta_o": 0.35, "phi_o": 0, "beta_m": 0.12, "k": 8, "eta": 1.55, "sigma_a": 0.2, "radius": 0.04, "r_bits": "0x3e5dd2cd", "tt_bits": "0x3bf997b2", "trt_bits": "0x3e188621"},
+    {"name": "backward_scatter", "theta_i": 0.35, "phi_i": 0, "theta_o": 0.35, "phi_o": 3.1415927, "beta_m": 0.12, "k": 8, "eta": 1.55, "sigma_a": 0.2, "radius": 0.04, "r_bits": "0x3a04d08f", "tt_bits": "0x40506e6a", "trt_bits": "0x39b6a500"},
+    {"name": "low_roughness", "theta_i": 0.5, "phi_i": 0.8, "theta_o": 0.55, "phi_o": 1.1, "beta_m": 0.02, "k": 1, "eta": 1.55, "sigma_a": 0.2, "radius": 0.04, "r_bits": "0x00000000", "tt_bits": "0x0c8ab077", "trt_bits": "0x0a7e1dc1"},
+    {"name": "high_roughness", "theta_i": 0.5, "phi_i": 0.8, "theta_o": 0.9, "phi_o": 1.1, "beta_m": 0.5, "k": 15, "eta": 1.55, "sigma_a": 0.2, "radius": 0.04, "r_bits": "0x3d2034c2", "tt_bits": "0x3731c04b", "trt_bits": "0x3d533f38"},
+    {"name": "zero_absorption", "theta_i": 0.4, "phi_i": 0.2, "theta_o": 0.45, "phi_o": 0.7, "beta_m": 0.12, "k": 8, "eta": 1.55, "sigma_a": 0, "radius": 0.04, "r_bits": "0x3d8af275", "tt_bits": "0x3cc24d6c", "trt_bits": "0x3e2a720f"},
+    {"name": "high_absorption", "theta_i": 1.4, "phi_i": 0.2, "theta_o": 0.45, "phi_o": 0.7, "beta_m": 0.12, "k": 8, "eta": 1.55, "sigma_a": 6, "radius": 0.04, "r_bits": "0x40a1097b", "tt_bits": "0x158e51a2", "trt_bits": "0x1686815e"},
+    {"name": "dark_hair", "theta_i": 0.4, "phi_i": 0.2, "theta_o": 0.45, "phi_o": 0.7, "beta_m": 0.1, "k": 10, "eta": 1.2, "sigma_a": 1.5, "radius": 0.04, "r_bits": "0x3aaef880", "tt_bits": "0x3a4b6304", "trt_bits": "0x3b6ff31c"},
+    {"name": "blond_hair", "theta_i": 0.4, "phi_i": 0.2, "theta_o": 0.45, "phi_o": 0.7, "beta_m": 0.12, "k": 8, "eta": 1.9, "sigma_a": 0.2, "radius": 0.04, "r_bits": "0x3e84eae6", "tt_bits": "0x3d14fedc", "trt_bits": "0x3f04f6e8"},
+    {"name": "combined_extreme", "theta_i": 1.5707, "phi_i": 0, "theta_o": 0.6, "phi_o": 3.1415927, "beta_m": 0.5, "k": 15, "eta": 1.55, "sigma_a": 0, "radius": 0.04, "r_bits": "0x369412ac", "tt_bits": "0x32f0e491", "trt_bits": "0x29b9d66d"}
+  ]
+}

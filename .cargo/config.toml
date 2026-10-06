@@ -1,0 +1,8 @@
+# 全仓测试默认走 release（主理人 2026-10-06 实测：全仓 debug 跑满 10 分钟被砍断，
+# release 只需 1 分 47 秒——快 6 倍以上，且断言能力不变）。
+# 用法：cargo xtest          （= cargo test --workspace --release）
+#      cargo xtest -p prism-io
+# 迭代时的单 crate 快速测试仍直接用 `cargo test -p <crate>`（0.66 秒，无需 release）。
+[alias]
+xtest = "test --workspace --release"
+xt = "xtest"

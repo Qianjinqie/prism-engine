@@ -1,0 +1,1 @@
+w=26 h=30 left=3 top=-27 fnv=aa89e7c2

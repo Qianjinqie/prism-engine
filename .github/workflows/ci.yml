@@ -1,0 +1,514 @@
+# ===========================================================================
+# ci.yml — Prism Engine 持续集成（全工程唯一的自动化门禁）。
+#
+# 设计约束（来自项目铁律，改动前请先读）：
+#   1. **零第三方 crate**：所以 `cargo` 命令一律带 `--offline` 友好的 `--locked`，
+#      依赖解析结果必须与 Cargo.lock 逐位一致；CI 不允许悄悄引入外部依赖。
+#   2. **action 依赖最小化**：只用 GitHub 官方 actions/*（checkout / cache /
+#      upload-artifact / download-artifact），不引 dtolnay/rust-toolchain 之类
+#      第三方 action。rustc 直接用 ubuntu-latest 预装的 rustup，避免供应链面。
+#   3. **不许掩盖失败**：测试必须带 `--no-fail-fast`，否则第一个失败的 crate
+#      会让 cargo 立即停止，后面 24 个 crate 的结果全部丢失（历史上正是如此）。
+#
+# 五个 job：
+#   ghost-guard  —— 幽灵写入防御（2026-10-06 事故后增设）：反向自证 + 基线判据。
+#                   秒级、无 cargo，**排在 native 之前**（native needs它）——
+#                   根因先于症状：源码被换掉时，先报"只增行零删除"，而不是
+#                   等13 分钟后报"测试挂了"。
+#   native      —— 编译 + 全量 2070 用例测试（唯一的"会不会挂"判据）
+#   wasm        —— wasm32 独立 target-dir 构建 + 产物静态结构校验
+#   wasm-verify —— 10 份 .wgsl 基础解析（从 wasm job拆出，失败原因更聚焦）
+#   interop     —— DWA 与官方 OpenEXR 的跨实现对拍门禁（三态退出码）
+#   lint        —— node 宿主验证 host_test.mjs（CPU 参考 × JS 独立实现交叉判对）
+#
+# ghost-guard 与 native 的顺序不是随意的：事故当天 raw.rs 被无人运行的写入
+# 注入 254 行（E0592），若只有 native 门禁，要等编译+测试十几分钟才暴露，且
+# 症状（某个测试挂了）掩盖了根因（源码被换）。放在前面，几秒就能定位。
+# 另外 ghost-guard 必须真跑而不是"本地存在即可"——它同时跑 --self-test，
+# 检测逻辑一旦被改成恒过（比如为了让 CI 变绿而注释掉判据），这个 job 就红。
+#
+# wasm 与 lint 的依赖关系：wasm job 用 `--no-test` 只负责"构建 + 静态校验"，
+# 把 prism_gpu.wasm 存成 artifact；lint job 下载它再跑 host_test.mjs。
+# 这样 host_test 只跑一次（职责单一），且 host_test 失败不会伪装成"构建失败"。
+#
+# interop 的特殊性：它需要**系统 OpenEXR**（本仓不依赖它，它只是验证工具），
+# 且退出码是**三态**（0 通过 / 1 判红 / 3 跳过）。详见该 job 的注释。
+# ===========================================================================
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支的新 push 取消仍在跑的旧 run：2070 个用例约 13 分钟，
+# 无人值守时排队会积压。
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# 最小权限：CI 只需要读代码。
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # 零第三方 crate ⇒ 网络不可用时也应能构建。CI 上不放 .cargo/config 锁网，
+  # 只用 --locked 保证不新增依赖。
+  RUST_BACKTRACE: "1"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # ghost-guard —— 幽灵写入防御（2026-10-06 事故后增设，防线 3）。
+  #
+  # 为什么必须排在 native（编译+测试）**之前**：
+  #   今天的事故是 raw.rs 被注入 254 行 → E0592 → prism-io 编译不过。native job
+  #   要跑 13 分钟才在测试阶段报出"有测试挂了"，而根因是**源码被换了**。
+  #   ghost-guard 只跑纯文本分析（node，秒级，不需要 cargo），能在 native 开工
+  #   前就把"文件相对基线只增行、零删除"这种形状报出来。把便宜的判红放在前面，
+  #   是为了让"根因"先于"症状"出现。
+  #
+  # 必须真跑在 CI 里：本job 同时执行 --check（对真实基线）与 --self-test
+  # （反向自证）。若检测逻辑被改成恒过（例如为了"让它变绿"而注释掉判据），
+  # --self-test 会立即判红，这个 job 随之失败——**这就是它不可被静音的原因**。
+  #
+  # 零第三方依赖：只用 node 内置模块，无需 npm install。
+  # ---------------------------------------------------------------------------
+  ghost-guard:
+    name: ghost write guard (self-test + baseline)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: node --version
+
+      # 先跑反向自证：检测器本身是否还有判红能力。
+      # 顺序有意为之——检测器坏了的话，后面的 --check 结果没有意义。
+      - name: Ghost guard self-test (must detect injected breakage)
+        run: node tools/ghost_guard.mjs --self-test
+
+      # 再对真实基线跑判据。--no-compile：编译由 native job 负责，
+      # 这里只做秒级纯文本判据，保持 job 廉价。
+      - name: Ghost guard baseline check (G1/G2/G3)
+        run: node tools/ghost_guard.mjs --check --no-compile
+
+      # 防线 2 的脚本也要在 CI 里可用（shell 语法错误 / 台账不可写要能发现）。
+      - name: Backup script smoke test
+        run: |
+          set -euo pipefail
+          chmod +x tools/backup.sh
+          ./tools/backup.sh backup crates/prism-io/src/raw.rs
+          ./tools/backup.sh verify crates/prism-io/src/raw.rs \
+            tools/backups/crates_prism-io_src_raw.rs.bak
+          ./tools/backup.sh status
+
+  # ---------------------------------------------------------------------------
+  # native —— 权威门禁：整个 workspace 能不能编译 + 全部测试是否通过。
+  # needs: ghost-guard —— 让源码完整性判红**先于**编译/测试判红出现。
+  # ---------------------------------------------------------------------------
+  native:
+    name: native build + test (--no-fail-fast)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: ghost-guard
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          rustc --version
+          cargo --version
+          node --version
+
+      # 缓存 cargo registry（源码包）与 target/（编译产物）。两者都按
+      # Cargo.lock 的 hash 分键：Cargo.lock 变了 → key 变 → 缓存自动失效，
+      # 不会出现"用旧依赖的旧产物编译新代码"这种最难查的错。
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: registry-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            registry-${{ runner.os }}-
+
+      - name: Cache target dir
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: native-target-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            native-target-${{ runner.os }}-
+
+      # --locked：依赖必须与 Cargo.lock 完全一致。零第三方 crate 前提下这是
+      # 纯收益——任何人偷偷加依赖都会在这里失败，而不是等到 review 才发现。
+      - name: Build workspace
+        run: cargo build --workspace --locked
+
+      # --no-fail-fast 是**硬性要求**：默认行为下第一个失败的 crate 就终止
+      # 全局测试，24 个后续 crate 完全不跑，CI 只能告诉你"有东西坏了"，
+      # 不能告诉你"坏了几个、哪些"。加了这个开关，每个 crate 的
+      # `test result:` 行都会出现在日志里，一次看全貌。
+      #
+      # `2>&1 | tee` 保留彩色与 stderr 顺序；`set -o pipefail` 保证
+      # cargo 的非零退出码能传到这一步的退出码上（否则 tee 成功会掩盖测试失败）。
+      - name: Run all tests (--no-fail-fast)
+        run: |
+          set -o pipefail
+          cargo test --workspace --no-fail-fast --locked 2>&1 | tee test-report.txt
+
+      # 汇总：把每个 crate 的 `test result:` 行抽出来做成一张表，
+      # 失败数量一目了然，不必在几千行日志里翻。
+      - name: Summarize test results
+        run: |
+          set -euo pipefail
+          echo "=== 每 crate 汇总 ==="
+          grep -E "^(test result:|error(\[|:)|failures:)" test-report.txt || true
+          echo ""
+          TOTAL=$(grep -c "^test result:" test-report.txt || true)
+          echo "共 $TOTAL 个测试二进制"
+          # 从 "test result: ok. 5 passed; 1 failed;" 里抽出 failed 数量求和。
+          FAILED=$(grep -oE "^test result: .*[0-9]+ failed" test-report.txt \
+                   | grep -oE "[0-9]+ failed" | grep -oE "[0-9]+" \
+                   | awk '{s+=$1} END {print s+0}')
+          echo "失败用例总数：$FAILED"
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "::error::没有任何测试被执行——日志格式变了？" ; exit 1
+          fi
+          if [ "$FAILED" -ne 0 ]; then
+            echo "::error::$FAILED 个用例失败" ; exit 1
+          fi
+
+      # 收集 warning：只报告、不失败。本工程当前存在若干历史 qa_* 测试文件的
+      # unused 警告（不在本次 CI 归属范围内），若这里加 -D warnings 会立刻
+      # 让 CI 变红且无法区分"新引入的警告"与"历史存量"。等存量清零后再收紧。
+      - name: Collect build warnings (report only)
+        run: |
+          set -euo pipefail
+          cargo build --workspace --locked 2>&1 | tee build-warnings.txt || true
+          grep -cE "^warning:" build-warnings.txt > warning-count.txt || echo 0 > warning-count.txt
+          echo "warning 行数：$(cat warning-count.txt)（仅记录，不阻断 CI）"
+
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-native
+          path: |
+            test-report.txt
+            build-warnings.txt
+            warning-count.txt
+          retention-days: 14
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # wasm —— wasm32 构建 + 产物静态校验。
+  #
+  # **必须独立 target-dir**：历史上 wasm32 产物混进 native 的 target/，
+  # 两套 target 的元数据互相污染，native 侧随后报
+  # `can't find crate prism_*`。build.sh 已内置该隔离（target/wasm32/），
+  # 这里再显式声明一次，防止有人日后把 --target-dir 改掉。
+  # ---------------------------------------------------------------------------
+  wasm:
+    name: wasm32 build + artifact verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          rustc --version
+          cargo --version
+          node --version
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: registry-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            registry-${{ runner.os }}-
+
+      # 缓存键里显式带上 target triple + profile：wasm32 与 native 的产物
+      # 虽在不同目录，但共用一个键会在 restore 时互相覆盖。
+      - name: Cache wasm target dir (isolated)
+        uses: actions/cache@v4
+        with:
+          path: target/wasm32
+          key: wasm-target-${{ runner.os }}-wasm32-unknown-unknown-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            wasm-target-${{ runner.os }}-wasm32-unknown-unknown-
+
+      - name: Add wasm32 target
+        run: rustup target add wasm32-unknown-unknown
+
+      # --no-test：host_test.mjs 由 lint job 单独跑（它需要下载 artifact）。
+      # 这里只做"构建 + 存在性"，让 job 失败原因保持单一。
+      - name: Build wasm (independent target-dir)
+        run: cd crates/prism-gpu/web && ./build.sh --no-test
+
+      # 显式复核隔离目录确实被使用（build.sh 若被改坏，这里能发现）。
+      # 判据：独立目录 target/wasm32/ 必须存在，且 native 的 target/debug/
+      # 下**不得**出现 wasm 产物（出现了就说明两套 target 又混到一起了）。
+      - name: Assert wasm did not pollute native target dir
+        run: |
+          set -euo pipefail
+          test -d target/wasm32 || {
+            echo "::error::独立 target-dir target/wasm32 未生成，build.sh 的 --target-dir 可能被改动"
+            exit 1
+          }
+          echo "独立 target-dir 存在：target/wasm32"
+          echo "--- 独立目录里的 wasm 产物 ---"
+          find target/wasm32 -name '*.wasm' | head -20
+          if [ -e target/debug/prism_gpu.wasm ]; then
+            echo "::error::native target/debug/ 下出现 prism_gpu.wasm —— wasm32 产物污染了 native target"
+            exit 1
+          fi
+          echo "native target/debug/ 干净：无 wasm 产物"
+
+      # 静态结构校验：产物存在 / 体积合理 / 21 个导出 + 14 个导入符号齐全。
+      # 用 WebAssembly.Module.imports+exports，无需提供 env.* 桩函数。
+      - name: Verify wasm artifact (exports/imports/size)
+        run: node crates/prism-gpu/web/ci_wasm_verify.mjs crates/prism-gpu/web/prism_gpu.wasm
+
+      # 交给 lint job 用（host_test.mjs 需要这个文件）。
+      - name: Upload wasm artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: prism-gpu-wasm
+          path: crates/prism-gpu/web/prism_gpu.wasm
+          retention-days: 7
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # wasm-verify —— WGSL 基础解析（从 wasm job 拆出，失败原因更聚焦）。
+  # 只做基础解析（注释/字符串闭合、括号配对、非空）；绑定组、符号、类型
+  # 层面的深度校验由 wgsl_lint.mjs 负责，本 job 不重复实现。
+  # 注意：脚本枚举目录里实际存在的 .wgsl，**不写死"9 个"**——目录里现为
+  # 10 份（其中 5 份是 include 公共件），新增 shader 不应让 CI 变红。
+  # ---------------------------------------------------------------------------
+  wasm-verify:
+    name: wgsl basic parse (all shaders)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: wasm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: node --version
+
+      - name: WGSL smoke parse
+        run: node crates/prism-gpu/web/ci_wgsl_smoke.mjs crates/prism-gpu/shaders
+
+  # ---------------------------------------------------------------------------
+  # interop —— DWA(DWAA/DWAB) 与官方 OpenEXR 的跨实现对拍门禁（W13 P0-1）。
+  #
+  # 【为什么必须独立成job，而不是塞进 native】
+  #   * 依赖不同：需要系统 OpenEXR（libopenexr-dev），而 native job 刻意
+  #     「零第三方 crate / 不装任何外部库」。混在一起会让 native 被平台
+  #     的包管理器状态绑架。
+  #   * 退出码语义不同：门禁有**三态**（0 真通过 / 1 判红 / 3 环境不具备），
+  #     塞进 native 会让「跳过」和「测试通过」混在同一份 test-report 里。
+  #
+  # 【退出码三态 —— 绝不让"装不上"变红，也绝不让它静默"通过"】
+  #   0 = 真通过     → CI 绿
+  #   1 = 判红       → CI 红（含**本仓代码编译失败**，见下）
+  #   3 = 环境不具备 → **显式 SKIP**：用 `continue-on-error` 之外的
+  #     方式处理成"中性"——既不算失败，也不算通过。
+  #   装不上 OpenEXR 的处理：`apt-get install` 用 `|| true` 兜底，
+  #   随后**显式检查** pkg-config 是否查得到；查不到就把 SKIP 打到
+  #   job summary 里并以 **exit 0 但标记 ::notice** 结束——
+  #   **绝不** `exit 1`（平台包缺失不是本仓的责任），
+  #   也**绝不**静默成功（那会让"门禁从未真正跑过"变成假绿）。
+  #
+  # 【--self-test 必须跑：这是防止门禁自己变成假绿的关键】
+  #   它是注入式反向自证：把实测最差值放大后喂给判据，断言必须判红。
+  #   若判据恒真，self-test 立刻失败 —— 门禁自己先被证伪。
+  # ---------------------------------------------------------------------------
+  interop:
+    name: dwa interop gate (vs official OpenEXR)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          node --version
+          cargo --version
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: registry-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            registry-${{ runner.os }}-
+
+      # 官方 OpenEXR 是**验证工具**，不是项目依赖（crates/ 下无 build.rs、
+      # 无 C++ 链接、无 cc crate）。装不上不阻塞本仓，但必须**显式可见**。
+      - name: Install official OpenEXR (libopenexr-dev + libimath-dev)
+        run: |
+          set -uo pipefail
+          sudo apt-get update -qq || true
+          # `|| true`：平台包不可用不应让 CI 变红——不是本仓的责任。
+          sudo apt-get install -y -qq libopenexr-dev libimath-dev || \
+            echo "::notice::apt-get install 失败（平台包不可用），门禁将走 SKIP(3) 路径"
+          echo "--- 安装后自检 ---"
+          if pkg-config --modversion OpenEXR; then
+            echo "HAS_OPENEXR=1"
+            echo "HAS_OPENEXR=1" >> "$GITHUB_ENV"
+          else
+            echo "HAS_OPENEXR=0"
+            echo "HAS_OPENEXR=0" >> "$GITHUB_ENV"
+            echo "::notice::pkg-config 查不到 OpenEXR —— 门禁将以 SKIP(3) 显式跳过（非通过）"
+          fi
+
+      # self-test 不依赖 OpenEXR（纯判据层），因此**任何情况下都必须跑**。
+      # 它是判据本身的反向自证：每条判据都要能判红，且实测值本身判绿。
+      # 这一步失败 ⇒ 门禁不可信 ⇒ 必须让 CI 变红（不退化成 SKIP）。
+      - name: interop_gate --self-test (judge reverse self-proof)
+        run: |
+          set -o pipefail
+          node crates/prism-io/tests/interop/interop_gate.mjs --self-test 2>&1 | tee interop-selftest.log
+          echo "self-test 退出码=$?"
+
+      # 环境不具备时显式 SKIP：中性结束 + job summary 留痕，**绝不**当成通过。
+      - name: Skip gate explicitly when OpenEXR is unavailable
+        if: env.HAS_OPENEXR == '0'
+        run: |
+          set -uo pipefail
+          echo "::notice title=interop SKIP::本runner 无官方 OpenEXR，DWA 对拍门禁已跳过（退出码 3=SKIP，非通过）"
+          echo "### interop 门禁：SKIP（环境不具备）" >> "$GITHUB_STEP_SUMMARY"
+          echo "官方 OpenEXR 装不上（pkg-config 查不到）。这是**验证工具缺失**，不是本仓代码问题。" >> "$GITHUB_STEP_SUMMARY"
+          echo "门禁以 **SKIP(3)** 显式跳过——**不等于通过**。判据层已由上一步 --self-test 反向自证。" >> "$GITHUB_STEP_SUMMARY"
+          echo "若要真正对拍，请在本机装 \`libopenexr-dev\` + \`libimath-dev\` 后运行 \`node crates/prism-io/tests/interop/interop_gate.mjs\`。" >> "$GITHUB_STEP_SUMMARY"
+          # 中性结束：不红（平台缺包不是本仓责任），但已显式留痕（非静默）。
+          exit 0
+
+      # 有 OpenEXR ⇒ 跑真门禁。这一步**不允许**吞掉失败：
+      #   退出码 1（判红，含本仓 Rust 编译失败）必须让 CI 变红；
+      #   退出码 3（环境仍不具备）中性跳过并留痕。
+      - name: Run interop gate (72 cells x 4 directions)
+        if: env.HAS_OPENEXR == '1'
+        run: |
+          set -uo pipefail
+          node crates/prism-io/tests/interop/interop_gate.mjs --json interop-result.json 2>&1 | tee interop-gate.log
+          RC=${PIPESTATUS[0]}
+          echo "门禁退出码 = $RC  （0=真通过 / 1=判红 / 3=环境不具备）"
+          if [ "$RC" -eq 3 ]; then
+            echo "::notice title=interop SKIP::环境仍不具备，显式跳过（不等于通过）"
+            echo "### interop 门禁：SKIP(3)" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # RC=1（判红）或任何非 0 非 3 的异常码 ⇒ 判红。
+          # 汇总一并写进 summary，便于 review 时直接看到失败格。
+          {
+            echo "### interop 门禁：FAIL(1)"
+            echo '```'
+            sed -n '/=== 汇总/,$p' interop-gate.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$RC"
+
+      - name: Upload interop logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: interop-logs
+          path: |
+            interop-selftest.log
+            interop-gate.log
+            interop-result.json
+          retention-days: 14
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # lint —— node 宿主验证：wasm 侧数值正确性（CPU 参考 × JS 独立实现交叉判对）。
+  #
+  # 这一层与 cargo test 互为**独立证据**：cargo test 是 Rust 内部自比，
+  # host_test.mjs 是"本文件里的 JS 实现"对"Rust 的 scan.rs/sort.rs"逐元素
+  # 比对，两者同时错才会同时通过。
+  #
+  # 关于"不硬编码断言条数"：本 job **只**以 host_test.mjs 的**退出码**为准，
+  # 不在 YAML 里写 `grep -c "ok" == 41` 这类断言。这样别人往 host_test.mjs
+  # 里加测试项（含另三位工程师正在加的门禁节）时，这里无需同步修改。
+  # 只要脚本以非 0 退出，job 即失败。
+  # ---------------------------------------------------------------------------
+  lint:
+    name: node host test (wasm numeric cross-check)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: wasm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: node --version
+
+      - name: Download wasm artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: prism-gpu-wasm
+          path: crates/prism-gpu/web
+
+      - name: Verify downloaded artifact is present
+        run: |
+          set -euo pipefail
+          test -f crates/prism-gpu/web/prism_gpu.wasm \
+            || { echo "::error::artifact 未下载到预期路径"; exit 1; }
+          ls -l crates/prism-gpu/web/prism_gpu.wasm
+
+      # 唯一判据 = 退出码。不 grep 计数、不比对断言条数。
+      - name: Run host_test.mjs
+        run: node crates/prism-gpu/web/host_test.mjs crates/prism-gpu/web/prism_gpu.wasm
+
+      # ------------------------------------------------------------------
+      # 合规自检（W16 用户特别要求：文件夹里必须有专门管合规的部分）。
+      #
+      # 排在 host_test **之后**：host_test 通过后本门禁才有意义，且两者互不
+      # 掩盖 —— host_test 判数值对错，本门禁判"零第三方代码依赖 + 资产登记
+      # 许可字段非空"。任一失败 job 即红。
+      #
+      # **两条都要跑**，缺一不可：
+      #   1) --self-test  必须**判红**（故意留空许可字段）——证明判据不是恒过的
+      #      假绿门禁。若有人把判据改成"见啥都绿"，这一条会立刻把 job 打红。
+      #   2) 本体必须 **exit 0** ——真实的 Cargo.toml / build.rs / 资产清单核验。
+      #
+      # 唯一判据 = 退出码。不 grep 计数、不比对文本条数。
+      # ------------------------------------------------------------------
+      - name: Compliance self-test (must FAIL on empty license field)
+        run: node tools/compliance_check.mjs --self-test
+
+      - name: Compliance check (no third-party code deps + asset registry)
+        run: node tools/compliance_check.mjs
+
+      - name: Upload host test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: host-test-log
+          path: crates/prism-gpu/web/prism_gpu.wasm
+          retention-days: 7

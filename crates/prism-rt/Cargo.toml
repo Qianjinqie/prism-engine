@@ -1,0 +1,18 @@
+[package]
+name = "prism-rt"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+prism-core = { path = "../prism-core" }
+prism-math = { path = "../prism-math" }
+prism-noise = { path = "../prism-noise" }
+# 账三 U4 实时 GI：复用 prism-geometry 的 SDF 场（Csg/图元）与 sphere tracing
+# （D-16 单实现，免重复造轮子）。prism-geometry 不依赖 prism-rt，无循环。
+prism-geometry = { path = "../prism-geometry" }
+
+[dev-dependencies]
+# 仅测试用（tile 化关卡复用 A5 编排器 + f16 缓冲位比较）；无生产循环依赖
+# （prism-render 不依赖 prism-rt）。
+prism-render = { path = "../prism-render" }
+prism-io = { path = "../prism-io" }

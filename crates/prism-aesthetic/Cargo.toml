@@ -1,0 +1,14 @@
+[package]
+name = "prism-aesthetic"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+prism-math = { path = "../prism-math" }
+prism-io = { path = "../prism-io" }
+prism-render = { path = "../prism-render" }
+prism-core = { path = "../prism-core" }
+
+[dev-dependencies]
+prism-noise = { path = "../prism-noise" }
+prism-ai = { path = "../prism-ai" }

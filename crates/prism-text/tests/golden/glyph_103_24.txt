@@ -1,0 +1,1 @@
+w=13 h=20 left=1 top=-14 fnv=cecb9e7e

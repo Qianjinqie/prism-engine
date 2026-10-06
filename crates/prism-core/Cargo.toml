@@ -1,0 +1,10 @@
+[package]
+name = "prism-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+prism-math = { path = "../prism-math" }
+prism-anim = { path = "../prism-anim" }
+# 注：不再依赖 prism-gpu（依赖解耦，见 src/lib.rs 头部说明）。
+# 原唯一使用点 build_render_request 已下沉到其唯一消费者 prism-render。

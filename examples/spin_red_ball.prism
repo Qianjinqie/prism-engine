@@ -1,0 +1,49 @@
+// ============================================================================
+// spin_red_ball —— 棱镜引擎 DSL v1 黄金示例（parser 测试的零损失凭证）
+//
+// 覆盖 v1 全部块与字段：scene(sphere+material / camera+orbit / light)、
+// timeline(duration+fps)、aesthetic(teal-orange+contrast+filmic)、
+// output(resolution+format)。数值与 parser/lib.rs 的 compiles_golden_example
+// 测试断言一一对应，改动任意数值都会使该测试失败。
+// ============================================================================
+
+scene "spin_red_ball" {
+    sphere ball {
+        radius 1.0
+        material {
+            albedo #c0392b
+            roughness 0.3
+            metalness 0.05
+        }
+    }
+
+    camera main {
+        orbit {
+            center 0,0,0
+            radius 8.0
+        }
+        fov 45
+    }
+
+    light sun {
+        direction (1.0, -1.0, -0.5)
+        color #fff4e6
+        intensity 3.0
+    }
+}
+
+timeline {
+    duration 3s
+    fps 12
+}
+
+aesthetic {
+    teal-orange
+    contrast 1.12
+    filmic
+}
+
+output {
+    resolution 480x270
+    format frames
+}

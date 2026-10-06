@@ -1,0 +1,12 @@
+[package]
+name = "prism-gpu"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# cdylib：产出可被浏览器 `WebAssembly.instantiate` 直接加载的 .wasm（D-14 手机
+# 测试链路）。rlib 保留，使 native 目标下 `cargo test --workspace` 不受影响。
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+prism-math = { path = "../prism-math" }

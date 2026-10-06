@@ -1,0 +1,11 @@
+[package]
+name = "prism-text"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+prism-raster = { path = "../prism-raster" }
+prism-io = { path = "../prism-io" }
+prism-anim = { path = "../prism-anim" }
+prism-core = { path = "../prism-core" }
+prism-math = { path = "../prism-math" }

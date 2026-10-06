@@ -1,0 +1,966 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Prism 交互式编辑器 — U13（子图签名增量预览）</title>
+<!-- 内联 32×32 PNG data-URI 图标（微信绿圆角 + 棱镜三角）：既避免浏览器自动
+     请求 /favicon.ico 产生 404 噪声日志，又不引入任何外链（无 http(s)/CDN）。 -->
+<link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAjUlEQVR42u3XOw6AIBBF0du5TbfqyjAWJEaRwDAfTHgJ9T0lA5Vtx540Hj3Tioow1vEqwiteRHjHX4hfA64NAUbjeWKERnwEgVZcikAzLkGgHe9FYBHvQWAVb0VgGW9BYBlugeAV/0LgGS8h8I4/EUTE7wii4nmk4C1APGB9SqcAhB8mU5xmUxynEef5CdBBlbTb30f8AAAAAElFTkSuQmCC" />
+<!--
+  U13 交互式编辑器宿主页。
+
+  铁律（与全仓一致）：
+    · 零第三方依赖、零 CDN、零外链 —— 纯原生 HTML/CSS/JS，完全离线可用。
+    · wasm 交互全部走手写 C-ABI（`prism_editor_*`，定义于
+      `crates/prism-app/src/editor/abi.rs`），无 wasm-bindgen、无胶水生成。
+    · 状态码：0=PASS 1=FAIL 2=PENDING 3=SKIP 4=BAD_ARG。
+    · 全部数值/像素由 Rust 侧权威计算，本页只做展示与输入，不本地重算。
+
+  与既有 D-14 `index.html` 的区别：那一页是深色 GPU 测试台；本页是**浅色
+  类微信编辑器**（米灰底 + 白卡 + 微信绿），面向真实交互而非测试报告。
+-->
+<style>
+  /* ---------------------------------------------------------------------
+     设计令牌：一套浅色「微信」配色。集中在此，改主题只改这里。
+     --------------------------------------------------------------------- */
+  :root{
+    --wx-green:#07c160;          /* 微信绿：主操作色 */
+    --wx-green-d:#06ad56;        /* 按下态 */
+    --wx-green-l:#e8f9ef;        /* 选中底色 */
+    --bg:#ededed;                /* 聊天列表底色 */
+    --card:#ffffff;              /* 卡片 */
+    --fg:#191919;                /* 主文字 */
+    --fg2:#576b95;               /* 链接/强调（微信蓝） */
+    --dim:#888888;               /* 次要文字 */
+    --line:#e3e3e3;              /* 分隔线 */
+    --line2:#f2f2f2;             /* 浅分隔 */
+    --warn:#fa9d3b;              /* 草稿档位 */
+    --danger:#fa5151;            /* 错误 */
+    --radius:10px;
+    --shadow:0 1px 2px rgba(0,0,0,.04);
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--bg);color:var(--fg);
+    font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    padding-bottom:28px;
+  }
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+
+  /* ---------------- 顶栏 ---------------- */
+  header{
+    position:sticky;top:0;z-index:20;
+    background:var(--card);border-bottom:1px solid var(--line);
+    padding:10px 14px;display:flex;align-items:center;gap:10px;
+  }
+  header h1{font-size:16px;font-weight:600;margin:0;flex:1;letter-spacing:.2px}
+  .badge{
+    font-size:11px;padding:2px 8px;border-radius:20px;
+    background:var(--line2);color:var(--dim);white-space:nowrap;
+  }
+  .badge.ok{background:var(--wx-green-l);color:var(--wx-green-d)}
+  .badge.bad{background:#fdecec;color:var(--danger)}
+
+  /* ---------------- 布局 ---------------- */
+  .wrap{max-width:1180px;margin:0 auto;padding:12px}
+  .cols{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,1fr);gap:12px;align-items:start}
+  @media (max-width:900px){.cols{grid-template-columns:1fr}}
+
+  .card{
+    background:var(--card);border-radius:var(--radius);
+    box-shadow:var(--shadow);padding:12px 13px;margin-bottom:12px;
+  }
+  .card > h2{
+    font-size:13px;font-weight:600;color:var(--dim);margin:0 0 10px;
+    display:flex;align-items:center;gap:8px;letter-spacing:.3px;
+  }
+  .card > h2 .hint{margin-left:auto;font-weight:400;font-size:11px}
+  .sep{height:1px;background:var(--line2);margin:10px -13px}
+
+  /* ---------------- 按钮 ---------------- */
+  button{
+    font:inherit;font-size:14px;color:var(--fg);background:#f7f7f7;
+    border:1px solid var(--line);border-radius:8px;padding:7px 13px;cursor:pointer;
+    transition:background .12s,border-color .12s;
+  }
+  button:hover:not(:disabled){background:#efefef}
+  button:active:not(:disabled){background:#e6e6e6}
+  button:disabled{opacity:.42;cursor:not-allowed}
+  button.primary{background:var(--wx-green);border-color:var(--wx-green);color:#fff}
+  button.primary:hover:not(:disabled){background:var(--wx-green-d)}
+  button.primary:active:not(:disabled){background:#059c4b}
+  button.tiny{font-size:12px;padding:4px 9px;border-radius:6px}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+
+  /* ---------------- 节点树 ---------------- */
+  #nodes{list-style:none;margin:0;padding:0}
+  #nodes li{
+    display:flex;align-items:center;gap:9px;padding:9px 10px;
+    border-radius:8px;cursor:pointer;border:1px solid transparent;
+  }
+  #nodes li + li{margin-top:2px}
+  #nodes li:hover{background:#f7f7f7}
+  #nodes li.sel{background:var(--wx-green-l);border-color:#b8e8cd}
+  #nodes .nid{
+    flex:0 0 auto;width:24px;height:24px;border-radius:6px;
+    background:#e6e6e6;color:var(--fg2);
+    display:flex;align-items:center;justify-content:center;
+    font-size:12px;font-weight:700;
+  }
+  #nodes li.sel .nid{background:var(--wx-green);color:#fff}
+  #nodes li.dirty .nid{box-shadow:0 0 0 2px #ffd9a8}
+  #nodes .meta{flex:1;min-width:0}
+  #nodes .st{font-size:14px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  #nodes .sub{font-size:11px;color:var(--dim);margin-top:1px;
+              overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .tag{font-size:10px;padding:1px 6px;border-radius:4px;background:var(--line2);color:var(--dim)}
+  .tag.dirty{background:#fff2e0;color:#c47f17}
+  .tag.sel{background:var(--wx-green);color:#fff}
+  .tag.root{background:#e8f0fe;color:var(--fg2)}
+
+  /* ---------------- 预览 ---------------- */
+  .preview{
+    background:#fafafa;border:1px solid var(--line);border-radius:8px;
+    padding:10px;display:flex;justify-content:center;
+  }
+  #view{
+    display:block;width:100%;max-width:420px;height:auto;image-rendering:auto;
+    background:
+      /* 棋盘底：暴露 alpha 与透明问题 */
+      repeating-conic-gradient(#ececec 0 25%,#f6f6f6 0 50%) 0 0/16px 16px;
+    border-radius:6px;
+  }
+  #graph{display:block;width:100%;height:auto}
+
+  /* ---------------- 参数控件 ---------------- */
+  .param{padding:9px 0}
+  .param + .param{border-top:1px solid var(--line2)}
+  .param .top{display:flex;align-items:baseline;gap:8px;margin-bottom:5px}
+  .param .pname{font-size:13px;font-weight:500;flex:1;min-width:0;
+                overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .param .ptype{font-size:10px;color:var(--dim)}
+  .param .ctl{display:flex;align-items:center;gap:9px}
+  input[type=range]{
+    -webkit-appearance:none;appearance:none;flex:1;min-width:0;height:22px;background:transparent;
+  }
+  input[type=range]::-webkit-slider-runnable-track{height:4px;border-radius:2px;background:var(--line)}
+  input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none;appearance:none;width:16px;height:16px;border-radius:50%;
+    background:var(--wx-green);margin-top:-6px;border:none;
+  }
+  input[type=range]::-moz-range-track{height:4px;border-radius:2px;background:var(--line)}
+  input[type=range]::-moz-range-thumb{width:16px;height:16px;border-radius:50%;background:var(--wx-green);border:none}
+  input[type=number]{
+    font:inherit;font-size:13px;width:88px;flex:0 0 auto;text-align:right;
+    padding:5px 7px;border:1px solid var(--line);border-radius:6px;background:#fafafa;color:var(--fg);
+    -moz-appearance:textfield;
+  }
+  input[type=number]::-webkit-outer-spin-button,
+  input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+  input[type=number]:focus{outline:none;border-color:var(--wx-green);background:#fff}
+  input[type=text]{
+    font:inherit;font-size:13px;flex:1;min-width:0;padding:5px 7px;
+    border:1px solid var(--line);border-radius:6px;background:#fafafa;color:var(--dim);
+  }
+  .chk{display:flex;align-items:center;gap:7px;font-size:13px;color:var(--fg2);cursor:pointer}
+  .chk input{width:15px;height:15px;accent-color:var(--wx-green)}
+
+  /* 档位分段控件 */
+  .seg{display:flex;background:#f2f2f2;border-radius:8px;padding:2px;gap:2px}
+  .seg button{
+    flex:1;border:none;background:transparent;font-size:13px;padding:6px 4px;border-radius:6px;color:var(--dim);
+  }
+  .seg button.on{background:var(--card);color:var(--fg);font-weight:600;box-shadow:var(--shadow)}
+  .seg button.on.draft{color:var(--warn)}
+
+  /* ---------------- 统计条 ---------------- */
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(84px,1fr));gap:8px}
+  .stat{background:#fafafa;border:1px solid var(--line2);border-radius:8px;padding:7px 9px}
+  .stat .k{font-size:10px;color:var(--dim);letter-spacing:.3px}
+  .stat .v{font-size:15px;font-weight:600;margin-top:1px}
+  .stat .v small{font-size:11px;font-weight:400;color:var(--dim)}
+
+  /* 增量收益条：重算 vs 复用，一眼看出签名树命中 */
+  .incbar{display:flex;height:9px;border-radius:5px;overflow:hidden;background:var(--line2);margin:9px 0 5px}
+  .incbar .rec{background:var(--warn)}
+  .incbar .reu{background:var(--wx-green)}
+  .inclegend{display:flex;gap:12px;font-size:11px;color:var(--dim);flex-wrap:wrap}
+  .inclegend i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:4px}
+
+  /* ---------------- JSON ---------------- */
+  textarea{
+    font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    width:100%;min-height:112px;resize:vertical;
+    background:#fafafa;border:1px solid var(--line);border-radius:8px;padding:9px;color:var(--fg);
+  }
+  textarea:focus{outline:none;border-color:var(--wx-green);background:#fff}
+
+  /* ---------------- 提示条 ---------------- */
+  .toast{
+    border-radius:8px;padding:9px 11px;font-size:12px;line-height:1.65;margin-bottom:12px;
+    white-space:pre-wrap;word-break:break-word;display:none;
+  }
+  .toast.show{display:block}
+  .toast.err{background:#fdecec;color:#a8071a}
+  .toast.ok{background:var(--wx-green-l);color:#0a6b3c}
+
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:2px 9px;font-size:11px;color:var(--dim)}
+  .kv b{font-weight:500;color:var(--fg2)}
+  .kv span{word-break:break-all;font-family:ui-monospace,Menlo,monospace}
+  .empty{color:var(--dim);font-size:13px;text-align:center;padding:16px 0}
+  .note{font-size:11px;color:var(--dim);line-height:1.6;margin-top:7px}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Prism 交互式编辑器</h1>
+  <span class="badge" id="bAbi">ABI —</span>
+  <span class="badge" id="bWasm">wasm 加载中…</span>
+</header>
+
+<div class="wrap">
+
+  <!-- 全局提示：结构化错误（Rust 侧三段式「什么事/建议」）原样展示 -->
+  <div class="toast" id="toast"></div>
+
+  <div class="cols">
+    <!-- ==================== 左列：图与预览 ==================== -->
+    <div>
+      <div class="card">
+        <h2>节点树 <span class="hint" id="hNodes"></span></h2>
+        <canvas id="graph" height="150"></canvas>
+        <div class="sep"></div>
+        <ul id="nodes"></ul>
+        <div class="note">
+          点节点选中 → 右侧生成参数控件。<b>橙色描边</b>=上次编辑的 dirty 子图
+          （精确下游闭包，兄弟子树不变）。数据全部来自 <code>prism_editor_graph_json</code>。
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>预览 <span class="hint" id="hView"></span></h2>
+        <div class="preview"><canvas id="view" width="256" height="256"></canvas></div>
+        <div class="sep"></div>
+        <div class="row">
+          <label class="chk"><input type="checkbox" id="live" />拖动实时应用</label>
+          <div style="flex:1"></div>
+          <span class="badge" id="bQuality">—</span>
+          <select id="size" class="mono" style="font:inherit;font-size:12px;padding:5px 7px;border:1px solid var(--line);border-radius:6px;background:#fafafa;color:var(--fg)">
+            <option value="128">128 × 128</option>
+            <option value="192">192 × 192</option>
+            <option value="256" selected>256 × 256</option>
+            <option value="384">384 × 384</option>
+          </select>
+          <button class="tiny" id="btnRender">重渲</button>
+        </div>
+        <div class="note">
+          画布像素由 <code>prism_editor_render</code> 写入 wasm 线性内存，本页零重算。
+        </div>
+      </div>
+    </div>
+
+    <!-- ==================== 右列：编辑与导出 ==================== -->
+    <div>
+      <div class="card">
+        <h2>参数 <span class="hint" id="hParam"></span></h2>
+        <div id="params"><div class="empty">未选中节点</div></div>
+      </div>
+
+      <div class="card">
+        <h2>质量档位</h2>
+        <div class="seg" id="segQ">
+          <button data-q="0" class="on draft">草稿 Draft</button>
+          <button data-q="1">成片 Final</button>
+        </div>
+        <div class="sep"></div>
+        <div class="row">
+          <button id="btnUndo" disabled>撤销</button>
+          <button id="btnRedo" disabled>重做</button>
+          <div style="flex:1"></div>
+          <button class="tiny" id="btnReset">重置为参考图</button>
+        </div>
+        <div class="note">
+          草稿档 <b>spp=1</b> 且内部 1/4 分辨率最近邻放大；成片档 <b>spp=16</b> 全分辨率。
+          档位进缓存键 <code>spp_tier</code>，切换后旧缓存自然失效。
+          撤销栈空时返回结构化错误（<code>E4002</code>/<code>E4003</code>），不 panic。
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>增量收益 <span class="hint">重算集 ≡ dirty 集</span></h2>
+        <div class="incbar">
+          <div class="rec" id="barRec" style="width:100%"></div>
+          <div class="reu" id="barReu" style="width:0%"></div>
+        </div>
+        <div class="inclegend">
+          <span><i style="background:var(--warn)"></i>重算 <b id="lgRec">0</b></span>
+          <span><i style="background:var(--wx-green)"></i>复用 <b id="lgReu">0</b></span>
+          <span>锥大小 <b id="lgCone">0</b></span>
+        </div>
+        <div class="sep"></div>
+        <div class="stats">
+          <div class="stat"><div class="k">每像素样本</div><div class="v" id="stSpp">—</div></div>
+          <div class="stat"><div class="k">内部分辨率</div><div class="v" id="stRes">—</div></div>
+          <div class="stat"><div class="k">输出</div><div class="v" id="stOut">—</div></div>
+          <div class="stat"><div class="k">像素字节</div><div class="v" id="stBytes">—</div></div>
+        </div>
+        <div class="note">
+          改一个叶节点，只有它到根的祖先链签名变化 → 兄弟子树按 <code>cache_key</code> 命中复用，零重算。
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>编辑操作序列 <span class="hint" id="hEdits"></span></h2>
+        <textarea id="edits" readonly spellcheck="false"></textarea>
+        <div class="row" style="margin-top:8px">
+          <button class="tiny" id="btnCopy">复制</button>
+          <button class="tiny" id="btnDet">确定性自检（同参渲染两次比对）</button>
+        </div>
+        <div class="note">
+          <code>prism_editor_edits_json</code> 逐字节稳定：同输入同输出，可直接存档 / 回放比对。
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 运行时信息（ABI 版本 / 状态码 / 导入段），便于离线核对 -->
+  <div class="card">
+    <h2>运行时</h2>
+    <div class="kv" id="rt"></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* =====================================================================
+ * U13 编辑器宿主（零依赖手写 ABI 客户端）
+ *
+ * 与 Rust 侧的三条硬约定：
+ *  1. 状态码判成败：0=PASS 1=FAIL 2=PENDING 3=SKIP 4=BAD_ARG。
+ *     文本细节一律从 NUL 前的 error 缓冲读（长度由 *_error_len 给出）。
+ *  2. `wasm.memory.buffer` 可能因 grow 整体失效 → **每次访问都重建视图**，
+ *     绝不跨调用缓存 Uint8Array。
+ *  3. 文本/像素缓冲是 thread_local 固定缓冲 → 读完立刻用掉，
+ *     下一次 ABI 调用会覆写；本页所有读取都是「调用后立即拷进 JS 字符串/数组」。
+ * ===================================================================== */
+
+const WASM_URL = "prism_editor.wasm";   // 与本 HTML 同目录
+
+/* 状态码 → 人话（与 Rust `editor::abi::status` 一一对应） */
+const ST = [
+  { code: 0, name: "PASS",   cls: "ok"  },
+  { code: 1, name: "FAIL",   cls: "bad" },
+  { code: 2, name: "PENDING",cls: ""    },
+  { code: 3, name: "SKIP",   cls: ""    },
+  { code: 4, name: "BAD_ARG",cls: "bad" },
+];
+
+/* StructureId 序号 → 中文标签（S1..S12，prism-core/src/node.rs） */
+const STRUCT_LABEL = {
+  S1: "标量场", S2: "卷积", S3: "约束梯度流", S4: "确定性抽样",
+  S5: "重参数化", S6: "谱分解", S7: "闭式线性响应", S8: "辐射传输",
+  S9: "分段多项式", S10: "层次+签名", S11: "扩散", S12: "实体表示",
+};
+
+const MERGE_OP = {
+  over: "Over 覆盖", plus: "Plus 相加", screen: "Screen 滤色",
+  multiply: "Multiply 相乘", mask: "Mask 遮罩",
+};
+const CSG_OP = {
+  union: "Union 并", subtract: "Subtract 差", intersect: "Intersect 交",
+};
+
+let wasm = null;      // WebAssembly.Instance.exports
+let graph = null;     // 最近一次 graph_json 解析结果
+let selected = null;  // 当前选中节点 id
+let lastStats = null; // 最近一次渲染统计
+let pendingName = 0;  // 参数名在 wasm 堆上的地址（复用，避免每次 alloc）
+
+/* ---------------------------------------------------------------- 内存 */
+const u8  = () => new Uint8Array(wasm.memory.buffer);
+const enc = new TextEncoder();
+const dec = new TextDecoder();
+
+/** 从 wasm 线性内存读 UTF-8 文本（ptr/len 由 Rust 导出）。 */
+function readStr(ptr, len) {
+  if (!ptr || !len) return "";
+  return dec.decode(u8().subarray(ptr, ptr + len));
+}
+const readJson = () => readStr(wasm.prism_editor_json_ptr(), wasm.prism_editor_json_len());
+const readErr  = () => readStr(wasm.prism_editor_error_ptr(), wasm.prism_editor_error_len());
+const readStat = () => readStr(wasm.prism_editor_stats_ptr(), wasm.prism_editor_stats_len());
+
+/* ---------------------------------------------------------------- DOM */
+const $ = (id) => document.getElementById(id);
+const el = (tag, cls, txt) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (txt !== undefined) n.textContent = txt;   // 永远用 textContent，杜绝注入
+  return n;
+};
+
+/** 展示 Rust 侧结构化错误（三段式原文照抄），成功则显示 ok 文本。 */
+function toast(msg, kind) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.className = "toast show " + (kind || "err");
+  if (kind === "ok") { setTimeout(() => t.classList.remove("show"), 1600); }
+}
+
+/** 统一处理状态码：非 PASS 弹错误并返回 false。 */
+function check(rc, what) {
+  if (rc === 0) return true;
+  const s = ST[rc] || { name: "RC" + rc, cls: "bad" };
+  toast(s.name + " · " + what + "\n" + readErr(), "err");
+  return false;
+}
+
+/* =====================================================================
+ * ABI 封装
+ * ===================================================================== */
+const ABI = {
+  version:  () => wasm.prism_editor_abi_version(),
+  init:     () => wasm.prism_editor_init(),
+  isInit:   () => wasm.prism_editor_is_init() === 1,
+
+  graphJson()  { return wasm.prism_editor_graph_json(); },
+  select(id)   { return wasm.prism_editor_select(id >>> 0); },
+  /** 当前选中节点 id（`u32::MAX` = 未选中）。 */
+  selected()   {
+    // 用 `>>> 0` 消掉 i32 视图的有符号性：0xFFFFFFFF 会被 i32 读成 -1，
+    // 直接比较 `=== 0xFFFFFFFF` 永远为假，导致"未选中"被误判为"选中了 -1"。
+    const v = wasm.prism_editor_selected() >>> 0;
+    return v === 0xFFFFFFFF ? null : v;
+  },
+  schemaJson(id) { return wasm.prism_editor_schema_json(id >>> 0); },
+  dirtyJson()  { return wasm.prism_editor_dirty_json(); },
+  editsJson()  { return wasm.prism_editor_edits_json(); },
+
+  /** 按参数类型分派到 f32 / u32 / bool 三个入口。参数名走 wasm 堆。 */
+  applyParam(node, name, pv) {
+    const bytes = enc.encode(name);
+    const ptr = wasm.prism_editor_alloc(bytes.length);
+    if (!ptr) { toast("wasm 堆分配失败（prism_editor_alloc 返回 0）", "err"); return 4; }
+    u8().set(bytes, ptr);                       // 写完立刻用；下一次调用可能 grow
+    let rc;
+    if (pv.t === "f32")       rc = wasm.prism_editor_apply_param_f32(node >>> 0, ptr, bytes.length, pv.v);
+    else if (pv.t === "u32")  rc = wasm.prism_editor_apply_param_u32(node >>> 0, ptr, bytes.length, pv.v >>> 0);
+    else if (pv.t === "bool") rc = wasm.prism_editor_apply_param_bool(node >>> 0, ptr, bytes.length, pv.v ? 1 : 0);
+    else { wasm.prism_editor_dealloc(ptr, bytes.length); return 4; }
+    wasm.prism_editor_dealloc(ptr, bytes.length);
+    return rc;
+  },
+
+  undo()      { return wasm.prism_editor_undo(); },
+  redo()      { return wasm.prism_editor_redo(); },
+  canUndo()   { return wasm.prism_editor_can_undo() === 1; },
+  canRedo()   { return wasm.prism_editor_can_redo() === 1; },
+
+  setQuality(tier) { return wasm.prism_editor_set_quality(tier >>> 0); },
+  quality()   { return wasm.prism_editor_quality(); },
+  qualitySpp(){ return wasm.prism_editor_quality_spp(); },
+
+  render(w, h) { return wasm.prism_editor_render(w >>> 0, h >>> 0); },
+
+  /**
+   * 取预览像素并拷进 JS（**必须拷贝**：wasm 侧是固定缓冲，
+   * 下一次 render 就会原地覆写）。
+   */
+  pixels(w, h) {
+    const ptr = wasm.prism_editor_pixels_ptr();
+    const len = wasm.prism_editor_pixels_len();
+    if (!ptr || len < w * h * 4) return null;
+    return u8().slice(ptr, ptr + len);
+  },
+};
+
+/* =====================================================================
+ * 渲染：wasm 像素 → canvas（零本地重算，只做 blit）
+ * ===================================================================== */
+const view = $("view");
+const vctx = view.getContext("2d", { willReadFrequently: false });
+
+function drawPreview(w, h) {
+  if (view.width !== w || view.height !== h) { view.width = w; view.height = h; }
+  const px = ABI.pixels(w, h);
+  if (!px) { toast("像素缓冲不可用（ptr=0 或长度不足）", "err"); return false; }
+  // copy: true —— 必须复制，因为 px 来自 wasm 内存视图的 slice（已是副本），
+  // 但 ImageData 要求独立的 Uint8ClampedArray 语义。
+  vctx.putImageData(new ImageData(new Uint8ClampedArray(px.buffer, px.byteOffset, px.length), w, h), 0, 0);
+  return true;
+}
+
+/* =====================================================================
+ * 节点图（简笔拓扑示意）：按最长路径分层，节点为圆角块，边为折线
+ * ===================================================================== */
+const gcv = $("graph");
+const gctx = gcv.getContext("2d");
+
+function drawGraph() {
+  const nodes = (graph && graph.nodes) || [];
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const cssW = gcv.clientWidth || 480, cssH = 150;
+  gcv.width = Math.round(cssW * dpr); gcv.height = Math.round(cssH * dpr);
+  gcv.style.height = cssH + "px";
+  gctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  gctx.clearRect(0, 0, cssW, cssH);
+
+  if (!nodes.length) return;
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  // 层号 = 最长前驱路径长度（拓扑分层，确定性）
+  const level = new Map();
+  const depth = (id, guard) => {
+    if (level.has(id)) return level.get(id);
+    if (guard > nodes.length + 1) return 0;           // 环保护（Rust 侧已拒绝成环）
+    const n = byId.get(id);
+    let d = 0;
+    if (n) for (const inp of n.inputs) d = Math.max(d, depth(inp.from, guard + 1) + 1);
+    level.set(id, d);
+    return d;
+  };
+  nodes.forEach((n) => depth(n.id, 0));
+
+  // 布局：x 按层，y 按同层序号居中
+  const NW = Math.min(104, Math.max(66, cssW / (Math.max(...level.values()) + 2.4)));
+  const NH = 30, GAPY = 12, PADX = 8, PADY = 14;
+  const maxL = Math.max(...level.values());
+  const perLayer = new Map();
+  const pos = new Map();
+  for (const n of nodes) {
+    const L = level.get(n.id);
+    const k = perLayer.get(L) || 0;
+    perLayer.set(L, k + 1);
+    const total = Math.max(1, countAt(L));
+    pos.set(n.id, {
+      x: PADX + L * (NW + 26),
+      y: PADY + (cssH - PADY * 2 - NH) * (total === 1 ? 0.5 : k / (total - 1)),
+      w: NW, h: NH,
+    });
+  }
+  function countAt(L) { let c = 0; for (const v of level.values()) if (v === L) c++; return c; }
+
+  const dirty = new Set((graph && graph.dirty) || []);
+  const sel = graph ? graph.selected : null;
+
+  // 边
+  gctx.strokeStyle = "#d4d4d4"; gctx.lineWidth = 1.4;
+  for (const n of nodes) {
+    const to = pos.get(n.id); if (!to) continue;
+    for (const inp of n.inputs) {
+      const f = pos.get(inp.from); if (!f) continue;
+      const x1 = f.x + f.w, y1 = f.y + f.h / 2, x2 = to.x, y2 = to.y + to.h / 2;
+      const mx = (x1 + x2) / 2;
+      gctx.beginPath();
+      gctx.moveTo(x1, y1);
+      gctx.bezierCurveTo(mx, y1, mx, y2, x2, y2);
+      gctx.stroke();
+    }
+  }
+  // 节点块
+  for (const n of nodes) {
+    const p = pos.get(n.id); if (!p) continue;
+    const isSel = sel === n.id, isDirty = dirty.has(n.id);
+    gctx.fillStyle = isSel ? "#e8f9ef" : "#ffffff";
+    gctx.strokeStyle = isSel ? "#07c160" : (isDirty ? "#fa9d3b" : "#dcdcdc");
+    gctx.lineWidth = isSel || isDirty ? 1.8 : 1.1;
+    rr(gctx, p.x, p.y, p.w, p.h, 7); gctx.fill(); gctx.stroke();
+    gctx.fillStyle = isSel ? "#06ad56" : "#191919";
+    gctx.font = "600 12px -apple-system,'PingFang SC',sans-serif";
+    gctx.textAlign = "center"; gctx.textBaseline = "middle";
+    gctx.fillText(STRUCT_LABEL[n.structure] || n.structure, p.x + p.w / 2, p.y + p.h / 2);
+  }
+}
+function rr(c, x, y, w, h, r) {
+  c.beginPath();
+  c.moveTo(x + r, y); c.arcTo(x + w, y, x + w, y + h, r);
+  c.arcTo(x + w, y + h, x, y + h, r); c.arcTo(x, y + h, x, y, r);
+  c.arcTo(x, y, x + w, y, r); c.closePath();
+}
+
+/* =====================================================================
+ * 节点树列表
+ * ===================================================================== */
+function renderNodeList() {
+  const ul = $("nodes");
+  ul.textContent = "";
+  const nodes = (graph && graph.nodes) || [];
+  const dirty = new Set((graph && graph.dirty) || []);
+  $("hNodes").textContent = nodes.length + " 个节点";
+  if (!nodes.length) { ul.appendChild(el("li", "empty", "图为空")); return; }
+
+  for (const n of nodes) {
+    const li = el("li");
+    if (selected === n.id) li.classList.add("sel");
+    if (dirty.has(n.id)) li.classList.add("dirty");
+
+    li.appendChild(el("span", "nid", String(n.id)));
+
+    const meta = el("div", "meta");
+    const st = el("div", "st");
+    st.appendChild(el("span", null, STRUCT_LABEL[n.structure] || n.structure));
+    st.appendChild(el("span", "tag", compLabel(n.composition)));
+    if (selected === n.id) st.appendChild(el("span", "tag sel", "已选"));
+    if (dirty.has(n.id)) st.appendChild(el("span", "tag dirty", "dirty"));
+    if (!n.inputs.length) st.appendChild(el("span", "tag root", "源"));
+    meta.appendChild(st);
+
+    const src = n.inputs.length
+      ? "← " + n.inputs.map((i) => "槽" + i.slot + "·节点" + i.from).join("，")
+      : "无上游（叶节点）";
+    meta.appendChild(el("div", "sub", src + " · " + n.params.length + " 个参数"));
+    li.appendChild(meta);
+
+    li.onclick = () => selectNode(n.id);
+    ul.appendChild(li);
+  }
+}
+
+function compLabel(c) {
+  if (!c) return "?";
+  if (c.kind === "feed") return "Feed 直出";
+  if (c.kind === "chain") return "Chain 串联";
+  if (c.kind === "merge") return MERGE_OP[c.op] || ("Merge " + c.op);
+  if (c.kind === "csg") return CSG_OP[c.op] || ("Csg " + c.op);
+  return c.kind;
+}
+
+/** 根节点 = 无下游（inputs 为空且无后继）者；多个时取 id 最大（与 Rust 侧 pick_root 同约定）。 */
+function lastRootId() {
+  const nodes = (graph && graph.nodes) || [];
+  if (!nodes.length) return null;
+  const hasOut = new Set();
+  for (const n of nodes) for (const i of n.inputs) hasOut.add(i.from);
+  const roots = nodes.filter((n) => !hasOut.has(n.id)).map((n) => n.id);
+  if (!roots.length) return nodes[nodes.length - 1].id;
+  return roots[roots.length - 1];
+}
+
+/* =====================================================================
+ * 参数控件：按 schema 生成滑条 + 数字框
+ * ===================================================================== */
+function selectNode(id) {
+  if (!check(ABI.select(id), "选中节点 " + id)) { return; }
+  if (!check(ABI.graphJson(), "读取图")) { return; }
+  reloadGraph();
+  selected = id;
+  renderNodeList();
+  renderParams();
+  drawGraph();
+}
+
+function renderParams() {
+  const box = $("params");
+  box.textContent = "";
+  if (selected === null) { box.appendChild(el("div", "empty", "未选中节点")); $("hParam").textContent = ""; return; }
+
+  const rc = ABI.schemaJson(selected);
+  if (!check(rc, "读取节点 " + selected + " 的参数 schema")) {
+    box.appendChild(el("div", "empty", "读取失败"));
+    return;
+  }
+  let sc;
+  try { sc = JSON.parse(readJson()); }
+  catch (e) { toast("schema JSON 解析失败：" + e, "err"); return; }
+
+  $("hParam").textContent = "节点 " + sc.node + " · " + (sc.params.length + " 项");
+  if (!sc.params.length) { box.appendChild(el("div", "empty", "该节点无参数")); return; }
+
+  const live = $("live").checked;
+  for (const p of sc.params) {
+    box.appendChild(buildParam(p, live));
+  }
+}
+
+/** 单个参数控件。`live=false` 时滑条拖动只更新数字框，松手才提交（一次编辑 = 一条撤销记录）。 */
+function buildParam(p, live) {
+  const wrap = el("div", "param");
+
+  const top = el("div", "top");
+  top.appendChild(el("span", "pname", p.name));
+  top.appendChild(el("span", "ptype", p.value.t));
+  wrap.appendChild(top);
+
+  const ctl = el("div", "ctl");
+
+  if (p.value.t === "bool") {
+    const lab = el("label", "chk");
+    const box = document.createElement("input");
+    box.type = "checkbox"; box.checked = !!p.value.v;
+    box.onchange = () => commit(p.name, { t: "bool", v: box.checked });
+    lab.appendChild(box);
+    lab.appendChild(el("span", null, box.checked ? "开" : "关"));
+    ctl.appendChild(lab);
+  } else if (p.value.t === "str") {
+    // 字符串参数：schema 未给范围，只读展示（诚实边界，见汇报）
+    const inp = document.createElement("input");
+    inp.type = "text"; inp.value = String(p.value.v); inp.readOnly = true;
+    ctl.appendChild(inp);
+  } else {
+    const isF = p.value.t === "f32";
+    const rng = document.createElement("input");
+    rng.type = "range";
+    rng.min = p.min; rng.max = p.max; rng.step = p.step;
+    rng.value = p.value.v;
+
+    const num = document.createElement("input");
+    num.type = "number";
+    num.min = p.min; num.max = p.max; num.step = p.step;
+    num.value = isF ? Number(p.value.v).toFixed(3) : p.value.v;
+
+    // 拖动中：只同步显示 + （可选）实时提交；change = 一次完整编辑
+    rng.oninput = () => {
+      num.value = isF ? Number(rng.value).toFixed(3) : rng.value;
+      if (live) commit(p.name, mkPv(p, rng.value));
+    };
+    rng.onchange = () => commit(p.name, mkPv(p, rng.value));
+    num.onchange = () => {
+      let v = Number(num.value);
+      if (!Number.isFinite(v)) v = p.value.v;
+      v = Math.min(p.max, Math.max(p.min, v));
+      num.value = isF ? v.toFixed(3) : v;
+      rng.value = v;
+      commit(p.name, mkPv(p, v));
+    };
+
+    ctl.appendChild(rng);
+    ctl.appendChild(num);
+  }
+  wrap.appendChild(ctl);
+  return wrap;
+}
+
+function mkPv(spec, raw) {
+  if (spec.value.t === "u32") return { t: "u32", v: Math.max(0, Math.round(Number(raw))) };
+  return { t: "f32", v: Number(raw) };
+}
+
+/** 提交一次编辑 → 失败弹结构化错误；成功则整体刷新并重渲。 */
+function commit(name, pv) {
+  if (selected === null) return;
+  const rc = ABI.applyParam(selected, name, pv);
+  if (!check(rc, "应用编辑 " + selected + "." + name)) { return; }
+  afterMutation("已应用 " + name + " = " + fmtPv(pv));
+}
+
+function fmtPv(pv) {
+  return pv.t === "f32" ? pv.v.toFixed(3) : (pv.t === "bool" ? (pv.v ? "true" : "false") : String(pv.v));
+}
+
+/** 任何状态变更后的统一收尾：重读图 → 重绘树/图 → 重渲 → 刷统计与按钮。 */
+function afterMutation(msg) {
+  if (!check(ABI.graphJson(), "读取图")) { return; }
+  reloadGraph();
+  if (msg) toast(msg, "ok");
+  renderNodeList();
+  drawGraph();
+  renderParams();
+  doRender();
+  refreshHistory();
+  refreshEdits();
+}
+
+function reloadGraph() {
+  try { graph = JSON.parse(readJson()); }
+  catch (e) { graph = null; toast("图 JSON 解析失败：" + e, "err"); return; }
+  if (graph.selected !== null && graph.selected !== undefined) selected = graph.selected;
+}
+
+/* =====================================================================
+ * 预览 / 统计 / 历史 / 导出
+ * ===================================================================== */
+function doRender() {
+  const n = parseInt($("size").value, 10) || 256;
+  if (!check(ABI.render(n, n), "渲染 " + n + "×" + n)) { return; }
+  if (!drawPreview(n, n)) { return; }
+
+  const raw = readStat();
+  try { lastStats = JSON.parse(raw); } catch (e) { lastStats = null; }
+  $("hView").textContent = n + " × " + n;
+
+  const s = lastStats;
+  if (s) {
+    $("stSpp").innerHTML = "";
+    $("stSpp").appendChild(document.createTextNode(String(s.spp)));
+    $("stRes").innerHTML = "";
+    $("stRes").appendChild(document.createTextNode(s.internal_width + "×" + s.internal_height));
+    $("stOut").textContent = s.width + "×" + s.height;
+    $("stBytes").textContent = (ABI.pixels(1, 1), (n * n * 4 / 1024).toFixed(0) + " KB");
+    $("lgRec").textContent = s.recomputed.length;
+    $("lgReu").textContent = s.reused.length;
+    $("lgCone").textContent = s.cone_size;
+    const tot = s.cone_size || 1;
+    $("barRec").style.width = (s.recomputed.length / tot * 100).toFixed(2) + "%";
+    $("barReu").style.width = (s.reused.length / tot * 100).toFixed(2) + "%";
+  }
+  const q = ABI.quality();
+  $("bQuality").textContent = (q === 0 ? "草稿 Draft" : q === 1 ? "成片 Final" : "—") + " · spp=" + ABI.qualitySpp();
+  $("bQuality").className = "badge" + (q === 0 ? "" : " ok");
+  syncQualitySeg(q);
+}
+
+function refreshHistory() {
+  $("btnUndo").disabled = !ABI.canUndo();
+  $("btnRedo").disabled = !ABI.canRedo();
+}
+
+function refreshEdits() {
+  if (!check(ABI.editsJson(), "导出编辑序列")) { return; }
+  const raw = readJson();
+  $("edits").value = raw;
+  let n = 0;
+  try { n = JSON.parse(raw).edits.length; } catch (e) { /* 保持 0 */ }
+  $("hEdits").textContent = n + " 条";
+}
+
+function syncQualitySeg(q) {
+  for (const b of $("segQ").querySelectorAll("button")) {
+    b.classList.toggle("on", Number(b.dataset.q) === q);
+  }
+}
+
+/* =====================================================================
+ * 事件绑定
+ * ===================================================================== */
+function bind() {
+  $("btnRender").onclick = () => { doRender(); toast("已重渲", "ok"); };
+  $("size").onchange = () => doRender();
+  $("live").onchange = () => renderParams();
+
+  $("btnUndo").onclick = () => {
+    if (!check(ABI.undo(), "撤销")) { return; }
+    afterMutation("已撤销");
+  };
+  $("btnRedo").onclick = () => {
+    if (!check(ABI.redo(), "重做")) { return; }
+    afterMutation("已重做");
+  };
+  $("btnReset").onclick = () => {
+    // 记住当前选中：init() 会清空选中，重置后恢复它（符合"我只是撤销了所有改动"
+    // 的心智模型），而不是把用户丢到别的节点上。
+    const keep = selected;
+    if (!check(ABI.init(), "重置")) { return; }
+    afterMutation("已重置为参考图");
+    // 恢复原选中；该节点已不存在时退回根节点，避免参数区空白。
+    let target = keep;
+    if (target === null || !((graph && graph.nodes) || []).some((n) => n.id === target)) {
+      target = lastRootId();
+    }
+    if (target !== null) { selectNode(target); }
+    else { selected = null; renderNodeList(); renderParams(); drawGraph(); }
+    $("bWasm").textContent = "wasm 就绪";
+    $("bWasm").className = "badge ok";
+  };
+
+  for (const b of $("segQ").querySelectorAll("button")) {
+    b.onclick = () => {
+      const t = Number(b.dataset.q);
+      if (!check(ABI.setQuality(t), "切换档位")) { return; }
+      afterMutation("档位 → " + (t === 0 ? "草稿 Draft (spp=1)" : "成片 Final (spp=16)"));
+    };
+  }
+
+  $("btnCopy").onclick = async () => {
+    const ta = $("edits");
+    ta.select();
+    ta.setSelectionRange(0, ta.value.length);
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    if (!ok && navigator.clipboard) {
+      try { await navigator.clipboard.writeText(ta.value); ok = true; } catch (e) { ok = false; }
+    }
+    toast(ok ? "已复制编辑序列 JSON" : "复制失败：请手动全选复制", ok ? "ok" : "err");
+  };
+
+  // 确定性自检：同参连续渲染两次，像素必须逐字节一致（确定性铁律的端上自证）
+  $("btnDet").onclick = () => {
+    const n = parseInt($("size").value, 10) || 256;
+    if (!check(ABI.render(n, n), "第一次渲染")) { return; }
+    const a = ABI.pixels(n, n);
+    const sa = readStat();
+    if (!check(ABI.render(n, n), "第二次渲染")) { return; }
+    const b = ABI.pixels(n, n);
+    const sb = readStat();
+    if (!a || !b) { toast("像素缓冲不可用", "err"); return; }
+    if (a.length !== b.length) { toast("两次像素长度不同：" + a.length + " vs " + b.length, "err"); return; }
+    let diff = -1;
+    for (let i = 0; i < a.length; i++) { if (a[i] !== b[i]) { diff = i; break; } }
+    if (diff >= 0) {
+      toast("FAIL · 像素在第 " + diff + " 字节不同（" + a[diff] + " vs " + b[diff] + "）\n" +
+            "两次统计：\n" + sa + "\n" + sb, "err");
+      return;
+    }
+    // 顺带验证编辑序列 JSON 的逐字节稳定性
+    ABI.editsJson(); const e1 = readJson();
+    ABI.editsJson(); const e2 = readJson();
+    toast("PASS · " + a.length + " 字节像素逐字节一致；编辑序列 JSON " +
+          (e1 === e2 ? "稳定（" + e1.length + " 字节）" : "不稳定！"), "ok");
+  };
+
+  window.addEventListener("resize", () => drawGraph());
+}
+
+/* =====================================================================
+ * 启动
+ * ===================================================================== */
+async function boot() {
+  try {
+    const resp = await fetch(WASM_URL);
+    if (!resp.ok) throw new Error("fetch(\"" + WASM_URL + "\") HTTP " + resp.status);
+    const bytes = await resp.arrayBuffer();
+
+    // 先静态核对：导入段必须为空（编辑器 ABI 纯导出，零胶水）
+    const mod = await WebAssembly.compile(bytes);
+    const imports = WebAssembly.Module.imports(mod);
+    const missing = [];
+    const inst = await WebAssembly.instantiate(mod, {
+      env: new Proxy({}, {
+        get(_, name) {
+          const fn = (...a) => { missing.push(String(name)); return 0; };
+          missing.push(String(name));
+          return fn;
+        },
+      }),
+    });
+    wasm = inst.exports;
+
+    $("bAbi").textContent = "ABI v" + ABI.version();
+    $("bAbi").className = "badge ok";
+    $("bWasm").textContent = imports.length === 0 ? "wasm 就绪 · 0 导入" : "wasm 就绪 · " + imports.length + " 导入";
+    $("bWasm").className = imports.length === 0 ? "badge ok" : "badge bad";
+
+    if (!check(ABI.init(), "初始化编辑器")) { throw new Error("init 失败"); }
+    $("rt").appendChild(kv("wasm 文件", WASM_URL));
+    $("rt").appendChild(kv("ABI 版本", String(ABI.version())));
+    $("rt").appendChild(kv("导入段", imports.length === 0
+      ? "空（纯导出，零胶水）"
+      : imports.map((i) => i.module + "." + i.name).join(", ")));
+    $("rt").appendChild(kv("未满足导入", missing.length === 0 ? "无" : missing.join(", ")));
+    $("rt").appendChild(kv("状态码约定", "0=PASS 1=FAIL 2=PENDING 3=SKIP 4=BAD_ARG"));
+    $("rt").appendChild(kv("节点签名 schema", "复用 prism-core 签名树（改一节点仅祖先链失效）"));
+
+    bind();
+    afterMutation(null);
+    if (graph) { selected = graph.selected; renderNodeList(); drawGraph(); renderParams(); }
+  } catch (e) {
+    $("bWasm").textContent = "wasm 加载失败";
+    $("bWasm").className = "badge bad";
+    toast("FAIL · 无法加载 " + WASM_URL + "\n  什么事：" + (e && e.message ? e.message : e) +
+          "\n  建议：先执行 crates/prism-gpu/web/build_editor.sh 生成 wasm，" +
+          "并用本地静态服务器打开本页（file:// 下 fetch 受限）", "err");
+  }
+}
+
+function kv(k, v) {
+  const f = el("div");
+  f.appendChild(el("b", null, k));
+  f.appendChild(el("span", null, v));
+  return f;
+}
+
+boot();
+</script>
+</body>
+</html>

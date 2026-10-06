@@ -1,0 +1,12 @@
+[package]
+name = "prism-infra"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+prism-math = { path = "../prism-math" }
+prism-gpu = { path = "../prism-gpu" }
+prism-core = { path = "../prism-core" }
+prism-render = { path = "../prism-render" }
+prism-io = { path = "../prism-io" }
+prism-dsl = { path = "../prism-dsl" }

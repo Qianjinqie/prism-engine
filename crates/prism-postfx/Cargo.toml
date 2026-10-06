@@ -1,0 +1,17 @@
+[package]
+name = "prism-postfx"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+prism-math = { path = "../prism-math" }
+prism-io = { path = "../prism-io" }
+prism-render = { path = "../prism-render" }
+prism-noise = { path = "../prism-noise" }
+prism-raster = { path = "../prism-raster" }
+
+[dev-dependencies]
+prism-core = { path = "../prism-core" }
+prism-aesthetic = { path = "../prism-aesthetic" }
+prism-texture = { path = "../prism-texture" }
+prism-rt = { path = "../prism-rt" }

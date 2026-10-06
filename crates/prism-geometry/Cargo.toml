@@ -1,0 +1,8 @@
+[package]
+name = "prism-geometry"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+prism-math = { path = "../prism-math" }
+prism-noise = { path = "../prism-noise" }

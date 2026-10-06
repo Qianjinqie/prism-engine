@@ -1,0 +1,7 @@
+[package]
+name = "prism-bytes"
+version = "0.1.0"
+edition = "2021"
+
+# 叶子 crate：零依赖（含本仓任何 crate）。理由见 src/lib.rs 文档「为什么是叶子」。
+[dependencies]

@@ -1,0 +1,10 @@
+[package]
+name = "prism-texture"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+prism-math = { path = "../prism-math" }
+prism-io = { path = "../prism-io" }
+prism-noise = { path = "../prism-noise" }
+prism-render = { path = "../prism-render" }

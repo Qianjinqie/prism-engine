@@ -1,0 +1,27 @@
+[package]
+name = "prism-app"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# cdylib：产出 `prism_editor.wasm`（U13 交互式编辑器页面加载）。
+#
+# 为什么 editor ABI 走 prism-app 而非 prism-gpu：编辑器的增量失效依赖
+# prism-core 的子图签名树，而 prism-gpu 只依赖 prism-math，反向依赖 prism-core
+# 会成环（prism-gpu/src/scan.rs 模块头明确禁止）。故 ABI 落在已依赖 prism-core
+# 的 prism-app，对 abi.rs 零改动。
+#
+# rlib 保留，使 native 目标下 `cargo test -p prism-app` 与既有 CLI 完全不受影响。
+# 二进制目标（main.rs）保持不变——CLI 入口不受影响。
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+prism-math = { path = "../prism-math" }
+prism-gpu = { path = "../prism-gpu" }
+prism-core = { path = "../prism-core" }
+prism-render = { path = "../prism-render" }
+prism-io = { path = "../prism-io" }
+prism-dsl = { path = "../prism-dsl" }
+prism-infra = { path = "../prism-infra" }
+prism-aesthetic = { path = "../prism-aesthetic" }
+prism-ai = { path = "../prism-ai" }

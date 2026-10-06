@@ -1,0 +1,788 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Prism GPU Harness — WebGPU 正确性测试（D-14）</title>
+<style>
+  :root{
+    --bg:#0e1116; --panel:#171b22; --panel2:#1e242e; --fg:#e6e9ef; --dim:#9aa4b2;
+    --pass:#2ecc71; --fail:#e74c3c; --skip:#f1c40f; --run:#3498db; --line:#2a3140;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Noto Sans SC",sans-serif;
+       padding:14px;max-width:900px;margin:0 auto;-webkit-text-size-adjust:100%}
+  h1{font-size:17px;margin:0 0 4px}
+  .sub{color:var(--dim);font-size:12px;margin-bottom:12px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:12px}
+  .card h2{font-size:13px;margin:0 0 8px;color:var(--dim);font-weight:600;letter-spacing:.3px}
+  button{background:var(--panel2);color:var(--fg);border:1px solid var(--line);border-radius:8px;
+         padding:9px 12px;font-size:13px;cursor:pointer;-webkit-tap-highlight-color:transparent}
+  button:active{transform:translateY(1px)}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  button.primary{background:var(--run);border-color:var(--run);color:#fff}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:2px 10px;font-size:12px}
+  .kv b{color:var(--dim);font-weight:500}
+  .kv span{word-break:break-all}
+  .banner{padding:12px;border-radius:10px;font-size:13px;line-height:1.6;margin-bottom:12px}
+  .banner.err{background:#3a1512;border:1px solid #7a2a22;color:#ffb4ab}
+  .banner.ok{background:#12261a;border:1px solid #1f5c37;color:#9be7b6}
+  .banner.warn{background:#332a10;border:1px solid #7a6420;color:#ffe08a}
+  #tests{list-style:none;padding:0;margin:0}
+  #tests li{border:1px solid var(--line);border-radius:8px;margin-bottom:8px;overflow:hidden;background:var(--panel2)}
+  .thead{display:flex;align-items:center;gap:10px;padding:10px 12px;cursor:pointer}
+  .dot{width:10px;height:10px;border-radius:50%;background:var(--dim);flex:0 0 auto}
+  .dot.PASS{background:var(--pass)} .dot.FAIL{background:var(--fail)}
+  .dot.SKIP{background:var(--skip)} .dot.RUN{background:var(--run);animation:pulse 1s infinite}
+  @keyframes pulse{50%{opacity:.35}}
+  .tname{flex:1;font-size:13px}
+  .tstate{font-size:11px;font-weight:700;letter-spacing:.5px}
+  .tstate.PASS{color:var(--pass)} .tstate.FAIL{color:var(--fail)}
+  .tstate.SKIP{color:var(--skip)} .tstate.RUN{color:var(--run)}
+  .tbody{display:none;padding:0 12px 12px;font-size:12px;color:var(--dim);
+         white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  li.open .tbody{display:block}
+  #errpanel .e{border-left:3px solid var(--fail);padding:4px 8px;margin:6px 0;background:#20120f;border-radius:4px;
+             font-family:ui-monospace,monospace;font-size:11px;white-space:pre-wrap;word-break:break-word}
+  #errpanel .e.stage{color:var(--dim)}
+  /* 成功事件：绿边深底。历史上只有 .e 一档，导致 "wasm-loaded code=OK" 也被
+     渲染成红字，真故障淹没在噪声里。 */
+  #errpanel .ok{border-left:3px solid var(--pass);padding:4px 8px;margin:6px 0;background:#0f1a14;border-radius:4px;
+             color:var(--dim);font-family:ui-monospace,monospace;font-size:11px;white-space:pre-wrap;word-break:break-word}
+  #errpanel .warn{border-left:3px solid #d8a13a;padding:4px 8px;margin:6px 0;background:#1a1610;border-radius:4px;
+             font-family:ui-monospace,monospace;font-size:11px;white-space:pre-wrap;word-break:break-word}
+  textarea{width:100%;min-height:160px;background:#0b0e13;color:var(--fg);border:1px solid var(--line);
+           border-radius:8px;padding:10px;font-family:ui-monospace,monospace;font-size:11px;resize:vertical}
+  .muted{color:var(--dim);font-size:11px}
+  .sep{height:1px;background:var(--line);margin:10px 0}
+  code{background:#0b0e13;padding:1px 4px;border-radius:4px;font-size:11px}
+</style>
+</head>
+<body>
+  <h1>Prism GPU Harness <span class="muted">· WebGPU 正确性测试（D-14）</span></h1>
+  <div class="sub">手机浏览器 = 正确性测试设备；性能基准以桌面 GPU 为准。零第三方 crate，WebGPU 为手写 <code>extern "C"</code> 绑定。</div>
+
+  <!-- 要求 1：特性检测 + 明确提示（不白屏） -->
+  <div id="support" class="banner warn">正在检测 WebGPU 支持…</div>
+
+  <div class="card">
+    <h2>环境摘要</h2>
+    <div class="kv" id="env"></div>
+    <div class="sep"></div>
+    <div class="row">
+      <button id="runall" class="primary">▶ 全部运行</button>
+      <button id="rerun">↻ 重跑失败项</button>
+      <button id="copy">⧉ 一键复制报告</button>
+    </div>
+    <div class="muted" style="margin-top:6px">点击任一测试项可展开详情 / 单独重跑。测试项清单由 Rust 侧导出，本页不硬编码。</div>
+  </div>
+
+  <!-- 要求 4：测试项逐个可点、可重跑，显示 PASS/FAIL/SKIP -->
+  <div class="card">
+    <h2>测试项 <span class="muted" id="testcount"></span></h2>
+    <ul id="tests"></ul>
+  </div>
+
+  <!-- 要求 2：错误全捕获面板 -->
+  <div class="card">
+    <h2>错误面板 <span class="muted" id="errcount">(0)</span></h2>
+    <div id="errpanel"><div class="muted">暂无错误。</div></div>
+  </div>
+
+  <!-- WGSL 源码查阅 + 自定义源码结构自检（用 prism_alloc/dealloc 往返线性内存） -->
+  <div class="card">
+    <h2>WGSL 源码（Rust 侧内嵌唯一真源，零 JS 副本）</h2>
+    <div class="row">
+      <select id="srcsel" style="flex:1;min-width:180px;background:var(--panel2);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:8px;font-size:12px"></select>
+      <button id="srccheck">✓ 结构自检</button>
+      <button id="srccopy">⧉ 复制源码</button>
+    </div>
+    <textarea id="srcview" readonly style="min-height:110px;margin-top:8px" placeholder="wasm 未加载"></textarea>
+    <div class="muted" style="margin-top:6px">「结构自检」把上面这段源码经 <code>prism_alloc</code> 写入 wasm 线性内存，再调 <code>prism_check_wgsl</code> 拿 Rust 侧判据（D-29 禁 libm / 括号配平 / 零第三方 include），随后 <code>prism_dealloc</code> 释放。<br>
+    <b>下拉框里显示的是已展开 <code>//!include</code> 的完整源码</b>（WGSL 无 include 语义，展开在 Rust 侧完成；每段源码前后有 <code>// ===== begin/end 文件名</code> 标记，便于按文件定位真机编译错误）。</div>
+  </div>
+
+  <!-- 要求 3：一键复制报告 -->
+  <div class="card">
+    <h2>错误报告（复制粘贴回对话即可定位）</h2>
+    <textarea id="report" readonly placeholder="运行测试后自动生成…"></textarea>
+  </div>
+
+<script type="module">
+"use strict";
+
+// ===========================================================================
+// 全局错误收集（要求 2）：GPU 验证错误 / panic / device lost / wasm 加载失败
+// ===========================================================================
+const errors = [];
+// 日志级别：`ok` 为过程成功事件（wasm 加载完成、streaming 回退等），
+// `warn` 为可疑但不失败，`err` 才是真正需要回传的故障。
+// 历史上所有条目都塞进同一个数组并统一渲染成红色，导致 "wasm-loaded code=OK"
+// 这类**成功**日志被显示成错误 —— 面板一打开就永远有红字，真故障反而被淹没。
+function logError(entry){
+  if (!entry.sev) entry.sev = (entry.code === "OK") ? "ok" : "err";
+  errors.push(Object.assign({ t: new Date().toISOString(), ua: navigator.userAgent }, entry));
+  renderErrors();
+  renderReport();
+}
+window.addEventListener("error", e => logError({ kind:"window.error", stage:"page", test:"-",
+  msg:String(e.message), src:`${e.filename}:${e.lineno}:${e.colno}` }));
+window.addEventListener("unhandledrejection", e => logError({ kind:"unhandledrejection", stage:"page", test:"-",
+  code:"REJECTION", msg:String(e.reason && e.reason.message || e.reason) }));
+function gpuErr(kind, ctx, err){
+  logError({ kind, stage: (ctx && ctx.stage) || "-", test: (ctx && ctx.test) || "-",
+    code: (err && (err.code || err.reason)) || "unknown",
+    msg: String(err && err.message || err || "unknown") });
+}
+
+// ===========================================================================
+// 常量：与 Rust `web::abi::status` 一一对应
+// ===========================================================================
+const ST = { PASS:0, FAIL:1, PENDING:2, SKIP:3, BAD_ARG:4 };
+const ST_NAME = ["PASS","FAIL","PENDING","SKIP","BAD_ARG"];
+
+const WASM_URL = "prism_gpu.wasm";   // 与本HTML 同目录（发布时整个 web/ 一起发布）
+
+// 句柄表在 wasm 线性内存里的元素宽度：句柄是 u32 ⇒ 4 字节。
+// 命名常量而非字面量：bind group 那段要把 n 个句柄的数组整段读出来，
+// 偏移与步长必须同源。此前两处各写一个 `4`，一旦改句柄宽度只改一处就静默错位
+// （门禁 wgsl_lint.mjs 规则 D2 断言此处无裸 4）。
+const BYTES_PER_U32 = 4;
+
+// ===========================================================================
+// WASM 加载（手写 instantiateStreaming → 回退 arrayBuffer；零胶水库）
+// ===========================================================================
+let wasm = null;       // = WebAssembly.Instance.exports（导出函数表；非 Instance 本身）
+let mem = null;        // WebAssembly.Memory（每次访问都可能因 grow 而换 buffer）
+let memU8 = () => new Uint8Array(wasm.memory.buffer);
+const dec = new TextDecoder();
+
+/** 读 wasm 线性内存中的 UTF-8 文本（ptr/len 由 Rust 导出）。 */
+function readStr(ptr, len){ return dec.decode(memU8().subarray(ptr, ptr + len)); }
+function errText(){ return readStr(wasm.prism_error_ptr(), wasm.prism_error_len()); }
+function resText(){ return readStr(wasm.prism_result_ptr(), wasm.prism_result_len()); }
+
+async function loadWasm(){
+  // instantiateStreaming 需要服务器给 .wasm 打 `application/wasm` MIME；
+  // 很多静态托管（含 file:// 与部分「发布为应用」打包）不给，故必须回退到
+  // arrayBuffer 路径，否则会出现"编译成功但页面报 MIME 错"的假故障。
+  const resp = await fetch(WASM_URL);
+  if (!resp.ok) throw new Error(`fetch("${WASM_URL}") HTTP ${resp.status} ${resp.statusText}`);
+  const total = Number(resp.headers.get("content-length") || 0);
+  let instance = null, how = "";
+  if (WebAssembly.instantiateStreaming && resp.headers.get("content-type")?.includes("application/wasm")) {
+    try {
+      ({ instance } = await WebAssembly.instantiateStreaming(resp, { env: makeGlue() }));
+      how = "instantiateStreaming";
+    } catch (e) {
+      logError({ kind:"wasm.streaming-fallback", stage:"wasm-load", test:"-", code:"FALLBACK", sev:"warn",
+                 msg:`instantiateStreaming 失败，改用 arrayBuffer：${e}` });
+    }
+  }
+  if (!instance) {
+    // 注意：resp.body 已被 instantiateStreaming 消费过则无法复用，故重新 fetch。
+    const bytes = await (resp.bodyUsed ? fetch(WASM_URL) : resp).arrayBuffer();
+    // 链接失败在此抛错。把**真实**的链接诊断写进错误缓冲，而不是让上层拿到
+    // 一个二次异常（历史上 `renderReport` 里的 `wasm.prism_abi_version()` 会
+    // 二次抛错并把这里的原始信息盖掉，导致只能看到"is not a function"）。
+    const env = makeGlue();
+    const missing = WebAssembly.Module.imports(new WebAssembly.Module(bytes))
+      .filter(i => typeof env[i.name] !== "function")
+      .map(i => i.name);
+    if (missing.length) throw new Error(`链接失败：wasm 需要 ${missing.length} 个 env 导入未满足（${missing.join(", ")}）`);
+    ({ instance } = await WebAssembly.instantiate(bytes, { env }));
+    how = "arrayBuffer";
+  }
+  // 链接成功但导出不可用（历史上出现过：实例存在而 exports 为空）。
+  if (!instance.exports || typeof instance.exports.prism_test_count !== "function")
+    throw new Error("链接成功但导出缺失：prism_test_count 不可用");
+  return { instance, how, size: total || (instance.exports.memory.buffer.byteLength) };
+}
+
+// ===========================================================================
+// 最小自研 JS 胶水：13 个 Rust→JS 转发（与 `web::js` 的 extern 声明一一对应）。
+// 只做"无法用纯 WASM 表达的异步/对象操作"，不含任何算法逻辑。
+// ===========================================================================
+// `adapter` 已删除：acquireDevice() 只需把 adapter 局部持有到 requestDevice 完成，
+// 之后全局只需要 device 与 adapterInfo（供环境摘要展示）。留一个只写不读的
+// 变量属死代码，会误导后来者以为 adapter 生命周期由宿主管理。
+let device = null, adapterInfo = null;
+let deviceLostFlag = false;
+const handles = new Map();   // u32 -> GPUObject
+let nextHandle = 1;
+function reg(o){ const h = nextHandle++; handles.set(h, o); return h; }
+function get(h){ return handles.get(h); }
+
+// 宿主侧待结算的异步工作（wasm 只能同步提交，Promise 由本宿主 await）。
+let pendingWork = [];        // Promise 列表
+let pendingCopies = [];      // {staging, dstPtr, len}：dispatch 后登记的读回
+let pendingErrors = [];      // createShaderModule 的编译错误码队列（FIFO）
+
+function memNow(){ return new Uint8Array(wasm.memory.buffer); }
+
+const sleepMs = (ms) => new Promise(r => setTimeout(r, ms));
+
+// ---------------------------------------------------------------------------
+// 设备申领：有限次重试 + 指数退避（D-14 真机冷启动竞态）
+//
+// 【实测数据，vendor=google arch=swiftshader / Xvfb】页面加载后**立刻**
+// 调 requestAdapter，首次调用在 t≈36~46ms **必定返回 null**（6/6 次）；
+// 同一时刻往后推 80ms 再调同一个函数即拿到 adapter（6/6 次）；逐 25ms
+// 轮询测得"首次成功"稳定落在 **t≈125~145ms**。同一浏览器、同一份代码，
+// 稍晚 ~100ms 调用就一定成功 ⇒ 这是 **GPU 进程/驱动尚未枚举完适配器的冷启动
+// 窗口**，不是逻辑缺陷。
+//
+// 【为什么必须重试，而不是"拿不到就永久失败】真实用户会遇到完全相同的窗口：
+// 手机浏览器冷启动、页面从后台恢复、驱动刚 dlopen 完。一次性失败会把 8 个
+// GPU 项全部带崩（实测 PASS=6/FAIL=8），而根因只是"早了 100ms"。
+//
+// 【为什么重试循环不在胶水里】WebAssembly 的 import 必须是**同步**函数
+// （门禁 wgsl_lint 规则 B2 用 constructor.name 实测拦截 async）。故同步胶水
+// 只登记 Promise，循环放在下面的 acquireDevice() 里，由 settle() 侧 await——
+// 这正是 settle() 的职责："await 宿主提交的异步工作"。
+//
+// 【预算】6 次封顶，5 段退避累加 2900ms（≈3s，与"SwiftShader 冷启动可能耗时
+// 1~2s"的实测量级匹配），**绝不无限重试**。退避表长度 =尝试次数-1，无不可达项。
+// 预算耗尽即如实落 err 并让 device.init 判 FAIL（判据不变，绝不用重试掩盖）。
+// ---------------------------------------------------------------------------
+const ADAPTER_ATTEMPTS = 6;
+const ADAPTER_BACKOFF = [50, 150, 400, 800, 1500];   // 累加 2900ms
+
+/**
+ * 申领 adapter + device，带有限次重试与指数退避。
+ *
+ * @returns {Promise<GPUDevice|null>} 成功给真实 device；预算耗尽给 null
+ *   （此时错误面板已落 err，device.init 会如实判FAIL）。
+ */
+async function acquireDevice(){
+  const t0 = performance.now();
+  for (let n = 1; n <= ADAPTER_ATTEMPTS; n += 1) {
+    if (n > 1) await sleepMs(ADAPTER_BACKOFF[n - 2]);
+    let ad = null, why = "";
+    try {
+      ad = await navigator.gpu.requestAdapter({ powerPreference:"high-performance" });
+      if (!ad) why = "requestAdapter 返回 null（GPU 适配器尚未就绪）";
+    } catch (e) {
+      why = `requestAdapter 抛错：${e}`;
+    }
+    if (ad) {
+      try {
+        adapterInfo = ad.info || (ad.requestAdapterInfo ? await ad.requestAdapterInfo() : {});
+        const dev = await ad.requestDevice({ label:"prism-harness" });
+        if (dev) {
+          device = dev;
+          deviceLostFlag = false;
+          dev.lost.then(info => {
+            deviceLostFlag = true;
+            gpuErr("device-lost", {stage:"runtime"}, `${info.reason}: ${info.message}`);
+          });
+          dev.addEventListener("uncapturederror", e => gpuErr("uncaptured", {stage:"runtime"}, e.error));
+          if (n > 1) {
+            // 成功事件用 ok级：冷启动重试成功不是故障，不该染红错误面板。
+            logError({ kind:"device-acquired", stage:"device", test:"device.init", code:"OK", sev:"ok",
+                       msg:`第 ${n}/${ADAPTER_ATTEMPTS} 次申领成功（冷启动重试 ${n - 1} 次，` +
+                           `耗时 ${Math.round(performance.now() - t0)}ms），adapter 已就绪` });
+          }
+          return dev;
+        }
+        why = "requestDevice 返回空";
+      } catch (e) {
+        why = `requestDevice 抛错：${e}`;
+      }
+    }
+    const elapsed = Math.round(performance.now() - t0);
+    if (n < ADAPTER_ATTEMPTS) {
+      // 重试过程落 warn 级：冷启动噪声可见但不算故障，避免淹没真问题。
+      logError({ kind:"adapter-retry", stage:"device", test:"device.init", code:"RETRY", sev:"warn",
+                 msg:`第 ${n}/${ADAPTER_ATTEMPTS} 次申领失败（+${elapsed}ms）：${why}；` +
+                     `${ADAPTER_BACKOFF[n - 1]}ms 后退避重试` });
+    } else {
+      // 预算耗尽才落 err 级，并带上"如何排查"，绝不静默。
+      logError({ kind:"requestAdapter", stage:"device", test:"device.init", code:"NO_ADAPTER", sev:"err",
+                 msg:`requestAdapter 连续 ${n} 次失败（总耗时 ${elapsed}ms，预算已耗尽）：${why}\n` +
+                     `排查：(1) 浏览器是否支持 WebGPU（navigator.gpu 存在不等于有适配器）；` +
+                     `(2) 软件渲染环境需 --enable-unsafe-webgpu 且驱动已就绪；` +
+                     `(3) 真实设备上确认未在低电量/无 GPU 模式下运行。` });
+    }
+  }
+  return null;
+}
+
+// 共享的在途申领 Promise（见 enqueueDevice 注释）。
+let devicePromise = null;
+
+/**
+ * 把一次 device 申领登记成 pendingWork 里的 promise，兑现后回填 ticket。
+ *
+ * 【为什么要共享在途 Promise，而不是每张票各自申领】宿主会**并发**跑
+ * `device.init`：`boot()` 收尾自动跑一次，回归脚本点「全部运行」又跑一次。
+ * 若两轮各自独立重试，会在冷启动窗口里同时打两轮 requestAdapter/requestDevice，
+ * 徒增竞争，且后到者会覆盖模块级的 `device`/`adapterInfo`。故用 `devicePromise`
+ * 记忆化：同一时刻只有**一条**申领链，两轮共享它。
+ *
+ * 【关键：不破坏 D-14 的"Pending 必须伴随真实 promise"契约】Rust 侧
+ * `t_device_init` 要求本run 往 `pendingWork` 登记过 promise，否则本轮 settle()
+ * 是空转、collect 立刻执行 → 必 FAIL。这里每张票都把**共享 promise 本身**
+ * 登记进 pendingWork，故无论第几轮、也无论是否已有在途请求，settle() 都
+ * 等得到真实工作。
+ */
+function enqueueDevice(ticket){
+  if (!devicePromise) {
+    devicePromise = acquireDevice().finally(() => {
+      // 失败才清空：允许「重跑失败项」按钮再触发一次完整重试。成功则保留，
+      // 后续轮次直接复用（幂等，Rust 侧 device_ready 分支亦保证不重复申领）。
+      if (!device) devicePromise = null;
+    });
+  }
+  const inflight = devicePromise;
+  return (async () => {
+    const dev = await inflight;
+    if (dev) handles.set(ticket, dev);   // 回填：Rust 拿到的句柄自此有效
+  })();
+}
+
+const glue = {
+  prism_navigator_gpu_available: () => (navigator.gpu ? 1 : 0),
+  // 【必须同步】WebAssembly 的 import 只能是普通同步函数：返回 Promise 会让
+  // 模块链接直接失败（浏览器报 `Import ... is not a function`，wasm 侧看不到
+  // 任何导出）。故此处同步返回**预留句柄**，把 requestAdapter/requestDevice 的
+  // Promise 登记到 pendingWork，由宿主 `await settleDevice()` 结算后回填。
+  // 若这里写 `async`，整页会退化成"wasm 未加载 + 导出全 undefined"。
+  //
+  // 【冷启动重试】真正的申领链在 `acquireDevice()` 里：requestAdapter 返回 null
+  // 时做有限次指数退避重试（SwiftShader/真机冷启动实测首次调用在 ~40ms 必返回
+  // null，~125ms 后才稳定成功，见 acquireDevice 注释）。本函数**保持同步**：
+  // 只做"发一张票 + 登记 promise"两件事，重试循环绝不放进同步胶水里空转。
+  prism_request_device(){
+    const ticket = reg(null);           // 预留句柄，settle 时回填真实 device
+    pendingWork.push(enqueueDevice(ticket));
+    return ticket;
+  },
+  prism_device_lost: h => (get(h) === device && deviceLostFlag) ? 1 : 0,
+  // 【就绪判据】句柄非 0 只代表"已预约"：prism_request_device 必须同步返回，
+  // 真正的 requestAdapter/requestDevice 在 settle() 里才 await。settle 之前
+  // 句柄表里该键是 null，此时任何 createBuffer/createShaderModule 都会返回 0。
+  // Rust 侧 device.init 的 PASS 依赖本函数为 1 —— 否则会出现"不存在的 device
+  // 被判为就绪、后续 GPU 项全部失败"的假通过（D-14 真机实测踩过）。
+  prism_device_ready: h => (get(h) instanceof GPUDevice) ? 1 : 0,
+
+  // usage 位（与 Rust `abi::usage` 约定）：1 = STORAGE, 2 = UNIFORM
+  prism_create_buffer: (h, size, usage) => {
+    const d = get(h); if (!d) return 0;
+    const isUniform = (usage & 2) !== 0;
+    const u = isUniform
+      ? (GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST)
+      : (GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+    return reg(d.createBuffer({ size, usage:u, label:`prism_${isUniform?"uniform":"storage"}_${size}` }));
+  },
+  prism_write_buffer: (h, buffer, ptr, len) => {
+    const d = get(h), b = get(buffer); if (!d || !b) return 0;
+    // 每次都重新取 memory.buffer：Rust 侧分配可能 grow，原 buffer 会 detached。
+    d.queue.writeBuffer(b, 0, new Uint8Array(wasm.memory.buffer, ptr, len));
+    return 1;
+  },
+  prism_create_shader_module: (h, src_ptr, src_len) => {
+    const d = get(h); if (!d) return 0;
+    const code = new TextDecoder().decode(new Uint8Array(wasm.memory.buffer, src_ptr, src_len));
+    d.pushErrorScope("validation");
+    const m = d.createShaderModule({ code });
+    // getCompilationInfo 是 Promise：登记后由 settle() await，结果进错误队列。
+    pendingWork.push((async () => {
+      let bad = 0, msgs = [];
+      try {
+        const info = await m.getCompilationInfo();
+        const errs = info.messages.filter(x => x.type === "error");
+        if (errs.length) {
+          bad = 1;
+          msgs = errs.map(x => `line ${x.lineNum}:${x.linePos} ${x.message}`);
+          gpuErr("wgsl-compile", {stage:"shader", test:"wgsl.compile"}, errs[0].message);
+        }
+      } catch (e) { bad = 1; msgs = [String(e)]; }
+      pendingErrors.push(bad);
+      if (msgs.length) logError({ kind:"wgsl-detail", stage:"shader", test:"wgsl.compile",
+                                  code:"COMPILE", msg: msgs.join("\n") });
+    })());
+    return reg(m);
+  },
+  prism_create_compute_pipeline: (h, m, ptr, len) => {
+    const d = get(h), mod = get(m); if (!d || !mod) return 0;
+    const entryPoint = new TextDecoder().decode(new Uint8Array(wasm.memory.buffer, ptr, len));
+    return reg(d.createComputePipeline({ layout:"auto", compute:{ module: mod, entryPoint } }));
+  },
+  prism_create_bind_group: (h, pipeline, group, bufs_ptr, n) => {
+    const d = get(h), pipe = get(pipeline); if (!d || !pipe) return 0;
+    const mem = memNow();
+    // 【双重计算修复，D-14 真机缺陷 2】view 必须**一次覆盖整个句柄数组**，
+    // 然后按 `i * BYTES_PER_U32` 相对 view 起点读。
+    // 病态写法是 `new DataView(mem.buffer, bufs_ptr + i*BYTES_PER_U32, BYTES_PER_U32)`
+    // 里 view 已从第 i 个句柄开始，又叠加一次 i*4 ⇒ 偏移加了两次，i≥1 读到错误句柄，
+    // 而且**不报任何错**（只是结果错，极难定位）。view 提到循环外构造，
+    // 顺带避免每轮重建（循环不变量）。门禁 wgsl_lint.mjs 规则 E1/E2/E3 锁死这三点。
+    const view = new DataView(mem.buffer, bufs_ptr, n * BYTES_PER_U32);
+    const entries = [];
+    for (let i = 0; i < n; i += 1) {
+      entries.push({ binding: i, resource: { buffer: get(view.getUint32(i * BYTES_PER_U32, true)) } });
+    }
+    // group 索引由参数给出（多 bind group 解锁：generate 用 group 0/1/2/3）。
+    // layout:"auto" 只为被 dispatch 的 entry 静态引用的 binding 生成布局，
+    // 故该 entry 的引用集合必须是连续前缀 {0..n-1}——与 group 索引无关。
+    return reg(d.createBindGroup({ layout: pipe.getBindGroupLayout(group), entries }));
+  },
+  prism_dispatch: (h, pipeline, bgs_ptr, n, gx, gy, gz) => {
+    const d = get(h); if (!d) return 0;
+    d.pushErrorScope("validation");
+    const enc = d.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    pass.setPipeline(get(pipeline));
+    // bgs_ptr 指向 n 个 bind group 句柄；第 i 个绑到 @group(i)。
+    // 【D-14 真机缺陷 2 的同类陷阱】view 一次覆盖整个句柄数组，索引相对起点。
+    const view = new DataView(memNow().buffer, bgs_ptr, n * BYTES_PER_U32);
+    for (let i = 0; i < n; i += 1) {
+      pass.setBindGroup(i, get(view.getUint32(i * BYTES_PER_U32, true)));
+    }
+    pass.dispatchWorkgroups(gx, gy, gz);
+    pass.end();
+    d.queue.submit([enc.finish()]);
+    // 验证错误是异步兑现的，登记后由 settle() 读取。
+    pendingWork.push((async () => {
+      const err = await d.popErrorScope();
+      if (err) {
+        pendingErrors.push(1);
+        gpuErr("dispatch-validation", {stage:"dispatch"}, err);
+      }
+    })());
+    return 1;
+  },
+  prism_read_buffer: (h, buffer, size) => {
+    const d = get(h), b = get(buffer); if (!d || !b) return 0;
+    const stg = d.createBuffer({ size, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const enc = d.createCommandEncoder();
+    enc.copyBufferToBuffer(b, 0, stg, 0, size);
+    d.queue.submit([enc.finish()]);
+    return reg(stg);
+  },
+  // wasm 只能同步登记；真正的 mapAsync + 写回线性内存由 settle() 执行。
+  prism_copy_out: (staging, dst_ptr, len) => {
+    if (!get(staging)) return 0;
+    pendingCopies.push({ staging, dstPtr: dst_ptr, len });
+    return 1;
+  },
+  prism_wait_idle: h => {
+    const d = get(h); if (!d) return 0;
+    pendingWork.push(d.queue.onSubmittedWorkDone().then(() => 1));
+    return 1;
+  },
+  prism_pop_error: () => (pendingErrors.length ? pendingErrors.shift() : 0),
+};
+
+/** 等待所有 wasm 提交的异步工作完成，并执行登记的读回拷贝。 */
+async function settle(){
+  if (pendingWork.length){ const ps = pendingWork; pendingWork = []; await Promise.all(ps); }
+  for (const c of pendingCopies) {
+    const d = get(c.staging);
+    if (!d) { pendingErrors.push(1); continue; }
+    try {
+      await d.mapAsync(GPUMapMode.READ);
+      new Uint8Array(wasm.memory.buffer, c.dstPtr, c.len).set(new Uint8Array(d.getMappedRange()));
+      d.unmap();
+    } catch (e) {
+      pendingErrors.push(1);
+      gpuErr("readback", {stage:"collect"}, e);
+    }
+  }
+  pendingCopies = [];
+}
+function makeGlue(){ return glue; }
+
+// ===========================================================================
+// WGSL 源码查阅（单一真源在 Rust 侧，本页不存副本）
+// ===========================================================================
+const SRCS = [];   // {label, ptr, len}
+function loadSources(){
+  const sel = document.getElementById("srcsel");
+  sel.innerHTML = "";
+  for (let i = 0; i < wasm.prism_shader_count(); i += 1) {
+    SRCS.push({ label: readStr(wasm.prism_shader_name(i), wasm.prism_shader_name_len(i)),
+                ptr: wasm.prism_shader_src(i), len: wasm.prism_shader_src_len(i) });
+  }
+  for (let i = 0; ; i += 1) {
+    const len = wasm.prism_kernel_wgsl_len(i);
+    if (!len) break;
+    SRCS.push({ label: `[D0 内核] ${i === 0 ? "scan_block" : "histogram"}`,
+                ptr: wasm.prism_kernel_wgsl(i), len });
+  }
+  for (const src of SRCS) {
+    const o = document.createElement("option");
+    o.value = String(SRCS.indexOf(src));
+    o.textContent = `${src.label}（${src.len} B）`;
+    sel.appendChild(o);
+  }
+  sel.addEventListener("change", showSource);
+  showSource();
+}
+function showSource(){
+  const i = Number(document.getElementById("srcsel").value || 0);
+  const src = SRCS[i];
+  document.getElementById("srcview").value = src ? readStr(src.ptr, src.len) : "";
+}
+document.getElementById("srccheck").addEventListener("click", () => {
+  const i = Number(document.getElementById("srcsel").value || 0);
+  const src = SRCS[i];
+  if (!src) return;
+  // 真实走一遍 alloc → 写 → Rust 读 → dealloc。
+  const ptr = wasm.prism_alloc(src.len);
+  if (!ptr) { logError({ kind:"alloc-failed", stage:"src-check", test:"-", code:"OOM", msg:`prism_alloc(${src.len}) 返回 0` }); return; }
+  new Uint8Array(wasm.memory.buffer, ptr, src.len)
+    .set(new TextEncoder().encode(readStr(src.ptr, src.len)));
+  const code = wasm.prism_check_wgsl(ptr, src.len);
+  wasm.prism_dealloc(ptr, src.len);
+  const detail = code === ST.FAIL ? errText() : resText();
+  logError({ kind: code === ST.PASS ? "src-check-ok" : "src-check-fail", stage:"src-check",
+             test:src.label, code: ST_NAME[code] || String(code), msg:detail,
+             sev: code === ST.PASS ? "ok" : "err" });
+  toast(code === ST.PASS ? "结构自检通过" : "结构自检未通过（见错误面板）");
+});
+document.getElementById("srccopy").addEventListener("click", async () => {
+  try { await navigator.clipboard.writeText(document.getElementById("srcview").value); toast("源码已复制"); }
+  catch { toast("复制失败，请长按选中文本框"); }
+});
+
+// ===========================================================================
+// 测试项清单：完全来自 Rust 导出（本页不硬编码 id→函数映射表）
+// ===========================================================================
+let TESTS = [];
+function loadManifest(){
+  const n = wasm.prism_test_count();
+  for (let i = 0; i < n; i += 1) {
+    TESTS.push({
+      i,
+      id: readStr(wasm.prism_test_id(i), wasm.prism_test_id_len(i)),
+      name: readStr(wasm.prism_test_name(i), wasm.prism_test_name_len(i)),
+      needsGpu: wasm.prism_test_needs_gpu(i) === 1,
+    });
+  }
+  document.getElementById("testcount").textContent = `（${n} 项，Rust 侧导出）`;
+}
+
+/** 驱动一个测试项：run → (PENDING 时 settle) → collect。 */
+async function runWasmTest(t){
+  let code = wasm.prism_test_run(t.i);
+  if (code === ST.PENDING) {
+    await settle();
+    code = wasm.prism_test_collect(t.i);
+  } else {
+    // 【关键·D-14 真机教训】非 PENDING 项**不能**清空 pendingWork。
+    // wasm 只能同步登记：requestDevice / createShaderModule().getCompilationInfo()
+    // / mapAsync 等 Promise 都排在 pendingWork 里等 settle() 兑现。若在此丢弃，
+    // requestDevice 的 promise 永不 await → device 句柄恒为 null →
+    // device.init 误判 PASS，后续 GPU 项全部"prism_create_buffer 失败"。
+    // 这里只清 pendingCopies（读回登记），且必须在 wasm 不再依赖它之后。
+    await settle();
+    pendingCopies = [];
+  }
+  const detail = code === ST.FAIL ? errText() : resText();
+  return { code, detail, state: ST_NAME[code] || `code${code}` };
+}
+
+// ===========================================================================
+// 状态机 + UI（要求 4）
+// ===========================================================================
+const states = {};
+const ul = document.getElementById("tests");
+
+function renderTests(){
+  ul.innerHTML = "";
+  for (const t of TESTS){
+    const s = states[t.id] || { state:"", detail:"" };
+    const li = document.createElement("li");
+    li.id = "item-"+t.id;
+    li.innerHTML = `
+      <div class="thead">
+        <span class="dot ${s.state}"></span>
+        <span class="tname">${escapeHtml(t.name)}${t.needsGpu ? "" : ' <span class="muted">(CPU)</span>'}</span>
+        <span class="tstate ${s.state}">${s.state || "—"}</span>
+      </div>
+      <div class="tbody">${escapeHtml(s.detail || "（尚未运行，点击标题运行 / 展开）")}</div>`;
+    li.querySelector(".thead").addEventListener("click", async (e) => {
+      if (e.target.classList.contains("tstate") || e.target.classList.contains("dot")){
+        await runOne(t);            // 点状态圆点/文字 => 重跑
+      } else {
+        li.classList.toggle("open");// 其它位置 => 展开
+      }
+    });
+    ul.appendChild(li);
+  }
+}
+async function runOne(t){
+  if (!wasm) { states[t.id] = { state:"SKIP", detail:"SKIP：wasm 未加载（见错误面板）" }; renderTests(); return; }
+  states[t.id] = { state:"RUN", detail:"运行中…" };
+  renderTests(); renderReport();
+  try {
+    const r = await runWasmTest(t);
+    states[t.id] = { state: r.state, detail: r.detail || "ok" };
+    if (r.code === ST.FAIL) logError({ kind:"test-fail", test:t.id, stage:"assert", code:"FAIL", msg:r.detail });
+  } catch (e){
+    states[t.id] = { state:"FAIL", detail:String(e && e.message || e) };
+    logError({ kind:"test-throw", test:t.id, stage:"driver", code:"THROW", msg:String(e && e.stack || e) });
+  }
+  renderTests(); renderReport();
+}
+async function runAll(){
+  const btn = document.getElementById("runall");
+  btn.disabled = true;
+  for (const t of TESTS) await runOne(t);
+  btn.disabled = false;
+}
+
+// ===========================================================================
+// 环境探测与报告（要求 1、3）
+// ===========================================================================
+function setBanner(cls, html){ const b=document.getElementById("support"); b.className="banner "+cls; b.innerHTML=html; }
+/** wasm ABI 版本的统一取值点：**任何**状态都必须能安全求值。
+ *  `wasm` 为 null 挡不住"实例在但导出缺失"（链接失败路径实测出现过），
+ *  故一律用 typeof 守卫。门禁 wgsl_lint.mjs 规则 C 锁死这一点。 */
+function abiVersionText(){ return (wasm && typeof wasm.prism_abi_version === "function") ? `ABI v${wasm.prism_abi_version()}` : "ABI n/a"; }
+function renderEnv(){
+  const rows = [
+    ["User-Agent", navigator.userAgent],
+    ["平台", navigator.platform || "-"],
+    ["WebGPU (navigator.gpu)", navigator.gpu ? "✅ 存在" : "❌ 缺失"],
+    ["wasm 模块", wasm ? `已加载 (${abiVersionText()})` : "❌ 未加载"],
+    ["wasm 来源", LOAD_INFO.how || "-"],
+    ["adapter vendor", adapterInfo?.vendor || "(未获取)"],
+    ["adapter architecture", adapterInfo?.architecture || "(未获取)"],
+    ["adapter device", adapterInfo?.device || "-"],
+    ["测试项数", String(TESTS.length)],
+    ["wasm 句柄表", String(handles.size)],
+  ];
+  document.getElementById("env").innerHTML =
+    rows.map(([k,v]) => `<b>${k}</b><span>${escapeHtml(String(v))}</span>`).join("");
+}
+function renderErrors(){
+  const p = document.getElementById("errpanel");
+  const nErr = errors.filter(e => (e.sev || "err") === "err").length;
+  // 计数只算真错误：成功日志（ok）不该让"错误面板 (1)"变成恐慌来源。
+  document.getElementById("errcount").textContent = nErr ? `(${nErr})` : "（0）";
+  if (!errors.length){ p.innerHTML = '<div class="muted">暂无错误。</div>'; return; }
+  const cls = e => (e.sev === "ok" ? "ok" : e.sev === "warn" ? "warn" : "e");
+  p.innerHTML = errors.map(e => `<div class="${cls(e)}">[${escapeHtml(e.kind)}] stage=${escapeHtml(e.stage||"-")} test=${escapeHtml(e.test||"-")} code=${escapeHtml(String(e.code))}\n${escapeHtml(String(e.msg))}</div>`).join("");
+}
+function renderReport(){
+  const lines = [];
+  lines.push("=== Prism GPU Harness 错误报告 (D-14) ===");
+  lines.push("time: " + new Date().toISOString());
+  lines.push("UA: " + navigator.userAgent);
+  lines.push("WebGPU: " + (navigator.gpu ? "available" : "MISSING"));
+  // 【防御】wasm 实例可能"存在但导出不可用"（链接失败时 WebAssembly.instantiate
+  // 有路径会返回空导出的实例）。此时直接调 prism_abi_version() 会二次抛错，
+  // 把真正的链接错误盖掉 —— 报告区必须能在**任何**状态下渲染出来。
+  const abi = abiVersionText();
+  lines.push("wasm: " + (wasm ? `loaded (${LOAD_INFO.how}, ${LOAD_INFO.size}B, ${abi})` : "NOT LOADED"));
+  lines.push("adapter: " + JSON.stringify(adapterInfo||{}));
+  lines.push("--- WGSL 源码清单（Rust 内嵌）---");
+  for (const s of SRCS) lines.push(`  ${s.label}  ${s.len} B`);
+  lines.push("--- 测试项 ---");
+  for (const t of TESTS){
+    const s = states[t.id] || { state:"—", detail:"" };
+    lines.push(`[${s.state}] ${t.id} :: ${t.name}`);
+    if (s.detail) lines.push("      " + String(s.detail).replace(/\n/g,"\n      "));
+  }
+  // 报告分两节：真故障（含 warn）在前，过程成功日志单列在后。
+  // 历史上统一成"错误 (N)"，把 code=OK 的成功事件也算进去，用户回传时噪音
+  // 会淹没真正的问题。
+  const errs = errors.filter(e => e.sev !== "ok");
+  const oks  = errors.filter(e => e.sev === "ok");
+  lines.push(`--- 错误与告警 (${errs.length}) ---`);
+  for (const e of errs)
+    lines.push(`[${e.kind}] sev=${e.sev||"err"} stage=${e.stage||"-"} test=${e.test||"-"} code=${e.code}\n  ${e.msg}`);
+  if (oks.length){
+    lines.push(`--- 过程日志 (${oks.length}，无需回传) ---`);
+    for (const e of oks) lines.push(`[${e.kind}] ${e.code} ${String(e.msg).split("\n")[0]}`);
+  }
+  document.getElementById("report").value = lines.join("\n");
+}
+function escapeHtml(s){ return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+// ---- 复制（要求 3）----
+document.getElementById("copy").addEventListener("click", async () => {
+  const ta = document.getElementById("report");
+  try { await navigator.clipboard.writeText(ta.value); toast("已复制到剪贴板"); }
+  catch { ta.focus(); ta.select(); toast("请长按复制（剪贴板不可用）"); }
+});
+function toast(msg){
+  const d = document.createElement("div");
+  d.textContent = msg;
+  d.style.cssText = "position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:#2a3140;padding:8px 14px;border-radius:8px;font-size:12px;z-index:99";
+  document.body.appendChild(d); setTimeout(()=>d.remove(), 1600);
+}
+document.getElementById("runall").addEventListener("click", runAll);
+document.getElementById("rerun").addEventListener("click", async () => {
+  for (const t of TESTS) if ((states[t.id]||{}).state === "FAIL") await runOne(t);
+});
+
+const LOAD_INFO = { how:"", size:0 };
+
+// ===========================================================================
+// 启动：加载 wasm（要求 4 的前置）→ 特性检测（要求 1）
+// 不支持 WebGPU 时明确提示横幅，其余 UI 仍可用（不白屏）。
+// ===========================================================================
+(async function boot(){
+  renderErrors(); renderReport();
+  try {
+    const info = await loadWasm();
+    // 【关键】`WebAssembly.Instance` 上的导出函数在 `.exports` 上，Instance 本身
+    // 只有 `exports` 属性。历史上误写成 `wasm = info.instance`（少一层 .exports），
+    // 于是全页 `wasm.prism_test_count()` 恒为 "is not a function" —— 而错误面板
+    // 也在同一 try 里，连载wasm成功的事实都报不出来。
+    wasm = info.instance.exports; LOAD_INFO.how = info.how; LOAD_INFO.size = info.size;
+    loadManifest();
+    loadSources();
+    renderTests(); renderEnv();
+    logError({ kind:"wasm-loaded", stage:"boot", test:"-", code:"OK",
+               msg:`${WASM_URL} via ${info.how}；${abiVersionText()}；${TESTS.length} 个测试项` });
+  } catch (e) {
+    // wasm 拿不到 → 错误面板说清原因，测试项标 SKIP，绝不白屏。
+    const msg = String(e && e.message || e);
+    logError({ kind:"wasm-load-failed", stage:"wasm-load", test:"-", code:"LOAD_FAIL",
+               msg:`无法加载 ${WASM_URL}：${msg}\n` +
+                   `排查：(1) 是否跑过 crates/prism-gpu/web/build.sh；(2) 页面与 .wasm 是否同目录一起发布；` +
+                   `(3) 用 file:// 打开会被 CORS 拦，需起本地服务器（python3 -m http.server）。` });
+    TESTS = []; SRCS.length = 0;
+    document.getElementById("testcount").textContent = "（清单不可用：wasm 未加载）";
+    document.getElementById("srcsel").innerHTML = "";
+    document.getElementById("srcview").value = "wasm 未加载，无法读取 WGSL 源码。";
+    setBanner("err", `❌ <b>wasm 模块加载失败</b>，无法驱动 Rust 侧测试。<br>${escapeHtml(msg)}<br>` +
+                      `页面其余部分仍可查看，错误详情见下方错误面板（可一键复制回传）。`);
+    renderTests(); renderEnv(); renderReport();
+    return;
+  }
+
+  if (!navigator.gpu){
+    // 不白屏清单：GPU 依赖项立刻标 SKIP 并写明原因，而不是停在 PENDING 让用户猜。
+    // 理由串与 Rust 侧 device.rs 的 SKIP 文案一致，两端单一真源。
+    for (const t of TESTS){
+      if (t.needsGpu) states[t.id] = { state:"SKIP", detail:"SKIP：无 navigator.gpu（本项需要 WebGPU）" };
+    }
+    setBanner("warn",
+      "⚠️ <b>当前浏览器不支持 WebGPU</b>：GPU 相关的 4 项将显示 SKIP。<br>" +
+      "但 <b>CPU 参考判对项（Blelloch scan / radix sort / WGSL 结构自检 / ABI 往返）仍会真实运行</b>——" +
+      "它们跑在 wasm 里，不吃 GPU。<br>要在真 GPU 上判对，请用 Chrome/Edge 113+ 或 Safari 18+" +
+      "（iOS 需在 设置→Safari→高级 中开启「WebGPU」）。");
+    renderTests(); renderEnv(); renderReport();
+    // CPU 项（needsGpu=0）仍可在 wasm 里真实运行，不因缺 WebGPU 而浪费。
+    const cpu = TESTS.filter(t => !t.needsGpu);
+    for (const t of cpu) await runOne(t);
+    renderTests(); renderEnv(); renderReport();
+    return;
+  }
+  setBanner("ok", "✅ wasm 已加载 + 检测到 WebGPU。点击「全部运行」开始正确性测试。");
+  // 自动跑 device.init，让 GPU 项在首轮即可运行。
+  const dev = TESTS.find(t => t.id === "device.init");
+  if (dev) await runOne(dev);
+  renderEnv(); renderReport();
+})();
+</script>
+</body>
+</html>

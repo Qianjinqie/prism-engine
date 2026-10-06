@@ -1,0 +1,9 @@
+[package]
+name = "prism-raster"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+prism-io = { path = "../prism-io" }
+prism-math = { path = "../prism-math" }
+prism-core = { path = "../prism-core" }

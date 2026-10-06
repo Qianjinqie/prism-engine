@@ -1,0 +1,10 @@
+[package]
+name = "prism-ai"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+prism-core = { path = "../prism-core" }
+prism-io = { path = "../prism-io" }
+prism-gpu = { path = "../prism-gpu" }
+prism-math = { path = "../prism-math" }

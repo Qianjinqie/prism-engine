@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Prism GPU Perf — 桌面 GPU 性能验收（D-14）</title>
+<style>
+  :root{
+    --bg:#0e1116; --panel:#171b22; --panel2:#1e242e; --fg:#e6e9ef; --dim:#9aa4b2;
+    --pass:#2ecc71; --fail:#e74c3c; --skip:#f1c40f; --run:#3498db; --line:#2a3140;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Noto Sans SC",sans-serif;
+       padding:14px;max-width:900px;margin:0 auto;-webkit-text-size-adjust:100%}
+  h1{font-size:17px;margin:0 0 4px}
+  .sub{color:var(--dim);font-size:12px;margin-bottom:12px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:12px}
+  .card h2{font-size:13px;margin:0 0 8px;color:var(--dim);font-weight:600;letter-spacing:.3px}
+  .banner{padding:12px;border-radius:10px;font-size:13px;line-height:1.6;margin-bottom:12px}
+  .banner.err{background:#3a1512;border:1px solid #7a2a22;color:#ffb4ab}
+  .banner.ok{background:#12261a;border:1px solid #1f5c37;color:#9be7b6}
+  .banner.warn{background:#332a10;border:1px solid #7a6420;color:#ffe08a}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:2px 10px;font-size:12px}
+  .kv b{color:var(--dim);font-weight:500}
+  .kv span{word-break:break-all}
+  pre{background:#0b0e13;border:1px solid var(--line);border-radius:8px;padding:10px;
+      font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;white-space:pre-wrap;
+      word-break:break-word;margin:0}
+  .muted{color:var(--dim);font-size:11px}
+  code{background:#0b0e13;padding:1px 4px;border-radius:4px;font-size:11px}
+</style>
+</head>
+<body>
+  <h1>Prism GPU Perf <span class="muted">· 桌面 GPU 性能验收（D-14）</span></h1>
+  <div class="sub">手机 = 正确性测试设备；<b>性能基准以桌面 GPU 为准</b>。本页由
+    <code>perf_check.mjs</code> 驱动，也可手动打开查看环境与手动测量。</div>
+
+  <div id="support" class="banner warn">正在检测 WebGPU / 加载 wasm …</div>
+
+  <div class="card">
+    <h2>环境摘要</h2>
+    <div class="kv" id="env"></div>
+  </div>
+
+  <div class="card">
+    <h2>确定性前置门禁</h2>
+    <pre id="det">未运行。</pre>
+  </div>
+
+  <div class="card">
+    <h2>测量结果</h2>
+    <pre id="meas">未运行。</pre>
+  </div>
+
+  <div class="card">
+    <h2>表达能力缺口（当前 ABI 无法表达目标规模）</h2>
+    <pre id="gap">未运行。</pre>
+  </div>
+
+<script type="module">
+"use strict";
+
+// ===========================================================================
+// 本页是 index.html 的**只读克隆 + 性能外壳**：
+//   ① wasm 加载 / 13 个 Rust→JS 胶水 / settle() 与 index.html **逐字同源**
+//      （WebGPU 手写绑定的契约必须一致，否则句柄语义会漂移）；
+//   ② 额外暴露 `window.__PERF__ = { ready, run(opts) }` 供 perf_check.mjs 驱动。
+// 不改 index.html（另一路工程师在改它的 bind group 支持），故本页自带一份拷贝。
+// ===========================================================================
+
+// ---- 全局错误收集（同 index.html）-----------------------------------------
+const errors = [];
+function logError(entry){
+  if (!entry.sev) entry.sev = (entry.code === "OK") ? "ok" : "err";
+  errors.push(Object.assign({ t: new Date().toISOString(), ua: navigator.userAgent }, entry));
+}
+window.addEventListener("error", e => logError({ kind:"window.error", stage:"page", test:"-",
+  msg:String(e.message), src:`${e.filename}:${e.lineno}:${e.colno}` }));
+window.addEventListener("unhandledrejection", e => logError({ kind:"unhandledrejection", stage:"page", test:"-",
+  code:"REJECTION", msg:String(e.reason && e.reason.message || e.reason) }));
+function gpuErr(kind, ctx, err){
+  logError({ kind, stage:(ctx && ctx.stage) || "-", test:(ctx && ctx.test) || "-",
+    code:(err && (err.code || err.reason)) || "unknown",
+    msg:String(err && err.message || err || "unknown") });
+}
+
+const ST = { PASS:0, FAIL:1, PENDING:2, SKIP:3, BAD_ARG:4 };
+const WASM_URL = "prism_gpu.wasm";
+const BYTES_PER_U32 = 4;
+
+// ---- wasm 加载（手写 instantiateStreaming → arrayBuffer 回退）-------------
+let wasm = null, mem = null;
+const dec = new TextDecoder();
+const memU8 = () => new Uint8Array(wasm.memory.buffer);
+function readStr(ptr, len){ return dec.decode(memU8().subarray(ptr, ptr + len)); }
+function errText(){ return readStr(wasm.prism_error_ptr(), wasm.prism_error_len()); }
+function resText(){ return readStr(wasm.prism_result_ptr(), wasm.prism_result_len()); }
+
+// ---- 句柄表 + 设备申领（逐字同 index.html）-------------------------------
+let device = null, adapterInfo = null;
+let deviceLostFlag = false;
+const handles = new Map();
+let nextHandle = 1;
+function reg(o){ const h = nextHandle++; handles.set(h, o); return h; }
+function get(h){ return handles.get(h); }
+
+let pendingWork = [];
+let pendingCopies = [];
+let pendingErrors = [];
+
+const sleepMs = (ms) => new Promise(r => setTimeout(r, ms));
+
+const ADAPTER_ATTEMPTS = 6;
+const ADAPTER_BACKOFF = [50, 150, 400, 800, 1500];
+
+async function acquireDevice(){
+  for (let n = 1; n <= ADAPTER_ATTEMPTS; n += 1) {
+    if (n > 1) await sleepMs(ADAPTER_BACKOFF[n - 2]);
+    let ad = null, why = "";
+    try {
+      ad = await navigator.gpu.requestAdapter({ powerPreference:"high-performance" });
+      if (!ad) why = "requestAdapter 返回 null（GPU 适配器尚未就绪）";
+    } catch (e) { why = `requestAdapter 抛错：${e}`; }
+    if (ad) {
+      try {
+        adapterInfo = ad.info || (ad.requestAdapterInfo ? await ad.requestAdapterInfo() : {});
+        const dev = await ad.requestDevice({ label:"prism-perf" });
+        if (dev) {
+          device = dev;
+          deviceLostFlag = false;
+          dev.lost.then(info => {
+            deviceLostFlag = true;
+            gpuErr("device-lost", {stage:"runtime"}, `${info.reason}: ${info.message}`);
+          });
+          dev.addEventListener("uncapturederror", e => gpuErr("uncaptured", {stage:"runtime"}, e.error));
+          return dev;
+        }
+        why = "requestDevice 返回空";
+      } catch (e) { why = `requestDevice 抛错：${e}`; }
+    }
+    logError({ kind:"adapter-retry", stage:"device", test:"perf", code:"RETRY", sev:"warn",
+               msg:`第 ${n}/${ADAPTER_ATTEMPTS} 次申领失败：${why}` });
+  }
+  return null;
+}
+
+let devicePromise = null;
+function enqueueDevice(ticket){
+  if (!devicePromise) {
+    devicePromise = acquireDevice().finally(() => { if (!device) devicePromise = null; });
+  }
+  const inflight = devicePromise;
+  return (async () => {
+    const dev = await inflight;
+    if (dev) handles.set(ticket, dev);
+  })();
+}
+
+const glue = {
+  prism_navigator_gpu_available: () => (navigator.gpu ? 1 : 0),
+  prism_request_device(){
+    const ticket = reg(null);
+    pendingWork.push(enqueueDevice(ticket));
+    return ticket;
+  },
+  prism_device_lost: h => (get(h) === device && deviceLostFlag) ? 1 : 0,
+  prism_device_ready: h => (get(h) instanceof GPUDevice) ? 1 : 0,
+  prism_create_buffer: (h, size, usage) => {
+    const d = get(h); if (!d) return 0;
+    const isUniform = (usage & 2) !== 0;
+    const u = isUniform
+      ? (GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST)
+      : (GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
+    return reg(d.createBuffer({ size, usage:u, label:`prism_${isUniform?"uniform":"storage"}_${size}` }));
+  },
+  prism_write_buffer: (h, buffer, ptr, len) => {
+    const d = get(h), b = get(buffer); if (!d || !b) return 0;
+    d.queue.writeBuffer(b, 0, new Uint8Array(wasm.memory.buffer, ptr, len));
+    return 1;
+  },
+  prism_create_shader_module: (h, src_ptr, src_len) => {
+    const d = get(h); if (!d) return 0;
+    const code = new TextDecoder().decode(new Uint8Array(wasm.memory.buffer, src_ptr, src_len));
+    d.pushErrorScope("validation");
+    const m = d.createShaderModule({ code });
+    pendingWork.push((async () => {
+      let bad = 0;
+      try {
+        const info = await m.getCompilationInfo();
+        const errs = info.messages.filter(x => x.type === "error");
+        if (errs.length) { bad = 1; gpuErr("wgsl-compile", {stage:"shader"}, errs[0].message); }
+      } catch { bad = 1; }
+      pendingErrors.push(bad);
+    })());
+    return reg(m);
+  },
+  prism_create_compute_pipeline: (h, m, ptr, len) => {
+    const d = get(h), mod = get(m); if (!d || !mod) return 0;
+    const entryPoint = new TextDecoder().decode(new Uint8Array(wasm.memory.buffer, ptr, len));
+    return reg(d.createComputePipeline({ layout:"auto", compute:{ module: mod, entryPoint } }));
+  },
+  prism_create_bind_group: (h, pipeline, group, bufs_ptr, n) => {
+    const d = get(h), pipe = get(pipeline); if (!d || !pipe) return 0;
+    const mem = memNow();
+    // view 一次覆盖整段句柄数组，按 i*BYTES_PER_U32 相对起点读（同 index.html 的缺陷 2 修复）。
+    const view = new DataView(mem.buffer, bufs_ptr, n * BYTES_PER_U32);
+    const entries = [];
+    for (let i = 0; i < n; i += 1) {
+      entries.push({ binding: i, resource: { buffer: get(view.getUint32(i * BYTES_PER_U32, true)) } });
+    }
+    // 【ABI 同步·2026-10-04】group 索引改为参数：多 bind group 解锁后
+    // `prism_create_bind_group` 从 4 参变 5 参。本页是该契约的只读克隆，
+    // 必须与 index.html 同步——否则参数错位，`n` 会收到 group 的值，
+    // 进而 `new DataView(..., n * BYTES_PER_U32)` 越界（实测报
+    // `Invalid DataView length 4709600`），性能页直接起不来。
+    return reg(d.createBindGroup({ layout: pipe.getBindGroupLayout(group), entries }));
+  },
+  // 本页用 dispatch 的**带时间戳变体**（见 PERF_DISPATCH_HOOKS）。默认走原路径。
+  prism_dispatch: (h, pipeline, bgs_ptr, n, gx, gy, gz) => {
+    const d = get(h); if (!d) return 0;
+    d.pushErrorScope("validation");
+    const enc = d.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    pass.setPipeline(get(pipeline));
+    // 【ABI 同步】bgs_ptr 指向 n 个 bind group 句柄，第 i 个绑到 @group(i)。
+    // 同 index.html：view 一次覆盖整个句柄数组，索引相对起点（防偏移双重计算）。
+    const view = new DataView(memNow().buffer, bgs_ptr, n * BYTES_PER_U32);
+    for (let i = 0; i < n; i += 1) {
+      pass.setBindGroup(i, get(view.getUint32(i * BYTES_PER_U32, true)));
+    }
+    pass.dispatchWorkgroups(gx, gy, gz);
+    pass.end();
+    d.queue.submit([enc.finish()]);
+    pendingWork.push((async () => {
+      const err = await d.popErrorScope();
+      if (err) { pendingErrors.push(1); gpuErr("dispatch-validation", {stage:"dispatch"}, err); }
+    })());
+    return 1;
+  },
+  prism_read_buffer: (h, buffer, size) => {
+    const d = get(h), b = get(buffer); if (!d || !b) return 0;
+    const stg = d.createBuffer({ size, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const enc = d.createCommandEncoder();
+    enc.copyBufferToBuffer(b, 0, stg, 0, size);
+    d.queue.submit([enc.finish()]);
+    return reg(stg);
+  },
+  prism_copy_out: (staging, dst_ptr, len) => {
+    if (!get(staging)) return 0;
+    pendingCopies.push({ staging, dstPtr: dst_ptr, len });
+    return 1;
+  },
+  prism_wait_idle: h => {
+    const d = get(h); if (!d) return 0;
+    pendingWork.push(d.queue.onSubmittedWorkDone().then(() => 1));
+    return 1;
+  },
+  prism_pop_error: () => (pendingErrors.length ? pendingErrors.shift() : 0),
+};
+function memNow(){ return new Uint8Array(wasm.memory.buffer); }
+function makeGlue(){ return glue; }
+
+async function settle(){
+  if (pendingWork.length){ const ps = pendingWork; pendingWork = []; await Promise.all(ps); }
+  for (const c of pendingCopies) {
+    const d = get(c.staging);
+    if (!d) { pendingErrors.push(1); continue; }
+    try {
+      await d.mapAsync(GPUMapMode.READ);
+      new Uint8Array(wasm.memory.buffer, c.dstPtr, c.len).set(new Uint8Array(d.getMappedRange()));
+      d.unmap();
+    } catch (e) { pendingErrors.push(1); gpuErr("readback", {stage:"collect"}, e); }
+  }
+  pendingCopies = [];
+}
+
+async function loadWasm(){
+  const resp = await fetch(WASM_URL);
+  if (!resp.ok) throw new Error(`fetch("${WASM_URL}") HTTP ${resp.status} ${resp.statusText}`);
+  let instance = null, how = "";
+  if (WebAssembly.instantiateStreaming && resp.headers.get("content-type")?.includes("application/wasm")) {
+    try {
+      ({ instance } = await WebAssembly.instantiateStreaming(resp, { env: makeGlue() }));
+      how = "instantiateStreaming";
+    } catch (e) {
+      logError({ kind:"wasm.streaming-fallback", stage:"wasm-load", code:"FALLBACK", sev:"warn",
+                 msg:`instantiateStreaming 失败，改用 arrayBuffer：${e}` });
+    }
+  }
+  if (!instance) {
+    const bytes = await (resp.bodyUsed ? fetch(WASM_URL) : resp).arrayBuffer();
+    const env = makeGlue();
+    const missing = WebAssembly.Module.imports(new WebAssembly.Module(bytes))
+      .filter(i => typeof env[i.name] !== "function").map(i => i.name);
+    if (missing.length) throw new Error(`链接失败：wasm 需要 ${missing.length} 个 env 导入未满足（${missing.join(", ")}）`);
+    ({ instance } = await WebAssembly.instantiate(bytes, { env }));
+    how = "arrayBuffer";
+  }
+  if (!instance.exports || typeof instance.exports.prism_test_count !== "function")
+    throw new Error("链接成功但导出缺失：prism_test_count 不可用");
+  return { instance, how, size: instance.exports.memory.buffer.byteLength };
+}
+
+// ===========================================================================
+// 性能测量核心
+// ===========================================================================
+
+/** 判软件适配器：vendor/arch/device 任一命中即算。 */
+function isSoftwareAdapter(info){
+  const s = `${info?.vendor||""} ${info?.architecture||""} ${info?.device||""} ${info?.description||""}`.toLowerCase();
+  return ["swiftshader","lavapipe","llvmpipe","software","microsoft basic render","softwarerasterizer"]
+    .some(k => s.includes(k));
+}
+
+/** 驱动一个测试项：run → (PENDING 时 settle) → collect。返回 {code, detail, runDetail}。 */
+async function runWasmTest(i){
+  let code = wasm.prism_test_run(i);
+  // run 阶段的 result 文本（含"构型/缓冲"等提交信息），collect 会覆盖它，故先留档。
+  const runDetail = resText();
+  if (code === ST.PENDING) {
+    await settle();
+    code = wasm.prism_test_collect(i);
+  } else {
+    await settle();
+    pendingCopies = [];
+  }
+  const detail = code === ST.FAIL ? errText() : resText();
+  return { code, detail, runDetail };
+}
+
+/** 找测试项索引（按 id）。找不到返回 -1。 */
+function findTest(id){
+  const n = wasm.prism_test_count();
+  for (let i = 0; i < n; i += 1) {
+    if (readStr(wasm.prism_test_id(i), wasm.prism_test_id_len(i)) === id) return i;
+  }
+  return -1;
+}
+
+/** FNV-1a 32 位散列（与 Rust 侧同族，确定性），用于确定性指纹。 */
+function fnv1a32(bytes){
+  let h = 0x811c9dc5 >>> 0;
+  for (let i = 0; i < bytes.length; i += 1) {
+    h ^= bytes[i];
+    // FNV 素数 16777619
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, "0");
+}
+
+/**
+ * 确定性门禁：把 `gpu.sim_particles`（真 GPU 计算 + 读回）跑 N 遍，逐字节比对。
+ * 【铁律 2】确定性不成立 ⇒ 性能数字无意义，调用方须失败退出。
+ */
+async function determinismGate(runs){
+  const idx = findTest("gpu.sim_particles");
+  if (idx < 0) return { ok:false, why:"找不到 gpu.sim_particles 测试项（清单变了？）" };
+  // 读回缓冲固定落在 result 文本前的线性内存区？—— 不。读回落在 wasm 内部 scratch，
+  // 宿主无从取址。故用**结果文本的字节指纹**做可观测比对：结果文本包含 FNV 指纹与
+  // 逐字段数值（见 abi.rs sim_particles 的 result 文案），两遍文本逐字节一致 ⇒ 计算确定。
+  const texts = [];
+  const raws = [];
+  for (let r = 0; r < runs; r += 1) {
+    const { code, detail } = await runWasmTest(idx);
+    if (code !== ST.PASS) return { ok:false, why:`第 ${r+1}/${runs} 遍 gpu.sim_particles 非 PASS（code=${code}）：${detail}` };
+    const bytes = new TextEncoder().encode(detail);
+    texts.push(detail);
+    raws.push(bytes);
+  }
+  const identical = texts.every(t => t === texts[0]);
+  const hashA = fnv1a32(raws[0]);
+  const hashB = fnv1a32(raws[raws.length - 1]);
+  return { ok:true, identical, hashA, hashB, bytes: raws[0].length, runs, sample: texts[0].split("\n")[0] };
+}
+
+/** 对某个测试项采样帧耗时。每次=一次完整 run→settle→collect（GPU 计算 + 读回同步）。 */
+async function timeTest(idx, frames, warmup){
+  // 预热：让驱动把 pipeline/内存分配等一次性开销摊掉（否则首帧恒为离群点）。
+  for (let w = 0; w < warmup; w += 1) await runWasmTest(idx);
+  const samples = [];
+  for (let f = 0; f < frames; f += 1) {
+    const t0 = performance.now();
+    const { code } = await runWasmTest(idx);
+    const t1 = performance.now();
+    if (code !== ST.PASS && code !== ST.SKIP) {
+      return { ok:false, why:`采样帧 ${f+1}/${frames} 非 PASS/SKIP（code=${code}）` };
+    }
+    samples.push(t1 - t0);
+  }
+  return { ok:true, samples };
+}
+
+function stats(xs){
+  const s = [...xs].sort((a,b) => a-b);
+  const n = s.length;
+  const sum = s.reduce((a,b) => a+b, 0);
+  const mean = sum / n;
+  const q = (p) => s[Math.min(n-1, Math.floor(p * n))];
+  return {
+    n,
+    min: s[0],
+    max: s[n-1],
+    mean,
+    median: n % 2 ? s[(n-1)/2] : (s[n/2 - 1] + s[n/2]) / 2,
+    p95: q(0.95),
+  };
+}
+
+window.__PERF__ = {
+  ready: (async () => {
+    // 声明 script 为 module：DOMContentLoaded 后运行，body 已在。
+    try {
+      const info = await loadWasm();
+      wasm = info.instance.exports;
+      if (!navigator.gpu) {
+        return { ok:false, why:"navigator.gpu 不存在（浏览器不支持 WebGPU 或非安全上下文）" };
+      }
+      // 触发 device 申领（经胶水走两阶段），settle 兑现后校验就绪。
+      if (wasm.prism_test_count() > 0) {
+        const di = findTest("device.init");
+        if (di >= 0) await runWasmTest(di);
+      }
+      if (!(device instanceof GPUDevice)) {
+        return { ok:false, why:"adapter/device 申领失败（见页面错误面板 / 脚本日志）" };
+      }
+      const info2 = adapterInfo || {};
+      const gpu = {
+        vendor: info2.vendor || "?",
+        architecture: info2.architecture || "?",
+        device: info2.device || "?",
+        description: info2.description || "-",
+        isSoftware: isSoftwareAdapter(info2),
+        featureTimestamps: false, // 当前 ABI 未接 timestamp-query，见能力缺口
+      };
+      // 从 wasm 侧读回本页关心的规模常量（用于诚实标注"可表达规模"）。
+      // 这些常量不经导出暴露，改从各测试项的 result 文本解析（单一真源仍是 Rust 侧，
+      // 本页只读取、不硬编码 —— 避免文档/脚本与 ABI 漂移）。
+      const abi = {
+        version: wasm.prism_abi_version(),
+        simPCount: null, particlesBytes: null,
+        wfWidth: null, wfHeight: null, wfSpp: null,
+      };
+      // sim_particles result 含 "缓冲 1536B = 32×48B"。
+      {
+        const si = findTest("gpu.sim_particles");
+        if (si >= 0) {
+          const r = await runWasmTest(si);
+          const m = /缓冲\s+(\d+)B\s*=\s*(\d+)×/.exec(r.detail || "");
+          if (m) { abi.particlesBytes = Number(m[1]); abi.simPCount = Number(m[2]); }
+        }
+      }
+      // rt_wavefront run 阶段文本含 "构型：2×2 像素 × spp=2"。
+      {
+        const wi = findTest("gpu.rt_wavefront");
+        if (wi >= 0) {
+          const r = await runWasmTest(wi);
+          const m = /(\d+)×(\d+)\s*像素\s*×\s*spp=(\d+)/.exec(r.runDetail || "");
+          if (m) { abi.wfWidth = Number(m[1]); abi.wfHeight = Number(m[2]); abi.wfSpp = Number(m[3]); }
+        }
+      }
+      renderEnv(gpu, abi);
+      if (window.__PERF__) window.__PERF__._abi = abi;   // 供 run() 读取已解析规模
+      setBanner("ok", "✅ wasm 已加载 + WebGPU adapter 就绪。等待 perf_check.mjs 驱动测量。");
+      return { ok:true, gpu, abi };
+    } catch (e) {
+      setBanner("err", `❌ 初始化失败：${escapeHtml(String(e && e.message || e))}`);
+      return { ok:false, why:`初始化异常：${e && e.message || e}` };
+    }
+  })(),
+
+  async run(opts){
+    const frames = Math.max(1, opts.frames | 0);
+    const warmup = Math.max(0, opts.warmup | 0);
+    // 已解析的 ABI 规模（ready 阶段填充；此处兜底为 ABI 既定常量口径）。
+    const A = window.__PERF__._abi || {};
+    const SC = { sim: A.simPCount ?? 32, pbytes: A.particlesBytes ?? 1536,
+                 w: A.wfWidth ?? 2, h: A.wfHeight ?? 2, spp: A.wfSpp ?? 2 };
+
+    // ---- ① 确定性前置门禁（铁律 2）-----------------------------------
+    // 无论是否 --self-check，都先跑；不成立则**直接返回失败**，不测速。
+    const det = await determinismGate(2);
+    renderDet(det);
+    if (!det.ok) {
+      return { ok:false, stage:"determinism", why:`确定性前置门禁失败：${det.why}` };
+    }
+    if (opts.selfCheck) {
+      return {
+        ok:true, determinism: det, measurements: [], capabilityGaps: [],
+        provenance: "self-check：仅验证确定性 + adapter，未测速",
+      };
+    }
+    if (!det.identical) {
+      return {
+        ok:true, determinism: det, measurements: [], capabilityGaps: [],
+        provenance: "确定性门禁判负",
+        __determinismFailed: true,
+      };
+    }
+
+    // ---- ② 能力缺口（诚实盘点当前 ABI 能表达什么规模）---------------
+    const capabilityGaps = [
+      {
+        id: "rt_wavefront@1080p",
+        why:
+          `当前 ABI 把 wavefront 构型写死为 WF_WIDTH=${SC.w}、WF_HEIGHT=${SC.h}、WF_SPP=${SC.spp}` +
+          `（= ${SC.w}×${SC.h} 像素，每帧 ${SC.w*SC.h*SC.spp} 条路径槽），是**编译期常量**，` +
+          "JS 侧无法指定分辨率。因此**无法表达 1920×1080**，" +
+          "本页只能测 ABI 允许的固定小构型，得到的是**小构型吞吐**，非 1080p 帧率。",
+        needed:
+          "需 abi.rs 新增导出：prism_rt_run(width, height, spp, frames) —— 按参数分配 WF_SLOTS_BYTES/" +
+          "WF_ACCUM_BYTES、设 WF_CONFIG uniform 的 width/height/spp、dispatch connect/accumulate 链，并返回" +
+          "每帧 GPU 时间（或暴露 timestamp-query）。当前 ABI 无任何「用 N×M 像素跑一帧」的接口。",
+      },
+      {
+        id: "sim_particles@1e6",
+        why:
+          `当前 ABI 把粒子数写死为 SIM_P_COUNT=${SC.sim}，PARTICLES_BYTES=${SC.pbytes} 字节，` +
+          "同样是**编译期常量**。" +
+          "emit/integrate/hash_cells 的 dispatch 工作组数也按该粒子数推出。因此**无法表达 100 万粒子**，" +
+          "本页只能测固定小规模链，得到的是**极小规模吞吐**，非百万粒子帧率。",
+        needed:
+          "需 abi.rs 新增导出：prism_sim_particles_run(count, frames) —— 按 count 分配粒子/单元缓冲、" +
+          "设置 SimParams.count、按 count 推工作组、dispatch 三入口链，并返回每帧 GPU 时间。" +
+          "百万粒子还需确认 maxStorageBufferBindingSize ≥ 1e6×48≈48MB（超出则须分块）。",
+      },
+    ];
+
+    // ---- ③ 测量（在 ABI 允许的规模上）-------------------------------
+    const measurements = [];
+
+    // 1080p 路径追踪链：测 rt_wavefront（ABI 内固定构型）
+    {
+      const idx = findTest("gpu.rt_wavefront");
+      if (idx >= 0) {
+        const r = await timeTest(idx, frames, warmup);
+        if (r.ok) {
+          const fs = stats(r.samples);
+          measurements.push({
+            id: "rt_wavefront（connect/accumulate 链）",
+            scale: {
+              human: "ABI 固定构型",
+              detail: `${SC.w}×${SC.h} 像素 × spp=${SC.spp}（目标为 1920×1080，见能力缺口）`,
+            },
+            framesMs: fs,
+            fps: { median: 1000 / fs.median, max1OverMin: 1000 / fs.max },
+            warmup,
+            target: {
+              human: "1080p 交互帧率",
+              met: false,
+              note: "无法判定：测的是 2×2 固定构型，非 1080p；此为小构型吞吐，不可外推为 1080p 帧率",
+            },
+            gap: `目标 1920×1080，当前 ABI 仅能表达 ${SC.w}×${SC.h}。测得的每帧耗时**含固定开销**（一次 ` +
+                 "dispatch + 一次同步读回），小构型下开销占比极高，**不可用线性外推换 1080p 数字**。",
+          });
+        } else {
+          measurements.push({ id:"rt_wavefront（connect/accumulate 链）", error: r.why });
+        }
+      }
+    }
+
+    // 百万粒子链：测 sim_particles（ABI 内固定 32 粒子）
+    {
+      const idx = findTest("gpu.sim_particles");
+      if (idx >= 0) {
+        const r = await timeTest(idx, frames, warmup);
+        if (r.ok) {
+          const fs = stats(r.samples);
+          measurements.push({
+            id: "sim_particles（emit/integrate/hash_cells 链）",
+            scale: {
+              human: "ABI 固定构型",
+              detail: `${SC.sim} 粒子（目标为 1,000,000 粒子，见能力缺口）`,
+            },
+            framesMs: fs,
+            fps: { median: 1000 / fs.median, max1OverMin: 1000 / fs.max },
+            warmup,
+            target: {
+              human: "百万粒子 60fps",
+              met: false,
+              note: "无法判定：测的是 32 粒子固定链，非百万；此为极小规模吞吐，不可外推",
+            },
+            gap: `目标 1,000,000 粒子，当前 ABI 仅能表达 ${SC.sim}。同样**不可线性外推**：小规模下` +
+                 "每帧耗时被固定开销（dispatch 提交 + 同步读回）主导，粒子数放大 3 万倍后的 " +
+                 "显存带宽/原子竞争/工作组调度行为完全不同。",
+          });
+        } else {
+          measurements.push({ id:"sim_particles（emit/integrate/hash_cells 链）", error: r.why });
+        }
+      }
+    }
+
+    renderMeas(measurements, det);
+    renderGap(capabilityGaps);
+    return {
+      ok: true,
+      determinism: det,
+      measurements,
+      capabilityGaps,
+      provenance:
+        "每帧耗时 = performance.now() 差，包住一次完整 run→settle→sync-readback；" +
+        `预热 ${warmup} 帧后采样 ${frames} 帧；报告 min/median/mean/p95，帧率取 median。` +
+        "**规模非目标规模**（见能力缺口），故帧率不可作 Phase 4 性能验收结论。",
+    };
+  },
+};
+
+// ---- 渲染辅助 -------------------------------------------------------------
+function escapeHtml(s){ return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function setBanner(cls, html){ const b = document.getElementById("support"); b.className = "banner " + cls; b.innerHTML = html; }
+function renderEnv(gpu, abi){
+  const rows = [
+    ["User-Agent", navigator.userAgent],
+    ["WebGPU", navigator.gpu ? "✅ 存在" : "❌ 缺失"],
+    ["adapter vendor", gpu.vendor],
+    ["adapter architecture", gpu.architecture],
+    ["adapter device", gpu.device],
+    ["软件适配器", gpu.isSoftware ? "⚠️ 是（不可作性能验收凭据）" : "否"],
+    ["ABI 版本", `v${abi.version}`],
+  ];
+  document.getElementById("env").innerHTML =
+    rows.map(([k,v]) => `<b>${escapeHtml(k)}</b><span>${escapeHtml(String(v))}</span>`).join("");
+}
+function renderDet(det){
+  const el = document.getElementById("det");
+  if (!det.ok){ el.textContent = `失败：${det.why}`; return; }
+  el.textContent =
+    `同输入两遍比对：${det.identical ? "一致 ✅" : "不一致 ❌"}\n` +
+    `指纹 A=${det.hashA}  B=${det.hashB}（FNV-1a32，${det.bytes}B × ${det.runs} 遍）\n` +
+    `样本首行：${det.sample || "-"}`;
+}
+function renderMeas(ms, det){
+  const lines = [];
+  lines.push(`确定性：${det.identical ? "成立 ✅" : "不成立 ❌"}（A=${det.hashA} B=${det.hashB}）`);
+  for (const m of ms){
+    if (m.error){ lines.push(`\n▸ ${m.id}\n  错误：${m.error}`); continue; }
+    lines.push(`\n▸ ${m.id}`);
+    lines.push(`  规模：${m.scale.human}（${m.scale.detail}）`);
+    lines.push(`  每帧耗时：min=${m.framesMs.min.toFixed(3)}ms median=${m.framesMs.median.toFixed(3)}ms ` +
+               `mean=${m.framesMs.mean.toFixed(3)}ms p95=${m.framesMs.p95.toFixed(3)}ms`);
+    lines.push(`  帧率：median=${m.fps.median.toFixed(2)} fps（n=${m.framesMs.n}）`);
+    if (m.gap) lines.push(`  ⚠️ ${m.gap}`);
+  }
+  document.getElementById("meas").textContent = lines.join("\n");
+}
+function renderGap(gaps){
+  document.getElementById("gap").textContent = gaps.map(g =>
+    `▸ ${g.id}\n  ${g.why}\n  需要接口：${g.needed}`).join("\n\n");
+}
+</script>
+</body>
+</html>

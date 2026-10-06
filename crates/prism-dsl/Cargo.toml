@@ -1,0 +1,11 @@
+[package]
+name = "prism-dsl"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+prism-math = { path = "../prism-math" }
+prism-core = { path = "../prism-core" }
+# W3-A4：v2 codegen 需要 prism-anim 的 Track / Keyframe / EasingKind / Expr / LoopMode
+# （anim / expr 块与关键帧字段的属性通道装配）。清单外新增依赖，已上报。
+prism-anim = { path = "../prism-anim" }

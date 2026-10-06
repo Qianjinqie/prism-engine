@@ -1,0 +1,21 @@
+sequenceDiagram
+    autonumber
+    participant Or as Orchestrator（prism-render，tile 编排）
+    participant Gr as Graph(t)（prism-core）
+    participant Sc as 签名缓存
+    participant Rg as 特解注册表
+    participant Sp as MathStructure 特解实例
+    Or->>Gr: eval(t, tile)
+    Gr->>Gr: 属性通道求值 → 各节点 SolvedParams
+    Gr->>Sc: query(子图签名, tile, 档位, schema_version)
+    alt 签名命中（对称性检测通过 = 内容未变）
+        Sc-->>Gr: 缓存产物直接复用
+    else 未命中
+        Gr->>Rg: resolve(节点.structure, SolvedParams)
+        Rg-->>Gr: 特解实例（按签名复用）
+        Gr->>Sp: apply / invert / sample(EvalCtx{seed, node_id, frame})
+        Note right of Sp: 样本流=hash(seed,id,frame,si[,dim])<br/>浮点只做格点间插值
+        Sp-->>Gr: 局部结果（无隐藏状态）
+        Gr->>Sc: store(签名, 产物)
+    end
+    Gr-->>Or: tile 产物 → 固定序合帧 → 交付

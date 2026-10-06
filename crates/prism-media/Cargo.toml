@@ -1,0 +1,18 @@
+[package]
+name = "prism-media"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+prism-bytes = { path = "../prism-bytes" }
+prism-core = { path = "../prism-core" }
+prism-math = { path = "../prism-math" }
+prism-io = { path = "../prism-io" }
+prism-audio = { path = "../prism-audio" }
+prism-anim = { path = "../prism-anim" }
+prism-gpu = { path = "../prism-gpu" }
+
+[dev-dependencies]
+prism-render = { path = "../prism-render" }
+prism-audio = { path = "../prism-audio" }
+prism-math = { path = "../prism-math" }

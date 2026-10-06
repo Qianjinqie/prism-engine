@@ -1,0 +1,8 @@
+[package]
+name = "prism-physics"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+prism-core = { path = "../prism-core" }
+prism-math = { path = "../prism-math" }

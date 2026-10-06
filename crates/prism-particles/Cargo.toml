@@ -1,0 +1,20 @@
+[package]
+name = "prism-particles"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+# AudioReactive 通道复用 B6 prism-audio（默认开）。B8 与 B12/B13 并行施工期间，
+# 若 prism-audio 暂时不可编译，可用 --no-default-features 单独验证粒子本体
+# （发射/力场/渲染/seek），AudioReactive 降级为单位增益（不静默编造数值）。
+default = ["audio"]
+audio = ["dep:prism-audio"]
+
+[dependencies]
+prism-core = { path = "../prism-core" }
+prism-math = { path = "../prism-math" }
+prism-noise = { path = "../prism-noise" }
+prism-physics = { path = "../prism-physics" }
+prism-io = { path = "../prism-io" }
+prism-render = { path = "../prism-render" }
+prism-audio = { path = "../prism-audio", optional = true }

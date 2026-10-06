@@ -1,0 +1,47 @@
+classDiagram
+    class Node {
+        +NodeId id
+        +StructureId structure
+        +ParamSchema params
+        +Composition composition
+        +Vec~ChannelRef~ bindings
+        +signature() Hash256
+    }
+    class StructureRegistry {
+        +register(StructureMeta, Factory)
+        +resolve(StructureId, SolvedParams) Box~dyn MathStructure~
+    }
+    class MathStructure {
+        <<trait>>
+        +meta() StructureMeta
+        +apply(Payload, EvalCtx) Payload
+        +invert(Payload, EvalCtx) Payload
+        +sample(SampleIndex, EvalCtx) Payload
+    }
+    class StructureMeta {
+        +KernelKind kernel
+        +DualityPair duality
+        +LatticePlan lattice
+    }
+    class EvalCtx {
+        +u64 global_seed
+        +NodeId node_id
+        +u64 frame
+        +LatticeCtx lattice
+    }
+    class SampleIndex {
+        +u64 frame
+        +u32 sample
+        +u16 dimension
+        +u64 node_id
+    }
+    class PropertyChannel {
+        +eval(t) SolvedParams
+    }
+    Node --> PropertyChannel : 参数绑定（A2）
+    Node --> StructureRegistry : 构建期登记
+    StructureRegistry o-- MathStructure : 特解实例按签名复用
+    MathStructure --> StructureMeta : 三问元数据
+    MathStructure --> EvalCtx : 求值上下文
+    EvalCtx --> SampleIndex : hash 纯函数派生
+    note for MathStructure "三操作=接口全集；能力面由 meta 显式声明"
