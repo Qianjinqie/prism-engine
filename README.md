@@ -8,7 +8,6 @@
 ![Distribution](https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg)
 ![Tests](https://img.shields.io/badge/tests-3271%20passed-brightgreen.svg)
 
-（徽章为静态事实徽章；接入 CI 后可替换为动态构建 / 覆盖率徽章。）
 
 ---
 
