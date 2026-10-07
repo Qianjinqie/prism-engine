@@ -1,16 +1,16 @@
-//! U5 结账 · 端到端逐位一致性证据（白皮书 §26 固定形状归约代数）。
+//! 端到端逐位一致性证据（固定形状归约代数）。
 //!
-//! 本文件是 U5 作为**独立子项**的端到端验收：证明"同输入逐字节可复现"在本
+//! 本文件是归约代数作为**独立子项**的端到端验收：证明"同输入逐字节可复现"在本
 //! 仓的多条归约路径上**真的成立**，且证明"禁止块内预归约"这条纪律**真的
 //! 有效**（反向测试）。
 //!
 //! # 三条归约路径（同一个数学对象：`reduction_shape(n)` 平衡 pairwise 树）
 //!
 //! 1. **直接路径**：`prism_core::graph::reduce`（串行参考 = 对同一形状树的
-//!    固定顺序求值，§26）；
+//!  固定顺序求值）；
 //! 2. **音频路径**：`prism_media::nle::audio::mixdown`（多轨混音复用同一
 //!    `reduce`，逐帧归约）；
-//! 3. **农场路径**：`prism_render::farm::{split_frames, merge_shards}`（U8
+//! 3. **农场路径**：`prism_render::farm::{split_frames, merge_shards}`（分布式
 //!    分布式调度；worker 只交逐帧载荷，主节点按帧号归位后**一次** `reduce`）。
 //!
 //! 判据：三条路径对**等价输入**给出**逐位相同**的结果（`to_bits()`）。
@@ -94,7 +94,7 @@ fn three_reduction_paths_agree_bitwise_for_same_sequence() {
 
 #[test]
 fn farm_arrival_order_does_not_change_bits() {
-    // 到达顺序无关（§26 律三"消序用排序"）：打乱分片顺序，逐位不变。
+    // 到达顺序无关（律三"消序用排序"）：打乱分片顺序，逐位不变。
     let n: u64 = 512;
     let parts: Vec<FrameRange> = split_frames(0, n - 1, 8).expect("应可切分");
     let shards: Vec<FrameShard<f32>> = parts
@@ -270,7 +270,7 @@ fn block_prereduction_differs_for_many_partitions() {
 }
 
 // ---------------------------------------------------------------------------
-// 4. 形状契约的跨规模一致性（§26 核心构造的可观测面）
+// 4. 形状契约的跨规模一致性（核心构造的可观测面）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -290,7 +290,7 @@ fn shape_depth_is_ceil_log2_and_key_is_pure_function_of_n() {
 
 #[test]
 fn pairwise_error_bound_holds_for_farm_merge() {
-    // §26 树深的数值推论：pairwise 求和误差 ≤ ⌈log₂n⌉·u·Σ|aᵢ|/(1−⌈log₂n⌉·u)。
+    //  树深的数值推论：pairwise 求和误差 ≤ ⌈log₂n⌉·u·Σ|aᵢ|/(1−⌈log₂n⌉·u)。
     // 用 f64 参考值对拍农场归约的 f32 结果（浮点给证）。
     let u_f32 = (f32::EPSILON as f64) / 2.0;
     for n in [3u64, 5, 8, 37, 100, 1000] {
@@ -345,7 +345,7 @@ fn same_n_different_data_walks_same_tree() {
 
 #[test]
 fn empty_and_single_item_reductions_are_unit_and_identity() {
-    // 边界：空集 → 单位元；单元素 → 原样（§26 退化情形）。
+    // 边界：空集 → 单位元；单元素 → 原样（退化情形）。
     assert_eq!(reduce(Vec::<f32>::new(), |a, b| a + b, 2.5_f32).to_bits(), 2.5_f32.to_bits());
     assert_eq!(reduce(vec![7.5_f32], |a, b| a + b, 0.0).to_bits(), 7.5_f32.to_bits());
     // 农场空作业 → 单位元（不静默补值）。

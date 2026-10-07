@@ -1,6 +1,6 @@
 //! prism-text 边缘攻击测试（跨模块集成；golden-file 与关键不变式）。
 //!
-//! 覆盖任务书测试清单：
+//! 覆盖测试清单：
 //! - TTF 解析断言（内嵌资产表完整性、字形查找、复合度量）；
 //! - 禁则断言（句号永不为行首——悬挂）；
 //! - 竖排标点转向断言（转向标记 + 位图宽高互换）；
@@ -158,7 +158,7 @@ fn vertical_rotation_markers_and_bitmap_swap() {
 /// 字形位图 golden：`tests/golden/glyph_<ch>_<size>.txt`。
 /// 文件内容：`w= h= left= top= fnv=`。
 ///
-/// **生成器已移出测试**（W14 路3）：原先这里的 `regenerate_glyph_golden`
+/// **生成器已移出测试**：原先这里的 `regenerate_glyph_golden`
 /// 是一条 `#[ignore]`，但它不是待修缺陷而是**写文件的生成器**——挂在
 /// `--ignored` 列表里会让「待办」与「缺陷」混淆，且让全仓验收长期挂着
 /// `ignored` 计数（与"注释掉测试"同类假绿）。现形态：

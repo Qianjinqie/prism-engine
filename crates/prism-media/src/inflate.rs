@@ -3,7 +3,7 @@
 //! # 历史（这笔债的来历）
 //!
 //! 本模块曾持有**第二份手写 DEFLATE inflate**（B11，为 APNG 的 `IDAT` / `fdAT`
-//! 而写）。第一份在 `prism-io/src/exr.rs`（U7，为 EXR 的 ZIP 块而写）。
+//! 而写）。第一份在 `prism-io/src/exr.rs`（为 EXR 的 ZIP 块而写）。
 //! 两者之所以并存，是因为 `prism-media` 依赖 `prism-io`、反向依赖会构成
 //! crate 循环——**两份实现都被卡在 L4，谁也够不着谁**。
 //!
@@ -50,7 +50,7 @@ fn inf_err(e: prism_bytes::BytesError) -> MediaError {
 /// # 尾部口径：**不要求** Adler-32 尾存在（迁移前行为，逐字节保持）
 ///
 /// 旧实现校验完 2 字节头就`inflate_raw(&data[2..])`，**完全不看尾部**。
-/// 仓库里两个 PNG 测试构造器（`tests/b11_integration.rs:81` 与
+/// 仓库里两个 PNG 测试构造器（`tests/media_integration.rs:81` 与
 /// `src/apng.rs:429` 的 `zlib_stored`）造的就是**不带尾**的 zlib 流，
 /// 因此这里转发到 [`prism_bytes::zlib::decompress_lenient`]（宽容口径）。
 ///
@@ -85,7 +85,7 @@ mod tests {
         out
     }
 
-    /// **不带尾**的 zlib stored 流——与 `tests/b11_integration.rs:81` 和
+    /// **不带尾**的 zlib stored 流——与 `tests/media_integration.rs:81` 和
     /// `src/apng.rs:429` 的构造器**逐字节同构**。
     fn zlib_stored_no_trailer(payload: &[u8]) -> Vec<u8> {
         let mut out = vec![0x78, 0x01];
@@ -112,7 +112,7 @@ mod tests {
 
     /// **迁移不变性（无尾流）**：旧 media 实现不看尾部，本模块必须仍不看。
     ///
-    /// `tests/b11_integration.rs::apng_golden_gradient` 用的PNG 负载就是
+    /// `tests/media_integration.rs::apng_golden_gradient` 用的PNG 负载就是
     /// 不带 Adler-32 尾的；若这里收紧尾部，那个测试当场回归。
     #[test]
     fn migration_invariance_accepts_stream_without_trailer() {

@@ -1,6 +1,6 @@
 //! 自写 JSON-RPC 2.0 编解码（零第三方依赖）。
 //!
-//! 语义权威：《强大版路线图》§3.6（"MCP stdio JSON-RPC"、"自写 JSON-RPC"）与
+//! 语义权威："MCP stdio JSON-RPC"、"自写 JSON-RPC"与
 //! JSON-RPC 2.0 规范（<https://www.jsonrpc.org/specification>）。本模块只做
 //! **协议层**：值的解析 / 序列化、请求 / 通知 / 响应的建模与往返。MCP 语义
 //! （工具列表 / 工具调用）见 [`crate::mcp`]。

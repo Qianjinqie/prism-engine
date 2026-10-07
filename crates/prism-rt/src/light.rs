@@ -1,8 +1,8 @@
-//! 灯光族（W5-B2）：方向光 / 球光 / 矩形面光 / 环境光 + NEE 采样与 MIS 权重。
+//! 灯光族：方向光 / 球光 / 矩形面光 / 环境光 + NEE 采样与 MIS 权重。
 //!
-//! # 灯光语义与 MIS 契约（白皮书 §1 / 路线图 B2 行；B1 既有语义保持）
+//! # 灯光语义与 MIS 契约（既有语义保持）
 //! - [`Light::Directional`]：锥形方向光（软太阳），**非几何**——BSDF 采样路径
-//!   永远打不中它，NEE 是唯一估计器 → NEE 权重恒 1（B1 既有修正，必须遵守；
+//!   永远打不中它，NEE 是唯一估计器 → NEE 权重恒 1（既有修正，必须遵守；
 //!   引入伪 MIS 会系统性欠估）。
 //! - [`Light::Sphere`]：均匀发光球，**场景几何**（Scene.spheres 以 Emissive
 //!   材质注册）——BSDF 采样可命中 → NEE 与 BSDF 两策略 power heuristic 配对。
@@ -13,7 +13,7 @@
 //!   miss 时由积分器经 [`ambient_background`] 全额取得）；NEE 不采样
 //!   （[`sample_nee`] 返回 None）→ 无重复计数，权重语义恒 1。
 //!
-//! # 确定性（D-29 / 架构 §4.4）
+//! # 确定性（D-29）
 //! 采样只用 ±×÷√ 与 [`crate::sampler`] 的 det 三角件（`cone_dir`/`cos_sin`），
 //! 无 libm 超越函数、无全局 RNG；u1/u2 由样本流哈希派生，任意像素任意 pass
 //! 可独立重算。
@@ -28,7 +28,7 @@ use crate::sampler::cone_dir;
 // 灯光定义
 // ---------------------------------------------------------------------------
 
-/// 场景灯光（B1 的 `Directional`/`Sphere` 字段逐字保留，B2 增补 `Rect`/`Ambient`）。
+/// 场景灯光（`Directional`/`Sphere` 字段逐字保留，B2 增补 `Rect`/`Ambient`）。
 #[derive(Debug, Clone, Copy)]
 pub enum Light {
     /// 方向光：`direction` = 指向光的方向（单位化），锥半角由 `cos_theta_max`
@@ -50,7 +50,7 @@ pub enum Light {
         /// 出射辐亮度。
         radiance: Vec3,
     },
-    /// 矩形面光（B2）：中心 + 两正交边向量定义平行四边形，双面发光，非几何。
+    /// 矩形面光：中心 + 两正交边向量定义平行四边形，双面发光，非几何。
     Rect {
         /// 矩形中心。
         center: Vec3,
@@ -61,7 +61,7 @@ pub enum Light {
         /// 出射辐亮度（双面同值）。
         radiance: Vec3,
     },
-    /// 均匀环境光（B2）：方向无关的逃逸背景辐亮度。
+    /// 均匀环境光：方向无关的逃逸背景辐亮度。
     Ambient {
         /// 背景辐亮度。
         radiance: Vec3,
@@ -126,12 +126,12 @@ pub fn ambient_background(lights: &[Light]) -> Vec3 {
 // ---------------------------------------------------------------------------
 
 /// 从着色点 `p` 对灯光做 NEE 采样（直接光照策略）。
-/// `u1`/`u2` 为样本流坐标（架构 §4.4 hash 派生）。
+/// `u1`/`u2` 为样本流坐标（hash 派生）。
 /// 返回 None：点在球光内 / 矩形掠射（pdf 发散）/ 环境光（无 NEE 语义）。
 pub fn sample_nee(light: &Light, p: Vec3, u1: f32, u2: f32) -> Option<LightSample> {
     match light {
         Light::Directional { direction, radiance, cos_theta_max } => {
-            // 锥内均匀采样（B1 同款）；pdf = 1/(2π(1−cos_max))。
+            // 锥内均匀采样（同款）；pdf = 1/(2π(1−cos_max))。
             // cos_max = 1（δ）时 cone_dir 退化为正对轴，pdf 记 1.0 占位。
             let wi = cone_dir(*direction, *cos_theta_max, u1, u2);
             let pdf_w = if *cos_theta_max >= 1.0 {

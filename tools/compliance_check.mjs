@@ -36,9 +36,28 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const CRATES_DIR = path.join(REPO_ROOT, 'crates');
-const REGISTRY_MD = path.join(REPO_ROOT, 'docs', '合规', 'assets', '资产登记.md');
-const NOTICES_MD = path.join(REPO_ROOT, 'docs', '合规', 'THIRD-PARTY-NOTICES.md');
+
+/**
+ * 源码/合规目录探测：同时支持两种布局——
+ *   仓库：crates/ + docs/合规/
+ *   分发包：src/ + Compliance/
+ * 优先取存在者。这样同一份脚本在仓库内与解包后的分发包里都能跑。
+ */
+function pickDir(...candidates) {
+  for (const c of candidates) {
+    try { if (existsSync(c)) return c; } catch { /* 继续 */ }
+  }
+  return candidates[0]; // 都不存在时返回首选，便于报错信息指向期望路径
+}
+const CRATES_DIR = pickDir(path.join(REPO_ROOT, 'crates'), path.join(REPO_ROOT, 'src'));
+const REGISTRY_MD = pickDir(
+  path.join(REPO_ROOT, 'docs', '合规', 'assets', '资产登记.md'),
+  path.join(REPO_ROOT, 'Compliance', 'assets', '资产登记.md'),
+);
+const NOTICES_MD = pickDir(
+  path.join(REPO_ROOT, 'docs', '合规', 'THIRD-PARTY-NOTICES.md'),
+  path.join(REPO_ROOT, 'Compliance', 'THIRD-PARTY-NOTICES.md'),
+);
 const SELF_TEST_DIR_PREFIX = 'compliance-selftest-';
 
 // 本仓 crate 命名空间。凡依赖名以此开头 → 本仓；否则就是第三方。
@@ -124,9 +143,9 @@ function parseDependencySections(toml) {
 function checkNoThirdPartyCode(repoRoot) {
   head('C1 · 零第三方代码依赖');
 
-  const cratesDir = path.join(repoRoot, 'crates');
+  const cratesDir = pickDir(path.join(repoRoot, 'crates'), path.join(repoRoot, 'src'));
   if (!existsSync(cratesDir)) {
-    fail('C1.0', '找不到 crates/ 目录', `路径：${cratesDir}`);
+    fail('C1.0', '找不到 crates/ 或 src/ 目录', `路径：${cratesDir}`);
     return;
   }
   const crateNames = readdirSync(cratesDir, { withFileTypes: true })
@@ -242,7 +261,10 @@ function isBlankCell(v) {
 function checkAssetRegistry(repoRoot) {
   head('C2 · 资产登记完备（空字段判红）');
 
-  const regPath = path.join(repoRoot, 'docs', '合规', 'assets', '资产登记.md');
+  const regPath = pickDir(
+    path.join(repoRoot, 'docs', '合规', 'assets', '资产登记.md'),
+    path.join(repoRoot, 'Compliance', 'assets', '资产登记.md'),
+  );
   if (!existsSync(regPath)) {
     fail('C2.0', '找不到资产登记文件', `期望路径：${regPath}`);
     return { assetCount: 0 };
@@ -322,7 +344,10 @@ function checkAssetRegistry(repoRoot) {
 function checkNotices(repoRoot) {
   head('C3 · 第三方归属声明');
 
-  const p = path.join(repoRoot, 'docs', '合规', 'THIRD-PARTY-NOTICES.md');
+  const p = pickDir(
+    path.join(repoRoot, 'docs', '合规', 'THIRD-PARTY-NOTICES.md'),
+    path.join(repoRoot, 'Compliance', 'THIRD-PARTY-NOTICES.md'),
+  );
   if (!existsSync(p)) {
     fail('C3.0', '找不到 THIRD-PARTY-NOTICES.md', `期望路径：${p}`);
     return;

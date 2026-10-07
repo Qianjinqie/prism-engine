@@ -1,11 +1,11 @@
-//! XPBD 统一求解器核心（B7 骨架批）。
+//! XPBD 统一求解器核心（骨架批）。
 //!
-//! 语义权威：《算法白皮书》§8（万物皆粒子+约束；compliance 刚度与迭代解耦；
-//! substepping 保稳）、§25.4（压缩映射 → 收敛保证：投影求解 = 不动点迭代，
-//! 子步数/迭代数显式标价）、§25.5 纪律 3（λ = 对偶变量，免费输出约束残余作
-//! 质量指标）、《架构总设计》§1.2 S3 行（子步数固定、求解序按 id 格锚）。
+//! 语义权威：（万物皆粒子+约束；compliance 刚度与迭代解耦；
+//! substepping 保稳）、（压缩映射 → 收敛保证：投影求解 = 不动点迭代，
+//! 子步数/迭代数显式标价）、 纪律 3（λ = 对偶变量，免费输出约束残余作
+//! 质量指标）、 S3 行（子步数固定、求解序按 id 格锚）。
 //!
-//! # 确定性纪律（白皮书 §8 第 4 条）
+//! # 确定性纪律（第 4 条）
 //!
 //! - 约束求解顺序按约束 id 升序（[`World::add_constraint`] 内部按 id 有序
 //!   插入——输入序无关，同约束集必得同求解序）；
@@ -13,7 +13,7 @@
 //!   IEEE 基本运算（+ − × ÷ √），跨平台逐位一致；
 //! - 同输入同输出逐位一致（测试把关）。
 //!
-//! # 收敛依据（白皮书 §25 的工程化）
+//! # 收敛依据（的工程化）
 //!
 //! 每子步的 Gauss–Seidel 投影是不动点迭代：残差按 O(q^iters) 衰减，q < 1
 //! 为映射压缩系数（Banach），由约束雅可比谱决定——这正是"子步数/迭代数可
@@ -21,19 +21,21 @@
 //! 即"小步比多迭代稳"。默认档（4 子步 × 8 迭代）为骨架参考标价，调用方按
 //! 场景在 [`World::step`] 参数处显式给定（危险默认值禁止，宪章 C21）。
 //!
-//! # 积分格式（账二 U6：长时程物理漂移）
+//! # 积分格式（长时程物理漂移）
 //!
 //! 求解器的**预测/速度更新**格式可切换（[`Integrator`]）：
 //!
 //! - [`Integrator::SemiImplicitEuler`]（**默认**）：`v += a·h; x += v·h`，
 //!   位置投影后 `v = (x − x_prev)/h`。既有逐位基线，语义不变。
-//! - [`Integrator::VelocityVerlet`]（辛格式族，账二 U6 实装）：kick-drift-kick
+//! - [`Integrator::VelocityVerlet`]（辛格式族，实装）：kick-drift-kick
 //!   变体，`x* = x + v·h + ½a·h²`（drift 含半加速度），投影后速度
 //!   `v += a·h + Δx/h`（Δt 修正 = 位置投影对速度的反馈）。**无约束纯自由系统**
 //!   下 Δx = 0，退化为教科书速度 Verlet，二阶精度、辛（symplectic）——长时程
 //!   能量误差**有界不漂移**（对比半隐式欧拉一阶累积漂移；4800 步实测位置漂移
-//!   小 600 余倍，见测试 U6-1/U6-2）。投影仍在同一套 XPBD 循环内，积分格式
-//!   只是预测/速度更新的重排（账本原文："辛积分器 = S3 求解器的积分格式升级"）。
+//!   小 600 余倍，见测试 `symplectic_verlet_position_drift_far_below_euler` /
+//!   `symplectic_verlet_energy_drift_bounded_over_long_horizon`）。投影仍在同一套
+//!   XPBD 循环内，积分格式
+//!   只是预测/速度更新的重排（"辛积分器 = S3 求解器的积分格式升级"）。
 //!
 //! 二者共用同一套约束投影（Gauss–Seidel，按 id 序）与确定性纪律；调用方经
 //! [`World::set_integrator`] 显式选择，默认恒为半隐式欧拉（零回归，其他求解
@@ -47,7 +49,7 @@ use crate::PhysicsError;
 // 粒子与约束
 // ---------------------------------------------------------------------------
 
-/// 粒子（XPBD"万物皆粒子"，白皮书 §8 第 1 条；刚体/软体/布料/流体在 W6
+/// 粒子（XPBD"万物皆粒子"， 第 1 条；刚体/软体/布料/流体在后续阶段
 /// 全部化为粒子云 + 约束族）。
 ///
 /// 数组下标即粒子 id（格锚 Zᵏ，构建顺序即身份）；`inv_mass = 0` 表示固定
@@ -74,11 +76,11 @@ impl Particle {
 /// XPBD 约束接口。两个方法对应 XPBD 论文（Macklin et al. 2016, §3）的两个
 /// 阶段：`evaluate` = 约束估计（estimate），`project` = 约束求解（dsolve）。
 ///
-/// W6 约束族（铰链/滑槽/限位关节、PBF 密度、形状匹配、SDF 碰撞，白皮书
-/// §8–§10）经本 trait 接入求解循环——骨架批仅落 [`DistanceConstraint`]
+/// 约束族（铰链/滑槽/限位关节、PBF 密度、形状匹配、SDF 碰撞）
+/// 经本 trait 接入求解循环——骨架阶段仅落 [`DistanceConstraint`]
 /// 作框架验证载体（这不是布料实装，是求解器的最小可测形态）。
 pub trait Constraint {
-    /// 约束 id：求解序格锚键（求解按 id 升序，白皮书 §8 第 4 条）。
+    /// 约束 id：求解序格锚键（求解按 id 升序， 第 4 条）。
     fn id(&self) -> u32;
 
     /// 作用粒子下标（升序；端点必须小于粒子总数，[`World::add_constraint`]
@@ -101,7 +103,7 @@ pub trait Constraint {
     /// 约束求解（dsolve）：XPBD 投影一步——拉格朗日乘子 λ 更新 + 位置修正。
     ///
     /// `dt_h` 为子步长；`lambda` 为本约束的对偶变量（每子步清零重置，XPBD
-    /// 论文语义）。返回修正后的 |C| 作约束残余（白皮书 §25.5 纪律 3：免费
+    /// 论文语义）。返回修正后的 |C| 作约束残余（纪律 3：免费
     /// 质量指标）。
     fn project(&self, particles: &mut [Particle], dt_h: f32, lambda: &mut f32) -> f32;
 }
@@ -109,7 +111,7 @@ pub trait Constraint {
 /// 距离约束：C(p_a, p_b) = |p_a − p_b| − rest_length。
 ///
 /// `compliance` = 1/stiffness（柔度，单位 m/N）：0 = 完全刚性；XPBD 刚度与
-/// 迭代次数解耦的关键参数（白皮书 §8 第 2 条）。
+/// 迭代次数解耦的关键参数（第 2 条）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct DistanceConstraint {
     id: u32,
@@ -214,12 +216,12 @@ impl Constraint for DistanceConstraint {
 // 世界与求解循环
 // ---------------------------------------------------------------------------
 
-/// 积分格式（求解器的预测/速度更新重排；账二 U6）。
+/// 积分格式（求解器的预测/速度更新重排）。
 ///
 /// 两者共用同一套约束投影（Gauss–Seidel，按 id 序），仅**预测**与**速度
 /// 更新**两步的数学形式不同。默认 [`Integrator::SemiImplicitEuler`] 保持
 /// 既有逐位基线；[`Integrator::VelocityVerlet`] 为辛格式族（速度 Verlet），
-/// 用于长时程模拟抑制能量漂移（账本 U6）。
+/// 用于长时程模拟抑制能量漂移。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Integrator {
     /// 半隐式（辛）欧拉：`v += a·h; x += v·h; 投影; v = (x − x_prev)/h`。
@@ -232,19 +234,19 @@ pub enum Integrator {
     /// 投影后 `v += a·h + Δx/h`（Δx = x − x*，位置投影修正）。
     ///
     /// 无约束纯自由系统下 Δx = 0，退化为教科书速度 Verlet，位置/速度精确、
-    /// 长时程能量误差有界（不随步数单调漂移）。账二 U6 的实装格式。
+    /// 长时程能量误差有界（不随步数单调漂移）。本实装格式。
     VelocityVerlet,
 }
 
-/// 一步求解报告：每子步每轮投影完成后的最大约束残余 |C|（收敛曲线；白皮书
-/// §25.5 纪律 3 的免费质量指标）。
+/// 一步求解报告：每子步每轮投影完成后的最大约束残余 |C|（收敛曲线；
+/// 纪律 3 的免费质量指标）。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct StepReport {
     /// 长度 = substeps × iterations；顺序 = 子步外层 × 迭代内层（固定）。
     pub residuals: Vec<f32>,
 }
 
-/// XPBD 世界：粒子集 + 约束集 + 常量重力 + 求解循环（白皮书 §8）。
+/// XPBD 世界：粒子集 + 约束集 + 常量重力 + 求解循环。
 ///
 /// 确定性不变式：`constraints` 恒按约束 id 升序存放（[`World::add_constraint`]
 /// 二分有序插入）——构建输入序不影响求解序与结果（格锚纪律）。
@@ -254,7 +256,7 @@ pub struct World {
     /// 与 `constraints` 平行的 λ 数组（每子步清零，XPBD 论文语义）。
     lambdas: Vec<f32>,
     gravity: Vec3,
-    /// 积分格式（预测/速度更新重排；默认半隐式欧拉，账二 U6）。
+    /// 积分格式（预测/速度更新重排；默认半隐式欧拉）。
     integrator: Integrator,
 }
 
@@ -272,7 +274,7 @@ impl std::fmt::Debug for World {
 }
 
 impl World {
-    /// 构造世界（重力常量外力；W6 换 ForceField 族——路线图 §3.3）。
+    /// 构造世界（重力常量外力；后续阶段换 ForceField 族——）。
     ///
     /// 积分格式默认 [`Integrator::SemiImplicitEuler`]（既有逐位基线）；
     /// 长时程场景经 [`World::set_integrator`] 显式切换为辛格式。
@@ -286,7 +288,7 @@ impl World {
         }
     }
 
-    /// 设置积分格式（账二 U6；默认半隐式欧拉，切换即改渲染行为——宪章 C15）。
+    /// 设置积分格式（默认半隐式欧拉，切换即改渲染行为——宪章 C15）。
     ///
     /// 非跨帧隐藏状态：格式是求解器配置，不参与快照（状态 = 位置 + 速度，
     /// [`World::set_state`] 语义不变）。
@@ -391,7 +393,7 @@ impl World {
                 code: "P1003",
                 location: "World::step".to_string(),
                 problem: "substeps = 0：子步数必须 ≥1（子步数固定是确定性纪律）".to_string(),
-                fix: "传 substeps ≥ 1，参考标价 4（小步比多迭代稳，白皮书 §8）".to_string(),
+                fix: "传 substeps ≥ 1，参考标价 4（小步比多迭代稳）".to_string(),
             });
         }
         if iterations == 0 {
@@ -577,7 +579,7 @@ mod tests {
     }
 
     /// 关卡 2：刚度解耦——同迭代数下不同 compliance 行为单调合理；且刚度
-    /// 不随迭代数改变（XPBD 特性验证，白皮书 §8 第 2 条）。
+    /// 不随迭代数改变（XPBD 特性验证， 第 2 条）。
     #[test]
     fn stiffness_decoupled_from_iterations_monotonic() {
         // 单摆：p0 固定，p1 挂在正下方（rest 1.0），重力把约束拉长。
@@ -805,7 +807,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // 账二 U6：长时程物理漂移（辛积分器）
+    // 长时程物理漂移（辛积分器）
     // -----------------------------------------------------------------------
 
     /// 无约束系统的机械能 E = Σ[½m|v|² − m·g·x]（m = 1/inv_mass；势能
@@ -830,7 +832,7 @@ mod tests {
         w
     }
 
-    /// 关卡 U6-1（对比断言 + 长时程）：固定物理时段（有界位移，避 f32 大数
+    /// 对比关卡（对比断言 + 长时程）：固定物理时段（有界位移，避 f32 大数
     /// 抵消）下用**大量积分步**（长时程 4800 步）对比位置漂移——辛格式（速度
     /// Verlet）相对解析解的位置误差**远小于**半隐式欧拉。
     ///
@@ -872,12 +874,12 @@ mod tests {
             "速度 Verlet 位置漂移应 < 1e-4（近解析精确），实际 {drift_verlet:e}"
         );
         println!(
-            "U6-1 长时程位置漂移（{steps} 步 / t={t}s）：欧拉 {drift_euler:e} vs Verlet {drift_verlet:e}（比 {:.0}×）",
+            "长时程位置漂移（{steps} 步 / t={t}s）：欧拉 {drift_euler:e} vs Verlet {drift_verlet:e}（比 {:.0}×）",
             drift_euler / drift_verlet.max(f32::MIN_POSITIVE)
         );
     }
 
-    /// 关卡 U6-2（守恒界）：辛格式能量漂移**有界不增长**——把长时程切成前后
+    /// 守恒界关卡：辛格式能量漂移**有界不增长**——把长时程切成前后
     /// 两半，后半段漂移与前半段同量级（无累积趋势）。
     ///
     /// 诚实边界：常量重力下加速度恒定，半隐式欧拉同属辛族、能量误差亦有界
@@ -924,11 +926,11 @@ mod tests {
             "辛格式能量漂移 {v_second:e} 应小于半隐式欧拉 {e_second:e}"
         );
         println!(
-            "U6-2 漂移有界（各 {half} 步）：Verlet {v_first:e}→{v_second:e}；欧拉 {e_first:e}→{e_second:e}"
+            "漂移有界（各 {half} 步）：Verlet {v_first:e}→{v_second:e}；欧拉 {e_first:e}→{e_second:e}"
         );
     }
 
-    /// 关卡 U6-3（确定性）：辛格式同输入两遍推进逐位一致（位置 + 速度
+    /// 确定性关卡：辛格式同输入两遍推进逐位一致（位置 + 速度
     /// 位模式），延续求解器的全链路确定性纪律。
     #[test]
     fn velocity_verlet_bitwise_deterministic() {
@@ -974,7 +976,7 @@ mod tests {
         assert_eq!(bits(&a), bits(&b), "辛格式两遍求解应逐位一致");
     }
 
-    /// 关卡 U6-4（有约束仍收敛）：辛格式接入同一套 XPBD 投影，约束残余仍
+    /// 有约束仍收敛关卡：辛格式接入同一套 XPBD 投影，约束残余仍
     /// 收敛到阈值内——积分格式升级不动投影语义。
     #[test]
     fn velocity_verlet_with_constraints_still_converges() {

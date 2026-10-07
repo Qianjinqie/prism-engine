@@ -1,7 +1,7 @@
 //! WGSL 着色器源码管理与结构自检（D2/D3/D4）。
 //!
-//! # 定位（路线图 Phase 4 验收：GPU/CpuRef 双实现互为判对）
-//! 真实 GPU 实装待真机（D1 vulkan/metal 绑定 + 手机 WebGPU 测试页，D-14）。
+//! # 定位（验收：GPU/CpuRef 双实现互为判对）
+//! 真实 GPU 实装待真机（vulkan/metal 绑定 + 手机 WebGPU 测试页，D-14）。
 //! 本模块在**无 GPU 环境**下对 WGSL 做两类可执行的工作：
 //!
 //! 1. **嵌入源码**：`include_str!` 编译期把全部 WGSL 打进二进制（供未来
@@ -33,7 +33,7 @@ pub static SHADERS: &[(&str, &str)] = &[
     ("sim_cloth.wgsl", include_str!("../shaders/sim_cloth.wgsl")),
     ("sim_sph.wgsl", include_str!("../shaders/sim_sph.wgsl")),
     ("text.wgsl", include_str!("../shaders/text.wgsl")),
-    // U4 深化 B：GI 的 GPU compute 路径（SDF sphere tracing 遮挡 + SH-L2 投影/重建）。
+    // GI 的 GPU compute 路径（SDF sphere tracing 遮挡 + SH-L2 投影/重建）。
     ("gi_compute.wgsl", include_str!("../shaders/gi_compute.wgsl")),
 ];
 
@@ -46,7 +46,7 @@ pub static SHADERS: &[(&str, &str)] = &[
 /// `rt_scene.wgsl`（场景访问层：材质/灯光/求交/可见性）即属此类——它是
 /// `rt_shade` / `rt_wavefront` 的实现细节，而非一个可独立运行的 kernel。
 ///
-/// `hair_scatter.wgsl`（U3 毛发深化 B：Marschner R/TT/TRT 三瓣）亦属此类——
+/// `hair_scatter.wgsl`（毛发深化 B：Marschner R/TT/TRT 三瓣）亦属此类——
 /// 它是纯函数库（M / N / A / S 合成），无 `@compute`/`@vertex`/`@fragment` 入口，
 /// 由未来的 hair 材质着色 kernel 经 `//!include hair_scatter.wgsl` 复用。
 pub static LIBRARIES: &[(&str, &str)] = &[
@@ -629,7 +629,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // U3 毛发深化 B：hair_scatter.wgsl（库件）源码级断言
+    // 毛发深化 B：hair_scatter.wgsl（库件）源码级断言
     // -----------------------------------------------------------------------
 
     #[test]

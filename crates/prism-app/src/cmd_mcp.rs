@@ -1,6 +1,6 @@
 //! `prism-app mcp` 子命令：MCP stdio 服务器主循环。
 //!
-//! 语义权威：《强大版路线图》§3.6（"MCP stdio JSON-RPC"）。MCP 用 **行分隔
+//! 语义权威：MCP stdio JSON-RPC。MCP 用 **行分隔
 //! 的 JSON-RPC**（每条消息一行）经 stdin/stdout 收发；本文件只做 I/O 循环，
 //! 协议实现见 [`prism_infra::mcp`]。
 //!

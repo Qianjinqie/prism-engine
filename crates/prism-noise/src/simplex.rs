@@ -1,4 +1,4 @@
-//! Simplex noise — skewed simplex grid + radial kernel (whitepaper §17, roadmap A3).
+//! Simplex noise — skewed simplex grid + radial kernel (roadmap A3).
 //!
 //! Structure follows the public-domain reference implementation of Stefan
 //! Gustavson, "Simplex noise demystified" (2005), based on Ken Perlin's simplex
@@ -12,7 +12,7 @@
 //! of `(seed, corner lattice coordinates)` (modulo bias over 12 gradients is
 //! ≈ 4/2⁶⁴, negligible). This makes the field a pure function of the seed
 //! parameter — one seed = one noise field — with no hidden global state, per
-//! the engine determinism contract (architecture v2.4 §4.4). The 2D case uses
+//! the engine determinism contract . The 2D case uses
 //! the same 12-gradient table as the reference (first two components).
 //!
 //! Output range: `[-1, 1]` (Gustavson calibration; asserted over a large

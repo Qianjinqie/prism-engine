@@ -1,8 +1,8 @@
 //! [`WebGpuBackend`]：在 WebGPU 上承载 D0 的 scan/sort 内核（WGSL compute）。
 //!
-//! 设计要点（D1 骨架，无 WGSL 运行时）：
+//! 设计要点（骨架，无 WGSL 运行时）：
 //! * WGSL 源码内嵌为 `&'static str`，与 vulkan/metal 后端共享同一份 shader
-//!   逻辑源（路线图"自研各后端共享同一套 WGSL"）。
+//!   逻辑源。
 //! * 编排逻辑（工作组规模、绑定顺序、dispatch 维度）全部在 Rust 侧计算，
 //!   JS 胶水仅做对象转发。
 //! * 在非 wasm 目标上，`render_scene` 走 CPU 兜底以保证可编译、可测试；
@@ -47,7 +47,7 @@ impl WebGpuBackend {
     /// 创建一个后端实例：探测 WebGPU、请求 device（失败则为无效句柄）。
     ///
     /// 该构造函数永不 panic——失败时后端自动降级为 CPU 渲染，供 harness
-    /// 继续运行其它测试项（路线图"错误反馈闭环"要求）。
+    /// 继续运行其它测试项（要求）。
     pub fn new() -> Self {
         let support = web::detect_support();
         let device = if support == WebGpuSupport::Available {
@@ -110,7 +110,7 @@ impl WebGpuBackend {
     /// 翻译成 WGSL dispatch 计划。返回按执行顺序排列的内核列表。
     ///
     /// 说明：骨架阶段只产出**dispatch 计划 + shader 源**，真实提交留待
-    /// 具备 WGSL 运行时的真机（D-14 手机测试路径）。
+    /// 具备 WGSL 运行时的真机（D-14 移动端验证路径）。
     pub fn plan_scan(&self, cfg: ScanConfig) -> Vec<KernelDispatch> {
         vec![KernelDispatch {
             name: "scan_block",

@@ -1,6 +1,6 @@
-//! Mandelbrot_bg（B4 清单：Mandelbrot_bg——Mandelbrot 集程序化背景）。
+//! Mandelbrot_bg（清单：Mandelbrot_bg —— Mandelbrot 集程序化背景）。
 //!
-//! 语义权威：《强大版路线图》B4 行（Mandelbrot_bg）；域 M（生成艺术输出
+//! 语义权威：Mandelbrot_bg；域 M（生成艺术输出
 //! 可再加工——背景板语义同 plasma）。
 //!
 //! # 实现

@@ -15,8 +15,8 @@
 //!
 //! 项目里曾有**两份手写 DEFLATE inflate**：
 //!
-//! 1. `prism-io/src/exr.rs` 内的一份（U7）；
-//! 2. `prism-media/src/inflate.rs` 内的一份（B11）。
+//! 1. `prism-io/src/exr.rs` 内的一份；
+//! 2. `prism-media/src/inflate.rs` 内的一份。
 //!
 //! 第二份的注释写着「因循环依赖无法复用，自研第二份 inflate，形成技术债」。
 //! 分层是 `io ∈ L4 → core ∈ L2`，低层不得依赖高层，两份实现都被卡在 L4 附近，

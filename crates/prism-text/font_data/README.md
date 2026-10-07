@@ -9,11 +9,11 @@
 
 合计 3.87MB（预算 ≤6MB；单档 1–3MB 达标）。
 
-## 来源链（D-31 资产自研化总账）
+## 来源链（资产自研化口径）
 
 1. 上游：`github.com/notofonts/noto-cjk` → `Sans/OTF/SimplifiedChinese/`
    （Noto Sans SC Regular/Bold，SIL OFL 1.1）；
-2. 镜像探测顺序 `gh-proxy.com` → `ghfast.top` → jsdelivr（任务书 a/b/c），
+2. 镜像探测顺序 `gh-proxy.com` → `ghfast.top` → jsdelivr，
    实际命中：**gh-proxy.com**（首次探测即通）；
 3. 原始 OTF sha256：
    - Regular `faa6c9df652116dde789d351359f3d7e5d2285a2b2a1f04a2d7244df706d5ea9`（8,331,336 B）
@@ -23,7 +23,7 @@
    CFF→glyf 转换（cu2qu）→ 改名 Prism Sans SC → post 3.0；
    详见 `MODIFICATIONS.md`。
 
-## OFL 1.1 合规五条（任务书 §6.1 数据资产清单 #2）
+## OFL 1.1 合规五条
 
 1. **许可附带**：`LICENSE` 为 OFL 1.1 全文，随字体与 crate 分发；
 2. **Reserved Font Name**：原名 `Noto` 为 RFN，衍生版改名 **Prism Sans SC**

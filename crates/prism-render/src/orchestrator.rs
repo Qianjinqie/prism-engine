@@ -1,9 +1,9 @@
-//! Tile 渲染编排器（A5）。
+//! Tile 渲染编排器。
 //!
-//! 语义权威：《架构总设计》v2.4 §4.1（Orchestrator：eval(t, tile) → tile 产物
-//! → 固定序合帧 → 交付）、§4.3（tile 无关性三规则）；《强大版路线图》§2.1/§2.6
+//! 语义权威：（Orchestrator：eval(t, tile) → tile 产物
+//! → 固定序合帧 → 交付）、tile 无关性三规则；
 //! （tile 级天然并行安全区；确定性优先——本批**逐 tile 顺序求值**，并行化属
-//! 10/2 压测窗口；《算法白皮书》§26：顺序求值 = 并行拓扑的退化情形，二者为
+//! 10/2 压测窗口；：顺序求值 = 并行拓扑的退化情形，二者为
 //! 同一棵执行树的两种遍历，结果逐位一致）。
 //!
 //! # 确定性关键
@@ -11,7 +11,7 @@
 //! 划分不得影响采样流（验收关卡 4）：同像素在整幅/tile 两模式下收到完全相同
 //! 的 SampleIndex，源与效果的纯函数性保证拼接结果与整幅逐字节一致。
 //!
-//! # 归约纪律（白皮书 §26）
+//! # 归约纪律
 //! 编排全程无跨 tile 浮点归约：tile 产物经位模式拷贝（`blit_rect`）合帧，
 //! 像素之间零浮点合并——tile 级是并行安全区。
 
@@ -22,7 +22,7 @@ use crate::tile::{Tile, TileEffect, TileGrid};
 
 /// 逐像素源：全局像素坐标 + [`SampleIndex`] → RGBA（f32 场景线性域）。
 ///
-/// 纯函数契约：同 `(x, y, si)` 必同输出；一切随机经 si 哈希派生（架构 §4.4，
+/// 纯函数契约：同 `(x, y, si)` 必同输出；一切随机经 si 哈希派生（
 /// 不得私开 RNG）。坐标是**全局像素域**——tile 化只改变求值的分批，不改变
 /// 坐标与采样流。
 pub trait PixelSource {
@@ -30,7 +30,7 @@ pub trait PixelSource {
     fn eval_pixel(&self, x: u32, y: u32, si: SampleIndex) -> [f32; 4];
 }
 
-/// tile 化渲染编排器（架构 §4.1 Orchestrator 的 A5 骨架）。
+/// tile 化渲染编排器（Orchestrator 的 A5 骨架）。
 pub struct TileOrchestrator {
     /// tile 网格划分。
     pub grid: TileGrid,
@@ -39,7 +39,7 @@ pub struct TileOrchestrator {
     /// 源节点 id（SampleIndex 格锚）。
     pub node_id: u64,
     /// 全局种子（样本流哈希的种子位；与 SampleIndex 一同构成派生键，
-    /// 架构 §4.4：hash(全局种子, 节点id, 帧, pixel, 样本索引[, 维度])）。
+    /// hash(全局种子, 节点id, 帧, pixel, 样本索引[, 维度])）。
     pub global_seed: u64,
 }
 

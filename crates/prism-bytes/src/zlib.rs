@@ -5,7 +5,7 @@
 //! # 与写入侧「实现互相独立」的理由（重要，勿合并）
 //!
 //! 本模块是**读取侧**。`prism_io::exr_write::deflate_zlib` 是**写入侧**的 zlib
-//! 压缩器。二者**刻意不共用同一条代码路径**，理由是 U7 的一条教训：
+//! 压缩器。二者**刻意不共用同一条代码路径**，理由是 EXR 侧的一条教训：
 //!
 //! > EXR 侧的 zlib 容器口径（裸 DEFLATE vs zlib 流）错 3 次才由测试逮住。
 //!
@@ -163,7 +163,7 @@ pub fn decompress(data: &[u8]) -> BytesResult<Vec<u8>> {
 /// | `prism_media::inflate::zlib_decompress` | **完全不看尾部**，校验完 2 字节头就 `inflate_raw(&data[2..])` |
 ///
 /// media 侧的宽容是**其既有 API 契约的一部分**：仓库里两个 PNG 测试构造器
-/// （`prism-media/tests/b11_integration.rs` 与 `src/apng.rs` 的 `zlib_stored`）
+/// （`prism-media/tests/media_integration.rs` 与 `src/apng.rs` 的 `zlib_stored`）
 /// 造的就是**不带 Adler-32 尾**的 zlib 流，收紧尾部要求会让它们当场回归。
 ///
 /// 「迁移后行为必须与迁移前一致，不一致是回归不是改进」——所以这里保留宽容
@@ -262,7 +262,7 @@ mod tests {
     /// **不带Adler-32 尾**的 zlib 流（只有 `CMF`/`FLG` + 裸 DEFLATE）。
     ///
     /// 这正是 `prism-media` 侧两个 PNG 测试构造器
-    /// （`tests/b11_integration.rs` 与 `src/apng.rs`）造的东西，
+    /// （`tests/media_integration.rs` 与 `src/apng.rs`）造的东西，
     /// 也是旧 `prism-media::inflate::zlib_decompress` 一直在宽容接收的输入。
     fn zlib_stored_no_trailer(payload: &[u8]) -> Vec<u8> {
         let mut out = vec![0x78, 0x01];

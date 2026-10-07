@@ -1,16 +1,16 @@
 //! 全帧景深（C1）：`dof_full`——按逐像素深度 AOV 计算弥散圆（CoC），对颜色
-//! 做变半径模糊；2D 层与 3D 通道统一虚化（路线图 §3.4：2D 文字进 3D 被 DOF
+//! 做变半径模糊；2D 层与 3D 通道统一虚化（例：2D 文字进 3D 被 DOF
 //! 正确虚化；C1 行点名文件）。
 //!
-//! 语义权威：《强大版路线图》C1 行（`crates/prism-postfx/effects/dof_full.rs`
-//! 全帧 DOF）与 §3.4（DepthComposite："雾/大气/景深对 2D 元素统一作用"）；
-//! 《算法白皮书》§18（软深度合成）。
+//! 语义权威：`crates/prism-postfx/effects/dof_full.rs`
+//! 全帧 DOF"；DepthComposite："雾/大气/景深对 2D 元素统一作用"；
+//! 软深度合成。
 //!
 //! # 设计
 //!
 //! 逐像素弥散圆半径 `coc = |z_aov − focus| · max_coc / max(|focus|, ε)`
 //! —— 焦点处 0、越偏离焦点越大（**软边**，非二值）。模糊用**分离 box 近似**
-//! （半径 = 该像素 coc 取整），tap 固定升序（白皮书 §26 固定序归约）。
+//! （半径 = 该像素 coc 取整），tap 固定升序（固定序归约）。
 //! 深度 AOV 与颜色同帧：CoC 逐像素独立 → 2D/3D 内容只要带深度即被一致虚化。
 //!
 //! # 协议说明
@@ -74,7 +74,7 @@ impl FullDof {
     ///
     /// 先用**全局最大 CoC** 做一次基模糊（保证邻域覆盖），再对每个像素按其
     /// 自身 CoC 在基模糊结果上做**目标半径**的二次均值——误差有界、确定性
-    /// 良好（近似，非物理精确 bokeh；白皮书允许软边近似）。
+    /// 良好（近似，非物理精确 bokeh；允许软边近似）。
     pub fn render(&self, color: &Fbuf16F) -> Fbuf16F {
         assert_eq!(
             (color.width, color.height),

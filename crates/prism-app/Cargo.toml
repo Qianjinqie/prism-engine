@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [lib]
-# cdylib：产出 `prism_editor.wasm`（U13 交互式编辑器页面加载）。
+# cdylib：产出 `prism_editor.wasm`（交互式编辑器页面加载）。
 #
 # 为什么 editor ABI 走 prism-app 而非 prism-gpu：编辑器的增量失效依赖
 # prism-core 的子图签名树，而 prism-gpu 只依赖 prism-math，反向依赖 prism-core

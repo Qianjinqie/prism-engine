@@ -1,7 +1,7 @@
-//! QA 攻击性测试（Edward）— Phase 4 D2 wavefront vs integrator 判对（`prism-rt`）。
+//! QA 攻击性测试 — Phase 4 D2 wavefront vs integrator 判对（`prism-rt`）。
 //!
 //! # 判对命门
-//! 路线图 Phase 4 验收核心：`wavefront::render_pixel`（GPU WGSL 的 CPU 仿真基准）
+//! 验收核心：`wavefront::render_pixel`（GPU WGSL 的 CPU 仿真基准）
 //! 必须与 `integrator::render_pixel`（CpuRef）在**同场景同种子**下逐像素**逐位一致**
 //! （强于「统计 diff ≤ 阈值」）。本文件以多种场景/参数/材质攻击该契约。
 //!

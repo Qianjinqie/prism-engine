@@ -1,4 +1,4 @@
-//! audio/reactive 节点（B6 → prism-core 注册表；D-27 静态汇入制）。
+//! audio/reactive 节点（→ prism-core 注册表；D-27 静态汇入制）。
 //!
 //! 节点 = 三元组的实例形态：本文件实现 [`MathStructure`] 的两个 reactive
 //! 特解，经 `registry!`（宏展开为 `__prism_collect(reg)` 注册函数）静态汇入
@@ -9,11 +9,11 @@
 //!
 //! 走用户段 `StructureId::custom`（S13/S14 @ prism-audio）：官方段 S1–S12 是
 //! 全局单例（注册表按 id 唯一键），B6 的谱分析与 C4 的 DCT 同属 S6——
-//! 官方位留给 alias.rs（A4）统一分配，audio 节点以自定义段挂接，跨 crate
+//! 官方位留给 alias.rs 统一分配，audio 节点以自定义段挂接，跨 crate
 //! 编号天然隔离（D-23）。三问：核 = 卷积（加窗谱分析），对偶 = 时频，
 //! 格锚 = 帧号/hop/win 整数格（帧级查表零浮点漂移）。
 //!
-//! # 数据接线（架构 §4.4）
+//! # 数据接线
 //!
 //! 烘焙表由 [`crate::reactive::install_bake`] 装入 `EvalCtx.snapshots`
 //! （纯数据资产）；节点 `apply` 按当前帧查表返回 `Payload::Scalar`——

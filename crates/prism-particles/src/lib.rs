@@ -1,6 +1,6 @@
 //! `prism-particles` — B8 粒子系统（Emitter / 力场 / 点精灵渲染 / AudioReactive）。
 //!
-//! 语义权威：《强大版路线图》§399（B8 行：Emitter/力场/点精灵渲染/AudioReactive）
+//! 语义权威：B8 行：Emitter/力场/点精灵渲染/AudioReactive
 //! 与 Phase 2 验收（Cpu 可跑）、D-16（Mini Code 原则）、D-22（数学结构第一性：
 //! 粒子 = 状态纯函数 + 力场特解装配）、D-28（快照等价 / `SampleIndex` 像素域）、
 //! D-29（禁 libm：超越函数自研入 prism-math）。
@@ -8,7 +8,7 @@
 //! # 红线（贯穿全 crate）
 //!
 //! - **零第三方依赖**（铁律一）：仅 std + workspace 内 crate。
-//! - **无全局 RNG**（架构 §2.6.3）：粒子状态纯函数化——粒子 `i` 的初态由
+//! - **无全局 RNG**：粒子状态纯函数化——粒子 `i` 的初态由
 //!   `hash(seed, i)` 派生（[`emitter`]）；湍流场用 (pos, t) 哈希派生
 //!   （复用 [`prism_physics::coupling::Turbulence`]）。同种子两遍逐位一致。
 //! - **复用 B6/B7 既有实现勿重复造**：力场族复用

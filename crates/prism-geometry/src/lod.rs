@@ -1,4 +1,4 @@
-//! LOD 链（从简；路线图 B3——步进 eps 随距离放大 + displace octaves 随距离衰减）。
+//! LOD 链（从简；——步进 eps 随距离放大 + displace octaves 随距离衰减）。
 //!
 //! # 语义（从简近似）
 //!
@@ -10,7 +10,7 @@
 //!
 //! [`sphere_trace_lod`] 步数固定、全部为输入的纯函数：同输入同命中。
 //! 注意：octaves 随 t 变化时场不再是严格 Lipschitz=1（安全系数 0.9 + 命中阈值兜底，
-//! 白皮书 §7 把该近似列为 LOD 允许的误差来源）。
+//!  把该近似列为 LOD 允许的误差来源）。
 
 use crate::csg::Csg;
 use crate::sdf::{TraceHit, TraceParams, DEFAULT_DISPLACE_OCTAVES};

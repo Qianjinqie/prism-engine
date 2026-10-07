@@ -1,22 +1,22 @@
 //! 属性通道 PropertyChannel（工作流 A2）。
 //!
-//! 语义权威：《强大版路线图》v2.0 §4 Phase 1 表 A2 行、《架构总设计》v2.4
-//! §3.6 类图 `PropertyChannel`（`eval(t) → SolvedParams`）、D-7（Spring 解析
+//! 语义权威：v2.0 Phase 1 表 A2 行、
+//!  类图 `PropertyChannel`（`eval(t) → SolvedParams`）、D-7（Spring 解析
 //! 解 + 自研受限表达式求值器，纯函数契约）。
 //!
 //! **一切节点参数皆通道**：`PropertyChannel` 把"写死一个数"与"随时间变化的
 //! 曲线 / 弹簧 / 表达式 / 噪声"统一为 **f(t) 纯函数**——同 t 同值、无隐藏
-//! 状态（架构 §2.3 求值纯函数契约）。通道值经 [`sample_binding`] 解算并写
-//! 入节点 [`Params`]，这就是"属性通道喂 Params"的路径（架构 §3.1 节点三元
+//! 状态（求值纯函数契约）。通道值经 [`sample_binding`] 解算并写
+//! 入节点 [`Params`]，这就是"属性通道喂 Params"的路径（节点三元
 //! 组的特解参数位）。
 //!
-//! 各通道的数学件宿主是 `prism-anim`（track/spring/easing/expr，白皮书
-//! §11）；本文件定义通道模型、两个组合子（Remap / Loop）与求值分派。
+//! 各通道的数学件宿主是 `prism-anim`（track/spring/easing/expr）；
+//! 通道模型、两个组合子（Remap / Loop）与求值分派。
 //!
 //! # 确定性
 //! - 全部通道是 t 的纯函数：`sample` 不读全局状态、不私开 RNG；
 //! - 唯一需要上下文的是 Wiggle（噪声种子派生）：[`PropertyChannel::sample_ctx`]
-//!   把 `EvalCtx` 的 (全局种子， 节点id) 经整数哈希混入噪声种子（架构 §4.4：
+//!  把 `EvalCtx` 的 (全局种子， 节点id) 经整数哈希混入噪声种子（
 //!   hash 派生 = 唯一随机源）——同节点同帧必同值，不同节点必不同流。
 
 use prism_anim::{Expr, LoopMode, Spring, Track, Wiggle};
@@ -24,21 +24,21 @@ use prism_anim::{Expr, LoopMode, Spring, Track, Wiggle};
 use crate::node::{EvalCtx, NodeBinding, ParamValue, Params};
 
 // ---------------------------------------------------------------------------
-// 通道模型（架构 §3.6 类图 PropertyChannel）
+// 通道模型（类图 PropertyChannel）
 // ---------------------------------------------------------------------------
 
-/// 属性通道（A2 全家桶）：一切变体都是 t 的纯函数，t 单位为秒。
+/// 属性通道（全家桶）：一切变体都是 t 的纯函数，t 单位为秒。
 #[derive(Debug, Clone, PartialEq)]
 pub enum PropertyChannel {
     /// 常量通道：f(t) ≡ v。
     Const(f32),
     /// 关键帧轨道（S9 分段多项式；easing 函数表在 `prism-anim::easing`）。
     Track(Track),
-    /// 阻尼弹簧闭式解（S7 闭式线性响应；白皮书 §11：O(1) 无迭代、seek 零成本）。
+    /// 阻尼弹簧闭式解（S7 闭式线性响应；：O(1) 无迭代、seek 零成本）。
     Spring(Spring),
-    /// 受限表达式通道（本批最小算术 + 变量 t/p/w/h；完整语法随 A4 DSL 波次）。
+    /// 受限表达式通道（本批最小算术 + 变量 t/p/w/h；完整语法随 A4 DSL 落地）。
     Expr(Expr),
-    /// 噪声驱动抖动（接 `prism-noise` 的 PCG/value-noise/fbm，白皮书 §17）。
+    /// 噪声驱动抖动（接 `prism-noise` 的 PCG/value-noise/fbm）。
     Wiggle(Wiggle),
     /// 时间重映射组合子：inner 的时间轴从 `out` 区间线性映射到 `in` 区间。
     /// 线性映射保序（单调），端点严格对齐（t = out_hi 时取 inner(in_hi)）。
@@ -84,7 +84,7 @@ impl PropertyChannel {
         }
     }
 
-    /// EvalCtx 衔接入口（架构 §4.4）。与 [`Self::sample`] 的唯一差别：
+    /// EvalCtx 衔接入口。与 [`Self::sample`] 的唯一差别：
     /// Wiggle 的噪声种子由 (通道 seed, 全局种子， 节点id) 整数哈希派生——
     /// 同节点同帧必同值、不同节点不同流（防网格伪影）；其余通道是纯 f(t)，
     /// 忽略 ctx。
@@ -101,7 +101,7 @@ impl PropertyChannel {
 
 /// 线性时间重映射：把 t 从 `out` 区间映到 `in` 区间（纯函数，保序）。
 ///
-/// 退化 `out_hi == out_lo` 时恒映射到 `in_lo`——文档化行为；DSL 层（A4）将
+/// 退化 `out_hi == out_lo` 时恒映射到 `in_lo`——文档化行为；DSL 层将
 /// 以防呆规则拦截退化区间（宪章 C18 防呆规则库）。
 fn remap_time(t: f32, in_lo: f32, in_hi: f32, out_lo: f32, out_hi: f32) -> f32 {
     let span = out_hi - out_lo;
@@ -111,7 +111,7 @@ fn remap_time(t: f32, in_lo: f32, in_hi: f32, out_lo: f32, out_hi: f32) -> f32 {
     in_lo + (t - out_lo) / span * (in_hi - in_lo)
 }
 
-/// 通道 → Params 的喂给路径（架构 §3.1）：按 t 解算绑定的通道，把结果以
+/// 通道 → Params 的喂给路径：按 t 解算绑定的通道，把结果以
 /// `ParamValue::F32` 写入 `params[param]`。
 ///
 /// 名字引用（`node.rs::ChannelRef`）到通道实例的解析属 A4（anim/expr 块
@@ -243,7 +243,7 @@ mod tests {
         assert!((direct.sample(1.0) - 10.0).abs() < 1e-6, "Direct 末点取末帧");
         assert!((direct.sample(2.5) - 10.0).abs() < 1e-6, "Direct 超时钳末帧");
 
-        // Loop：周期回绕；t=duration 整回绕到首帧（白皮书 §19 u mod 1）。
+        // Loop：周期回绕；t=duration 整回绕到首帧（u mod 1）。
         assert_eq!(loopy.sample(0.0), 0.0);
         assert!((loopy.sample(0.5) - 5.0).abs() < 1e-6);
         assert_eq!(loopy.sample(1.0), 0.0, "Loop 在 t=duration 回绕到首帧");

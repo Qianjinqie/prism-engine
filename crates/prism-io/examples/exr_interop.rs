@@ -256,7 +256,7 @@ fn cmd_gen(args: &[String]) -> Result<(), String> {
         .iter()
         .map(|p| (p.name.as_str(), p.pixel_type))
         .collect();
-    // W14 路2：tiled 与 scanline 走**同一个**头部构造 + 同一个压缩参数，
+    // tiled 与 scanline 走**同一个**头部构造 + 同一个压缩参数，
     // 只切换布局入口。tile 尺寸固定 32×32 —— 与 C++ harness 的
     // `hdr.setTileDescription(TileDescription(32, 32, ONE_LEVEL))` 一致，
     // 否则两侧的块边界不同，方向 C 的「同一源数据」前提会被破坏。

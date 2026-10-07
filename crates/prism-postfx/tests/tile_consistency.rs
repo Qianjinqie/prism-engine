@@ -1,5 +1,5 @@
-//! 验收关卡 1（B4）：tile 化渲染与整幅渲染**逐字节一致**（复用 A5
-//! `TileOrchestrator`，MD5 位模式指纹判定，RFC 1321 官方向量锚定）。
+//! 验收关卡 1：tile 化渲染与整幅渲染**逐字节一致**（复用
+//! `TileOrchestrator`；MD5 位模式指纹判定，RFC 1321 官方向量锚定）。
 //!
 //! # 验证集（可平移不变 = halo 型协议效果）
 //! blur / bloom / ca / sharpen / denoise(à-trous) / warp / grade / lut3d
@@ -8,8 +8,8 @@
 //!
 //! # 排除集（位置键控效果——协议缺口，非缺陷）
 //! grain / glitch / vignette / dissolve / plasma / mandelbrot_bg 的图案
-//! 锚定在**窗口局部坐标**；`TileEffect::eval_window` 不携带全局原点（A5
-//! trait 只读对接，B4 不得私改协议），其整幅求值为规范语义（post 链 CPU
+//! 锚定在**窗口局部坐标**；`TileEffect::eval_window` 不携带全局原点（
+//! trait 只读对接，不得私改协议），其整幅求值为规范语义（post 链 CPU
 //! 参考路径）。tile 一致性承载需协议增补全局原点上下文——上报完工汇报。
 
 use prism_core::SampleIndex;
@@ -206,7 +206,7 @@ fn checkpoint1_postfx_tiled_16x9_equals_fullframe_bit_identical() {
 
 #[test]
 fn checkpoint1_postfx_effect_chain_tiled_equals_fullframe() {
-    // 效果链（路线图 §2.2：post { chain [...] } 任意组合）：总 halo =
+    // 效果链（例：post { chain [...] } 任意组合）：总 halo =
     // 各级申报之和，逐级归纳保证核心区邻域读取与整幅一致。
     let grid = TileGrid::counts(192, 108, 16, 9);
     let orch = TileOrchestrator::new(grid);

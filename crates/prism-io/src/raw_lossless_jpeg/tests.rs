@@ -181,7 +181,7 @@ fn predictor_matches_table_h1_expressions() {
 
 #[test]
 fn predictor_shift_is_floor_not_trunc() {
-    // **这是任务书要找的「差 1 的坑」的真身。**
+    // **这是「差 1 的坑」的真身。**
     //
     // T.81 Table H.1 注 a) + 正文：「the divide by 2 in the prediction
     // selections 5 and 6 ... is done by an arithmetic-right-shift」。

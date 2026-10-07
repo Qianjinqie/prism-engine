@@ -123,7 +123,7 @@ export function runCell(tools, workDir, s) {
   }
 
   // ================= 方向 B / C：我们写 → 官方读 =================
-  // W14 路2：`exr_write::write_tiled_image` 已实装 flat tiled 写出（十种压缩、
+  // `exr_write::write_tiled_image` 已实装 flat tiled 写出（十种压缩、
   // ONE_LEVEL、边缘 tile 按裁剪尺寸），故 tiled 与 scanline **走同一条真跑路径**，
   // 不再有 B/C 的显式 SKIP。Rust harness 的 `gen` 按 spec 的 layout 字段切换入口，
   // tile 尺寸与 C++ 侧一致（32×32），保证两侧块边界相同。
@@ -181,7 +181,7 @@ export function runCell(tools, workDir, s) {
     const raw = rawPayloadBytes(s);
     const COMPRESSIBLE = new Set(["const", "gradient"]);
     if (s.layout === "tile") {
-      // 【W14 路2 的诚实边界】tiled 的官方文件**已存在**（方向 A 就写出来了），
+      // 【tiled 实装的诚实边界】tiled 的官方文件**已存在**（方向 A 就写出来了），
       // 但方向 D 的阈值 0.5 是**按 scanline 的实测分布标定**的
       // （const ≤ 0.094 / gradient ≤ 0.328）。tiled 的实测分布不同：
       // const ≤ 0.154、**gradient ≤ 0.531**（`dwab-half-tile-1-gradient`），

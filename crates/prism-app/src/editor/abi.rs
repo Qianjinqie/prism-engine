@@ -1,4 +1,4 @@
-//! U13 编辑器 wasm C-ABI（手写，零第三方 crate）。
+//! 编辑器 wasm C-ABI（手写，零第三方 crate）。
 //!
 //! # 为什么 ABI 在 prism-app 而不是 prism-gpu
 //!
@@ -7,7 +7,7 @@
 //! `cache_key`），而 `prism-gpu` 只依赖 `prism-math`——反向依赖 `prism-core`
 //! 会成环（`prism-gpu/src/scan.rs` 模块头明确禁止："故此处**不得反向依赖
 //! prism-core**（避免循环依赖）"）。故本 ABI 落在 `prism-app`（已依赖
-//! `prism-core`），**对 `abi.rs` 零改动**，也顺带避开与并行批次的编辑冲突。
+//! `prism-core`），**对 `abi.rs` 零改动**，也顺带避开与并行轮次的编辑冲突。
 //!
 //! # 与既有 ABI 同一套约定（照搬 `prism-gpu/src/web/abi.rs` 的哲学）
 //!

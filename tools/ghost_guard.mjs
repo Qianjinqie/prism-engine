@@ -2,13 +2,11 @@
 // ===========================================================================
 // ghost_guard.mjs — 幽灵写入（Ghost Write）防御检查器
 //
-// 背景（2026-10-06 真实事故）：`crates/prism-io/src/raw.rs` 在 17:31 与 17:58
-// 两次被**无人运行的写入**注入 254 行代码，触发 `error[E0592]: duplicate
-// definitions`，prism-io 编译不通过；18:02 又"自愈"回良好态。来源未定位
-// （无残留 Agent 进程，疑为客户端网络中断后重试重放写入）。
+// 背景：开发过程中出现过源文件被非预期写入污染、随后又"自愈"的情况。为了能在
+// 分钟级定位这类问题，本工具把它的形态固化成可执行的判据。
 //
 // 已查明的 forensic 指纹（本工具的四项判据都源于此，不是猜的）：
-//   1. 破损态 8479 行 vs 良好态 8225 行，diff = **多 254 行、删 0 行**
+//   1. 破损态比良好态多 254 行、删 0 行
 //      ⇒ 破损态是良好态的**严格超集**（这是最有效的指纹）。
 //   2. 注入块首行是**无缩进的 `///`** ⇒ 截断写入指纹。
 //   3. 注入内容是旧版重复实现 ⇒ 同名函数重复定义（E0592）。
@@ -47,11 +45,22 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const BASELINE_FILE = path.join(REPO_ROOT, 'tools', 'ghost_guard_baseline.json');
 const SELF_TEST_DIR_PREFIX = 'ghost-guard-selftest-';
 
+// 源码根目录：仓库布局是 crates/，单文件源码分发包布局是 src/。
+// BASELINE.files[].path 记的是仓库布局的路径，这里按实际存在的目录重映射。
+const SRC_ROOT = ['crates', 'src'].find((d) =>
+  existsSync(path.join(REPO_ROOT, d)),
+) ?? 'crates';
+
+/** 把基线里记录的仓库布局路径映射到当前布局。 */
+function localize(rel) {
+  return rel.startsWith('crates/') ? SRC_ROOT + rel.slice('crates'.length) : rel;
+}
+
 // ---------------------------------------------------------------------------
-// 基线（2026-10-06 主理人实测 + 本路复核，三文件的 md5 与任务书逐一吻合）
+// 基线（2026-10-06 实测 + 逐项复核，三文件的 md5 与基线逐一吻合）
 // ---------------------------------------------------------------------------
 const BASELINE = {
-  // 生成时间：主理人实测基线（幽灵写入事故处置完成、精确还原之后）。
+  // 生成时间：基线快照的建立时刻（取自一次已确认的精确还原之后）。
   generated_at: '2026-10-06T18:02:00+08:00',
   //基线快照存放在 tools/ghost_baseline/<slug>.txt（逐字节副本），
   // 用于 G2 的行级 LCS 判定（只靠 md5 无法区分"增行"与"删行"）。
@@ -216,10 +225,10 @@ function checkDuplicateDefinitions(lines) {
  * `A B C` → `C A B` 会误判成超集。保序的 LCS 才能刻画"截断注入只追加不改写"。
  *
  * ⚠️ **判红 ≠ 一定是幽灵写入**（工具输出里也如实这么说）：任何**合法**的纯追加
- * 改动同样会命中本判据——包括并发路上正在进行的正常开发（本仓 2026-10-06
- * 三路并发时，`exr_write.rs` 就因路 2 的合法追加而判红）。所以 G2 是
+ * 改动同样会命中本判据——包括并发开发时正在进行的正常改动（本仓 2026-10-06
+ * 多路并发时，`exr_write.rs` 就因一条合法追加而判红）。所以 G2 是
  * **"形状告警"，不是"判决"**。处置分岔：确认是本路改动 → `--bless` 更新基线；
- * 确认不是 → 停手上报（施工手册 §5.5），不许顺手"修好"。
+ * 确认不是 → 停手上报，不许顺手"修好"。
  * 真正的判决由 G1（重复定义）与 G4（编译）给出：幽灵写入必然同时命中 G1 或
  * G4，而合法追加不会。
  *
@@ -267,7 +276,7 @@ function checkStrictSuperset(baseLines, curLines) {
  *
  * 为什么这个判据能抓住今天的注入：注入块的**首行是顶格 `///`**，而它被插在
  * 原有缩进代码块（`}`）的紧后面——正是"上下都不属于"的错位形状。用真实备份
- * 复刻 17:58 破损态，本判据在 **行 3357** 命中，与事故位置一致。
+ * 复刻已知破损态，本判据在 **行 3357** 命中——该位置是注入块的起点。
  *
  * @param {string[]} lines
  * @returns {{line: number, prevLine: number, text: string, prev: string}[]}
@@ -323,9 +332,29 @@ function checkCompiles(extraArgs = []) {
 /** 基线快照目录（逐字节副本，供 G2 做行级 LCS）。 */
 function baselineDir() { return path.join(REPO_ROOT, 'tools', 'ghost_baseline'); }
 
-/** 基线条目的快照文件名：`crates/prism-io/src/raw.rs` → `prism-io__src__raw.rs.txt`。 */
+/**
+ * 基线条目的快照文件名：`crates/prism-io/src/raw.rs` → `crates__prism-io__src__raw.rs.txt`。
+ * 快照文件按**仓库布局**命名并随包分发，所以包内（src/ 布局）查找时要先剥掉
+ * 当前布局前缀再退回仓库布局名，才能找到同一份快照。
+ */
 function snapshotName(relPath) {
   return `${relPath.replace(/[\\/]/g, '__')}.txt`;
+}
+
+/** 在基线目录里找 relPath 对应的快照，兼容仓库布局（crates__）与包内布局（src__）。 */
+function resolveSnapshot(relPath) {
+  const dir = baselineDir();
+  const direct = path.join(dir, snapshotName(relPath));
+  if (existsSync(direct)) return direct;
+  // 快照随包分发时按仓库布局命名，这里试所有可能的源码根前缀。
+  const segs = relPath.split(/[\\/]/).filter(Boolean);
+  const tails = segs.slice(1).join('__');
+  const roots = ['crates', 'src'];
+  for (const root of roots) {
+    const alt = path.join(dir, `${root}__${tails}.txt`);
+    if (existsSync(alt)) return alt;
+  }
+  return null;
 }
 
 function readBaseline() {
@@ -343,8 +372,8 @@ function readBaseline() {
 
 /** 取某文件的基线行；无快照时返回 null（G2 降级为不可判定，如实报告而非假装通过）。 */
 function baselineLines(relPath) {
-  const snap = path.join(baselineDir(), snapshotName(relPath));
-  if (!existsSync(snap)) return null;
+  const snap = resolveSnapshot(relPath);
+  if (!snap) return null;
   const text = readFileSync(snap, 'utf8');
   return text.split('\n');
 }
@@ -383,8 +412,8 @@ function inspectFile(absPath, base) {
   } else {
     let baseText = base.text;
     if (baseText === undefined) {
-      const snap = path.join(baselineDir(), snapshotName(rel));
-      baseText = existsSync(snap) ? readFileSync(snap, 'utf8') : null;
+      const snap = resolveSnapshot(rel);
+      baseText = snap ? readFileSync(snap, 'utf8') : null;
     }
     if (baseText === null) {
       notes.push(`缺少基线快照 ${snapshotName(rel)}：G2 不可判定`);
@@ -410,11 +439,11 @@ function runGuards(opts = {}) {
   const withCompile = opts.withCompile !== false;
   const baseline = readBaseline();
   const targets = opts.files && opts.files.length
-    ? opts.files
-    : baseline.files.map((f) => f.path);
+    ? opts.files.map(localize)
+    : baseline.files.map((f) => localize(f.path));
 
   console.log(bold('幽灵写入防御检查（ghost_guard）'));
-  console.log(dim(`仓库：${REPO_ROOT}`));
+  console.log(dim(`仓库：${REPO_ROOT}　源码根：${SRC_ROOT}/`));
   console.log(dim(`基线：${baseline.generated_at || '内置'}　目标文件 ${targets.length} 个`));
   console.log('');
 
@@ -427,7 +456,7 @@ function runGuards(opts = {}) {
       hasRed = true;
       continue;
     }
-    const base = baseline.files.find((f) => f.path === rel) || null;
+    const base = baseline.files.find((f) => localize(f.path) === rel) || null;
     const r = inspectFile(abs, base);
 
     // G1
@@ -454,7 +483,7 @@ function runGuards(opts = {}) {
         console.log(dim('      ⚠ G2 只证明"形状像"，不能单独断定是幽灵写入：**任何**纯追加改动都会命中它，'
           + '包括合法的并发工作。'));
         console.log(dim('        确认是本人/本路改动 → node tools/ghost_guard.mjs --bless ' + rel));
-        console.log(dim('        确认不是      → 立即停手上报（见施工手册 §5.5），不许顺手修好'));
+        console.log(dim('        确认不是      → 立即停手上报，不许顺手修好'));
       }
     } else if (r.g2) {
       console.log(`${yellow('?')} G2 严格超集　${rel}　${yellow('不可判定（缺基线快照）')}`);
@@ -531,9 +560,9 @@ pub fn helper(x: u32) -> u32 {
 `;
 
 /**
- * 生成一个「破损态」fixture——**复刻今天 17:58 的真实形状**。
+ * 生成一个「破损态」fixture——**复刻已取证的破损形状**。
  *
- * 取证细节（决定了 fixture 怎么写，不能随便编）：事故报的是 `error[E0592]`
+ * 取证细节（决定了 fixture 怎么写，不能随便编）：当时的报错是 `error[E0592]`
  * duplicate definitions，而 E0592 属于**名字解析**阶段——rustc 能报出它，说明
  * 破损文件**语法上是解析通过的**，括号是配平的。因此注入的 254 行不可能是一个
  * 带 `impl X {` 头的整块（那会是解析错误），而是**直接躺在既有 impl 内部的
@@ -546,13 +575,13 @@ pub fn helper(x: u32) -> u32 {
  *   - 方法名与既有方法重复（同一 impl 作用域）⇒ G1 必红。
  *
  * @param {string} clean 良好态源码
- * @param {number} blockLines 注入块行数（复刻事故的 254 行量级）
+ * @param {number} blockLines 注入块行数（复刻取证的 254 行量级）
  * @returns {string}
  */
 function makeBrokenFixture(clean, blockLines = 254) {
   const cl = clean.split('\n');
   // 注入点：紧跟 impl 内一条**缩进代码行**（`        Probe { v }`）之后——
-  // 与真实事故同形：注入块首行的顶格 `///` 紧跟在缩进代码行后面（G3 命中）。
+  // 与取证形状一致：注入块首行的顶格 `///` 紧跟在缩进代码行后面（G3 命中）。
   let at = cl.findIndex((l) => /^ {8}\S/.test(l));
   if (at === -1) at = cl.findIndex((l) => /^ {4}(?:pub )?fn /.test(l));
   if (at === -1) at = cl.length;
@@ -659,18 +688,18 @@ function runSelfTest() {
       console.log(red('✗') + ` G3 误报impl 内正常缩进文档块 ${ri.g3.length} 处`);
     }
 
-    // ---- 断言 5：真实事故复刻（用仓库里的 raw.rs 基线，不造假数据）----
+    // ---- 断言 5：破损态复刻（用仓库里的 raw.rs 基线，不造假数据）----
     //这是最强的一条：直接拿 tools/ghost_baseline/ 里的真实基线快照，
-    //按事故形状（行 3357 处插入 254 行、块首顶格 `///`、含重复定义）复刻破损态，
+    // 按取证形状（行 3357 处插入 254 行、块首顶格 `///`、含重复定义）复刻破损态，
     // 要求 G1/G2/G3 全部判红。若判绿，说明检测器对**真实文件**失效。
-    const realBase = path.join(baselineDir(), snapshotName('crates/prism-io/src/raw.rs'));
+    const realBase = resolveSnapshot('crates/prism-io/src/raw.rs');
     if (existsSync(realBase)) {
       const goodText = readFileSync(realBase, 'utf8');
       const gLines = toLines(goodText);
       const inj = [];
       inj.push('/// 旧版 `read_raw_samples_deflate` / `deflate_predictor` 半截实现。');
       inj.push('///');
-      inj.push('/// 复刻 2026-10-06 17:58 事故：破损态 = 良好态的严格超集（+254 / -0）。');
+      inj.push('/// 复刻取证样本：破损态 = 良好态的严格超集（+254 / -0）。');
       let f = 0;
       while (inj.length < 254 - 10) { inj.push(`    /// 半截重复实现的填充段 ${f}。`); f += 1; }
       // 与既有方法同名（同属impl DngFile 作用域 ⇒ G1 命中）
@@ -683,7 +712,7 @@ function runSelfTest() {
       inj.push('    pub fn slice_compressed(&self) -> &[u8] {');
       inj.push('        &[]');
       inj.push('    }');
-      // 注入点：真实事故位置行 3357（该行原本是缩进的 `///` 文档行）
+      // 注入点：取证样本的起点行 3357（该行原本是缩进的 `///` 文档行）
       const brokenReal = [...gLines.slice(0, 3356), ...inj, ...gLines.slice(3356)].join('\n');
       const realPath = path.join(dir, 'raw_broken.rs');
       writeFileSync(realPath, brokenReal);
@@ -696,17 +725,17 @@ function runSelfTest() {
       const added = rr.g2 ? rr.g2.added : -1;
       const removed = rr.g2 ? rr.g2.removed : -1;
       if (rrG1 && rrG2 && rrG3) {
-        console.log(green('✓') + ' 真实事故复刻判红（raw.rs 基线 + 254 行注入）：'
+        console.log(green('✓') + ' 破损态复刻判红（raw.rs 基线 + 254 行注入）：'
           + `G1=${rrG1 ? '红' : '绿'} G2=${rrG2 ? '红' : '绿'} G3=${rrG3 ? '红' : '绿'}`);
-        console.log(dim(`     与 17:58 事故一致：${gLines.length} → ${toLines(brokenReal).length} 行，`
+        console.log(dim(`     与取证样本一致：${gLines.length} → ${toLines(brokenReal).length} 行，`
           + `diff = +${added} / -${removed}（零删除 ⇒ 严格超集）`));
-        console.log(dim(`     G3 顶格文档块命中行：${rr.g3.slice(0, 3).map((h) => h.line).join(', ')}（事故位置 3357）`));
+        console.log(dim(`     G3 顶格文档块命中行：${rr.g3.slice(0, 3).map((h) => h.line).join(', ')}（注入起点 3357）`));
       } else {
         failures += 1;
-        console.log(red('✗') + ` 真实事故复刻 **未**判红：G1=${rrG1} G2=${rrG2} G3=${rrG3}`);
+        console.log(red('✗') + ` 破损态复刻 **未**判红：G1=${rrG1} G2=${rrG2} G3=${rrG3}`);
       }
     } else {
-      console.log(yellow('?') + ' 跳过真实事故复刻：未找到 raw.rs 基线快照'
+      console.log(yellow('?') + ' 跳过破损态复刻：未找到 raw.rs 基线快照'
         + dim('（先跑 node tools/ghost_guard.mjs --bless crates/prism-io/src/raw.rs）'));
     }
 
@@ -732,7 +761,8 @@ function runSelfTest() {
 function bless(relPaths) {
   mkdirSync(baselineDir(), { recursive: true });
   const baseline = readBaseline();
-  for (const rel of relPaths) {
+  for (const relIn of relPaths) {
+    const rel = localize(relIn);
     const abs = path.join(REPO_ROOT, rel);
     if (!existsSync(abs)) { console.log(red(`✗ ${rel} 不存在`)); continue; }
     const src = readFileSync(abs);

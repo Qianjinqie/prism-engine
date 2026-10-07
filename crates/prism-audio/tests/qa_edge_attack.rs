@@ -1,4 +1,4 @@
-//! prism-audio 边缘攻击测试（W5-B6 QA）：FFT / WAV / mixer / buffer / det 的
+//! prism-audio 边缘攻击测试（QA）：FFT / WAV / mixer / buffer / det 的
 //! 边界、退化、确定性与能量守恒攻击。
 //!
 //! 每个断言都在"若失败表示何种缺陷"的口径下撰写（不是复述既有测试正条）。

@@ -1,4 +1,4 @@
-//! 物理建模合成（B12）：Karplus-Strong 弦 + 模态打击（modal synthesis）。
+//! 物理建模合成：Karplus-Strong 弦 + 模态打击（modal synthesis）。
 //!
 //! # Karplus-Strong 弦
 //!
@@ -10,7 +10,7 @@
 //! ```
 //!
 //! 为满足确定性（无全局 RNG），激励取**确定性伪随机**：`prism-noise` PCG 整数
-//! 哈希按 `hash(seed, i)` 派生（架构 §4.4）。默认激励用理想冲激（起播即全谐波）。
+//! 哈希按 `hash(seed, i)` 派生。默认激励用理想冲激（起播即全谐波）。
 //!
 //! # 模态打击
 //!

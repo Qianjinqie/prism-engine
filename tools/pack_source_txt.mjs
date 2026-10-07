@@ -7,9 +7,11 @@
 //   2. 内嵌 UNPACK SCRIPT BEGIN/END 之间的可用 Node 脚本（零依赖、Node 18+）
 //   3. 后接合并内容，每个文件以 === FILE: 路径 === 分隔
 //
-// 打包范围（主理人已确认）：
-//   ✅ crates/** docs/** .github/workflows/** tools/** examples/**
-//      根文件：Cargo.toml / Cargo.lock / .gitignore / package.json / package-lock.json
+// 打包范围（分发包 = 极简三目录 + 构建必需件）：
+//   ✅ crates/（→ src/）· docs/合规/（→ Compliance/）· docs/开发者指南.md ·
+//      tools/ · .github/ · .cargo/ · examples/ · Cargo.toml · Cargo.lock
+//   ❌ 不打包：docs/设计/（设计权威留仓库）· package.json · .gitignore
+//      （examples/ 必须带：prism-dsl 的测试用 include_str! 读它，缺了编不过）
 //   ❌ 排除：target/ node_modules/ *.bak dist/ .codebuddy/ 及任何中间产物
 //
 // 用法：node tools/pack_source_txt.mjs [--dry-run]
@@ -27,16 +29,61 @@ const PKG_NAME = 'prism-engine-v1.0-source.txt';
 
 // -----------------------------------------------------------------------------
 // 打包规则
+//
+// 分发包结构（极简三目录 + 构建必需件）：
+//   src/               ← 由 crates/ 重组
+//   Compliance/        ← 由 docs/合规/ 重组
+//   开发者指南.md       ← 由 docs/开发者指南.md 重组
+//   tools/             ← 门禁脚本
+//   .github/workflows/ ← CI 配置
+//   examples/           ← prism-dsl 测试用 include_str! 读取，缺了测试编译不过
+//   Cargo.toml / Cargo.lock / .cargo/config.toml ← 构建必需件
+//
+// 不打包：docs/设计/（设计权威，留在仓库，不进分发包）、
+//         package.json（tools 全用 node 内建，无 npm 依赖）、.gitignore。
 // -----------------------------------------------------------------------------
-const INCLUDE_ROOTS = ['crates', 'docs', 'tools', 'examples', '.github', '.cargo'];
-const INCLUDE_FILES = ['Cargo.toml', 'Cargo.lock', '.gitignore', 'package.json', 'package-lock.json'];
+const INCLUDE_ROOTS = ['crates', 'docs/合规', 'tools', '.github', '.cargo', 'examples'];
+const INCLUDE_FILES = ['Cargo.toml', 'Cargo.lock', 'docs/开发者指南.md'];
+
+/**
+ * 包内路径重映射：仓库路径 → 分发包路径。
+ * 只改**包内**的呈现，仓库目录结构保持原样（crates/ 不动）。
+ */
+function remap(rel) {
+  if (rel === 'docs/开发者指南.md') return '开发者指南.md';
+  if (rel.startsWith('docs/合规/')) return rel.slice('docs/合规/'.length).replace(/^/, 'Compliance/');
+  if (rel === 'docs/合规') return 'Compliance';
+  if (rel.startsWith('crates/')) return 'src/' + rel.slice('crates/'.length);
+  return rel;
+}
+
+/** 包内内容改写：仅对特定文件做精确替换（仓库原文件不动） */
+function rewriteContent(rel, text) {
+  // 根 Cargo.toml：workspace members 指向 src/*
+  if (rel === 'Cargo.toml') {
+    return text.replace(/members\s*=\s*\["crates\/\*"\]/, 'members = ["src/*"]');
+  }
+  // 源码里的路径注释与 doc 链接：crates/xxx → src/xxx（包内不存在 crates/）。
+  // docs/合规/ → Compliance/；docs/开发者指南.md → 开发者指南.md。
+  // 只改**路径字面量**，不碰 crates/ 目录名在别处的用法。
+  if (rel.startsWith('crates/') && /\.(rs|wgsl|sh|mjs|js|md|html|json|toml|cpp|h)$/i.test(rel)) {
+    return text
+      .replace(/\bdocs\/合规\//g, 'Compliance/')
+      .replace(/\bdocs\/开发者指南\.md\b/g, '开发者指南.md')
+      //带路径的：crates/xxx → src/xxx
+      .replace(/\bcrates\/(?=[A-Za-z0-9_.-])/g, 'src/')
+      // 光目录名（指源码根）：`crates/` → `src/`
+      .replace(/(?<=`|"|'|\s|^)crates\/(?=[`"')\s，。；、）)]|$)/g, 'src/');
+  }
+  return text;
+}
 
 /** 硬排除：目录名（任意层级） */
 const EXCLUDE_DIRS = new Set([
   'target', // 13G 构建产物
   'node_modules', // 19M 第三方依赖
   'dist', // 分发包自身（自引用）
-  '.codebuddy', // 内部任务书
+  '.codebuddy', // 内部工作区
   '.git',
   'backups', // tools/backups 下的 .bak 备份
 ]);
@@ -99,7 +146,9 @@ function collect() {
   for (const root of INCLUDE_ROOTS) {
     const abs = path.join(REPO, root);
     if (!fs.existsSync(abs)) continue;
-    walk(abs, files);
+    const st = fs.statSync(abs);
+    if (st.isDirectory()) walk(abs, files);
+    else files.push(root); // 单文件根
   }
   // 排序：保证同样输入 → 逐字节同样的输出（确定性打包）
   return files.sort((a, b) => a.localeCompare(b, 'en'));
@@ -192,15 +241,23 @@ const header = [
   '3. 运行: node unpack.cjs',
   '   完成后在当前目录得到完整目录树（需 Node 18+）',
   '',
+  '【分发包结构】',
+  '   src/                源码（26 个 crate）',
+  '   Compliance/         合规声明（零依赖核验 / 第三方声明 / 资产登记）',
+  '   开发者指南.md        开发者文档（自包含：上手 / 架构 / 数学内核 / 门禁 / 扩展）',
+  '   tools/              门禁脚本',
+  '   .github/workflows/  CI 配置',
+  '   Cargo.toml / Cargo.lock / .cargo/  构建必需件',
+  '',
   '【装依赖与跑测试】（还原之后）',
-  '   rustup target add wasm32-unknown-unknown   # wasm 目标（可选，手机测试链路 D-14 用）',
-  '   cargo test -p prism-core --release        # 单 crate 冒烟：111 用例',
+  '   rustup target add wasm32-unknown-unknown   # wasm 目标（可选，手机端验证链路用）',
+  '   cargo test -p prism-core --release        # 单 crate 冒烟',
   '   cargo xtest                               # 全仓：= cargo test --workspace --release',
   '   node tools/compliance_check.mjs           # 合规自检（必须 exit 0）',
   '   node tools/compliance_check.mjs --self-test  # 反向自证：必须判红',
   '',
   '【不需要安装】npm install / pip / ffmpeg / OpenEXR —— 本项目零第三方代码依赖。',
-  '   字体资产（OFL 1.1）已随包分发，见 docs/合规/assets/资产登记.md。',
+  '   字体资产（OFL 1.1）已随包分发，见 Compliance/assets/资产登记.md。',
   '',
   'UNPACK SCRIPT BEGIN',
   UNPACK_SCRIPT,
@@ -217,7 +274,8 @@ for (const f of files) {
   const raw = fs.readFileSync(path.join(REPO, f));
   const binary = isBinary(raw);
   if (binary) binCount++;
-  chunks.push(`${SEP}\n=== FILE: ${f} ===\n`);
+  const dest = remap(f);
+  chunks.push(`${SEP}\n=== FILE: ${dest} ===\n`);
   if (binary) {
     //二进制：整块base64 写成一行，行数恒为 1。
     chunks.push('=== BASE64 ===\n');
@@ -225,7 +283,8 @@ for (const f of files) {
     chunks.push(raw.toString('base64'));
     chunks.push('\n');
   } else {
-    const body = raw.toString('utf-8');
+    // 内容改写仅作用于包内（如根 Cargo.toml 的 members 指向 src/*）
+    const body = rewriteContent(f, raw.toString('utf-8'));
     // 末尾无换行的文件打 NOEOL 标记，还原时才能精确复原。
     const hasEol = body.endsWith('\n');
     if (!hasEol) { noEolCount++; chunks.push('=== NOEOL ===\n'); }

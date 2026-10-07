@@ -1,5 +1,5 @@
 //!include rt_common.wgsl
-// prism-rt 场景访问层（D2）——storage buffer 布局 + 材质/灯光/求交/可见性桩。
+// prism-rt 场景访问层 —— storage buffer 布局 + 材质/灯光/求交/可见性桩。
 //
 // # 为什么需要本文件
 // `rt_shade.wgsl`（BSDF/NEE）与 `rt_wavefront.wgsl`（队列四阶段）都调用

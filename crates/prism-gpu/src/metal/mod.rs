@@ -24,7 +24,7 @@
 //!
 //! # MSL「双份源」组织约定
 //!
-//! 路线图 Phase 4 定案：*Metal 侧 MSL 手写双份源*（Vulkan 侧走自研 SPIR-V
+//! 定案：*Metal 侧 MSL 手写双份源*（Vulkan 侧走自研 SPIR-V
 //! 发射器；Metal 侧不走发射器，直接手写 MSL）。约定见 [`msl`] 子模块：
 //!
 //! * **目录**：`crates/prism-gpu/src/metal/msl/`，与 WGSL 源

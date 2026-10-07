@@ -1,15 +1,15 @@
 //! ACES 输出变换拟合（RRT + ODT）与 ACEScg 工作空间对接。
 //!
-//! 语义权威：《算法白皮书》§13（ACES 输出变换拟合——候选对比表选定
+//! 语义权威：（ACES 输出变换拟合——候选对比表选定
 //! **分段拟合**为默认档、Narkowicz 单曲线为 `aces_fast` 风格档；"两档并存
 //! （准确档默认 + 风格档可选）"；管线顺序"线性域白平衡/曝光 → AP1→输出色域
-//! 3×3 → ODT 拟合 → OETF"）；《强大版路线图》§3.5（ACES 全流程）、C2 行、
+//! 3×3 → ODT 拟合 → OETF"）；ACES 全流程、C2 行、
 //! D-29（禁 libm）、D-16（Mini Code）。
 //!
 //! # 两档
 //! - [`aces_fitted`]（**准确档 / 默认**）：Stephen Hill 官方拟合——ACEScg
 //!   (AP1) → sRGB 输入矩阵 → `RRTAndODTFit` 有理函数 → sRGB 输出矩阵。
-//!   与公开参考值对拍误差典型 ~1e-3（验收线 ±0.01，白皮书 §13）；
+//!  与公开参考值对拍误差典型 ~1e-3（验收线 ±0.01）；
 //! - [`aces_fast`]（**风格档**）：Narkowicz 单曲线 `(x(a·x+b))/(x(c·x+d)+e)`
 //!   ——草稿迭代预设，[`crate::aces::AcesFit`] 选择档位。
 //!
@@ -20,7 +20,7 @@
 
 use crate::colorspace::{mat3_apply, ACESCG_TO_SRGB, SRGB_TO_ACESCG};
 
-/// ACES 输出变换档位（§13 两档并存）。
+/// ACES 输出变换档位（两档并存）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcesFit {
     /// 准确档：Stephen Hill RRT+ODT 有理函数拟合（默认）。
@@ -104,14 +104,14 @@ impl AcesOutput {
 
 // 说明：ACEScg 工作空间转换（线性 sRGB ↔ ACEScg 矩阵）落在
 // `crate::colorspace`（`SRGB_TO_ACESCG`/`ACESCG_TO_SRGB`/`TransformChain`），
-// 与 §2.2 线性管线对接；本件引用之（Import Before Use）。
+// 与线性管线对接；本件引用之（Import Before Use）。
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::colorspace::{acescg_to_srgb, srgb_to_acescg};
 
-    /// ACES 准确档对拍（公开参考值锚点，误差 < 0.01，路线图 Phase 3 验收）。
+    /// ACES 准确档对拍（公开参考值锚点，误差 < 0.01，验收）。
     ///
     /// 参考值来自 Stephen Hill 官方拟合在代表性样本上的期望输出（与
     /// `ACESFitted` 参考实现比对）。归一化线性 sRGB 输入。

@@ -1,7 +1,7 @@
-//! U11-2：MaterialX `.mtlx`（XML）解析 → 特解参数包（D-23 三元组）编译。
+//! MaterialX `.mtlx`（XML）解析 → 特解参数包（D-23 三元组）编译。
 //!
-//! 语义权威：《差距账本》U11（"无 MaterialX/OSL 材质互换"）、
-//! 《架构总设计》§2.6 D-23（自定义四级光谱之**特解级**：结构位 + 特解参数位 +
+//! 语义权威：的分层约定（"无 MaterialX/OSL 材质互换"）、
+//!  D-23（自定义四级光谱之**特解级**：结构位 + 特解参数位 +
 //! 组合位 = 三元组）、宪章 C18（错误三段式 + 必含建议段）、
 //! C20（缺定义即明确报错，绝不静默降级）、C17（全链路确定性）、
 //! D-16（Mini Code）、D-29（确定性数学件）。
@@ -1597,7 +1597,7 @@ mod tests {
 
     #[test]
     fn node_type_mapping_covers_required_kinds() {
-        // 任务书点名的节点类型必须都能映射。
+        // 下列节点类型必须都能映射。
         for (mtlx, expect) in [
             ("standard_surface", "standard_surface"),
             ("bsdf", "bsdf"),

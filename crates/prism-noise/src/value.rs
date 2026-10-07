@@ -1,4 +1,4 @@
-//! Value noise — lattice hash + quintic interpolation (whitepaper §17, roadmap A3).
+//! Value noise — lattice hash + quintic interpolation (roadmap A3).
 //!
 //! Grid-corner values are PCG hashes of `(seed, lattice coordinates)`; between
 //! corners the field is interpolated with Perlin's improved-noise quintic fade

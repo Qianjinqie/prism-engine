@@ -1,6 +1,6 @@
-//! BVH：SAH 构建 + 射线求交 + 最近点 + 广义 winding number（白皮书 §6/§7；架构 v2.4 S10）。
+//! BVH：SAH 构建 + 射线求交 + 最近点 + 广义 winding number（S10）。
 //!
-//! # 确定性（白皮书 §6 超越点）
+//! # 确定性（超越点）
 //!
 //! - 构建：自顶向下 SAH，每轴 12 桶；代价并列时按"先轴后桶"遍历序取首最小（同输入永远同树）；
 //!   桶划分退化时按质心全序（`total_cmp` + 图元索引）稳定排序取中位，保证终止且确定。
@@ -9,7 +9,7 @@
 //! - winding 链的超越函数（atan2/asin/sin/cos）一律走 [`crate::det_math`]
 //!   确定性件（D-29：纯 IEEE 运算，禁 libm，同输入逐位一致）。
 //!
-//! # 一树两用（白皮书 §7）
+//! # 一树两用
 //!
 //! 每个节点在构建时增存实体角聚合（面积加权中心 C、法线矩 N、法线锥），
 //! winding number 查询对"远处且法线一致"的节点簇用一阶近似（O(log n)），
@@ -19,9 +19,9 @@ use crate::det_math::{det_asin, det_atan2, det_cos_sin};
 use crate::{vmax, vmin, vmaxc, vminc};
 use prism_math::Vec3;
 
-/// SAH 分桶数（白皮书 §6：12 桶）。
+/// SAH 分桶数（12 桶）。
 const SAH_BUCKETS: usize = 12;
-/// 叶子图元上限（白皮书 §6：叶子 4–8 图元）。
+/// 叶子图元上限（叶子 4–8 图元）。
 const LEAF_MAX: usize = 8;
 
 /// 轴对齐包围盒。
@@ -88,7 +88,7 @@ impl Aabb {
 
     /// 射线与盒的区间交（slab 法；`inv` 为 1/rd 分量）。
     ///
-    /// 白皮书 §6 附注：`exit` 侧微量外扩（+1e-7）消除浮点边界漏交。
+    ///  附注：`exit` 侧微量外扩（+1e-7）消除浮点边界漏交。
     #[inline]
     pub fn ray(&self, ro: Vec3, inv: Vec3, t_min: f32, t_max: f32) -> Option<(f32, f32)> {
         let a = self.min - ro;
@@ -211,7 +211,7 @@ pub struct BvhNode {
     pub count: u32,
     /// 内部节点：右子索引；叶子为 0。
     pub right_child: u32,
-    // —— winding number 聚合（白皮书 §7：每节点增存实体角聚合，一树两用）——
+    // —— winding number 聚合（每节点增存实体角聚合，一树两用）——
     /// 面积加权中心 C = Σ Aᵢcᵢ / ΣAᵢ。
     pub solid_center: Vec3,
     /// 法线矩 N = Σ Aᵢn̂ᵢ。
@@ -395,7 +395,7 @@ impl Bvh {
             }
             mid
         };
-        // 叶子下限（白皮书叶子 4–8）：一侧过小时改用中位划分，两侧均 ≥ 4。
+        // 叶子下限（叶子 4–8）：一侧过小时改用中位划分，两侧均 ≥ 4。
         let mid = if mid < 4 || prims.len() - mid < 4 {
             median_partition(centroids, prims, axis);
             prims.len() / 2
@@ -436,7 +436,7 @@ impl Bvh {
         id
     }
 
-    /// Möller–Trumbore 三角形命中（白皮书 §6 图元内命中；t 并列按图元索引 tie-break）。
+    /// Möller–Trumbore 三角形命中（图元内命中；t 并列按图元索引 tie-break）。
     pub fn ray_intersect(&self, ro: Vec3, rd: Vec3, t_min: f32, t_max: f32) -> Option<RayHit> {
         debug_assert!((rd.length() - 1.0).abs() < 1e-4, "ray_intersect requires unit rd");
         if self.tris.is_empty() {
@@ -445,7 +445,7 @@ impl Bvh {
         }
         let inv = Vec3::new(1.0 / rd.x, 1.0 / rd.y, 1.0 / rd.z);
         let mut best: Option<RayHit> = None;
-        // 固定深度显式栈（白皮书 §6：深度上界由图元总数推导，64 层必够）。
+        // 固定深度显式栈（深度上界由图元总数推导，64 层必够）。
         let mut stack: Vec<(u32, f32)> = Vec::with_capacity(64);
         stack.push((0, t_min));
         while let Some((id, t_lo)) = stack.pop() {
@@ -537,7 +537,7 @@ impl Bvh {
         best
     }
 
-    /// 广义 winding number（白皮书 §7：内部 = ±1，外部 = 0；对开放网格鲁棒）。
+    /// 广义 winding number（内部 = ±1，外部 = 0；对开放网格鲁棒）。
     ///
     /// 远处且法线一致的节点簇用一阶近似 `Ω ≈ N·(C−p)/|C−p|³`（O(log n)），
     /// 其余下降到叶子用 van Oosterom–Strackee 闭式精确求和。
@@ -706,7 +706,7 @@ fn median_partition(centroids: &[Vec3], prims: &mut [u32], axis: usize) {
     });
 }
 
-/// Möller–Trumbore：射线-三角形交（不使用 fma，白皮书 §6 附注）。
+/// Möller–Trumbore：射线-三角形交（不使用 fma， 附注）。
 fn tri_ray_hit(t: &Triangle, ro: Vec3, rd: Vec3, t_min: f32, t_max: f32) -> Option<f32> {
     let e1 = t.b - t.a;
     let e2 = t.c - t.a;

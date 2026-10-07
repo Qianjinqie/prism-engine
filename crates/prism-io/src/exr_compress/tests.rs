@@ -817,7 +817,7 @@ fn exr_compress_rejects_foreign_compressions() {
 
 /// 端到端：同一图像 → None 编一份、四种压缩各编一份 → 读回**逐位对拍**。
 ///
-/// 这是任务书要求的「最强证据」：同一图像用 `None` 编、`Piz` 编码后再解，
+/// 这是「最强证据」：同一图像用 `None` 编、`Piz` 编码后再解，
 /// 结果应逐位相同。
 #[test]
 fn end_to_end_four_compressions_match_none_path_bitwise() {

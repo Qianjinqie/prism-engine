@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ===========================================================================
-# build.sh — 一条命令产出 harness 用的 .wasm（D-14 手机测试链路）。
+# build.sh — 一条命令产出 harness 用的 .wasm（D-14 移动端验证链路）。
 #
 # 关键点：wasm32 产物**必须**走独立 --target-dir。历史上踩过的坑：wasm32 的
 # 编译产物混进 native 的 target/，导致后续 native 编译报

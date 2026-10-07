@@ -1,20 +1,20 @@
 //! color（C2：色彩管理节点——输入/输出色彩空间声明 + 变换链）。
 //!
-//! 语义权威：《强大版路线图》§3.5（"色彩空间是每个节点的显式参数，不是全局
+//! 语义权威：（"色彩空间是每个节点的显式参数，不是全局
 //! 魔法"；"全部是色彩节点链（`grade`/`aces_output`/`lut3d`）"）、C2 行
 //! （"ACEScg 工作空间切换；ACES 输出变换（拟合）；PQ/HLG OETF"）；
-//! 《算法白皮书》§13（管线顺序：线性域白平衡/曝光 → AP1→输出色域 3×3 →
+//! （管线顺序：线性域白平衡/曝光 → AP1→输出色域 3×3 →
 //! ODT 拟合 → OETF）。
 //!
 //! # 单节点变换（[`ColorManage`]）
 //! 一个节点声明 `input`/`output` 色彩空间（[`prism_math::colorspace::ColorSpace`]），
 //! 装配完整变换链：矩阵互转（[`prism_math::colorspace::TransformChain`]）+
 //! ACES 输出变换拟合（[`prism_math::aces::AcesOutput`]）+ OETF（sRGB/PQ/HLG）。
-//! 节点链由多个 [`ColorManage`] 首尾相接构成（§3.5"色彩节点链"）。
+//! 节点链由多个 [`ColorManage`] 首尾相接构成（"色彩节点链"）。
 //!
 //! # 处理域
-//! `Fbuf16F` 的 RGBA16F 缓冲（§2.2 线性高精度管线）。节点对 RGB 三分量
-//! 求值、alpha 直通；f32 运算、写回量化 f16（架构 §4.3 格锚）。
+//! `Fbuf16F` 的 RGBA16F 缓冲（线性高精度管线）。节点对 RGB 三分量
+//! 求值、alpha 直通；f32 运算、写回量化 f16（格锚）。
 //! halo = 0（逐像素，可平移不变）。
 
 use prism_io::fbuf::Fbuf16F;
@@ -24,7 +24,7 @@ use prism_math::hlg::hlg_oetf;
 use prism_math::pq::pq_oetf;
 use prism_render::tile::TileEffect;
 
-/// 输出 OETF（传输函数）选择（§3.5："输出侧 OETF 可插拔"）。
+/// 输出 OETF（传输函数）选择（"输出侧 OETF 可插拔"）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Oetf {
     /// 无传输编码（保留线性值）。
@@ -80,7 +80,7 @@ fn srgb_oetf(x: f32) -> f32 {
 impl ColorManage {
     /// 对单个像素应用整条变换链（供链装配/`eval_window` 复用的纯函数）。
     ///
-    /// 顺序（§13）：①矩阵互转 `input → output`（经 ACEScg 枢纽）；
+    /// 顺序：①矩阵互转 `input → output`（经 ACEScg 枢纽）；
     /// ②若 `aces` 则插入 RRT+ODT 拟合（作用于线性 sRGB 域）；
     /// ③OETF 编码。alpha 直通。
     pub fn apply_color(&self, c: [f32; 4]) -> [f32; 4] {

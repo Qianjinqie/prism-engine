@@ -1,14 +1,14 @@
-//! `prism-rt` — 路径追踪 CpuRef（路线图 B1，施工日历 v4.4 波次 W4）。
+//! `prism-rt` — 路径追踪 CpuRef。
 //!
-//! 语义权威：《算法白皮书》§1（Sobol+Owen 采样器 / NEE+MIS / RR / firefly 钳制）、
-//! §3（HG 介质）、§26（固定形状归约）；《架构总设计》v2.4 §4.3（格锚表：hash
-//! 走 PCG 整数件、归约走 prism-core 唯一形状函数）、§4.4（采样派生式）；
+//! 语义权威：Sobol+Owen 采样器 / NEE+MIS / RR / firefly 钳制、
+//! HG 介质、固定形状归约；（格锚表：hash
+//! 走 PCG 整数件、归约走 prism-core 唯一形状函数）、采样派生式；
 //! D-16（Mini Code）、D-22（数学结构第一性）。
 //!
 //! # 确定性铁律
 //! 每个像素的每个样本是独立纯函数：坐标 = `Sobol(i, dim) ⊕ 打散掩码`，其中
 //! 索引 i 与掩码均由 `hash(种子, 像素, 样本索引/维度)` 派生——无全局 RNG 状态，
-//! 任意像素任意 pass 可独立重算（白皮书 §1 超越点）。
+//! 任意像素任意 pass 可独立重算（超越点）。
 //!
 //! # 模块
 //! - [`sampler`]：Sobol 方向数 + Owen 打散（Joe–Kuo 64 维 + 超表兜底）。
@@ -22,7 +22,7 @@
 //! - [`integrator`]：backwards PT + NEE + MIS + RR + firefly 钳制。
 //! - [`accum`]：算术累积缓冲 + prism-core 固定树形 spp 均值（禁跨 tile 归约）。
 //!
-//! # 范围（W5-B2 已接入）
+//! # 范围（已接入）
 //! Disney 全族 / 四灯光族 / random walk SSS / 焦散 MNEE+PSR 均已挂接
 //! [`integrator`]；BSDF 最小集（Lambert 漫反 + 完美镜面）作为等价 Disney
 //! 参数路径保留（既有测试与 examples 逐位兼容）。

@@ -3,10 +3,10 @@
 //! `GlyphAdvance` 是文本管线的度量内核特解：`apply(Vec3(gid, size,
 //! spacing)) → advance(px)`——水平排版步进的解析解（hmtx/upem 线性映射）。
 //!
-//! 参数装配说明：求值器 SolvedParams 注入位随 A2 批次落地（eval.rs 已
+//! 参数装配说明：求值器 SolvedParams 注入位随 A2 轮次落地（eval.rs 已
 //! 记账）；本特解的字体源为**常量资产**（内嵌 OFL 子集，非运行时状态），
 //! `Default` 实例即给出真实 advance——数学诚实，非桩。图接线随 C1
-//! Compose 波次接入。
+//! Compose 接入。
 
 use prism_core::node::{
     DualityPair, EvalCtx, KernelKind, LatticePlan, MathStructure, OpCapabilities, Payload,

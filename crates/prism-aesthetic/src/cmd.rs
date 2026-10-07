@@ -1,8 +1,8 @@
 //! critic 引擎命令（C5）：analyze / critique / suggest / apply + `--autofix`。
 //!
-//! 语义权威：《强大版路线图》§3.5（critic 内建为引擎命令且接增量渲染）、§4
+//! 语义权威：critic 内建为引擎命令且接增量渲染、
 //! C5 行（analyze/critique/suggest/apply + `--autofix`（走增量渲染））；CLI
-//! 出口 `critique`（§3.6 开发者面：MCP/CLI/HTTP 三出口之一）。
+//! 出口 `critique`（开发者面：MCP/CLI/HTTP 三出口之一）。
 //!
 //! # 命令四相（Deterministic、纯函数）
 //!

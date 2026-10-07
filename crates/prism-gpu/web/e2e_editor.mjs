@@ -1,4 +1,4 @@
-// U13 editor.html 端到端浏览器验证（零依赖，仅 node 内建 + 已装的 playwright）
+// editor.html 端到端浏览器验证（零依赖，仅 node 内建 + 已装的 playwright）
 // 覆盖：加载、节点树渲染、选中、滑条改参→apply_edit、dirty 子图精确性、
 //       canvas 预览非空、撤销/重做逐字段一致、空栈结构化错误、档位切换、
 //       编辑序列 JSON 导出与稳定性、确定性自检。

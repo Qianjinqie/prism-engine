@@ -1,4 +1,4 @@
-//! QA 攻击性测试（Edward）— Phase 4 GPU 三路 D0/D1/D2-D4（`prism-gpu`）。
+//! QA 攻击性测试 — Phase 4 GPU 三路 D0/D1/D2-D4（`prism-gpu`）。
 //!
 //! 铁律：零第三方依赖（D-15）+ 全链路确定性 + 禁 libm（D-29）。
 //!
@@ -371,7 +371,7 @@ fn sync_empty_sequence() {
 fn shaders_all_pass_structural_check() {
     let checks = check_all();
     assert_eq!(checks.len(), SHADERS.len());
-    // 【U4 深化 B】新增 `gi_compute.wgsl`（GI 的 GPU 路径），嵌入 shader 数 9 → 10。
+    // 新增 `gi_compute.wgsl`（GI 的 GPU 路径），嵌入 shader 数 9 → 10。
     assert_eq!(checks.len(), 10, "应嵌入 10 个 WGSL shader");
     for c in &checks {
         assert!(c.has_entry, "{} 无入口", c.name);
@@ -429,7 +429,7 @@ fn wgsl_custom_trig_present_and_no_builtin_trig() {
         for (lineno, line) in src.lines().enumerate() {
             let code = line.split("//").next().unwrap_or("");
             for builtin in ["sin(", "cos(", "tan("] {
-                // 允许自定义名 cos_sin(；仅当出现 ` sin(`/`\tcos(` 等词边界调用时报警。
+                // 允许自定义名 cos_sin( 等；仅当出现 ` sin(`/`\tcos(` 等词边界调用时报警。
                 let needle = builtin;
                 if let Some(pos) = code.find(needle) {
                     let prev = code[..pos].chars().last();
@@ -735,7 +735,7 @@ fn has_lost_then_capture(html: &str) -> bool {
     false
 }
 
-/// 失败含义：harness 页面缺失四个路线图要求之一（特性检测/错误面板/一键复制/可重跑）。
+/// 失败含义：harness 页面缺失四个要求之一（特性检测/错误面板/一键复制/可重跑）。
 /// 静态审读 `web/index.html` 源码。
 #[test]
 fn harness_four_requirements_present() {

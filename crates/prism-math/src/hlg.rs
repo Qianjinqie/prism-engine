@@ -1,6 +1,6 @@
 //! HLG（ITU-R BT.2100 Hybrid Log-Gamma）传输函数。
 //!
-//! 语义权威：《强大版路线图》§3.5（"HLG OETF P1"）、C2 行（"PQ/HLG OETF"）、
+//! 语义权威：HLG OETF P1、C2 行（"PQ/HLG OETF"）、
 //! D-29（"超越函数自研……禁 libm pow"）。公式常数取自 ITU-R BT.2100-2
 //! Table 5（经 MovieLabs / colour-science 复核）：
 //!
@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn hlg_roundtrip_consistent() {
-        // 往返一致性（场景线性 → 编码 → 线性），误差 < 1e-4（路线图验收项）。
+        // 往返一致性（场景线性 → 编码 → 线性），误差 < 1e-4（验收项）。
         for i in 0..=1000u32 {
             let e = i as f32 / 1000.0;
             let back = hlg_oetf_inverse(hlg_oetf(e));
@@ -384,7 +384,7 @@ mod tests {
     }
 
     // ── PQ（ST 2084）补充测试 ──────────────────────────────────────
-    // 任务书要求：PQ 已存在，**只补测试，不许重做**。以下锁定其单调性、
+    // 要求：PQ 已存在，**只补测试，不许重做**。以下锁定其单调性、
     // 端点与「与 HLG 可比」的性质，作为 BT.2100 两条 HDR 曲线的对照基线。
 
     #[test]

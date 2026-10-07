@@ -16,7 +16,7 @@
 //! - [`det_asin`]：恒等式 `asin z = atan2(z, √((1−z)(1+z)))`，复用
 //!   [`det_atan2`] 零新增多项式；全域对照 < 1e-6 rad。
 //!
-//! sqrt 为 IEEE 精确舍入运算，不在 D-29 禁列（白皮书 §6 附注同 rt 先例）。
+//! sqrt 为 IEEE 精确舍入运算，不在 D-29 禁列（附注同 rt 先例）。
 
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI};
 

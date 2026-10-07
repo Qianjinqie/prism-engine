@@ -1,14 +1,14 @@
-//! 三合一降噪（B4）：à-trous 空域 + 确定性时域累积 + variance 自适应 spp
+//! 三合一降噪：à-trous 空域 + 确定性时域累积 + variance 自适应 spp
 //! 预算 + [`DenoiseBackend`] 后端挂点。
 //!
-//! 语义权威：《算法白皮书》§5（降噪三件套：空间 à-trous、时域累积、
-//! 自适应 spp——预算分配必须确定性，白皮书 §26 固定序归约）；《强大版
-//! 路线图》§4 B4 行（"三合一降噪……DenoiseBackend trait 预留 + UV warp"）；
-//! 《架构总设计》v2.4 §4.3（halo 协议）。
+//! 语义权威：（降噪三件套：空间 à-trous、时域累积、
+//! 自适应 spp——预算分配必须确定性， 固定序归约）；《强大版
+//! 》 B4 行（"三合一降噪……DenoiseBackend trait 预留 + UV warp"）；
+//! halo 协议。
 //!
 //! # 确定性纪律（关卡 3 / 4）
 //! - **零超越函数（D-29）**：边缘停止用**有理核** `w = 1/(1 + d²/σ²)`
-//!   （纯 +−×÷）而非标准 exp 核——白皮书只要求"边缘停止函数用色差"，
+//!  （纯 +−×÷）而非标准 exp 核——只要求"边缘停止函数用色差"，
 //!   形式自定，有理核对同输入更稳定可复现；
 //! - à-trous 权重核 = B3 样条 `[1,4,6,4,1]/16` 外积（÷256 归一）；
 //! - 时域累积 = **递推增量均值** `acc ← acc + (cur − acc)/(n+1)`（f32
@@ -45,7 +45,7 @@ impl Default for AtrousSpatial {
 }
 
 impl AtrousSpatial {
-    /// 趟步距序列：`2^i`，i = 0..iterations（白皮书 §5）。
+    /// 趟步距序列：`2^i`，i = 0..iterations。
     fn step_of(iter: u32) -> u32 {
         1 << iter
     }
@@ -81,7 +81,7 @@ fn atrous_pass(src: &Fbuf16F, step: u32, sigma2: f32) -> Fbuf16F {
             let c = src.get(x, y);
             let mut acc = [0.0f32; 4];
             let mut wsum = 0.0f32;
-            // 行主序双循环（白皮书 §26 固定序归约）。
+            // 行主序双循环（固定序归约）。
             for l in 0..5u32 {
                 let sy: u32 = (y as i64 + (l as i64 - 2) * step as i64)
                     .clamp(0, src.height as i64 - 1) as u32;
@@ -163,7 +163,7 @@ impl TemporalAccumulator {
 ///
 /// largest-remainder 法：`ideal_i = total·w_i/W`；`base_i = floor(ideal_i)`；
 /// 余量 `total − Σbase` 按小数部分**降序**（并列按**索引升序**）逐项 +1。
-/// 总和恰为 `total`，tie-break 固定 ⇒ 同输入同分配（白皮书 §26 确定性）。
+/// 总和恰为 `total`，tie-break 固定 ⇒ 同输入同分配（确定性）。
 ///
 /// # Panics
 /// 权重含 NaN/负数、或 `total > 2²⁴` 时 panic（后者防 f32 舍入破坏
@@ -202,12 +202,12 @@ pub fn allocate_spp(weights: &[f32], total: u32) -> Vec<u32> {
 }
 
 // ---------------------------------------------------------------------------
-// DenoiseBackend —— 后端挂点（只定义协议，不实现后端；后续波次接入）
+// DenoiseBackend —— 后端挂点（只定义协议，不实现后端；后续版本接入）
 // ---------------------------------------------------------------------------
 
-/// 降噪后端协议（B4 预留挂点）。
+/// 降噪后端协议（预留挂点）。
 ///
-/// 实现契约（宪章 D 系 + 白皮书 §26 + 架构 §4.3）：
+/// 实现契约（宪章 D 系 + +）：
 /// - **纯函数**：同输入同输出，无隐藏状态、无私开 RNG（随机性唯一入口
 ///   prism-noise 整数 hash）；
 /// - **f16 存储 / f32 运算域**：写回量化 f16，位模式精确往返；
@@ -215,8 +215,8 @@ pub fn allocate_spp(weights: &[f32], total: u32) -> Vec<u32> {
 ///   可按其调节降噪强度，但不得破坏确定性；
 /// - 零第三方依赖（与整个 prism 引擎一致）。
 ///
-/// W4 交付 CPU 参考路径（[`AtrousSpatial`] + [`TemporalAccumulator`]）；
-/// GPU / AI 后端由后续波次实现本 trait 接入。
+/// CPU 参考路径（[`AtrousSpatial`] + [`TemporalAccumulator`]）；
+/// GPU / AI 后端由后续版本实现本 trait 接入。
 pub trait DenoiseBackend {
     /// 后端名（诊断 / 注册用）。
     fn name(&self) -> &'static str;

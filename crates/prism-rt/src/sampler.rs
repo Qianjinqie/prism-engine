@@ -1,6 +1,6 @@
-//! Sobol 低差异序列 + 打散采样器（白皮书 §1 的 B1 实装——"采样器是灵魂"）。
+//! Sobol 低差异序列 + 打散采样器（的 B1 实装——"采样器是灵魂"）。
 //!
-//! # 语义（白皮书 §1，逐条对应）
+//! # 语义（逐条对应）
 //! 哈希只负责**选点与打散**两件事：
 //! ① `hash(种子, 像素)` 定数字位移 c，Sobol 索引 = `样本序号 ⊕ c`（样本域经
 //!    ⊕ 进入派生式）——Sobol 映射线性：`Sobol(i⊕c) = Sobol(i) ⊕ Sobol(c)`，
@@ -15,10 +15,10 @@
 //!
 //! # 确定性
 //! 每个像素的每个样本是独立纯函数：无全局 RNG 状态，任意像素任意 pass 可
-//! 独立重算（白皮书 §1 超越点）。整数 hash 走 [`prism_noise::pcg`]（格 Zᵏ）；
-//! 浮点只做 Sobol 逆映射与格点间换算（架构 §4.3 格锚表）。
+//! 独立重算（超越点）。整数 hash 走 [`prism_noise::pcg`]（格 Zᵏ）；
+//! 浮点只做 Sobol 逆映射与格点间换算（格锚表）。
 //!
-//! # 方向数表（数据资产，D-12 审查锚点；路线图 §6.1 数据资产清单 #1）
+//! # 方向数表（数据资产，D-12 审查锚点；数据资产清单 #1）
 //! Sobol 方向数采用 **Joe–Kuo 官方表**（BSD 三条款许可，**非公有领域**）：
 //! S. Joe & F. Y. Kuo, "Constructing Sobol sequences with better
 //! two-dimensional projections" (SIAM J. Sci. Comput. 30(5), 2008)，
@@ -39,7 +39,7 @@
 //! # 模块内容
 //! - Sobol 核心：方向数构造（Bratley–Fox 递推）+ [`sobol_u32`]。
 //! - 纯函数采样入口：[`sample_1d`] / [`sample_2d`] / [`aux_1d`]（面向
-//!   `EvalCtx`/`SampleIndex`，架构 §4.4 唯一随机入口）。
+//!  `EvalCtx`/`SampleIndex`， 唯一随机入口）。
 //! - [`SampleStream`]：单像素单样本的维度化采样句柄（integrator 侧便利层）。
 //! - 分布映射工具族：disk / 余弦半球 / 锥方向 / 正交基（相机、介质、
 //!   积分器共享，零重复实现；全部只用 ±×÷√ 与确定性三角件）。
@@ -167,7 +167,7 @@ fn direction_table() -> &'static [[u32; 32]; SOBOL_DIMS as usize] {
 }
 
 /// Sobol 坐标（32 位定点）：`Sobol(index, dim) = ⊕_{k: index 第 k 位=1} V_{k+1}`。
-/// 纯整数异或——格 Zᵏ 运算，确定性是定理而非承诺（白皮书 §25.3）。
+/// 纯整数异或——格 Zᵏ 运算，确定性是定理而非承诺。
 #[inline]
 pub fn sobol_u32(dim: u16, index: u32) -> u32 {
     debug_assert!(
@@ -189,7 +189,7 @@ pub fn sobol_u32(dim: u16, index: u32) -> u32 {
 }
 
 // ---------------------------------------------------------------------------
-// 样本流派生（架构 §4.4：hash(全局种子, 节点id, 帧, pixel, 样本[, 维度])）
+// 样本流派生（hash(全局种子, 节点id, 帧, pixel, 样本[, 维度])）
 // ---------------------------------------------------------------------------
 
 /// Sobol 索引盐（派生 ① 的 hash 参数，与掩码盐分离防混叠）。
@@ -199,8 +199,8 @@ const MASK_SALT: u64 = 0x1319_8A2E_0370_7344;
 /// 游程辅助流盐（aux_1d 的 hash 参数，与上两者分离防混叠）。
 const AUX_SALT: u64 = 0x9E37_79B9_7F4A_7C15;
 
-/// 像素基种子：hash(全局种子, 像素, 帧, 节点)——**不含样本序号**（白皮书
-/// §1 ①②：选点位移与打散掩码都以"像素整条序列"为单位，同一像素的样本
+/// 像素基种子：hash(全局种子, 像素, 帧, 节点)——**不含样本序号**（
+///  ①②：选点位移与打散掩码都以"像素整条序列"为单位，同一像素的样本
 /// 序列共享同一 c 与掩码，net 性质才逐点保持）。
 #[inline]
 fn base_seed(ctx: &EvalCtx, pixel: (u32, u32)) -> u64 {
@@ -244,7 +244,7 @@ pub fn sample_1d(ctx: &EvalCtx, si: &SampleIndex) -> f32 {
     dim_value(base, si.dimension, sobol_index(base, si.sample))
 }
 
-/// 二维 Sobol 采样（纯函数）：维度 (d, d+1) 共享同一索引 i（白皮书 §1：
+/// 二维 Sobol 采样（纯函数）：维度 (d, d+1) 共享同一索引 i（
 /// 向量坐标成对出自同一 net 点——**禁止按维度独立取随机数**）。
 pub fn sample_2d(ctx: &EvalCtx, si: &SampleIndex) -> (f32, f32) {
     let base = base_seed(ctx, si.pixel);
@@ -257,7 +257,7 @@ pub fn sample_2d(ctx: &EvalCtx, si: &SampleIndex) -> (f32, f32) {
 
 /// 游程辅助流（介质 delta tracking 步进等变长随机序列）：PCG 纯函数流，
 /// 以 (维度槽位, 步序号) 区分。此类抽取不参与 (t,m,s)-net 向量结构
-/// （自由程不是低差异量），hash 派生与白皮书 §1"选点与打散"分工一致。
+/// （自由程不是低差异量），hash 派生与"选点与打散"分工一致。
 #[inline]
 pub fn aux_1d(ctx: &EvalCtx, si: &SampleIndex, step: u32) -> f32 {
     pcg::hash3_f32(aux_seed(ctx, si), si.dimension as u64, step as u64, AUX_SALT)

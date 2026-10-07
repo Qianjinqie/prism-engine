@@ -1,4 +1,4 @@
-//! `prism-mux` — 容器交付（工作流 C4；路线图 C4 行 / §3.5 容器路线；D-10 容器/编码
+//! `prism-mux` — 容器交付（工作流 C4； 容器路线；D-10 容器/编码
 //! 决策 / D-16 Mini Code / D-17 ffmpeg 运行时协作 / D-29 禁 libm）。
 //!
 //! 引擎内置终态容器链（D-10：**永远可用、零外部依赖**）：
@@ -14,7 +14,7 @@
 //! - [`avi`] — AVI(rawvideo) 写入（"双击可播"底线证明）；
 //! - [`boxes`] — ISO-BMFF 盒原语（ftyp/moov/trak/stbl/mdat，手写）；
 //! - [`mp4`] — MP4 容器写入（MJPEG 视频轨 + PCM 音频轨）；
-//! - [`loudnorm`] — EBU R128 响度归一（BS.1770 K 加权 + 双门控，白皮书 §21）；
+//! - [`loudnorm`] — EBU R128 响度归一（BS.1770 K 加权 + 双门控）；
 //! - [`extprobe`] — ffmpeg 探测器（PATH 检测 + 编码器能力探测 + 自动降级链，C7）；
 //! - [`hwenc`] — 硬件编码器适配层（VideoToolbox/MediaFoundation/NVENC/VAAPI，骨架）。
 //!

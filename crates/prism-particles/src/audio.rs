@@ -8,11 +8,11 @@
 //! - [`ReactiveModulation`]：把频段映射到粒子参数增益
 //!   （发射率 / 速度 / 尺寸），线性混合（`param · (1 + Σ w_b · band_b · amount)`）。
 //! - [`modulation_for_frame`]：从 [`ReactiveBake`] 查第 `frame` 帧频段，
-//!   返回该帧的三增益——**帧级纯函数**（B6 保证帧级纯函数，seek 等价免获得）。
+//!   返回该帧的三增益——**帧级纯函数**（帧级纯函数保证，seek 等价免获得）。
 //!
 //! 无新增频段分析代码；无隐藏状态；无全局 RNG（驱动量来自烘焙表，纯查表）。
 //!
-//! # feature 门（施工期）
+//! # feature 门
 //!
 //! [`ReactiveModulation`] / [`FrameGains`] 为纯映射（无外部依赖），恒可用；
 //! 依赖 B6 烘焙表类型的 [`modulation_for_frame`] / [`gains_series`] 在

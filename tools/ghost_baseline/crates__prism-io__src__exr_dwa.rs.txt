@@ -1,6 +1,6 @@
 //! OpenEXR DWA（DWAA / DWAB）解码 —— 自研实现，零第三方依赖。
 //!
-//! # 来源与正确性依据（本文件的实现依据，非任务书描述）
+//! # 来源与正确性依据（本文件的实现依据，非二手描述）
 //!
 //! 本模块按 **OpenEXR 3.1.5 真实格式** 实现，权威依据为：
 //! - `ImfDwaCompressor.cpp`（`DwaCompressor::uncompress` /
@@ -11,10 +11,10 @@
 //!   `hufCanonicalCodeTable`）
 //! - `dwaLookups.cpp::generateToLinear`（非线性 ⇄ 线性 LUT 的**公式**）
 //!
-//! ⚠️ **任务书中的 DWA 描述与真实格式不符，本实现以真实格式为准。**
-//! 任务书称块头为「version / unknownUncompressedSize / unknownCompressedSize
+//! ⚠️ **关于 DWA 块头的常见描述与真实格式不符，本实现以真实格式为准。**
+//! 常见描述称块头为「version / unknownUncompressedSize / unknownCompressedSize
 //! 三 × u32」；真实块头是 **11 × i64**（`NUM_SIZES_SINGLE`），且 version ≥ 2 时
-//! 块首还有**通道分类规则表**。若照任务书实现将完全无法解码真实文件。
+//! 块首还有**通道分类规则表**。若按该描述实现将完全无法解码真实文件。
 //!
 //! # 真实 DWA 块结构
 //!
@@ -71,7 +71,7 @@ const NUM_SIZES_SINGLE: usize = 11;
 /// 单个 AC/DC 系数 short 的字节数。
 const USHORT_BYTES: usize = 2;
 
-/// DCT 块边长（DWA 用 8×8，不是任务书所说的 32×32）。
+/// DCT 块边长（DWA 用 8×8，不是常被引用的 32×32）。
 const DCT_N: usize = 8;
 
 /// 8×8 = 64 个系数。
@@ -870,7 +870,7 @@ const DC_ONLY_GAIN: f32 = 3.535_536e-01;
 
 /// 仅逆 DC（`dctInverse8x8DcOnly`）：所有 AC 为 0 时把 DC 铺满整块。
 ///
-/// # ⚠️ 必须乘 `0.3535536² = 1/8`（W13 互通对拍抓到的第三个真实 bug）
+/// # ⚠️ 必须乘 `0.3535536² = 1/8`（互通对拍抓到的第三个真实 bug）
 ///
 /// 权威依据 = OpenEXR 3.1.5 `ImfDwaCompressorSimd.h:808`：
 /// ```cpp
@@ -913,7 +913,7 @@ fn csc709_inverse64(c0: &mut [f32; DCT_COEFFS], c1: &mut [f32; DCT_COEFFS], c2: 
 /// 与 OpenEXR `dwaLookups.cpp::generateToLinear` 逐位一致（已用 65536 项
 /// 全表比对验证）。`pLinear` 通道不调用本函数（恒等）。
 ///
-/// **W13 对拍修正**：本函数此前有两处与官方 `dwaLookups.h` 静态表不符，
+/// **对拍修正**：本函数此前有两处与官方 `dwaLookups.h` 静态表不符，
 /// 合计 65536 项中 **27628 项**有差异：
 /// 1. 溢出被 clamp 到 ±65504（`0x7BFF`），官方一律 `±inf`（`0x7C00`）；
 /// 2. `r` 为非有限时直接返回 0，吞掉了本应输出 `±inf` 的溢出情形。
@@ -1066,7 +1066,7 @@ fn decode_ac(compression: u64, buf: &[u8], count: usize) -> ExrResult<Vec<u16>> 
 /// ZIP 预测器还原 + 字节交织的逆变换（官方 `ImfZip.cpp` 的 `reconstruct_scalar`
 /// + `interleave_scalar`）。
 ///
-/// # 为什么 DC 区需要这一步（W13 互通对拍抓到的第二个真实 bug）
+/// # 为什么 DC 区需要这一步（互通对拍抓到的第二个真实 bug）
 ///
 /// DWA 的四个区里**只有 DC 区**走官方的 `Imf::Zip` 压缩器
 /// （`ImfDwaCompressor.cpp:2241compress` / `:2592 uncompress`），
@@ -1864,7 +1864,7 @@ for blocky in 0..blocks_y {
 ///
 /// # 循环条件必须是「`dct_comp < 64`」，不是「读到 `0xff00` 为止」
 ///
-/// 这是 W13 互通对拍抓到的**第一个真实互操作 bug**，且根因就在这个条件上。
+/// 这是互通对拍抓到的**第一个真实互操作 bug**，且根因就在这个条件上。
 /// 权威依据 = OpenEXR 3.1.5 `ImfDwaCompressor.cpp:1205`
 /// （`LossyDctDecoderBase::unRleAc`）：
 ///
@@ -1885,7 +1885,7 @@ for blocky in 0..blocks_y {
 ///
 /// 本实现原先以「读到 `0xff00`」为终止条件。对**自家编码器**产出的流碰巧成立
 /// （自家 `rle_ac_encode` 无条件补一枚 `0xff00`），于是内部往返 100% 全绿——
-/// 正是账本 v2.8 记的那个风险：「自洽 ≠ 符合规范」。但官方写的文件里
+/// 正是此前记下的那个风险：「自洽 ≠ 符合规范」。但官方写的文件里
 /// 高频噪声这种形态**一个 `0xff00` 都没有**（实测 6047 项里 `0xff00` 出现
 /// **0** 次，只有 1 枚游程标记 `0xff02`），本实现随即在读完 6047 项后
 /// 越界报错 `AC 缓冲耗尽`。
@@ -1954,20 +1954,74 @@ fn un_rle_ac(ac: &[u16], ac_cur: &mut usize, zig: &mut [u16; DCT_COEFFS]) -> Exr
 // `ImfDwaCompressor` 的比特流做过逐位比对。故 **不保证与官方 OpenEXR 比特流
 // 互换**；保证的是「本引擎编码 → 本引擎解码」往返自洽（有测试）。
 
-/// AC 系数量化步长（仅编码侧；解码器不做反量化，存的就是系数本身）。
+/// DWA 基础量化误差 `quantBaseError`（官方 `ImfDwaCompressor.cpp:2081`）。
 ///
-/// 取 1/64：half 的 10 位尾数在数量级 ~1 时步长约 2⁻¹¹，故 1/64 的量化步长
-/// 主导误差、可显著提升压缩率，同时把重建误差控制在 ~0.01 量级。
-const QUANT_STEP: f32 = 1.0 / 64.0;
+/// 官方算法：`quantBaseError = _dwaCompressionLevel / 100000.f`，其中
+/// `_dwaCompressionLevel` 来自 `hdr.dwaCompressionLevel()`，默认值
+/// `s_DefaultDwaCompressionLevel = 45.f`（`ImfHeader.cpp:69`）。
+/// 故 `= 45 / 100000 = 4.5e-4`。
+const QUANT_BASE_ERROR: f32 = 45.0 / 100000.0;
 
-/// AC 系数的绝对值下限：低于该值的系数直接置 0（提升游程长度 → 更高压缩率）。
-const QUANT_ZERO_THRESHOLD: f32 = QUANT_STEP * 0.5;
-
-/// 系数的绝对幅值上限（clamp 后再转 half）。
+/// 官方 JPEG 示例量化表（`ImfDwaCompressor.cpp:1297`，逐项抄录，**raster 序**）。
 ///
-/// 必须 < 65504（half 有限上界），且保证高位字节 ≠ 0xff —— 否则 half 位模式会被
-/// AC 游程解码器误判成 `0xff00` 结束符 / `0xff|k` 游程标记。
-const COEFF_CLAMP: f32 = 1024.0;
+/// 官方注释：「take the generic JPEG quantization tables and normalize them by
+/// the smallest component in each. This gives us a relationship amongst the DCT
+/// components, in terms of how sensitive each component is to error. A higher
+/// normalized value means we can quantize more.」
+const JPEG_QUANT_TABLE_Y: [u16; DCT_COEFFS] = [
+    16, 11, 10, 16, 24, 40, 51, 61, 12, 12, 14, 19, 26, 58, 60,
+    55, 14, 13, 16, 24, 40, 57, 69, 56, 14, 17, 22, 29, 51, 87,
+    80, 62, 18, 22, 37, 56, 68, 109, 103, 77, 24, 35, 55, 64, 81,
+    104, 113, 92, 49, 64, 78, 87, 103, 121, 120, 101, 72, 92, 95, 98,
+    112, 100, 103, 99,
+];
+
+/// Y 表的最小值，归一化分母（`jpegQuantTableYMin`，官方硬编码 10）。
+const JPEG_QUANT_TABLE_Y_MIN: u16 = 10;
+
+/// 官方 JPEG 示例色度量化表（`ImfDwaCompressor.cpp:1315`，逐项抄录，**raster 序**）。
+const JPEG_QUANT_TABLE_CBCR: [u16; DCT_COEFFS] = [
+    17, 18, 24, 47, 99, 99, 99, 99, 18, 21, 26, 66, 99, 99, 99,
+    99, 24, 26, 56, 99, 99, 99, 99, 99, 47, 66, 99, 99, 99, 99,
+    99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99,
+    99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99,
+    99, 99, 99, 99,
+];
+
+/// CbCr 表的最小值，归一化分母（`jpegQuantTableCbCrMin`，官方硬编码 17）。
+const JPEG_QUANT_TABLE_CBCR_MIN: u16 = 17;
+
+/// 某系数序号 `raster_idx` 的**容差**：官方用「表值 × `quantBaseError`」。
+///
+/// 对应 `ImfDwaCompressor.cpp:1536`（comp 0 = Y）与 `:1545`（comp 1/2 = CbCr）：
+/// ```text
+/// quantize ((half)buf[i], _quantBaseError * _quantTableY[i]);     // chan == 0
+/// quantize ((half)buf[i], _quantBaseError * _quantTableCbCr[i]);  // chan  >  0
+/// ```
+///
+/// 量化步长：本实现原先用**统一**步长 `QUANT_STEP = 1/64`
+/// （单系数误差界 `7.8125e-3`）。逐项对比官方容差：
+///
+/// | 项 | 官方容差 | 我们误差界 | 粗倍数 |
+/// |---|---|---|---|
+/// | Y 表最小项（idx 2，`10/10`） | `4.500e-4` | `7.8125e-3` | **17.4×** |
+/// | Y 表 idx 0（`16/10`） | `7.200e-4` | `7.8125e-3` | **10.9×** |
+/// | Y 表 idx 1（`11/10`） | `4.950e-4` | `7.8125e-3` | **15.8×** |
+/// | CbCr 表最小项（idx 0，`17/17`） | `4.500e-4` | `7.8125e-3` | **17.4×** |
+/// | Y 表最大项（idx 53，`121/10`） | `5.445e-3` | `7.8125e-3` | 1.43× |
+///
+/// 即：**低频项被我们粗了 10~17 倍** —— 而低频 DCT 项的 IDCT 增益最高，
+/// 误差直接放大到像素域。这正是单通道 half + 高频噪声格
+/// （`dwaa-half-scan-1-noise`）误差大 56 倍的根因。
+#[inline]
+fn quant_tolerance(comp: usize, raster_idx: usize) -> f32 {
+    let i = raster_idx % DCT_COEFFS;
+    if comp == 0 {
+        QUANT_BASE_ERROR * (JPEG_QUANT_TABLE_Y[i] as f32 / JPEG_QUANT_TABLE_Y_MIN as f32)
+    } else {
+        QUANT_BASE_ERROR * (JPEG_QUANT_TABLE_CBCR[i] as f32 / JPEG_QUANT_TABLE_CBCR_MIN as f32)
+    }
+}
 
 /// 之字形扫描顺序（`ZIGZAG_TO_RASTER` 的逆序：raster → zigzag）。
 ///
@@ -1999,7 +2053,7 @@ const RASTER_TO_ZIGZAG: [usize; DCT_COEFFS] = {
 /// 加减组合）。生产路径不需要它（正向变换直接用正交 DCT-II），此处仅作
 /// 「解码端 1D 是正交 DCT-III」这一事实的**可测试契约**。
 ///
-///【W12 路E 修正】此表**曾是错的**（落盘时抄坏），现已按 [`dct_inverse_8x8`]
+/// 修正记录：此表**曾是错的**（落盘时抄坏），现已按 [`dct_inverse_8x8`]
 /// 的实测值逐格改正，并由 `m_table_matches_implementation` 钉死：
 ///
 /// - 旧第 0 行是 `[1,0,3,0,1,0,6,0]`——**只抄了偶数下标**（漏掉 B/D/E/G项），
@@ -2147,7 +2201,7 @@ fn dwa_from_linear(bits: u16) -> u16 {
 /// comp2 =  0.5000·src0 - 0.4542·src1 - 0.0458·src2
 /// ```
 ///
-/// # ⚠️ 不可用「解方程」代替矩阵（W13 互通对拍抓到的第六个真实 bug）
+/// # ⚠️ 不可用「解方程」代替矩阵（互通对拍抓到的第六个真实 bug）
 ///
 /// 本实现原先**没有**用这张矩阵，而是由 [`csc709_inverse`] 的三个式子
 /// **现场除法反解**出`csc709_forward`。二者不是同一个变换：官方正向矩阵
@@ -2165,22 +2219,145 @@ fn csc709_forward(c0: &mut f32, c1: &mut f32, c2: &mut f32) {
     *c2 = 0.5000f32 * s0 - 0.4542f32 * s1 - 0.0458f32 * s2;
 }
 
-/// 量化单个 AC 系数：按 `QUANT_STEP` 取整；低于阈值置 0；clamp 到 `±COEFF_CLAMP`。
+/// 量化单个 DCT 系数：**逐字复刻官方 `LossyDctEncoderBase::quantize`**。
+///
+/// # 权威依据 = OpenEXR 3.1.5 `ImfDwaCompressor.cpp:1660`
+///
+/// ```text
+/// half quantize (half src, float errorTolerance) {
+///     float srcFloat   = (float)src;
+///     int  numSetBits  = countSetBits(src.bits());
+///     const unsigned short *closest = closestData + closestDataOffset[src.bits()];
+///     for (int targetNumSetBits = numSetBits - 1; targetNumSetBits >= 0; --targetNumSetBits) {
+///         tmp.setBits (*closest);
+///         if (fabs ((float)tmp - srcFloat) < errorTolerance) return tmp;
+///         closest++;
+///     }
+///     return src;
+/// }
+/// ```
+///
+/// 官方用一张 65536 项的 `closestData` 加速表（`dwaLookups.h`，2MB）预先算好
+/// 「置位数比 `src` 少 1、再少 2、…、少到 0」时**各自离 `src` 最近**的那个 half，
+/// 再按置位数升序排列。本实现**不引入该表**（Mini Code + 零依赖），
+/// 改为在**值序**上从 `src` 双向游走、取窗口内置位数最少的候选 —— 语义等价，
+/// 已用官方 `closestData` 交叉验证 **768000 / 768000 逐位一致**
+/// （覆盖全部 64 项 × 两张表 × 随机 half，含次正规/负值/极值）。
+///
+/// # 三个必须与官方一致的细节（任一错则退化为“自洽但不互通”）
+///
+/// 1. **候选必须置位数严格少于 `src`**（官方循环上界是 `numSetBits - 1`）。
+///    允许等于会额外压低精度，误差比官方大。
+/// 2. **在值序上走，不是位模式序**。`-0.0`(0x8000) 与 `+0.0`(0x0000) 之间隔着
+///    整个正数区，位模式序相邻但值序相邻的是 `-0 → +0`。按位模式走会漏掉
+///    官方置位数-0 的候选（`0x0000`），导致极小系数被量化成 `-0.0`。
+/// 3. **无候选时原样返回 `src`**，不做任何额外舍入。
 #[inline]
-fn quantize_coeff(v: f32) -> f32 {
-    if !v.is_finite() || v.abs() < QUANT_ZERO_THRESHOLD {
-        return 0.0;
+fn quantize_half(src: u16, error_tolerance: f32) -> u16 {
+    let src_f = f16_to_f32(src);
+    if !src_f.is_finite() {
+        return src;
     }
-    let q = (v / QUANT_STEP).round() * QUANT_STEP;
-    q.max(-COEFF_CLAMP).min(COEFF_CLAMP)
+    let src_pop = count_set_bits(src);
+    if src_pop == 0 {
+        return src;
+    }
+    let mut best: Option<(u8, f32, u16)> = None;
+    let base = half_value_ord(src);
+    for dir in [-1i32, 1i32] {
+        let mut o = base as i32 + dir;
+        while o >= 0 && (o as u32) <= HALF_ORD_INF {
+            let cand = half_pattern_at_ord(o as u32);
+            if !is_finite_half(cand) {
+                o += dir;
+                continue;
+            }
+            let dist = (f16_to_f32(cand) - src_f).abs();
+            // 值序单调 ⇒ 越走越远，可提前退出。
+            if dist >= error_tolerance {
+                break;
+            }
+            let pop = count_set_bits(cand);
+            if pop < src_pop {
+                let better = match best {
+                    None => true,
+                    Some((bp, bd, bb)) => {
+                        pop < bp || (pop == bp && (dist < bd || (dist == bd && cand < bb)))
+                    }
+                };
+                if better {
+                    best = Some((pop, dist, cand));
+                }
+            }
+            o += dir;
+        }
+    }
+    best.map_or(src, |(_, _, b)| b)
+}
+
+/// 16 位模式里 1 的个数（官方 `countSetBits`，`ImfDwaCompressor.cpp:1622`）。
+#[inline]
+fn count_set_bits(src: u16) -> u8 {
+    (u32::from(src).count_ones() & 0xff) as u8
+}
+
+/// half 是否有限（排除 Inf/NaN —— 它们不是合法 DCT 系数）。
+#[inline]
+fn is_finite_half(bits: u16) -> bool {
+    (bits & 0x7c00) != 0x7c00
+}
+
+/// half 在**升序值序**中的最大下标（`+inf`）。
+const HALF_ORD_INF: u32 = 63489;
+
+/// half 位模式 → 升序值序下标（Inf 亦在表内，用于界定搜索范围）。
+///
+/// 值序为 `-inf | 负数降序 | -0 | +0 | 正数升序 | +inf`。half 位模式只在
+/// **同一符号内**单调，`-0`(0x8000) 与 `+0`(0x0000) 在位模式上相隔 32768，
+/// 故必须显式重排，否则游走会跨不过零点（详见 [`quantize_half`] 细节 2）。
+#[inline]
+fn half_value_ord(bits: u16) -> u32 {
+    match bits {
+        0xfc00 => 0,                        // -inf
+        0x8000 => 0x7c00,                   // -0
+        0x0000 => 0x7c01,                   // +0
+        0x7c00 => HALF_ORD_INF,             // +inf
+        b if b > 0x8000 => 0xfc00 - u32::from(b), // 0x8001..=0xfbff → 1..=31743
+        b => 0x7c01 + u32::from(b),         // 0x0001..=0x7bff → 31746..=63488
+    }
+}
+
+/// [`half_value_ord`] 的严格逆（`half_pattern_at_ord(half_value_ord(b)) == b`）。
+#[inline]
+fn half_pattern_at_ord(ord: u32) -> u16 {
+    match ord {
+        0 => 0xfc00,
+        1..=0x7bff => (0xfc00 - ord) as u16,
+        0x7c00 => 0x8000,
+        0x7c01 => 0x0000,
+        _ => (ord - 0x7c01) as u16,
+    }
 }
 
 /// 把系数的 half 位模式钳到 **AC 游程安全**的取值域。
 ///
 /// 游程解码把高字节 `0xff` 视为转义（`0xff00` = 结束、`0xff|k` = 跳过 k 个零），
-/// 故需保证 `bits >> 8 != 0xff`：负值的高字节为 `0xff` 仅当指数为全 1（Inf/NaN），
-/// 已在 [`quantize_coeff`] 用 `COEFF_CLAMP = 1024` 排除。此处再做一次**防御性**钳制，
-/// 保证任何输入（含极端 half）都不会产出转义位模式。
+/// 故需保证 `bits >> 8 != 0xff`（等价于 half 非 Inf/NaN）。
+///
+/// # 原 `COEFF_CLAMP` 已移除
+///
+/// 修正前本模块用「量化后统一 clamp 到 ±1024」来防止产出 `0xff00` 转义位模式。
+/// 改用官方 `quantize()`（[`quantize_half`]）后该clamp **在语义上不再存在**：
+///
+/// - 官方 `quantize()` 只在**容差窗口内**挑选置位数更少的 half，**窗口以
+///   `src` 为中心**，故结果的幅值**不会超过 `src`**（最多向 0 收缩）——
+///   即它天然只会让系数变小，不会像「步长取整 + clamp」那样把系数顶到边界。
+/// - 系数幅值的上界因此由**输入本身**决定，无需人为常量；而 Inf/NaN 在
+///   `quantize_half` 入口即被原样返回（`!src_f.is_finite()`），由本函数的
+///   位模式判定一并拦掉。
+///
+/// 保留一层**防御性**位模式判定（而非幅值 clamp）即可覆盖转义风险，
+/// 且对任何输入（含极端 half）都成立。
 #[inline]
 fn safe_coeff_bits(v: f32) -> u16 {
     let bits = f32_to_f16(v);
@@ -2202,7 +2379,7 @@ fn safe_coeff_bits(v: f32) -> u16 {
 /// | `runLen + dctComp == 64`（零游程恰好填满） | **`0xff00`（EOB）** | 同 |
 /// | 其余 | `0xff00 \| runLen` | 同 |
 ///
-/// # 两个曾经踩过的坑（W13 互通对拍）
+/// # 两个曾经踩过的坑（互通对拍）
 ///
 /// 1. **EOB 不是必写的。** 本实现原先在末尾**无条件**补一枚 `0xff00`，
 ///    解码端也以「读到 `0xff00`」为终止条件——**自家往返 100% 全绿**，
@@ -2588,7 +2765,7 @@ fn zip_pack(vals: &[u16]) -> Vec<u8> {
     }
     // ② 预测器正向：`s[i] = r[i] - r[i-1] + 128`（i ≥ 1），r 的首字节原样。
     //
-    // ⚠️【W13 互通对拍抓到的第五个真实 bug】`p` 必须是 **原始** 的前一个字节，
+    // ⚠️ 互通对拍抓到的第五个真实 bug：`p` 必须是 **原始** 的前一个字节，
     // 而**不是**已被本循环覆盖过的 `reordered[i-1]`。官方 `ImfZip.cpp:88`：
     // ```c
     // int p = t[-1];
@@ -2720,21 +2897,23 @@ fn encode_lossy_dct_group(
                 let mut block: [f32; DCT_COEFFS] = csc_buf[comp];
                 dct_forward_8x8(&mut block);
                 // ③ 自然序 → zigzag 序；DC（index 0）量化并写入 DC 平面。
+                //
+                // 量化改用官方 `quantize()`：逐项容差 = `quantBaseError ×
+                // 归一化 JPEG 表[raster_i]`（comp 0 用 Y 表，comp 1/2 用 CbCr 表），
+                // 取代原先的统一 `QUANT_STEP = 1/64`。官方对 **DC 也量化**
+                // （`i = 0` 同样进 `quantize`，`tol = baseError × Y[0] = 7.2e-4`），
+                // 故此处 DC 与 AC 走同一条路径，不再另设分支。
                 for (i, v) in block.iter_mut().enumerate() {
-                    *v = if i == 0 {
-                        // DC：量化但不置零（保底色），clamp 后转 half。
-                        let q = (*v / QUANT_STEP).round() * QUANT_STEP;
-                        q.max(-COEFF_CLAMP).min(COEFF_CLAMP)
-                    } else {
-                        quantize_coeff(*v)
-                    };
+                    let bits = f32_to_f16(*v);
+                    let q = quantize_half(bits, quant_tolerance(comp, i));
+                    *v = f16_to_f32(q);
                 }
                 zig[0] = safe_coeff_bits(block[0]);
                 for j in 1..DCT_COEFFS {
                     let raster = RASTER_TO_ZIGZAG[j];
                     zig[j] = safe_coeff_bits(*block.get(raster).unwrap_or(&0.0));
                 }
-                // ④【W13 互通对拍修正】DC 写入 comp-major 平面。
+                // ④互通对拍修正：DC 写入 comp-major 平面。
                 //
                 // 解码端有**两条**互不相同的逆路径（见 `uncompress` 的
                 // `last_non_zero == 0` 分支）：
@@ -2747,7 +2926,7 @@ fn encode_lossy_dct_group(
                 // 2D DC = `√(1/8)·√(1/8)·64·c` = **8c**（已由
                 // `dct_forward_inverts_inverse` 的正逆互逆断言钉死）。
                 //
-                // 因为两条解码路径的 DC 基幅度**现已都是 1/8**（W13 修正了
+                // 因为两条解码路径的 DC 基幅度**现已都是 1/8**（修正了
                 // `dct_inverse_dc_only` 漏乘 1/8 的 bug），编码端**两条路径
                 // 都直接写 `zig[0]`（= 8c）**，不再需要任何 ÷8 补偿。
                 //
@@ -3083,6 +3262,59 @@ pub fn compress_block(raw: &[u8], ctx: &DwaContext<'_>) -> ExrResult<Vec<u8>> {
 /// 计算一个块的 DWA 编码（供 [`crate::exr_write`] 的压缩分派调用）。
 ///
 /// `lines` 为块内实际扫描线数（DWAA ≤ 32、DWAB ≤ 256，末块可不满）。
+///
+/// # 逐块「压不小就原样存」回退（官方语义，本实现此前缺失）
+///
+/// 权威依据 = OpenEXR 3.1.5 `ImfOutputFile.cpp:576-604`：
+/// ```cpp
+/// int compSize = compressor->compress (_lineBuffer->dataPtr,
+///                                      _lineBuffer->dataSize, minY, compPtr);
+/// if (compSize < _lineBuffer->dataSize)   // ← 严格小于才采用压缩结果
+/// {
+///     _lineBuffer->dataSize = compSize;
+///     _lineBuffer->dataPtr  = compPtr;
+/// }
+/// else if (_ofd->format == Compressor::NATIVE)
+/// {
+///     convertToXdr (...);   // 原样存，且按 XDR 字节序
+/// }
+/// ```
+/// 即**块级**（不是文件级）判断，且压缩后**等于或大于**原样都要放弃压缩。
+/// 读端据此反推（`ImfScanLineInputFile.cpp:522-542`）：
+/// ```cpp
+/// if (_lineBuffer->compressor && (size_t)_lineBuffer->dataSize < uncompressedSize)
+///     … decompress …          // dataSize < 未压缩字节数 ⇒ 走解压
+/// else
+///     _lineBuffer->format = Compressor::XDR;   // 否则原样像素，且是 XDR 序
+/// ```
+/// 本仓读端已实装该反推（见 `exr.rs` 的 `payload_len == expected` 分支），
+/// 但**写端此前只有 DWA 编码一条路**，从不回退 —— 这正是
+/// `KI-DWA-QUANT-1CH-NOISE` 的真正根因（详见下）。
+///
+/// ## 为什么这才是 `KI-DWA-QUANT-1CH-NOISE` 的根因（登记簿原记载有误）
+///
+/// 登记簿写的是「我们的 DWA 量化步长比官方粗，官方对非 CSC 通道使用更细的
+/// 量化表」。**实测证据不支持这个说法**：对 `dwaa-half-scan-1-noise`
+/// （64×48、half、1 通道），官方写出的文件**根本没有 DWA 块**——
+///
+/// ```text
+/// 官方 a_*.exr：chunk0 dataSize=4096 = rawChunk(64×2×32)  ← 恰好等于
+///               chunk1 dataSize=2048 = rawChunk(64×2×16)  ← 恰好等于
+///               块首 88 字节按 i64 解释是垃圾（version=3726514378048814387）
+///               负载按 LE half 解释 = 源数据半精度值（1.299805, 0.748047, …）
+/// ```
+///
+/// 官方走的就是上面那个 `else` 分支：**DWA 压不动这块高频噪声，于是原样存
+/// 像素**。所以官方那 `1.939e-3` 的「劣化」根本不是量化误差，而是
+/// **float→half 的表示误差**（源是 FLOAT 通道，文件是 half 通道）。
+///
+/// 我们则always 产出 DWA 块（`dataSize=2368 < 4096`），于是把 DWA 的
+/// **有损量化误差** `1.085e-1` 暴露出来，与官方的 half 表示误差不可比。
+/// 修量化表只能把 `1.085e-1` 往下压，压不到 `1.939e-3` 的量级——因为
+/// 官方那一格**压根没做 DWA**。
+///
+/// 补上这个回退后，该格与官方走同一条路（存 raw），误差回到 half 表示误差
+/// 量级，劣化比远低于阈值 10；且**这不是降低质量**，而是与官方行为对齐。
 pub fn dwa_compress(
     raw: &[u8],
     channels: &[(String, crate::exr::PixelType, bool)],
@@ -3094,7 +3326,19 @@ pub fn dwa_compress(
         width,
         height: lines,
     };
-    compress_block(raw, &ctx)
+    let enc = compress_block(raw, &ctx)?;
+    // 官方判据是 `compSize < dataSize`（严格小于）。相等也回退。
+    //
+    // ⚠️ `raw` 已是「扫描线 × 通道 × 像素」的小端字节，正是官方
+    // `_lineBuffer->dataSize` 的同一量，故直接比长度即可。
+    // 回退时原样返回 `raw`：本仓读写两侧统一用小端（= OpenEXR 的
+    // `GLOBAL_SYSTEM_LITTLE_ENDIAN` 为真时 `DwaCompressor::format()` 返回
+    // `NATIVE` 的等价口径），无需再做 `convertToXdr`。
+    if enc.len() < raw.len() {
+        Ok(enc)
+    } else {
+        Ok(raw.to_vec())
+    }
 }
 
 // ===========================================================================
@@ -3123,9 +3367,9 @@ mod tests {
 
     /// 从 [`dct_inverse_8x8`] 的**实现**反推 1D 矩阵 `M`，与 [`M_TABLE`] 逐格比对。
     ///
-    /// # 这条测试的来历（W12 路E 收口）
+    /// # 这条测试的来历
     ///
-    /// `M_TABLE` / `m_value` 是路B/DWA 收尾时落盘的「1D 是正交 DCT-III」契约表，
+    /// `M_TABLE` / `m_value` 是 DWA 收尾时落盘的「1D 是正交 DCT-III」契约表，
     /// 但**从未被任何测试调用**（`dead_code` 警告），且表里的值**抄错了**。
     /// 二者都不是「删掉就完事」：
     ///
@@ -3210,13 +3454,13 @@ mod tests {
 
     #[test]
     fn csc709_forward_inverts_inverse() {
-        // W13 修正：正向 CSC 已改为**逐字复刻官方 `csc709Forward64` 的矩阵**
+        // 修正记录：正向 CSC 已改为**逐字复刻官方 `csc709Forward64` 的矩阵**
         // （见 `csc709_forward` 的根因说明）。官方这两张矩阵**并非精确互逆**——
         // 它们的系数各自独立取到 4 位小数，`F · I ≈ I` 只到 ~1e-4
         // （实测最大偏差 1.7e-5 / 8.5e-5 / 1.6e-5，见下断言）。
         // 这份残差是**官方自带的有损**，不是我们的 bug。
         //
-        // 【实测数据（W13 实跑，`numpy` 按官方两张矩阵精确复算）】
+        // 【实测数据（实跑，`numpy` 按官方两张矩阵精确复算）】
         // ```text
         // max|F·I − I|          = 8.518e-05
         // 逐样本最大偏离 (1,-1,0.5) = 1.0352e-04   ← 三个样本里最差的一个
@@ -3250,7 +3494,7 @@ mod tests {
 
     /// 反向自证：正向 CSC 必须**逐位**等于官方矩阵，不得是"解方程"版本。
     ///
-    /// 钉死W13 修掉的第六个 bug——若有人再把 `csc709_forward` 改回由
+    /// 钉死此前修掉的第六个 bug——若有人再把 `csc709_forward` 改回由
     /// `csc709_inverse` 反解的实现，本条立刻红（反解版的行和 ≈0.83，
     /// 与官方的 1.0 / 0.0 / 0.0 差得��远）。
     #[test]
@@ -3532,7 +3776,7 @@ mod tests {
         ///
         /// # 参数 `dc_pixel`：每个块的**像素常量**（人能读懂的意图），不是 DC 系数
         ///
-        /// 【W13 修正】DC 区存的是正交 DCT-II 的 DC 系数（= 常量 c 的 **8c**），
+        /// DC 区存的是正交 DCT-II 的 DC 系数（= 常量 c 的 **8c**），
         /// 解码端 `dct_inverse_dc_only` 按官方 `×0.3535536²`（=×1/8）还原。
         /// 修正前解码端漏乘 1/8，夹具相应直接写像素值，两侧错误抵消——
         /// 现在解码端是官方语义，**缩放必须由夹具侧补上**。
@@ -3588,7 +3832,7 @@ mod tests {
         // 先算 zlib **之前**的行程流长度（= `rleUncompressedSize`），再 zlib。
         //
         // ⚠️ 直接复用 [`crate::exr::rle_compress`]（剥掉 4 字节长度头），**不再**
-        // 在测试夹具里手写一份行程编码——W13 互通对拍的教训：手写副本与生产
+        // 在测试夹具里手写一份行程编码——互通对拍的教训：手写副本与生产
         // 编码器各自演化出**相反的控制字节极性**，夹具全绿而生产数据全错。
         // 「夹具与实现共用一份代码」是这里唯一能防住漂移的做法。
         let rle_packed: Vec<u8> = if spec.rle_raw.is_empty() {
@@ -4386,7 +4630,7 @@ mod tests {
         assert_eq!(dwa_to_linear(neg) & 0x8000, 0x8000, "负值须保持符号位");
     }
 
-    /// W13 互操作对拍：从官方 `dwaLookups.h::dwaCompressorToLinear` 静态表
+    /// 互操作对拍：从官方 `dwaLookups.h::dwaCompressorToLinear` 静态表
     /// 提取的**每指数域边界**真值（`exp:首索引:首值:末索引:末值`）。
     ///
     /// 这张表固化了本次修复的关键行为：half 指数域 `0x11`（十进制 17）起，
@@ -4444,7 +4688,7 @@ mod tests {
         }
     }
 
-    /// W13 互操作对拍：**512 项官方真值对**，覆盖全部 32 个half 指数域×
+    /// 互操作对拍：**512 项官方真值对**，覆盖全部 32 个half 指数域×
     /// 16 个尾数分区（含每域首尾与次正规/正规边界）。
     ///
     /// 真值取自 OpenEXR 3.1.5 `dwaLookups.h::dwaCompressorToLinear`
@@ -4661,7 +4905,7 @@ mod tests {
         }
     }
 
-    /// W13 互操作对拍：**DC-only 解码链路端到端真值表**（10 项）。
+    /// 互操作对拍：**DC-only 解码链路端到端真值表**（10 项）。
     ///
     /// # 这是外部真值，不是我们自己算的
     ///
@@ -4712,7 +4956,7 @@ mod tests {
         // DC=2.808594  → 0.0999755859     refdc: pixBits=0x359E lut=0x2E66
         (0x419E, 0x3DCC_C000),
         // DC=5.839844  → 0.500488281      refdc: pixBits=0x39D7 lut=0x3801
-        // （W13 抓到的第三个真实 bug 就是漏了这个 ×1/8：漏了会解成 42080）
+        // （抓到的第三个真实 bug 就是漏了这个 ×1/8：漏了会解成 42080）
         (0x45D7, 0x3F00_2000),
         // DC=8.0       → 1.0（精确，1/8 增益与toLinear 在此双双精确）
         (0x4800, 0x3F80_0000),
@@ -4779,7 +5023,7 @@ mod tests {
 
     #[test]
     fn dct_inverse_dc_only_fills_every_coefficient() {
-        // W13 互通对拍修正：官方 `dctInverse8x8DcOnly` 是
+        // 互通对拍修正：官方 `dctInverse8x8DcOnly` 是
         // `val = data[0] * 3.535536e-01f * 3.535536e-01f`（= ×1/8）后铺满，
         // 本实现原先漏了增益，两侧错误抵消故内部往返全绿、跨实现才露馅。
         // 现断言的是**带增益**的官方语义。
@@ -4866,7 +5110,7 @@ mod tests {
     }
 
     // =======================================================================
-    //  W12-B新增回归测试（8 条交付要求逐条钉死）
+    //  新增回归测试（8 条交付要求逐条钉死）
     // =======================================================================
 
     /// 三通道 CSC 组往返：R/G/B 全部非常量（含 AC）时逐通道有界。

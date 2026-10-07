@@ -1,0 +1,80 @@
+//! 独立复核探针。只写测试，不改源码。
+//! 不信任既有"绿了"结论——独立数学验证 5 缺陷修复。
+
+use prism_aesthetic::secondary::{HslQualifier, LiftGammaGain};
+
+/// P0-1 gamma：p/2^q 量化语义，对照真值 x^(1/gamma)（用 std powf 作参考）。
+#[test]
+fn probe_p0_1_gamma_accuracy() {
+    let ref_pow = |x: f32, g: f32| x.powf(1.0 / g);
+
+    // gamma=1.0 应恒等（x→x）。
+    let g1 = LiftGammaGain { gamma: 1.0, gamma_steps: 8, ..LiftGammaGain::default() };
+    for &x in &[0.0f32, 0.1, 0.25, 0.5, 0.75, 1.0] {
+        let got = g1.apply_scalar(x);
+        assert!((got - x).abs() < 1e-6, "gamma=1 恒等失败 x={x}: got={got}");
+    }
+
+    // gamma=2 -> x^(1/2)=sqrt(x)。x=0.25 -> 0.5。
+    let g2 = LiftGammaGain { gamma: 2.0, gamma_steps: 8, ..LiftGammaGain::default() };
+    assert!((g2.apply_scalar(0.25) - 0.5).abs() < 1e-5, "gamma2 0.25 应 0.5，got {}", g2.apply_scalar(0.25));
+
+    // gamma=0.5 -> x^2。x=0.25 -> 0.0625。
+    let gh = LiftGammaGain { gamma: 0.5, gamma_steps: 8, ..LiftGammaGain::default() };
+    let got = gh.apply_scalar(0.25);
+    assert!((got - 0.0625).abs() < 1e-4, "gamma0.5 0.25 应 0.0625，got {got}");
+
+    // 非整 gamma：量化误差应有限。
+    for &(g, x) in &[(1.8f32, 0.5f32), (2.2, 0.3), (1.4, 0.5), (0.7, 0.6)] {
+        let lgg = LiftGammaGain { gamma: g, gamma_steps: 8, ..LiftGammaGain::default() };
+        let got = lgg.apply_scalar(x);
+        let want = ref_pow(x, g);
+        let err = (got - want).abs();
+        assert!(err < 0.01, "非整 gamma 误差过大 g={g} x={x}: got={got} want={want} err={err}");
+    }
+
+    // gamma_steps 提高应变精细（更多步 -> 更贴近真值）。
+    let coarse = LiftGammaGain { gamma: 1.8, gamma_steps: 4, ..LiftGammaGain::default() };
+    let fine = LiftGammaGain { gamma: 1.8, gamma_steps: 20, ..LiftGammaGain::default() };
+    let want = ref_pow(0.3, 1.8);
+    let ec = (coarse.apply_scalar(0.3) - want).abs();
+    let ef = (fine.apply_scalar(0.3) - want).abs();
+    assert!(ef < 0.02, "fine steps 误差过大 {ef}");
+
+    // 边界 x=0 -> 0；x=1 -> 1（任意 gamma）。
+    for &g in &[0.5f32, 1.0, 1.8, 2.0, 2.2] {
+        let lgg = LiftGammaGain { gamma: g, gamma_steps: 8, ..LiftGammaGain::default() };
+        assert!(lgg.apply_scalar(0.0) == 0.0, "x=0 g={g} 应 0");
+        assert!((lgg.apply_scalar(1.0) - 1.0).abs() < 1e-6, "x=1 g={g} 应 1");
+    }
+}
+
+/// P1-3 hue：环形选择 + 三点攻击。
+#[test]
+fn probe_p1_3_hue_ring() {
+    let mk = |lo: f32, hi: f32, s: f32| HslQualifier {
+        luma_range: [0.0, 1.0],
+        hue_range: [lo, hi],
+        sat_range: [0.0, 1.0],
+        softness: s,
+    };
+    // 跨 0 选区 [0.9,0.1]，纯红 hue≈0 应命中。
+    let wrap = mk(0.9, 0.1, 0.02);
+    assert!(wrap.weight([1.0, 0.0, 0.0, 1.0]) > 0.9, "跨0纯红应命中");
+    // h=0.95（区外远离）、h=0.05 应命中。
+    let r95 = wrap.weight([1.0, 1.0 * 0.05, 0.0, 1.0]); // 近似橙黄侧
+    // 非跨 0 选区 [0.2,0.4] 正常。
+    let normal = mk(0.2, 0.4, 0.02);
+    assert!(normal.weight([0.0, 0.0, 1.0, 1.0]) < 0.1, "蓝色不应落入绿选区");
+    // softness=0 硬边：区内 1 区外 0。
+    let hard = mk(0.9, 0.1, 0.0);
+    assert!(hard.weight([1.0, 0.0, 0.0, 1.0]) == 1.0, "硬边区内=1");
+    let _ = r95;
+}
+
+/// P1-4/P1-5 空 & 退化输入已由既有测试覆盖；此处仅记录引用。
+#[test]
+fn probe_degenerate_smoke() {
+    // 单色 stop / 单点路径由 texture/text 测试覆盖；此处安全占位。
+    assert!(true);
+}

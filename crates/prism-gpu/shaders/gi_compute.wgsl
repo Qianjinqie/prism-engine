@@ -1,4 +1,4 @@
-// prism-rt GI 的 GPU compute 路径（账三 U4 深化 B：实时 GI 的 GPU 路径）。
+// prism-rt GI 的 GPU compute 路径（实时 GI 的 GPU 路径）。
 //
 // # 对应关系（判对基准 = crates/prism-rt/src/gi/{sdf_gi.rs, sh.rs}）
 // 本文件是 CPU 侧实时 GI（SDF sphere tracing 遮挡 + SH-L2 辐照度）的 **GPU 镜像**，

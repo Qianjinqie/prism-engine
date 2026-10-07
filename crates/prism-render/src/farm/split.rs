@@ -1,4 +1,4 @@
-//! 确定性切分（白皮书 §26 工程四律之四"分布式同树"）。
+//! 确定性切分（工程四律之四"分布式同树"）。
 //!
 //! # 数学设计
 //!
@@ -15,7 +15,7 @@
 //! 第 i 块起点 = start + i*base + min(i, rem)
 //! ```
 //!
-//! **为什么余数放前面**：§26 层构造里"奇数尾元素直接进位下一层"——短的块在
+//! **为什么余数放前面**：层构造里"奇数尾元素直接进位下一层"——短的块在
 //! 树的**浅层**先参与结合。把余数给前块，使**所有块长 ∈ {base, base+1}**，
 //! 且块长序列**单调不增后恒定**，与 `reduction_shape` 的"尾进位"在结构上
 //! 同形：短块不落在序列尾部，因此尾部块长恒为 `base`，跨机器切分时尾部负载
@@ -31,7 +31,7 @@
 //!
 //! ## 2. 与 `reduction_shape` 的形状对齐（工程四律之四"分布式同树"）
 //!
-//! 白皮书要求"跨机分片按**同一形状函数**切分"。本模块把 `k` 块切分与
+//! 要求"跨机分片按**同一形状函数**切分"。本模块把 `k` 块切分与
 //! [`prism_core::graph::reduction_shape`] 的**槽（slot）划分**联系起来：
 //!
 //! - `slot_counts(n)` 给出 `reduction_shape(n)` 逐层的槽数——第 0 层是 n 个
@@ -197,7 +197,7 @@ pub fn slot_ranges(n: u64, depth: usize) -> Result<Vec<FrameRange>, FarmError> {
             // 两槽在叶序上相邻（左操作数在前），并为一段连续区间。
             next.push(FrameRange { start: lo.start.min(hi.start), end: lo.end.max(hi.end) });
         }
-        // 奇数尾槽进位（§26 形状规则）。
+        // 奇数尾槽进位（形状规则）。
         if current.len() % 2 == 1 {
             if let Some(tail) = current.last() {
                 next.push(*tail);
@@ -209,7 +209,7 @@ pub fn slot_ranges(n: u64, depth: usize) -> Result<Vec<FrameRange>, FarmError> {
 }
 
 /// **形状对齐**切分：把块边界钉在 `reduction_shape(n)` 的槽边界上
-/// （§26 工程四律之四"分布式同树"）。
+/// （工程四律之四"分布式同树"）。
 ///
 /// # 与 [`split_frames`] 的区别
 /// - [`split_frames`]：纯均分（前余数），保证纯函数 + 不重不漏，**不承诺**块
@@ -453,7 +453,7 @@ mod tests {
     #[test]
     fn shape_aligned_split_lands_on_reduction_tree_slot_boundaries() {
         // 核心断言：形状对齐切分的每个块边界都是 reduction_shape(n) 某一层的槽边界。
-        // 这保证"块内归约 + 块间归约"与"全局一级归约"同树（§26 律四）。
+        // 这保证"块内归约 + 块间归约"与"全局一级归约"同树（律四）。
         for n in [8u64, 100, 1000, 1024] {
             for k in [1usize, 2, 3, 5, 7, 8, 16] {
                 let parts: Vec<FrameRange> =

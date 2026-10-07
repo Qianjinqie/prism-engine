@@ -1,4 +1,4 @@
-//! 六算法生成器（B9 核心）。
+//! 六算法生成器核心。
 //!
 //! 每个生成器是**确定性生成**：给定 (seed, 参数, 画布尺寸) 产出像素覆盖
 //! 率缓冲（`prism_raster::Coverage`）——这是"生成艺术节点"的统一输出面。
@@ -367,7 +367,7 @@ pub struct VoronoiArt {
     pub sites: u32,
     /// F1/F2 边缘阈值（0=纯 F1 分格，>0 突出单元边界）。
     pub edge_threshold: f32,
-    /// 站点的噪声扰动幅度（像素，白皮书 §10 消"饼干感"手法）。
+    /// 站点的噪声扰动幅度（像素， 消"饼干感"手法）。
     pub site_jitter: f32,
 }
 
@@ -485,7 +485,7 @@ impl FractalMandelbrot {
 // 6. NoiseModulation
 // ---------------------------------------------------------------------------
 
-/// 噪声调制：fbm 场 + 域扭曲（域算子，白皮书 §17 与 SDF/UV warp 互通）。
+/// 噪声调制：fbm 场 + 域扭曲（域算子， 与 SDF/UV warp 互通）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NoiseModulation {
     /// 全局种子。

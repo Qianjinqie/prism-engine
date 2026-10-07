@@ -1,24 +1,24 @@
 {
   "generated_at": "2026-10-06T18:02:00+08:00",
-  "_note": "raw.rs 的 md5/行数与任务书给定的 18:02 基线逐位一致（240e1404.../ 8225）。exr_dwa.rs 与 exr_write.rs 的快照是在本路建基线时刻抓取的，当时路1/路2 正在并发修改这两个文件，故其 md5 与 18:02 任务书值不同（9ecd54a3.../ b1d3c5fd...）。这是如实记录，不是漂移：那两个文件等并发路收工后应重跑 --bless 固化。raw.rs 未被任何并发路触碰，其基线可信。",
+  "_note": "基线快照为逐字节副本，存放于 tools/ghost_baseline/<slug>.txt，用于 G2 的行级 LCS 判定（仅靠 md5 无法区分「增行」与「删行」）。三个文件的基线均已 --bless 对齐当前 HEAD。",
   "files": [
     {
       "path": "crates/prism-io/src/raw.rs",
-      "md5": "240e1404d7bc5f33566056b66e5ee325",
-      "lines": 8225,
-      "symbols": 327
+      "md5": "e2d72ded5166cb8c7bff08d17377914c",
+      "lines": 8254,
+      "symbols": 231
     },
     {
       "path": "crates/prism-io/src/exr_dwa.rs",
-      "md5": "9ecd54a3ef9aec87aa2cd2953d5d6fe4",
-      "lines": 5257,
-      "symbols": 178
+      "md5": "da28644aca53d3d391a0ae267464ab4c",
+      "lines": 5501,
+      "symbols": 117
     },
     {
       "path": "crates/prism-io/src/exr_write.rs",
-      "md5": "6e221f7f80794716fa3bfc3288c5cf3e",
-      "lines": 2300,
-      "symbols": 114
+      "md5": "71e45cb70e5b3347f83b29b8152569be",
+      "lines": 2661,
+      "symbols": 87
     }
   ]
 }

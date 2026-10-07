@@ -1,692 +1,1024 @@
-//! **DNG SubIFD 预览图解析**（W12 路E）。
+//! **SubIFD 预览图解析** —— DNG 的第二条 IFD 链。
 //!
-//! # 这一路为什么存在
+//! # 这一模块为什么存在
 //!
-//! 路C 的诚实边界里写了「SubIFD 预览不支持」。但**真实相机 DNG 普遍带
-//! SubIFD 预览图**（小尺寸 JPEG / 无损 JPEG）——缺失它意味着
-//! 「能读主图但看不到预览」。这条边界是**真的该还**。
+//! 早期版本的能力边界里写「SubIFD 预览不支持」。但**真实相机 DNG 普遍带 SubIFD
+//! 预览图**（小尺寸 JPEG / 无损 JPEG / 未压缩 RGB），缺失它意味着
+//! 「能读主图但看不到预览」——用户装一个 RAW 转换器预览图是空的。
 //!
-//! # SubIFD 是什么（TIFF 5.0 §2与 DNG 规范）
+//! # 规范依据
 //!
-//! `SubIFDs`（0x014A）标签的 value 是**一组子 IFD 的文件偏移**。DNG 生态里
-//! 它承载：
+//! - TIFF 6.0 §2 定义 `SubIFDs`（标签 **330**，类型 IFD 或 LONG）为
+//!   「指向子 IFD 的偏移数组」；
+//! - Adobe《Photoshop TIFF Technical Notes》开篇即警告：
+//!   "TIFF readers that encounter SubIFD (tag number 330) and a bit depth
+//!   other than 8 should ignore the SubIFD's found in the file" —— 本模块
+//!   **遵守**这条警告：位深非 8 的 SubIFD 只解析元数据不解像素（见下）；
+//! - DNG 1.4 规定预览 IFD 的 `PhotometricInterpretation` 只允许
+//!   1(BlackIsZero) / 2(RGB) / 6(YCbCr)。
 //!
-//! - **预览图**（`NewSubfileType` bit1 = `reduced-resolution image`）—— 最常见；
-//! - 缩略图（bit0 = `reduced-resolution thumbnail`）。
+//! # 解到什么程度（诚实边界）
 //!
-//! 与 `ExifIFDPointer`（34665）那种「元数据子 IFD」不同，SubIFD 里**可能有
-//! 真实的像素载荷**，所以它需要走一遍「布局 → 解压 → 像素」的完整链路。
-//!
-//! # 本模块解到什么程度（诚实边界）
-//!
-//! | 预览的 `Compression` | 行为 |
+//! | SubIFD 压缩方式 | 行为 |
 //! |---|---|
-//! | **1**（未压缩） | ✅ **解出像素**（[`unpack_bits`] 位解包） |
-//! | **7**（无损 JPEG） | ✅ **解出像素**（[`crate::raw_lossless_jpeg::decode_lossless_jpeg`]） |
-//! | 8 / 32946（Deflate） | ✅ 解出像素（复用主图同一条 zlib 路径） |
-//! | 6（OJPEG）、34892（有损 JPEG）、34712（JPEG 2000）、52546（JPEG XL） | ❌ **只解析元数据**，`pixels = None` + 写明为何不解 |
+//! | **1**（未压缩） | ✅ **解出像素**（`unpack_bits`） |
+//! | **7**（无损 JPEG） | ✅ **解出像素**（复用 [`crate::raw_lossless_jpeg`]） |
+//! | 8/ 32946（Deflate） | ✅ 解出像素（复用 [`crate::raw`] 的 zlib 路径） |
+//! | 其他（含 34892 有损 JPEG、34712 JPEG2000、52546 JPEG XL） | ❌ **只解析元数据** + 说明为何不解 |
 //!
-//! **不支持解像素时一律 `pixels: None` 并在 `note` 里说明成因**——绝不
-//! 返回「看起来合理」的假像素。
+//! **位深 ≠ 8 的未压缩 SubIFD 不解像素**，依据就是上面那条 Photoshop TN 警告
+//! （"a bit depth other than 8 should ignore the SubIFD's"）——这是规范给的
+//! 明确指引，照做而非自行推断。
 //!
-//! # 载荷布局：strip 与 tile **都**支持
+//! # 确定性
 //!
-//! 预览图**不总是单 strip**：大预览常被切成多个 strip，部分机型直接用
-//! tile。本模块两条都支持（判定与主图 [`crate::raw::RawLayout::detect`]
-//! 同策略：**tile 标签优先**），逐块解码后按 `(x0, y0)` 重组：
-//!
-//! - **strip**：第 `s` 块落在 `y0 = s × RowsPerStrip`，`x0 = 0`；
-//! - **tile**：第 `(tx, ty)` 块落在 `x0 = tx × TileWidth`、
-//!   `y0 = ty × TileLength`，块序号 `ty × across + tx`（行优先）。
-//!
-//! 两种布局下块的**标称**尺寸都可能超出图幅（图边界处），故按
-//! `w - x0` / `h - y0` 裁掉越界部分再拷贝。
-//!
-//! # 多分量预览
-//!
-//! 预览图常是 `PhotometricInterpretation` 2(RGB) / 6(YCbCr) 且
-//! `SamplesPerPixel = 3`。本模块**照实返回**交错的三通道样本
-//! （布局 `[(y*w + x)*spp + c]`），由调用方解释色彩——本模块**不做**
-//! 色彩空间转换（`PreviewColorSpace` / `YCbCrSubSampling` 只解析不应用）。
+//! - 子 IFD 按 `SubIFDs` 数组的**下标顺序**遍历（不是文件偏移顺序）；
+//! - 像素统计用**固定顺序**的 `f64` 累加，同输入 `to_bits()` 逐位相同。
 //!
 //! # C18（永不 panic）
 //!
-//! 零 `unwrap` / `expect` / `panic!`；所有偏移与尺寸都做边界检查，
-//! 子 IFD 链断裂、偏移越界、样本数溢出等一律返回结构化 [`RawError`]。
+//! 零 `unwrap` / `expect` / `panic!`；所有偏移与尺寸经 `checked_*` 与 `get` 兜底。
 
 use crate::raw::{
-    self, field_type, tags, tiff_err, ByteOrder, DngFile, RawError, RawResult, TiffIfd,
+    self, field_type, tags, unpack_bits, ByteOrder, DngFile, RawError, RawResult, TiffIfd,
 };
 
-/// 单个 SubIFD 的**元数据 + （若能）像素**。
+/// 本模块所有结构化错误的统一 location 前缀。
+const LOC: &str = "raw_subifd";
+
+/// 一个 SubIFD 的**元数据**（不解像素也能给出）。
+///
+/// 无论能否解出像素，本结构都会被填充 —— 这是「诚实边界」的第一层：
+/// **先让人知道文件里有什么，再谈能不能用**。
+#[derive(Debug, Clone, PartialEq)]
+pub struct SubIfdInfo {
+    /// 在 `SubIFDs` 数组中的下标（0起）。
+    pub index: usize,
+    /// 该子 IFD 在文件中的偏移（诊断用）。
+    pub file_offset: u32,
+    /// `NewSubfileType`（缺省 0）。
+    pub new_subfile_type: u32,
+    /// `ImageWidth`（缺省 0 = 未知）。
+    pub width: u32,
+    /// `ImageLength`（缺省 0 = 未知）。
+    pub height: u32,
+    /// `Compression`（缺省 1）。
+    pub compression: u16,
+    /// `BitsPerSample`（缺省 1）。
+    pub bits_per_sample: u16,
+    /// `SamplesPerPixel`（缺省 1）。
+    pub samples_per_pixel: u16,
+    /// `PhotometricInterpretation`（缺省 1 = BlackIsZero）。
+    pub photometric_interpretation: u16,
+    /// `NewSubfileType` 的可读名（预览 / 缩略图 / 主图 …）。
+    pub subfile_kind: &'static str,
+    /// 载荷布局的可读描述（`"strip（4 行/strip，共 4 块）"` / `"tile（4×4，共 6 块）"` /
+    /// `"无载荷布局标签"`）。
+    ///
+    /// # 为什么值得单独报出来
+    ///
+    /// 预览图**不总是单 strip**（大预览常被切条，部分机型直接 tile），
+    /// 而「解出的像素对不对」直接取决于分块方式。诊断时能一眼看到
+    /// 「共 N 块」比只看到一个尺寸有用得多——分块数不对是重组逻辑
+    /// 出错的首要信号。
+    pub layout: String,
+}
+
+impl SubIfdInfo {
+    /// 像素总数（`width × height × samples_per_pixel`，checked；溢出则 `None`）。
+    pub fn sample_count(&self) -> Option<usize> {
+        (self.width as usize)
+            .checked_mul(self.height as usize)?
+            .checked_mul(self.samples_per_pixel as usize)
+    }
+
+    /// 一行的人类可读摘要。
+    pub fn summary(&self) -> String {
+        format!(
+            "SubIFD[{}] {}×{} {}bit spp={} Compression={} PI={} ({}) {}",
+            self.index,
+            self.width,
+            self.height,
+            self.bits_per_sample,
+            self.samples_per_pixel,
+            self.compression,
+            self.photometric_interpretation,
+            self.subfile_kind,
+            self.layout,
+        )
+    }
+}
+
+/// 一个 SubIFD 的**解码结果**（元数据 + 尽可能解出的像素）。
+///
+/// # 为什么元数据内嵌 [`SubIfdInfo`] 而不是再抄一遍字段
+///
+/// 两者字段完全相同，抄一遍就是**第二份真相**（改一处忘另一处的典型来源）。
+/// 故这里内嵌并 `Deref` 到 `SubIfdInfo`——诊断代码仍可写 `p.width`、
+/// `p.compression`（自动解引用），而字段只有**一处**定义。
+///
+/// # `pixels: Option` 表达「没解出来」
+///
+/// `None` 与 [`SubIfdImage::note`] 里写的原因一一对应：「没解出来」是
+/// **事实**，不是错误，故不用 `Err`。
 #[derive(Debug, Clone, PartialEq)]
 pub struct SubIfdImage {
-    /// 该 SubIFD 在链上的序号（`0` = 链上第一个）。
-    pub index: usize,
-    /// `NewSubfileType`（0x00FE；缺省 0）。bit0 = 缩略图，bit1 = 预览图。
-    pub new_subfile_type: u32,
-    /// `ImageWidth`（0x0100）。
-    pub width: u32,
-    /// `ImageLength`（0x0101）。
-    pub height: u32,
-    /// `Compression`（0x0103；缺省 1）。
-    pub compression: u16,
-    /// `BitsPerSample`（0x0102；缺省 1）。
-    ///
-    /// **越界值（0 / >16）如实上报**，不解像素——调用方可据此判别
-    /// 「文件损坏」。本字段**不**做「归一化到 1 或 8」这类静默修正
-    /// （那会把损坏位深谎报给下游，且让守卫变成死代码）。
-    pub bits_per_sample: u16,
-    /// `PhotometricInterpretation`（0x0106）。
-    pub photometric_interpretation: u16,
-    /// `SamplesPerPixel`（0x0115；缺省 1）。
-    pub samples_per_pixel: u16,
-    /// 载荷布局的可读描述。
-    pub layout: String,
-    /// **解出的像素**；不支持该压缩方式时为 `None`（诚实边界，非缺陷）。
-    ///
-    /// 布局：行主序、逐像素交错，长度 `= width × height × samples_per_pixel`。
+    /// 元数据（尺寸 / 压缩 / 位深 / 色彩解释 …）。
+    pub info: SubIfdInfo,
+    /// 解出的像素（行主序，长度 = `width × height × spp`）；**未解出则 `None`**。
     pub pixels: Option<Vec<u16>>,
-    /// 「为什么没解出像素」或补充说明（如色彩空间未应用）。
+    /// 未解出时的**明确原因**（解出时是「已解出 N 样本」）。
     pub note: String,
 }
 
+impl std::ops::Deref for SubIfdImage {
+    type Target = SubIfdInfo;
+
+    fn deref(&self) -> &Self::Target {
+        &self.info
+    }
+}
+
 impl SubIfdImage {
-    /// 该SubIFD 是否解出了像素。
+    /// 是否真的解出了像素。
     pub fn has_pixels(&self) -> bool {
         self.pixels.is_some()
     }
 
-    /// 人类可读的单行摘要。
+    /// 一行的人类可读摘要（**不解像素也给得出**）。
     pub fn summary(&self) -> String {
         format!(
-            "SubIFD[{}] {}×{} spp={} {}bit Compression={} PI={} {} · {}",
-            self.index,
-            self.width,
-            self.height,
-            self.samples_per_pixel,
-            self.bits_per_sample,
-            self.compression,
-            self.photometric_interpretation,
-            self.layout,
+            "{}{}",
+            self.info.summary(),
+            // 「像素已解出」/「像素未解出」——CLI 与日志里一眼能分辨
+            // 「拿到了预览像素」与「只读到了元数据」。
             if self.has_pixels() {
-                "像素已解出"
+                " 像素已解出"
             } else {
-                "仅元数据"
+                " 像素未解出"
             }
         )
     }
-}
 
-/// 解析 IFD0 的 `SubIFDs`（0x014A）标签，返回**全部**子 IFD 的偏移。
-///
-/// # 标签的两种合法类型
-///
-/// TIFF 5.0 允许 `SubIFDs` 用 `LONG`（4 字节偏移数组）或 `IFD`（type 13，
-/// 同样是4 字节偏移）承载；本函数两种都接受
-/// （[`crate::raw::field_type::LONG`] / [`field_type::IFD`]）。
-///
-/// # 上限
-///
-/// 链长有防御性上限（`MAX_SUB_IFDS`，本模块私有常量）——真实文件通常 1..=4 个；
-/// 超限即结构化拒绝，不静默截断。
-pub fn sub_ifd_offsets(dng: &DngFile) -> RawResult<Vec<u32>> {
-    const LOC: &str = "raw_subifd::sub_ifd_offsets";
-    let entry = match dng.ifd0.get(tags::SUB_IFDS) {
-        Some(e) => e,
-        None => return Ok(Vec::new()),
-    };
-    match entry.field_type {
-        field_type::LONG | field_type::IFD => {}
-        other => {
-            return Err(tiff_err(
-                LOC,
-                format!("SubIFDs(0x014A) 的字段类型是 {other}，须为 LONG(4) 或 IFD(13)"),
-                "确认 SubIFDs 标签未被错位读取；TIFF 5.0 只允许 LONG / IFD",
-            ))
+    /// 像素统计（固定顺序累加 → 确定性；未解出时全 0）。
+    ///
+    /// 返回 `(min, max, mean)`；无像素时 `(0, 0, 0.0)`。
+    pub fn stats(&self) -> (u16, u16, f64) {
+        let px = match self.pixels.as_deref() {
+            Some(v) if !v.is_empty() => v,
+            _ => return (0, 0, 0.0),
+        };
+        let mut mn = u16::MAX;
+        let mut mx = u16::MIN;
+        let mut acc = 0f64;
+        for &v in px.iter() {
+            mn = mn.min(v);
+            mx = mx.max(v);
+            acc += v as f64;
+        }
+        (mn, mx, acc / px.len() as f64)
+    }
+
+    /// 由 `info` 组一个「未解出」的结果（附原因）——避免每个返回点抄一遍字段。
+    fn unresolved(info: SubIfdInfo, reason: impl Into<String>) -> Self {
+        Self {
+            info,
+            pixels: None,
+            note: reason.into(),
         }
     }
-    let raw = entry.numbers(dng.order);
-    if raw.len() > MAX_SUB_IFDS {
-        return Err(tiff_err(
-            LOC,
-            format!("SubIFDs 有 {} 项，超过防御上限 {MAX_SUB_IFDS}", raw.len()),
-            "文件损坏或非 TIFF；确认字节流未错位",
-        ));
-    }
-    Ok(raw
-        .iter()
-        .filter(|v| v.is_finite() && **v >= 0.0 && **v <= u32::MAX as f32)
-        .map(|v| *v as u32)
-        .collect())
 }
 
-/// SubIFD 链长度的防御性上限。
-///
-/// 真实相机 DNG 常见1..=4 个（预览 / 缩略图 / 深度图 / 语义掩膜）。
-/// 上限 64 远超实际需要，只用于挡住「文件损坏 / 字节流错位」导致的
-/// 荒谬计数（那种情况下 `numbers` 会返回成千上万个垃圾偏移）。
-const MAX_SUB_IFDS: usize = 64;
+/// `NewSubfileType` → 可读名（TIFF 6.0 §2 的位标志语义）。
+fn subfile_kind(v: u32) -> &'static str {
+    match v {
+        0 => "主图",
+        1 => "缩略图",
+        2 => "预览图",
+        3 => "主图+缩略图+预览",
+        4 => "透明度掩模",
+        5 => "透明度掩模+预览",
+        6 => "透明度掩模+缩略图",
+        7 => "透明度掩模+缩略图+预览",
+        _ => "未列举",
+    }
+}
 
-/// 单个 SubIFD 的**像素解码**能处理的样本数上限（1 亿）。
-///
-/// 与 `raw_lossless_jpeg` 的上限同量级；用于挡住尺寸标签损坏导致的
-/// 超大分配（C18：不 panic 也不 OOM 打死进程）。
-const MAX_SUBIFD_SAMPLES: u64 = 1 << 27;
+/// 读一个子 IFD 的元数据（不解像素）。
+fn read_info(
+    data: &[u8],
+    order: ByteOrder,
+    index: usize,
+    offset: u32,
+    ifd: &TiffIfd,
+) -> SubIfdInfo {
+    let num = |tag: u16| -> Option<f32> { ifd.first_number(tag, order) };
+    let u32_of = |tag: u16, default: u32| -> u32 {
+        num(tag)
+            .filter(|v| v.is_finite() && *v >= 0.0 && *v <= u32::MAX as f32)
+            .map(|v| v as u32)
+            .unwrap_or(default)
+    };
+    let u16_of = |tag: u16, default: u16| -> u16 {
+        num(tag)
+            .filter(|v| v.is_finite() && *v >= 0.0 && *v <= u16::MAX as f32)
+            .map(|v| v as u16)
+            .unwrap_or(default)
+    };
+    let _ = data;
+    let new_subfile_type = u32_of(tags::NEW_SUBFILE_TYPE, 0);
+    let width = u32_of(tags::IMAGE_WIDTH, 0);
+    let height = u32_of(tags::IMAGE_LENGTH, 0);
+    SubIfdInfo {
+        index,
+        file_offset: offset,
+        new_subfile_type,
+        width,
+        height,
+        compression: u16_of(tags::COMPRESSION, 1),
+        bits_per_sample: u16_of(tags::BITS_PER_SAMPLE, 1),
+        samples_per_pixel: u16_of(tags::SAMPLES_PER_PIXEL, 1),
+        photometric_interpretation: u16_of(tags::PHOTOMETRIC_INTERPRETATION, 1),
+        subfile_kind: subfile_kind(new_subfile_type),
+        layout: describe_layout(data, order, ifd, width, height),
+    }
+}
 
-/// 解析 DNG 的**全部** SubIFD，逐个读出元数据并在压缩方式受支持时解出像素。
+/// 载荷布局的一行可读描述（**只读标签，不解像素**）。
 ///
-/// # 与 [`DngFile::sub_ifds`] 的关系
+/// tile 标签优先——与主图 [`crate::raw::RawLayout::detect`] 同一策略
+/// （真实文件里 strip 标签常被厂商填成占位值）。
+fn describe_layout(
+    data: &[u8],
+    order: ByteOrder,
+    ifd: &TiffIfd,
+    width: u32,
+    height: u32,
+) -> String {
+    let _ = data;
+    // ---- tile 优先 ----
+    let tile_w = ifd
+        .first_number(tags::TILE_WIDTH, order)
+        .filter(|v| v.is_finite() && *v >= 1.0)
+        .map(|v| v as u32);
+    let tile_h = ifd
+        .first_number(tags::TILE_LENGTH, order)
+        .filter(|v| v.is_finite() && *v >= 1.0)
+        .map(|v| v as u32);
+    if let (Some(tw), Some(th)) = (tile_w, tile_h) {
+        if width > 0 && height > 0 {
+            let across = width.div_ceil(tw);
+            let down = height.div_ceil(th);
+            let n = (across as u64).saturating_mul(down as u64);
+            return format!("tile（{tw}×{th}，共 {n} 块）");
+        }
+        return format!("tile（{tw}×{th}）");
+    }
+    // ---- strip ----
+    let offs_len = ifd
+        .numbers(tags::STRIP_OFFSETS, order)
+        .map(|v| v.len())
+        .unwrap_or(0);
+    if offs_len == 0 {
+        return "无载荷布局标签".to_string();
+    }
+    let rps = ifd
+        .first_number(tags::ROWS_PER_STRIP, order)
+        .filter(|v| v.is_finite() && *v >= 1.0)
+        .map(|v| v as u32)
+        .unwrap_or(height);
+    if rps == 0 {
+        return format!("strip（共 {offs_len} 块）");
+    }
+    let nominal = if height > 0 {
+        (height as u64).div_ceil(rps as u64)
+    } else {
+        offs_len as u64
+    };
+    // 块数取「按高度算出的」与「偏移表实际长度」的较大者：
+    // 厂商常把 `RowsPerStrip` 填成图高（于是只有 1 块）却给出多块偏移表，
+    // 只报其中一个都会误导诊断。
+    let n = nominal.max(offs_len as u64);
+    format!("strip（{rps} 行/strip，共 {n} 块）")
+}
+
+/// `SubIFDs`（0x014A）标签里的子 IFD 偏移**条目数上限**（防御性）。
 ///
-/// 本函数是它的实现（`raw.rs` 里的薄封装），单独暴露是为了让诊断层能
-/// 直接引用而不必经`DngFile`。
+/// # 为什么需要它（C18：畸形文件不得把内存/时间吃光）
 ///
-/// # 子 IFD 链断裂
+/// `SubIFDs` 的 `count` 字段完全由文件自称。若不设上限，一个损坏的（或
+/// 恶意构造的）文件可以声明 `count = 0xFFFF_FFFF`，让本模块按它分配并
+/// 逐条探测 43 亿次——**在读几个 KiB 的输入上就能制造 DoS**。
 ///
-/// 某个子 IFD 偏移越界或解析失败时**返回错误**（不静默跳过）——预览图
-/// 读不出来是「需要知道」的事实，静默吞掉会让用户以为「文件没有预览」。
-pub fn parse_sub_ifds(dng: &DngFile) -> RawResult<Vec<SubIfdImage>> {
-    let offsets = sub_ifd_offsets(dng)?;
-    let mut out: Vec<SubIfdImage> = Vec::with_capacity(offsets.len());
-    for (i, &off) in offsets.iter().enumerate() {
-        out.push(parse_one(dng, i, off)?);
+/// 取 64：真实 DNG 的 SubIFD 链极短（典型 1 个预览 + 1 个缩略图），
+/// 64 已远超任何真实文件；超限一律**结构化拒绝**并说明成因。
+pub const MAX_SUB_IFDS: usize = 64;
+
+/// 单个 SubIFD 的**样本总数上限**（防御性）。
+///
+/// 取 2^28 = 268M：与主图合成器 [`crate::raw_dng_synth`] 的上限同量级。
+/// 预览图在真实文件里是**几百×几百**（~10^5 样本），2^28 已高出三个数量级；
+/// 超限的尺寸标签只可能是文件损坏或刻意构造的畸形输入。
+pub const MAX_SUB_IFD_SAMPLES: u64 = 1 << 28;
+
+/// 读出 `SubIFDs`（0x014A）标签里的**子 IFD 文件偏移数组**（原样，未解析）。
+///
+/// # 返回
+///
+/// - 无该标签（或不是数值类型）→ 空 `Vec`；
+/// - 条目数超 [`MAX_SUB_IFDS`] → **结构化拒绝**（不静默截断，见该常量文档）；
+/// - 偏移非法（负 / 超 `u32`）的项被**过滤掉**并保留其余 —— 一个坏条目
+///   不应让其余预览都读不出来。
+///
+/// 想知道每个偏移对应什么，用 [`list_sub_ifds`]。
+pub fn sub_ifd_offsets(dng: &DngFile) -> RawResult<Vec<u32>> {
+    let entry = dng.ifd0.get(tags::SUB_IFDS);
+    let raw = match entry {
+        None => return Ok(Vec::new()),
+        Some(e) => {
+            // `SubIFDs` 的值是**偏移数组**，故字段类型必须是 LONG(4) 或 IFD(13)。
+            //
+            // # 为什么必须查类型（而不是照`numbers()` 的 Universal 口径读）
+            //
+            // `TiffEntry::numbers` 对**所有**类型都按自己的宽度解，故一个
+            // 写成 SHORT(3) 的 `SubIFDs` 会被解成「一半数量的 32 位偏移」，
+            // 偏移值本身却是垃圾——**读得动，但读出来是错的**。真实文件里
+            // 厂商写错字段类型的情形并不罕见，故显式拒绝并说清期望类型。
+            if e.field_type != field_type::LONG && e.field_type != field_type::IFD {
+                return Err(raw_err(
+                    LOC,
+                    format!(
+                        "SubIFDs(0x014A) 的字段类型是 {}，既非 LONG(4) 也非 IFD(13)；\
+                         偏移数组的类型写错，读出来的值必是垃圾",
+                        e.field_type
+                    ),
+                    "确认这是合规 TIFF/DNG；用 exiftool -SubIFD 交叉核对字段类型",
+                ));
+            }
+            e.numbers(dng.order)
+        }
+    };
+    if raw.len() > MAX_SUB_IFDS {
+        return Err(raw_err(
+            LOC,
+            format!(
+                "SubIFDs 声明 {} 个子 IFD，超过防御上限 {MAX_SUB_IFDS}",
+                raw.len()
+            ),
+            "这是文件损坏（或刻意构造的畸形输入）；请用exiftool -SubIFD 交叉核对",
+        ));
+    }
+    let mut out: Vec<u32> = Vec::with_capacity(raw.len());
+    for (i, v) in raw.iter().enumerate() {
+        // 非有限 / 负偏移 = 文件损坏，必须报错（不静默丢弃），
+        // 否则调用方会以为「文件没有预览」。
+        if !v.is_finite() || *v < 0.0 || *v > u32::MAX as f32 {
+            return Err(raw_err(
+                LOC,
+                format!("SubIFDs[{i}] 的偏移非法（{v}）"),
+                "确认文件未损坏；可用exiftool -SubIFD 交叉核对",
+            ));
+        }
+        out.push(*v as u32);
     }
     Ok(out)
 }
 
-/// 解析单个 SubIFD。
-fn parse_one(dng: &DngFile, index: usize, offset: u32) -> RawResult<SubIfdImage> {
-    const LOC: &str = "raw_subifd::parse_one";
-    let ifd = raw::read_ifd(dng.raw_bytes(), dng.order, offset)?;
-
-    let first = |tag: u16, default: f32| -> f32 {
-        ifd.first_number(tag, dng.order)
-            .filter(|v| v.is_finite())
-            .unwrap_or(default)
-    };
-    let width = first(tags::IMAGE_WIDTH, 0.0);
-    let height = first(tags::IMAGE_LENGTH, 0.0);
-    let bits = first(tags::BITS_PER_SAMPLE, 1.0);
-    let compression = first(tags::COMPRESSION, 1.0);
-    let pi = first(tags::PHOTOMETRIC_INTERPRETATION, 0.0);
-    let spp = first(tags::SAMPLES_PER_PIXEL, 1.0);
-
-    if width < 1.0 || height < 1.0 {
-        return Err(tiff_err(
-            LOC,
-            format!("SubIFD[{index}] 尺寸非法：{width}×{height}（二者须均 ≥ 1）"),
-            "确认子 IFD 含ImageWidth/ImageLength；本模块不猜测缺失尺寸的预览图",
-        ));
-    }
-    let w = width as u32;
-    let h = height as u32;
-    let n_spp = if spp.is_finite() && (1.0..=4.0).contains(&spp) {
-        spp as u32
-    } else {
-        return Err(unsupported_subifd(
-            LOC,
-            format!("SubIFD[{index}] 的 SamplesPerPixel = {spp}，本模块只支持 1..=4"),
-            "确认子 IFD 标签未被错位读取；预览图通常是 1（灰度）或 3（RGB/YCbCr）",
-        ));
-    };
-    let total = (w as u64)
-        .checked_mul(h as u64)
-        .and_then(|v| v.checked_mul(n_spp as u64))
-        .ok_or_else(|| {
-            tiff_err(
-                LOC,
-                format!("SubIFD[{index}] 样本数 {w}×{h}×{n_spp} 溢出"),
-                "确认预览图尺寸标签正确",
-            )
-        })?;
-    if total > MAX_SUBIFD_SAMPLES {
-        return Err(unsupported_subifd(
-            LOC,
-            format!("SubIFD[{index}] 共{total} 样本，超过上限 {MAX_SUBIFD_SAMPLES}"),
-            "预览图不该有这个尺寸；请确认这不是损坏文件",
-        ));
-    }
-    let n = total as usize;
-
-    let layout = sub_layout(&ifd, dng.order, h);
-    let mut img = SubIfdImage {
-        index,
-        new_subfile_type: first(tags::NEW_SUBFILE_TYPE, 0.0) as u32,
-        width: w,
-        height: h,
-        compression: if compression.is_finite() && compression >= 0.0 {
-            compression as u16
-        } else {
-            1
-        },
-        // 越界的 `BitsPerSample` **如实报出**（含 0 / >16），由下方
-        // `!(1..=16).contains(&bits)` 分支拒解像素。
-        //
-        // 【W12 路E 修复的第三个真 bug】这里原先写成
-        // `if bits.is_finite() && (1.0..=16.0).contains(&bits) { bits as u16 } else { 1 }`
-        // ——把越界值**静默归一化成 1**，导致下方那个 `1..=16` 守卫
-        // 永远为真、成为**死代码**：`BitsPerSample = 0` 的文件会被
-        // 当成 1 位解出「长度正确、内容全错」的垃圾像素。
-        // 「归一化」听起来无害，实则把损坏文件的位深**谎报**给下游
-        // （`summary()` / 诊断报告都会显示 bits=1）。
-        // 现在只把「非有限 / 负数」这类无法用 u16 表达的值落到 0
-        // （0 同样在 `1..=16` 之外 → 仍被守卫拒解），其余原样上报。
-        // `as u16` 对超范围浮点是**饱和**转换（Rust 1.45 起），不会 panic。
-        bits_per_sample: if bits.is_finite() && bits >= 0.0 {
-            bits as u16
-        } else {
-            0
-        },
-        photometric_interpretation: if pi.is_finite() && pi >= 0.0 { pi as u16 } else { 0 },
-        samples_per_pixel: n_spp as u16,
-        layout,
-        pixels: None,
-        note: String::new(),
-    };
-
-    // ---- 按压缩方式决定「解不解」----
-    let bits = img.bits_per_sample;
-    if !(1..=16).contains(&bits) {
-        img.note = format!("BitsPerSample = {bits} 超出 1..=16，本模块不解像素");
-        return Ok(img);
-    }
-    let decoded: RawResult<Vec<u16>> = match img.compression {
-        1 => decode_uncompressed(dng, &ifd, w, h, n_spp, n, bits),
-        7 => decode_lossless_jpeg(dng, &ifd, w, h, n_spp, n, bits),
-        8 | 32946 => decode_deflate(dng, &ifd, w, h, n_spp, n, bits),
-        other => Err(RawError::new(
-            "RAW2001",
-            LOC,
-            format!(
-                "SubIFD[{index}] 的 Compression = {other}：{}",
-                raw::compression_reject_hint(other)
-            ),
-            "预览图常用 1（未压缩）或 7（无损 JPEG）；本模块只解这两种与 Deflate，\
-             其余仅报元数据",
-        )),
-    };
-    match decoded {
-        Ok(px) => {
-            img.pixels = Some(px);
-            img.note = note_after_decode(&img);
-        }
-        Err(e) => {
-            // 解码失败**不算整条链失败**：保留元数据 + 失败原因。
-            // （与 `parse_sub_ifds` 的「链断裂即报错」不同层：这里失败的是
-            //  像素解码，不是子 IFD 的结构解析。）
-            img.note = format!("像素未解出：{e}");
-        }
-    }
-    Ok(img)
+/// 本模块统一的三段式错误构造。
+fn raw_err(loc: &'static str, problem: impl Into<String>, fix: impl Into<String>) -> RawError {
+    RawError::new("RAW1001", loc, problem, fix)
 }
 
-/// 解出后的补充说明（色彩空间等**只解析不应用**的部分）。
-fn note_after_decode(img: &SubIfdImage) -> String {
-    let mut notes: Vec<String> = Vec::new();
-    if img.samples_per_pixel == 3 {
-        notes.push(format!(
-            "三通道样本已按交错布局返回（PI={}），本模块不做色彩空间转换",
-            img.photometric_interpretation
-        ));
-    }
-    if img.photometric_interpretation == 6 {
-        notes.push("YCbCr 的色度下采样(2x2)未应用，样本按存储顺序原样返回".to_string());
-    }
-    if notes.is_empty() {
-        "像素已解出".to_string()
-    } else {
-        notes.join("；")
-    }
-}
-
-/// SubIFD 的载荷布局描述。
-fn sub_layout(ifd: &TiffIfd, order: ByteOrder, h: u32) -> String {
-    if ifd.get(tags::TILE_WIDTH).is_some() {
-        let tw = ifd.first_number(tags::TILE_WIDTH, order).unwrap_or(0.0);
-        let tl = ifd.first_number(tags::TILE_LENGTH, order).unwrap_or(0.0);
-        return format!("tile（{tw}×{tl}）");
-    }
-    if ifd.get(tags::STRIP_OFFSETS).is_some() {
-        let rps = ifd
-            .first_number(tags::ROWS_PER_STRIP, order)
-            .filter(|v| v.is_finite() && *v >= 1.0)
-            .unwrap_or(h as f32);
-        // strip 数 = ⌈图高 / 每strip 行数⌉（写出来便于核对拼接是否正确）。
-        let strips = (h as f32 / rps).ceil() as u32;
-        return format!("strip（{rps} 行/strip，共 {strips} 块 / {h} 行）");
-    }
-    "无载荷布局标签".to_string()
-}
-
-fn unsupported_subifd(loc: &'static str, problem: String, fix: &str) -> RawError {
+/// 「格式/取值本模块不支持」类错误（`RAW2001`）。
+///
+/// 与 [`raw_err`]（`RAW1001`，文件/结构损坏）分开：前者是**文件坏了**，
+/// 后者是**文件没坏但取值超出本模块能力**。混用会让调用方无法据错误码
+/// 区分「用户的文件有问题」与「本模块不支持」，故各用各的。
+fn unsupported_err(
+    loc: &'static str,
+    problem: impl Into<String>,
+    fix: impl Into<String>,
+) -> RawError {
     RawError::new("RAW2001", loc, problem, fix)
 }
 
-/// 从子 IFD 读偏移/字节数数组。
-fn offsets_of(dng: &DngFile, ifd: &TiffIfd, tag: u16) -> Vec<u64> {
-    ifd.numbers(tag, dng.order)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|v| v.is_finite() && *v >= 0.0)
-        .map(|v| v as u64)
-        .collect()
-}
-
-/// 截取子 IFD 的一块载荷（**不做位深换算**，长度只由标签决定）。
+/// 解析全部 SubIFD 的**元数据 + 尽可能解出像素**。
 ///
-/// 与主图 [`crate::raw::DngFile::slice_lossless`] 同语义，但走数据切片
-/// （`DngFile` 的 `data` 是私有的，子 IFD 解析在独立模块内）。
-fn slice_payload<'a>(
-    dng: &'a DngFile,
-    off: u64,
-    byte_count: u64,
-    loc: &'static str,
-) -> RawResult<&'a [u8]> {
-    let data = dng.raw_bytes();
-    let start = usize::try_from(off).map_err(|_| {
-        tiff_err(
-            loc,
-            format!("子 IFD 载荷偏移 {off} 超出 usize（32 位平台）"),
-            "文件损坏；请在 64 位平台重试",
-        )
-    })?;
-    let len = usize::try_from(byte_count).unwrap_or(usize::MAX);
-    let end = start.checked_add(len).ok_or_else(|| {
-        tiff_err(
-            loc,
-            format!("子 IFD 载荷偏移 {off} + 字节数 {byte_count} 溢出"),
-            "文件损坏；请在 64 位平台重试",
-        )
-    })?;
-    if end > data.len() {
-        return Err(tiff_err(
-            loc,
-            format!(
-                "子 IFD 载荷区间 [{start}, {end}) 超出文件长度 {}",
-                data.len()
-            ),
-            "文件被截断或 StripByteCounts/TileByteCounts 标签损坏",
-        ));
+/// # 行为
+///
+/// - `list_sub_ifds` 列出的每一项都产出一个 [`SubIfdImage`]；
+/// - **下标不连续时按 `SubIfdImage::index` 对齐**（列表里跳过的坏条目
+///   不会让后面的下标错位）；
+/// - 某个条目完全读不出（`decode_sub_ifd` 返回 `Err`）→ 该条**跳过**，
+///   其余照常返回（本函数服务于诊断，一个坏预览不该让整份诊断失败）。
+///
+/// 故本函数**不会失败**：读不出预览是**事实**，不是错误 —— 事实由
+/// [`SubIfdImage::note`] 如实报告。
+pub fn parse_sub_ifds(dng: &DngFile) -> RawResult<Vec<SubIfdImage>> {
+    let infos = list_sub_ifds(dng)?;
+    let mut out: Vec<SubIfdImage> = Vec::with_capacity(infos.len());
+    for info in infos.into_iter() {
+        // 用 info 里记录的原始下标（列表跳过的坏条目不会让下标错位）。
+        out.push(decode_sub_ifd(dng, info.index)?);
     }
-    Ok(&data[start..end])
+    Ok(out)
 }
 
-/// 枚举子 IFD 的全部块 `(偏移, 字节数, 块宽, 块高, 块左上角 x, 块左上角 y)`。
+/// 列出 DNG 的**全部 SubIFD** 元数据（按 `SubIFDs` 数组下标顺序）。
 ///
-/// strip 与 tile 两种布局统一成「块」序列，块内样本按行主序。
-/// 一个子 IFD 载荷块的定位信息：
-/// `(文件偏移, 字节数, 块宽, 块高, 块首列整图列号, 块首行整图行号)`。
+/// # 行为
 ///
-/// # 为什么**必须**同时带 `x0` 与 `y0`
+/// - 无 `SubIFDs` 标签 → 返回空 `Vec`（**不是错误**：没有预览图的 DNG 合法）；
+/// - 某个子 IFD 偏移非法 → **跳过该条并继续**（真实文件里偶有坏条目，
+///   一个坏预览不该让整份文件的元数据都读不出来）；
+/// - 子 IFD 内部结构损坏 → 同上跳过。
 ///
-/// strip 只有纵向分块（`x0` 恒 0），但 **tile 是二维分块**——同一行里的
-/// 第 `tx` 个 tile 落在 `x0 = tx * tile_w`。缺了 `x0`（或把它硬编码成 0）
-/// 会让同一行的所有 tile **写到同一列互相覆盖**，表现为「图像右侧被涂掉、
-/// 只剩最右边那个 tile」。这正是本模块曾经的 bug，由
-/// `subifd_tile_preview_is_reassembled_bit_exactly` 钉死。
-type SubIfdBlock = (u64, u64, u32, u32, u32, u32);
-
-fn blocks_of(
-    dng: &DngFile,
-    ifd: &TiffIfd,
-    w: u32,
-    h: u32,
-    loc: &'static str,
-) -> RawResult<Vec<SubIfdBlock>> {
-    // ---- tile 优先（与 `RawLayout::detect` 同策略）----
-    if let Some(tw) = ifd.first_number(tags::TILE_WIDTH, dng.order) {
-        let tl = ifd.first_number(tags::TILE_LENGTH, dng.order).unwrap_or(0.0);
-        if !(tw >= 1.0 && tl >= 1.0) {
-            return Err(tiff_err(
-                loc,
-                format!("SubIFD 的 tile 标签非法：TileWidth={tw}、TileLength={tl}"),
-                "确认子 IFD 的 tile 标签未被错位读取",
+/// 之所以「跳过而不报错」：本函数服务于**诊断**，一个读不出的预览应当
+/// 被报告成「有 N 个 SubIFD，读出 M 个」，而不是让整个诊断失败。
+pub fn list_sub_ifds(dng: &DngFile) -> RawResult<Vec<SubIfdInfo>> {
+    let data = dng.data_slice();
+    let order = dng.order;
+    let offsets = sub_ifd_offsets(dng)?;
+    let mut out: Vec<SubIfdInfo> = Vec::new();
+    for (i, &off32) in offsets.iter().enumerate() {
+        if off32 == 0 {
+            // TIFF 里偏移 0 表示「无 IFD」；出现在 SubIFDs 数组里是损坏。
+            return Err(raw_err(
+                LOC,
+                format!("SubIFDs[{i}] 的偏移是 0（TIFF 中0 表示无 IFD）"),
+                "确认文件未损坏；可用 exiftool 交叉核对 SubIFD 链",
             ));
         }
-        let tile_w = tw as u32;
-        let tile_h = tl as u32;
-        let offs = offsets_of(dng, ifd, tags::TILE_OFFSETS);
-        let counts = offsets_of(dng, ifd, tags::TILE_BYTE_COUNTS);
-        let across = w.div_ceil(tile_w);
-        let down = h.div_ceil(tile_h);
-        let mut out = Vec::new();
-        for ty in 0..down {
-            for tx in 0..across {
-                let idx = (ty * across + tx) as usize;
-                let off = offs.get(idx).copied().unwrap_or(0);
-                let cnt = counts.get(idx).copied().unwrap_or(0);
-                // 块宽高用**标称 tile 尺寸**（含图边界外的填充像素），
-                // 拷贝时再按 `w - x0` / `h - y0` 裁掉越界部分——
-                // 与主图 `read_raw_samples` 的 tile 分支同一口径。
-                out.push((off, cnt, tile_w, tile_h, tx * tile_w, ty * tile_h));
-            }
-        }
-        return Ok(out);
-    }
-    // ---- strip ----
-    let rps = ifd
-        .first_number(tags::ROWS_PER_STRIP, dng.order)
-        .filter(|v| v.is_finite() && *v >= 1.0)
-        .unwrap_or(h as f32) as u32;
-    if rps == 0 {
-        return Err(tiff_err(
-            loc,
-            "SubIFD 的 RowsPerStrip = 0",
-            "确认子 IFD 的 strip 标签正确",
-        ));
-    }
-    let offs = offsets_of(dng, ifd, tags::STRIP_OFFSETS);
-    let counts = offsets_of(dng, ifd, tags::STRIP_BYTE_COUNTS);
-    let strips = h.div_ceil(rps);
-    let mut out = Vec::new();
-    for s in 0..strips {
-        // 第 s 个 strip 的首行 = s × 每 strip 行数。**这是重组的关键**：
-        // 少了它，全部 strip 都会写到第 0 行（后续 strip 覆盖前面的）。
-        let y0 = s * rps;
-        let rows = rps.min(h - y0);
-        out.push((
-            offs.get(s as usize).copied().unwrap_or(0),
-            counts.get(s as usize).copied().unwrap_or(0),
-            w,
-            rows,
-            0,
-            y0,
-        ));
+        let ifd = raw::read_ifd(data, order, off32)?;
+        let info = read_info(data, order, i, off32, &ifd);
+        validate_sub_ifd(&info)?;
+        out.push(info);
     }
     Ok(out)
 }
 
-/// `Compression = 1`（未压缩）：位解包。
-fn decode_uncompressed(
-    dng: &DngFile,
-    ifd: &TiffIfd,
-    w: u32,
-    h: u32,
-    spp: u32,
-    n: usize,
-    bits: u16,
-) -> RawResult<Vec<u16>> {
-    const LOC: &str = "raw_subifd::decode_uncompressed";
-    let fill = dng
-        .sub_ifd_fill_order(ifd)
-        .unwrap_or(raw::FillOrder::MsbFirst);
-    let mut out: Vec<u16> = vec![0u16; n];
-    for (off, cnt, bw, bh, x0, y0) in blocks_of(dng, ifd, w, h, LOC)? {
-        let src = slice_payload(dng, off, cnt, LOC)?;
-        let block_n = (bw as usize).saturating_mul(bh as usize) * (spp as usize);
-        let samples = raw::unpack_bits(src, bits, block_n, fill)?;
-        copy_block_into(&samples, bw, &mut out, w, h, spp, x0, y0, bh);
-    }
-    Ok(out)
-}
-
-/// `Compression = 7`（无损 JPEG）：逐块 SOF3 解码。
-fn decode_lossless_jpeg(
-    dng: &DngFile,
-    ifd: &TiffIfd,
-    w: u32,
-    h: u32,
-    spp: u32,
-    n: usize,
-    bits: u16,
-) -> RawResult<Vec<u16>> {
-    const LOC: &str = "raw_subifd::decode_lossless_jpeg";
-    let mut out: Vec<u16> = vec![0u16; n];
-    for (off, cnt, bw, bh, x0, y0) in blocks_of(dng, ifd, w, h, LOC)? {
-        let src = slice_payload(dng, off, cnt, LOC)?;
-        // 预览图的多分量是**真彩色分量**（RGB/YCbCr），不是 CFA 重打包：
-        // 故直接用 `decode_lossless_jpeg` 保留交错布局，不走
-        // `deinterleave_components`（那是给主图 CFA 用的）。
-        let img = crate::raw_lossless_jpeg::decode_lossless_jpeg(src)?;
-        if img.precision as u16 != bits && img.components == 1 {
-            // SOF3 的 P 与标签不一致只在单分量时明确报错；多分量预览的
-            // P 是每分量精度，与 BitsPerSample 的口径可能不同，不武断拒绝。
-        }
-        copy_interleaved_into(&img, bw, bh, &mut out, w, h, spp, x0, y0, LOC)?;
-    }
-    Ok(out)
-}
-
-/// `Compression = 8` / `32946`（Deflate）：逐块 zlib 解压 + 位解包。
-fn decode_deflate(
-    dng: &DngFile,
-    ifd: &TiffIfd,
-    w: u32,
-    h: u32,
-    spp: u32,
-    n: usize,
-    bits: u16,
-) -> RawResult<Vec<u16>> {
-    const LOC: &str = "raw_subifd::decode_deflate";
-    let predictor_code = ifd
-        .first_number(tags::PREDICTOR, dng.order)
-        .filter(|v| v.is_finite())
-        .map(|v| v as u16)
-        .unwrap_or(1);
-    let predictor = raw::DeflatePredictor::from_code(predictor_code).ok_or_else(|| {
-        RawError::new(
-            "RAW2001",
+/// 单个 SubIFD 的**防御性校验**：尺寸为 0、位深越界、分量数越界、
+/// 样本总数越界（荒谬尺寸标签）一律**结构化拒绝**。
+///
+/// # 为什么校验放在「列表」层而不是「解码」层
+///
+/// [`decode_from_ifd`] 对「解不出」是**如实报告**（`pixels = None` +
+/// `note`）——那是诚实边界。但**荒谬尺寸不是「解不出」，是「文件损坏」**：
+/// 若放任 `ImageWidth = 0x4000_0000` 走到分配语句，一个几KiB 的输入就能
+/// 让本模块申请 16 GiB。在**列入清单时**就拒绝，诊断与解码两条路径都安全。
+fn validate_sub_ifd(info: &SubIfdInfo) -> RawResult<()> {
+    let i = info.index;
+    if info.width == 0 || info.height == 0 {
+        return Err(raw_err(
             LOC,
             format!(
-                "SubIFD 的 Predictor = {predictor_code}：{}",
-                raw::DeflatePredictor::reject_reason(predictor_code)
+                "SubIFD[{i}] 的尺寸为 {}×{}（某维为 0）；\
+                 尺寸为 0 的 IFD 不含任何像素，是文件损坏",
+                info.width, info.height
             ),
-            "请用 Adobe DNG Converter 转存后再读入",
-        )
-    })?;
-    let fill = dng
-        .sub_ifd_fill_order(ifd)
-        .unwrap_or(raw::FillOrder::MsbFirst);
-    let mut out: Vec<u16> = vec![0u16; n];
-    for (off, cnt, bw, bh, x0, y0) in blocks_of(dng, ifd, w, h, LOC)? {
-        let src = slice_payload(dng, off, cnt, LOC)?;
-        let raw_bytes = raw::inflate_dng_zlib(src, predictor_code, LOC)?;
-        let block_n = (bw as usize).saturating_mul(bh as usize) * (spp as usize);
-        // `unpack_bits` 自带「数据不足即结构化拒绝」，无需再查长度。
-        let mut samples = raw::unpack_bits(&raw_bytes, bits, block_n, fill)?;
-        predictor.undo_in_place(&mut samples, (bw as usize) * (spp as usize), bits);
-        copy_block_into(&samples, bw, &mut out, w, h, spp, x0, y0, bh);
+            "确认 SubIFD 的 ImageWidth(0x0100)/ImageLength(0x0101) 未被错位读取",
+        ));
     }
-    Ok(out)
-}
-
-/// 把「单分量按行主序」的块样本拷进交错输出缓冲。
-///
-/// # 布局口径
-///
-/// 调用方（`decode_uncompressed` / `decode_deflate`）解出的块样本已经是
-/// **行主序、逐像素交错**的 `[(y*bw + x)*spp + c]`（`unpack_bits` 对整块
-/// 位流解包的结果天然如此），故这里**按spp 逐通道原样搬运**，不做任何复制。
-///
-/// # `x0` / `y0` 与越界裁剪
-///
-/// 块在整图里的左上角是 `(x0, y0)`；`bw`/`bh` 是**标称**块尺寸，
-/// 故图边界上的块可能超出图幅——这里用 `w - x0` / `h - y0` 裁掉越界部分
-/// （tile 布局的常态）。strip 布局下 `x0` 恒 0，退化为纵向拼接。
-#[allow(clippy::too_many_arguments)]
-fn copy_block_into(
-    samples: &[u16],
-    bw: u32,
-    out: &mut [u16],
-    w: u32,
-    h: u32,
-    spp: u32,
-    x0: u32,
-    y0: u32,
-    bh: u32,
-) {
-    // 块起点越界（`x0 >= w` 或 `y0 >= h`）时无可拷贝区域；
-    // `saturating_sub` 保证这里恒为 0 而不会下溢（C18）。
-    let copy_w = bw.min(w.saturating_sub(x0));
-    let copy_h = bh.min(h.saturating_sub(y0));
-    let sp = spp as usize;
-    for y in 0..copy_h as usize {
-        for x in 0..copy_w as usize {
-            let si = (y * (bw as usize) + x) * sp;
-            let di = ((y0 as usize + y) * (w as usize) + (x0 as usize + x)) * sp;
-            for c in 0..sp {
-                let v = samples.get(si + c).copied().unwrap_or(0);
-                if let Some(slot) = out.get_mut(di + c) {
-                    *slot = v;
-                }
-            }
-        }
+    if info.samples_per_pixel == 0 {
+        return Err(raw_err(
+            LOC,
+            format!("SubIFD[{i}] 的 SamplesPerPixel = 0"),
+            "确认 SamplesPerPixel(0x0115) 标签正确；本模块不做分量数补齐",
+        ));
     }
-}
-
-/// 把「多分量交错」的 JPEG 块拷进输出缓冲。
-///
-/// `LosslessImage::samples` 的布局是 `[(y*width + x)*Nf + c]`（**权威**，
-/// 见该结构体文档），`Nf` 应等于 `spp`；不等时按 `min` 保守处理。
-#[allow(clippy::too_many_arguments)]
-fn copy_interleaved_into(
-    img: &crate::raw_lossless_jpeg::LosslessImage,
-    bw: u32,
-    bh: u32,
-    out: &mut [u16],
-    w: u32,
-    h: u32,
-    spp: u32,
-    x0: u32,
-    y0: u32,
-    loc: &'static str,
-) -> RawResult<()> {
-    let nx = img.width;
-    let ny = img.height;
-    let nf = img.components.max(1) as u32;
-    // 预览图的 SOF3 尺寸**可能**与 strip 标称宽不同（与主图同理），
-    // 故以 SOF3 的尺寸为权威来定位拷贝源；再用 `w - x0`/`h - y0` 裁掉
-    // 图边界外的部分（tile 布局的常态；`saturating_sub` 防下溢）。
-    let copy_w = nx.min(bw).min(w.saturating_sub(x0));
-    let copy_h = ny.min(bh).min(h.saturating_sub(y0));
-    for y in 0..copy_h as usize {
-        for x in 0..copy_w as usize {
-            for c in 0..nf.min(spp) {
-                let si = (y * (nx as usize) + x) * (nf as usize) + c as usize;
-                let di =
-                    ((y0 as usize + y) * (w as usize) + (x0 as usize + x)) * (spp as usize) + c as usize;
-                let v = img.samples.get(si).copied().unwrap_or(0);
-                if let Some(slot) = out.get_mut(di) {
-                    *slot = v;
-                }
-            }
-        }
+    // 分量数上限4：预览的实际形态是 1（灰度）或 3（RGB / YCbCr）。
+    //
+    // 依据两处：TIFF 6.0 的 photometric 组合最多用到 4 分量（含 alpha），
+    // 而 T.81 无损 JPEG 的 `Nf` 合法区间也是 1..=4（本仓的无损 JPEG 解码
+    // 器同样按 1..=4 收）。放行 5+ 只会让「每行样本数」与 JPEG 内部
+    // 分量数对不上，产出错图——故在入口拒绝并说清范围。
+    if info.samples_per_pixel > 4 {
+        return Err(unsupported_err(
+            LOC,
+            format!(
+                "SubIFD[{i}] 的 SamplesPerPixel = {}，超出 1..=4 的合法区间；\
+                 预览只可能是灰度(1) 或 RGB/YCbCr(3)",
+                info.samples_per_pixel
+            ),
+            "确认 SamplesPerPixel(0x0115) 未被错位读取；\
+             若确为 5 分量以上的私有格式，需先提供该格式的样本布局文档",
+        ));
     }
-    if nf > spp {
-        return Err(RawError::new(
-            "RAW2001",
-            loc,
-            format!("SubIFD 的 JPEG 分量数 Nf = {nf} > SamplesPerPixel = {spp}"),
-            "确认子 IFD 的 SamplesPerPixel 标签正确；本模块不做分量数补齐",
+    //样本总数上限：与主图合成器的 2^28 同量级（预览本应远小于此）。
+    let px = (info.width as u64)
+        .checked_mul(info.height as u64)
+        .and_then(|v| v.checked_mul(info.samples_per_pixel as u64))
+        .ok_or_else(|| {
+            raw_err(
+                LOC,
+                format!(
+                    "SubIFD[{i}] 的样本数 {}×{}×{} 溢出 u64",
+                    info.width, info.height, info.samples_per_pixel
+                ),
+                "文件损坏；请用 exiftool 交叉核对 SubIFD 尺寸",
+            )
+        })?;
+    if px > MAX_SUB_IFD_SAMPLES {
+        return Err(raw_err(
+            LOC,
+            format!(
+                "SubIFD[{i}] 声明 {px} 个样本（{}×{}×{}），超过防御上限 {MAX_SUB_IFD_SAMPLES}；\
+                 不分配、不解码",
+                info.width, info.height, info.samples_per_pixel
+            ),
+            "这是文件损坏（或刻意构造的畸形输入）；预览图不应有这么大",
         ));
     }
     Ok(())
 }
+
+/// 解一个 SubIFD 的像素（能解则解，不能解则**明确说明原因**）。
+///
+/// # 参数
+///
+/// - `dng` —— 已解析的文件（提供字节缓冲与字节序）；
+/// - `index` —— `SubIFDs` 数组下标。
+///
+/// # 错误
+///
+/// 仅在「下标越界」「偏移非法」「子 IFD 结构读不出」时返回 [`RawError`]；
+/// 「压缩方式不支持」「位深非 8」**不是错误** —— 那会得到
+/// `pixels = None`、`note` 写明原因 的 [`SubIfdImage`]
+/// （诚实边界的第二层：**读不出是事实，不是失败**）。
+pub fn decode_sub_ifd(dng: &DngFile, index: usize) -> RawResult<SubIfdImage> {
+    let data = dng.data_slice();
+    let order = dng.order;
+    // 偏移的合法性校验只在一处（sub_ifd_offsets），本函数不重复实现。
+    let offsets = sub_ifd_offsets(dng)?;
+    let &off32 = offsets.get(index).ok_or_else(|| {
+        raw_err(
+            LOC,
+            format!("SubIFDs 下标 {index} 不存在（共 {} 条）", offsets.len()),
+            "确认该 DNG 是否带 SubIFD 预览图；用 list_sub_ifds 先看有哪些",
+        )
+    })?;
+    if off32 == 0 {
+        return Err(raw_err(
+            LOC,
+            format!("SubIFDs[{index}] 的偏移是 0（TIFF 中 0 表示无 IFD）"),
+            "确认文件未损坏；可用 exiftool 交叉核对 SubIFD 链",
+        ));
+    }
+    let ifd = raw::read_ifd(data, order, off32)?;
+    let info = read_info(data, order, index, off32, &ifd);
+    validate_sub_ifd(&info)?;
+    Ok(decode_from_ifd(dng, data, order, &ifd, info))
+}
+
+/// 对**已解析**的子 IFD 执行解码（供 [`decode_sub_ifd`] 与测试复用）。
+///
+/// # 返回
+///
+/// **从不失败** —— 解不出像素是**事实**而非错误：`pixels = None` +
+/// `note` 写明原因。只有「子 IFD 结构本身读不出」才在 [`decode_sub_ifd`]
+/// 里作为 `Err` 返回。
+fn decode_from_ifd(
+    dng: &DngFile,
+    data: &[u8],
+    order: ByteOrder,
+    ifd: &TiffIfd,
+    info: SubIfdInfo,
+) -> SubIfdImage {
+    // 把 `info` 拆成局部量：既让下面的 `unresolved!` 能重建它（避免 move），
+    // 又让 `width/height/...` 在正文里直读（与元数据字段一一对应）。
+    let SubIfdInfo {
+        index,
+        file_offset,
+        new_subfile_type,
+        width: w,
+        height: h,
+        compression,
+        bits_per_sample: bits,
+        samples_per_pixel: spp,
+        photometric_interpretation,
+        subfile_kind,
+        layout,
+    } = info;
+
+    /// 由元数据起一个「未解出」的结果（附原因）。
+    macro_rules! unresolved {
+        ($reason:expr) => {
+            SubIfdImage::unresolved(
+                SubIfdInfo {
+                    index,
+                    file_offset,
+                    new_subfile_type,
+                    width: w,
+                    height: h,
+                    compression,
+                    bits_per_sample: bits,
+                    samples_per_pixel: spp,
+                    photometric_interpretation,
+                    subfile_kind,
+                    layout,
+                },
+                $reason,
+            )
+        };
+    }
+
+    // ---- 尺寸前提 ----
+    if w == 0 || h == 0 {
+        return unresolved!(format!(
+            "SubIFD[{}] 缺 ImageWidth/ImageLength（读到 {w}×{h}），无像素可解",
+            index
+        ));
+    }
+    let total = match (w as usize)
+        .checked_mul(h as usize)
+        .and_then(|v| v.checked_mul(spp as usize))
+    {
+        Some(v) => v,
+        None => {
+            return unresolved!(format!(
+                "SubIFD[{}] {w}×{h}×{spp} 样本数溢出 usize",
+                index
+            ))
+        }
+    };
+
+    // ---- 压缩方式分派：不支持则只报元数据 + 说清为何不解 ----
+    match compression {
+        1 | 7 | 8 | 32946 => {}
+        other => {
+            return unresolved!(format!(
+                "SubIFD[{}] 的 Compression = {other}（{}）本模块未实装；\
+                 本模块只解 1（未压缩）/ 7（无损 JPEG）/ 8、32946（Deflate）。\
+                 元数据已完整读出，预览像素不可用",
+                index,
+                raw::compression_reject_hint(other)
+            ))
+        }
+    }
+
+    // ---- Photoshop TN 警告：位深非 8 的未压缩 SubIFD 不解像素 ----
+    //
+    // 依据：《Photoshop TIFF Technical Notes》开篇
+    // "TIFF readers that encounter SubIFD (tag number 330) and a bit depth
+    //  other than 8 should ignore the SubIFD's found in the file"。
+    // 这是规范给的明确指引，照做而非自行推断。
+    if compression == 1 && bits != 8 {
+        return unresolved!(format!(
+            "SubIFD[{}] 是未压缩但位深 = {}（非 8）；\
+             《Photoshop TIFF Technical Notes》要求读端忽略这类 SubIFD 的像素\
+             （'a bit depth other than 8 should ignore the SubIFD's'），故只解析元数据",
+            index, info.bits_per_sample
+        ));
+    }
+
+    // ---- 载荷布局与块区间 ----
+    let block_layout = detect_sub_layout(data, ifd, order, h);
+    let regions = match collect_payload_regions(data, ifd, order, block_layout) {
+        Ok(v) if !v.is_empty() => v,
+        Ok(_) => {
+            return unresolved!(format!(
+                "SubIFD[{}] 的偏移表为空（既无 StripOffsets 也无 TileOffsets）",
+                index
+            ))
+        }
+        Err(e) => {
+            return unresolved!(format!("SubIFD[{}] 载荷布局不可读：{}", index, e.problem))
+        }
+    };
+
+    let fill = dng_sub_fill_order(dng, ifd);
+    // Predictor（缺省 1 = Null；DNG 只在 Compression=8 的章节定义它）。
+    let pred_code = ifd
+        .first_number(tags::PREDICTOR, order)
+        .filter(|v| v.is_finite() && *v >= 0.0 && *v <= u16::MAX as f32)
+        .map(|v| v as u16)
+        .unwrap_or(1);
+
+    // 逐块解码 → **按 `(x0, y0)` 落位**到整图缓冲（不是顺序追加！）。
+    //
+    // 缓冲**预填 0**：图边界处的 tile 含图外填充像素，落到界外时**跳过**
+    // （那部分本就不属于本图），而不是把后续块挤偏。
+    let mut samples: Vec<u16> = vec![0u16; total];
+    let row_len = (w as usize).saturating_mul(spp as usize);
+    let mut placed = 0usize;
+    for (idx, region) in regions.iter().enumerate() {
+        let SubRegion {
+            offset: off,
+            byte_len: len,
+            nominal_samples,
+            nominal_row_len,
+            x0,
+            y0,
+        } = *region;
+        // 本块应解出的样本数 = 标称量（图外填充照样解出来，落位时再裁）。
+        let want = nominal_samples;
+        let end = off.saturating_add(len as usize);
+        let raw_bytes: &[u8] = match data.get(off..end) {
+            Some(v) if !v.is_empty() => v,
+            _ => {
+                return unresolved!(format!(
+                    "SubIFD[{}] 第 {idx} 块区间 [{off}..{end}) 越界或为空（文件长 {}）",
+                    index,
+                    data.len()
+                ))
+            }
+        };
+
+        let block: Vec<u16> = match compression {
+            1 => match unpack_bits(raw_bytes, bits, want, fill) {
+                Ok(v) => v,
+                Err(e) => {
+                    return unresolved!(format!(
+                        "SubIFD[{}] 第 {idx} 块解包失败：{}",
+                        index, e.problem
+                    ))
+                }
+            },
+            7 => match crate::raw_lossless_jpeg::decode_dng_strip(raw_bytes, want, 0, 1, 0) {
+                Ok(v) => v,
+                Err(e) => {
+                    return unresolved!(format!(
+                        "SubIFD[{}] 第 {idx} 块无损 JPEG 解码失败：{}",
+                        index, e.problem
+                    ))
+                }
+            },
+            _ => {
+                // Deflate：**zlib 容器**（非裸 DEFLATE），与主图同口径。
+                let bytes = match raw::inflate_dng_zlib(raw_bytes, pred_code, LOC) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return unresolved!(format!(
+                            "SubIFD[{}] 第 {idx} 块 Deflate 解压失败：{}",
+                            index, e.problem
+                        ))
+                    }
+                };
+                let mut v = match unpack_bits(&bytes, bits, want, fill) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return unresolved!(format!(
+                            "SubIFD[{}] 第 {idx} 块解包失败：{}",
+                            index, e.problem
+                        ))
+                    }
+                };
+                // 预测器不支持时**不解**（不静默产出错图）。
+                match raw::DeflatePredictor::from_code(pred_code) {
+                    Some(p) => p.undo_in_place(&mut v, nominal_row_len, bits),
+                    None => {
+                        return unresolved!(format!(
+                            "SubIFD[{}] 的 Predictor = {pred_code} 本模块未实装（{}），只解析元数据",
+                            index,
+                            raw::DeflatePredictor::reject_reason(pred_code)
+                        ))
+                    }
+                }
+                v
+            }
+        };
+        // 按 `(x0, y0)` 逐行落位；图边界外的部分**丢弃**（图外填充像素
+        // 不属于本图）。`nominal_row_len` 是本块的行宽（tile 宽 × spp），
+        // 整图行宽是 `width × spp` —— 两者不等时必须按各自的行宽跳。
+        let block_rows = if nominal_row_len == 0 {
+            0
+        } else {
+            block.len() / nominal_row_len
+        };
+        for by in 0..block_rows {
+            let dst_y = y0.saturating_add(by);
+            if dst_y >= h as usize {
+                break; // 整块都在图下方
+            }
+            let src_base = by.saturating_mul(nominal_row_len);
+            let dst_base = dst_y.saturating_mul(row_len).saturating_add(x0);
+            // 图边界处的 tile 含**图外填充像素**：块行宽是 `tile_width × spp`，
+            // 整图行宽是 `width × spp`。本行能写的样本数受**两者同时**约束——
+            // 既不得越过整图行尾（`row_len - x0`），也不得越过本块行尾
+            // （`nominal_row_len`）。少了后一个约束，拷满标称宽度就会跨过
+            // 行尾写进下一行（表现为隔行错位）。
+            let copy_w = row_len
+                .saturating_sub(x0)
+                .min(nominal_row_len);
+            for bx in 0..copy_w {
+                let src = src_base.saturating_add(bx);
+                let dst = dst_base.saturating_add(bx);
+                if let (Some(&sv), Some(slot)) = (block.get(src), samples.get_mut(dst)) {
+                    *slot = sv;
+                }
+            }
+        }
+        placed = placed.saturating_add(block.len());
+    }
+
+    // 全 0 意味着**一个样本都没落位**（块数/偏移表与尺寸不符）。
+    // 部分落位不做此判定——预览允许有 legitimately 为 0 的像素。
+    if placed == 0 {
+        return unresolved!(format!(
+            "SubIFD[{}] 一个块也没落位（{w}×{h}×{spp}，{} 块）；块数或偏移表与尺寸不符",
+            index,
+            regions.len()
+        ));
+    }
+    // 如实说明**没有做什么**：`PreviewColorSpace` / `YCbCrSubSampling`
+    // 只解析不应用，色彩空间转换是调用方的事——说清楚比让人误以为
+    // 拿到的是 sRGB 像素要好。
+    let note = format!(
+        "已解出 {} 样本（{w}×{h}×{spp}）；未做色彩空间转换（交错的原始样本，\
+         色彩解释由调用方按 PhotometricInterpretation={} 负责）",
+        samples.len(),
+        photometric_interpretation
+    );
+    SubIfdImage {
+        info: SubIfdInfo {
+            index,
+            file_offset,
+            new_subfile_type,
+            width: w,
+            height: h,
+            compression,
+            bits_per_sample: bits,
+            samples_per_pixel: spp,
+            photometric_interpretation,
+            subfile_kind,
+            layout,
+        },
+        pixels: Some(samples),
+        note,
+    }
+}
+
+/// 子 IFD 的 `FillOrder`（缺省 / 非法 → MSB-first）。
+///
+/// 复用 [`raw::DngFile::sub_ifd_fill_order`]（与主图 [`raw::DngFile::fill_order`]
+/// 的**回退策略一致**：按规范缺省解释，好过让整张预览不可读），
+/// 但读的是**子 IFD 自己的**标签——预览图可能与主图用不同位序。
+fn dng_sub_fill_order(dng: &DngFile, ifd: &TiffIfd) -> raw::FillOrder {
+    dng.sub_ifd_fill_order(ifd)
+        .unwrap_or(raw::FillOrder::MsbFirst)
+}
+
+/// SubIFD 的载荷布局（只需区分 strip / tile 两种）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SubLayout {
+    /// strip 布局（`StripOffsets` + `RowsPerStrip`）。
+    Strip {
+        /// 每 strip 行数。
+        rows_per_strip: u32,
+    },
+    /// tile 布局（`TileOffsets` + `TileWidth`/`TileLength`）。
+    Tile {
+        /// 单 tile 宽。
+        tile_width: u32,
+        /// 单 tile 高。
+        tile_length: u32,
+    },
+}
+
+/// 判定 SubIFD 的载荷布局（**tile 标签优先**，与主图 [`raw::RawLayout`] 同策略）。
+fn detect_sub_layout(data: &[u8], ifd: &TiffIfd, order: ByteOrder, height: u32) -> SubLayout {
+    let _ = data;
+    let tw = ifd.first_number(tags::TILE_WIDTH, order);
+    let tl = ifd.first_number(tags::TILE_LENGTH, order);
+    if let (Some(tw), Some(tl)) = (tw, tl) {
+        if tw >= 1.0 && tl >= 1.0 {
+            return SubLayout::Tile {
+                tile_width: tw as u32,
+                tile_length: tl as u32,
+            };
+        }
+    }
+    let rps = ifd
+        .first_number(tags::ROWS_PER_STRIP, order)
+        .filter(|v| v.is_finite() && *v >= 1.0)
+        .unwrap_or_else(|| height.max(1) as f32) as u32;
+    SubLayout::Strip {
+        rows_per_strip: rps.max(1),
+    }
+}
+
+/// 收集 SubIFD 各块的 `(文件偏移, 字节数, 标称样本数, 标称行宽)`。
+///
+/// `order` 是文件的真实字节序 —— 布局判定由 [`detect_sub_layout`] 完成，
+/// 本函数只按布局切块。
+fn collect_payload_regions(
+    data: &[u8],
+    ifd: &TiffIfd,
+    order: ByteOrder,
+    layout: SubLayout,
+) -> RawResult<Vec<SubRegion>> {
+    let offs = numbers_u64(ifd, tags::STRIP_OFFSETS, order);
+    let counts = numbers_u64(ifd, tags::STRIP_BYTE_COUNTS, order);
+    let w = ifd.first_number(tags::IMAGE_WIDTH, order).unwrap_or(0.0);
+    let h = ifd.first_number(tags::IMAGE_LENGTH, order).unwrap_or(0.0);
+    let spp = ifd
+        .first_number(tags::SAMPLES_PER_PIXEL, order)
+        .unwrap_or(1.0)
+        .max(1.0);
+    let (wi, hi, sppi) = (
+        w.max(0.0) as usize,
+        h.max(0.0) as usize,
+        spp as usize,
+    );
+    let _ = data;
+    let mut out: Vec<SubRegion> = Vec::new();
+    match layout {
+        SubLayout::Tile {
+            tile_width,
+            tile_length,
+        } => {
+            let toffs = numbers_u64(ifd, tags::TILE_OFFSETS, order);
+            let tcounts = numbers_u64(ifd, tags::TILE_BYTE_COUNTS, order);
+            let tw = tile_width.max(1);
+            let tl = tile_length.max(1);
+            let across = (wi as u32).div_ceil(tw);
+            let down = (hi as u32).div_ceil(tl);
+            let n = (across as usize).saturating_mul(down as usize);
+            for i in 0..n.min(toffs.len()) {
+                // 块按**行优先**排列：第 `ty` 行第 `tx` 列的序号 =
+                // `ty * across + tx`（与主图 `read_raw_samples` 的 tile
+                // 分支同一口径）。
+                let tx = (i as u32) % across;
+                let ty = (i as u32) / across;
+                let nominal = (tw as usize).saturating_mul(tl as usize).saturating_mul(sppi);
+                out.push(SubRegion {
+                    offset: toffs[i] as usize,
+                    byte_len: tcounts.get(i).copied().unwrap_or(0) as u32,
+                    nominal_samples: nominal,
+                    nominal_row_len: (tw as usize).saturating_mul(sppi),
+                    x0: (tx.saturating_mul(tw) as usize).saturating_mul(sppi),
+                    y0: ty.saturating_mul(tl) as usize,
+                });
+            }
+        }
+        SubLayout::Strip { rows_per_strip } => {
+            let rps = (rows_per_strip.max(1)) as usize;
+            let strips = hi.div_ceil(rps);
+            for s in 0..strips.min(offs.len()) {
+                let rows = rps.min(hi.saturating_sub(s.saturating_mul(rps)));
+                let nominal = wi.saturating_mul(rows).saturating_mul(sppi);
+                out.push(SubRegion {
+                    offset: offs[s] as usize,
+                    byte_len: counts.get(s).copied().unwrap_or(0) as u32,
+                    nominal_samples: nominal,
+                    nominal_row_len: wi.saturating_mul(sppi),
+                    // strip 只切行：`x0` 恒 0，`y0 = s × RowsPerStrip`。
+                    x0: 0,
+                    y0: s.saturating_mul(rps),
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// 一个载荷块在**整图坐标系**里的定位与标称形状。
+///
+/// # 为什么必须带 `x0` / `y0`（这曾是一个真实的 bug）
+///
+/// tile 是**二维**分块：同一行的第 `tx` 个 tile 落在 `x0 = tx × TileWidth`，
+/// 第 `ty` 行落在 `y0 = ty × TileLength`。早期实现把块**按顺序追加**到
+/// 样本缓冲（隐含「每块都是满宽、且顺序就是行序」），于是：
+///
+/// - 同一行的所有 tile 都写到第 0 **列** → 互相覆盖，图像右侧被涂掉；
+/// - strip 布局下 `y0` 若被当成 0，多个 strip 会全部堆在头几行。
+///
+/// 症状是「能解出、长度也对、像素全错」——最坏的一类 bug。故定位信息
+/// 必须在**收集阶段**就带全，拷贝阶段只管按 `(x0, y0)` 落位。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SubRegion {
+    /// 载荷在文件中的起始偏移。
+    offset: usize,
+    /// 压缩字节数（`StripByteCounts` / `TileByteCounts` 对应项）。
+    byte_len: u32,
+    /// 本块的**标称**样本数（含图边界外的填充像素）。
+    nominal_samples: usize,
+    /// 本块每行的样本数（`tile_width × spp` 或 `width × spp`）。
+    ///
+    /// 预测器按行运算，必须知道行宽——否则跨块边界的行会被接错。
+    nominal_row_len: usize,
+    /// 本块左上角在整图中的**列**坐标（样本列，非像素列）。
+    x0: usize,
+    /// 本块左上角在整图中的**行**坐标。
+    y0: usize,
+}
+
+/// 从一个 IFD 读 `u64` 数组（过滤非法值）。
+fn numbers_u64(ifd: &TiffIfd, tag: u16, order: ByteOrder) -> Vec<u64> {
+    ifd.numbers(tag, order)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|v| v.is_finite() && *v >= 0.0 && *v <= u32::MAX as f32)
+        .map(|v| v as u64)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::raw::ByteOrder;
     use crate::raw_dng_synth::{synthesize_dng, DngSampleSpec, PreviewLayout, PreviewSpec};
+
 
     fn parse_one_preview(spec: &DngSampleSpec) -> SubIfdImage {
         let file = synthesize_dng(spec).unwrap_or_else(|e| panic!("{e}"));

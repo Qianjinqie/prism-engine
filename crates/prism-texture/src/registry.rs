@@ -1,6 +1,6 @@
-//! 纹理注册表（B14）：名称 → 纹理工厂。
+//! 纹理注册表：名称 → 纹理工厂。
 //!
-//! 语义权威：《架构总设计》v2.4 §2.2（纹理 = 程序化生成器特解，节点暴露
+//! 语义权威：（纹理 = 程序化生成器特解，节点暴露
 //! 形态 = 纹理节点）；注册表风格与 prism-postfx `EffectRegistry` 一致
 //! （HashMap 索引 + 结构化三段式错误，宪章 C18/C19）。
 
@@ -99,7 +99,7 @@ impl TextureRegistry {
     }
 }
 
-/// 官方预置纹理注册表（B14 程序化纹理族全集）。
+/// 官方预置纹理注册表（程序化纹理族全集）。
 pub fn default_registry() -> TextureRegistry {
     let mut reg = TextureRegistry::new();
     reg.register("paper", || Box::new(Paper::default())).unwrap();

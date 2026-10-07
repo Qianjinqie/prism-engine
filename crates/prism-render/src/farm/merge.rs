@@ -1,11 +1,11 @@
-//! 结果合并：形状对齐的确定性归约（白皮书 §26 固定形状归约代数）。
+//! 结果合并：形状对齐的确定性归约（固定形状归约代数）。
 //!
 //! # 铁律：块内不归约，归约只在主节点发生一次
 //!
 //! 本模块的合并入口 [`merge_shards`] 收 [`FrameShard`]——**每个分片带的是逐帧
 //! 部分值，不是块内汇总值**。合并步骤：
 //!
-//! 1. **按帧号归位**（§26 律三"消序用排序"）：分片可以任意顺序到达、按任意
+//! 1. **按帧号归位**（律三"消序用排序"）：分片可以任意顺序到达、按任意
 //!    顺序被调度器分发；归位键是**帧号**（数据内容），不是完成顺序；
 //! 2. **不重不漏校验**：归位后逐帧值必须恰好覆盖全部帧，缺一帧即 P5005；
 //! 3. **一次归约**：[`prism_core::graph::reduce`] 按
@@ -279,7 +279,7 @@ where
             // 内部不自洽：不猜测、不补默认值——退回串行参考（结果仍正确）。
             return reduce(layer, combine, unit);
         }
-        // 奇数尾元素直接进位下一层（§26 形状规则）。
+        // 奇数尾元素直接进位下一层（形状规则）。
         let carry_from: usize = pairs.len() * 2;
         if let Some(tail) = layer.get(carry_from) {
             next.push(tail.clone());
@@ -367,7 +367,7 @@ mod tests {
         z ^ (z >> 31)
     }
 
-    /// 浮点载荷：结合序敏感的小数（§26 的反例来源：浮点加法不结合）。
+    /// 浮点载荷：结合序敏感的小数（的反例来源：浮点加法不结合）。
     fn fval(frame: u64) -> f32 {
         0.1 * (frame as f32) + 0.05
     }
@@ -424,7 +424,7 @@ mod tests {
 
     #[test]
     fn parallel_merge_matches_serial_reference_across_scales() {
-        // 核心验收（账本原话"并行 md5 == 串行 md5"）：多规模逐位一致。
+        // 核心验收（"并行 md5 == 串行 md5"）：多规模逐位一致。
         // 规模含非 2 的幂（3 / 7 / 100 / 1000）与 2 的幂（1 / 2 / 8 / 1024）。
         for n in [1u64, 2, 3, 7, 8, 100, 1000, 1024] {
             let parts: Vec<FrameRange> = split_frames(0, n - 1, 8).expect("应可切分");
@@ -484,7 +484,7 @@ mod tests {
 
     #[test]
     fn merge_audit_tree_shape_is_pure_function_of_frame_count() {
-        // 归约树形状 = 帧数的纯函数（§26 核心构造）：审计字段可观测。
+        // 归约树形状 = 帧数的纯函数（核心构造）：审计字段可观测。
         for n in [1u64, 2, 3, 7, 8, 100, 1000, 1024] {
             let parts: Vec<FrameRange> = split_frames(0, n - 1, 3).expect("应可切分");
             let (_value, audit): (u64, MergeAudit) =

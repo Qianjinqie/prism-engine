@@ -1,4 +1,4 @@
-// prism-text SDF 采样 shader（D4）——字形 SDF atlas 采样 + 抗锯齿。
+// prism-text SDF 采样 shader —— 字形 SDF atlas 采样 + 抗锯齿。
 //
 // # 对应关系（判对基准 = prism-text/src/sdf.rs 烘焙的 atlas）
 // - atlas：R8 通道，值 = 有符号距离映射到 [0,1]（d ∈ [−spread, +spread] → [0,1]）。

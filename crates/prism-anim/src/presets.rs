@@ -4,7 +4,7 @@
 //! snappy/wobbly/bouncy` 对齐 React Spring / framer-motion 的预设词汇，参数
 //! 以 (ω, ζ) 直接给出，物理含义显式可调。
 //!
-//! 全部预设是常量数据（纯声明，零运行时成本，架构 §2.1 别名层同款哲学）。
+//! 全部预设是常量数据（纯声明，零运行时成本， 别名层同款哲学）。
 
 use crate::spring::Spring;
 

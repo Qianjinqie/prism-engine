@@ -1,4 +1,4 @@
-//! Fractal Brownian motion — octave-summed spectral synthesis (whitepaper §17).
+//! Fractal Brownian motion — octave-summed spectral synthesis .
 //!
 //! `fbm(p) = Σᵢ ampᵢ · base(freqᵢ · p, seedᵢ)` with `freqᵢ = lacunarityⁱ`,
 //! `ampᵢ = gainⁱ`, `seedᵢ = seed + i` (octave seeds differ by the octave index;
@@ -7,7 +7,7 @@
 //! `[-1, 1]` for any octave count. With `octaves = 1` the result is exactly
 //! the base noise (freq = 1, amp = 1, norm = 1) — asserted bitwise by a test.
 //!
-//! Practical parameters (whitepaper §17): octaves 4–6, lacunarity ≈ 2,
+//! Practical parameters:octaves 4–6, lacunarity ≈ 2,
 //! gain ≈ 0.5. The caller must keep `lacunarity^octaves` within the finite
 //! f32 range (saturating casts make overflow deterministic but meaningless).
 

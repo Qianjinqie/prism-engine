@@ -7,7 +7,7 @@ edition = "2021"
 prism-core = { path = "../prism-core" }
 prism-math = { path = "../prism-math" }
 prism-noise = { path = "../prism-noise" }
-# 账三 U4 实时 GI：复用 prism-geometry 的 SDF 场（Csg/图元）与 sphere tracing
+# 实时 GI：复用 prism-geometry 的 SDF 场（Csg/图元）与 sphere tracing
 # （D-16 单实现，免重复造轮子）。prism-geometry 不依赖 prism-rt，无循环。
 prism-geometry = { path = "../prism-geometry" }
 

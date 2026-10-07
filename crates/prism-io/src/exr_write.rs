@@ -1,17 +1,17 @@
-//! EXR 写入器 —— 与 [`crate::exr`] 的读取器对称（U7 收口 · 路L 补完）。
+//! EXR 写入器 —— 与 [`crate::exr`] 的读取器对称。
 //!
 //! # 覆盖范围
 //!
 //! - **flat 扫描线压缩**：`None` / `Rle` / `Zip` / `Zips` / `Piz` / `Pxr24` /
 //!   `B44` / `B44A`（复用 [`crate::exr_compress`] 的编码器）+
-//!   `Dwaa` / `Dwab`（W11 路B 补完，见 [`crate::exr_dwa::dwa_compress`]）；
-//! - **flat 分块（tiled）**：[`write_tiled_image`]（W14 路2 补完）——同样的十种压缩，
+//!   `Dwaa` / `Dwab`（见 [`crate::exr_dwa::dwa_compress`]）；
+//! - **flat 分块（tiled）**：[`write_tiled_image`]——同样的十种压缩，
 //!   `ONE_LEVEL` 单层 tile 网格，**边缘 tile 按裁剪尺寸写**；
 //! - **deep 扫描线**：[`write_deep_image`]，压缩支持 `None` / `Rle` / `Zips` /
 //!   `Zip`（逐扫描线一块）；
 //! - **deep tiled**、multipart → **结构化拒绝**（见 [`check_writable`] 的理由）。
 //!
-//! # 分块（tiled）布局规格（W14 路2 · 全部经官方 OpenEXR 3.1.5 实测反解）
+//! # 分块（tiled）布局规格（全部经官方 OpenEXR 3.1.5 实测反解）
 //!
 //! | 环节 | 本写入器的口径 | 官方实测依据 |
 //! |---|---|---|
@@ -22,7 +22,7 @@
 //! | 块序 | 行主序 `block = ty * tiles_x + tx` | 实测 chunk 顺序 `(0,0)(1,0)(0,1)(1,1)` |
 //! | **边缘 tile** | 负载**只含裁剪后**的 `tw × th` | 64×48 图 + 32×32 tile：上排 `len=4096`（32×32×4B），下排 `len=2048`（32×**16**×4B） |
 //!
-//! **tile 尺寸无「32 的倍数」硬约束**（任务书假设已被实测推翻）：官方 3.1.5 对
+//! **tile 尺寸无「32 的倍数」硬约束**（一种常见假设已被实测推翻）：官方 3.1.5 对
 //! `1×1` / `3×5` / `17×32` / `32×17` / `33×32` 一律**正常写出并读回**，无异常。
 //! 故本写入器只校验「非 0」，不强制对齐；需要跨实现最高兼容时由调用方选 32 的倍数。
 //!
@@ -404,7 +404,7 @@ fn writer_rejection(c: Compression) -> &'static str {
 /// 写入器**是否实现**该压缩类型的编码。
 ///
 /// 与读取侧的 [`Compression::is_supported`] **不同**：读取侧十种全支持，写入侧
-/// 做 `None/Rle/Zip/Zips/Piz/Pxr24/B44/B44A` 八种 + `Dwaa/Dwab`（W11 路B 补完）。
+/// 做 `None/Rle/Zip/Zips/Piz/Pxr24/B44/B44A` 八种 + `Dwaa/Dwab`。
 pub fn writer_supports(c: Compression) -> bool {
     matches!(
         c,
@@ -439,7 +439,7 @@ fn encode_block(
         Compression::Pxr24 => pxr24_compress(raw, ctx),
         Compression::B44 => b44_compress(raw, ctx, false),
         Compression::B44A => b44_compress(raw, ctx, true),
-        // DWAA / DWAB（W11 路B）：算法一致，块行数由 `lines_per_block()` 决定。
+        // DWAA / DWAB：算法一致，块行数由 `lines_per_block()` 决定。
         Compression::Dwaa | Compression::Dwab => {
             let chans: Vec<(String, PixelType, bool)> = ctx
                 .channels
@@ -857,12 +857,12 @@ pub fn write_image(
 }
 
 // ===========================================================================
-//  四之二、flat 分块（tiled）写入 —— W14 路2
+//  四之二、flat 分块（tiled）写入
 // ===========================================================================
 
 /// tile 网格中第 `(tx, ty)` 个 tile 的**裁剪后**像素尺寸。
 ///
-/// ⚠️ **边缘 tile 必须按裁剪尺寸写**（W13 坑#3，`ImfDwaCompressor.cpp:689`）：
+/// ⚠️ **边缘 tile 必须按裁剪尺寸写**（已知坑#3，`ImfDwaCompressor.cpp:689`）：
 /// 官方按 `ceil(_height / 8.0)` 计算 DCT 块行数，其中 `_height` 是**裁剪后**的行数。
 /// 若按完整 tile 高度写，末行/末列 tile 会多写数据，读端索要块数与文件不自洽。
 ///
@@ -916,7 +916,7 @@ fn build_tile_raw(
 /// - 每块头 = `tileX(i32) tileY(i32) levelX(i32) levelY(i32) dataSize(i32)`，
 ///   其中 `tileX/tileY` 是 **0 基 tile 索引**（**不是**像素坐标——官方在
 ///   dataWindow 原点平移后仍写索引）、`levelX = levelY = 0`；
-/// - **边缘 tile 的负载只含裁剪后的 `tw × th`**（W13 坑#3）。
+/// - **边缘 tile 的负载只含裁剪后的 `tw × th`**（已知坑#3）。
 ///
 /// # 支持范围
 ///
@@ -1203,7 +1203,7 @@ pub fn header_for(
         compression,
         data_window: DataWindow::new(width, height),
         display_window: DataWindow::new(width, height),
-        // 【W13 修正】块序 = y 升序（`write_scanline_image` 的 `b` 递增），
+        // 修正记录：块序 = y 升序（`write_scanline_image` 的 `b` 递增），
         // 故 `lineOrder` 必须标 `INCREASING_Y`，否则官方按声明的降序
         // 反向遍历偏移表会读出「Early end of file」。详见
         // [`crate::exr::LINE_ORDER_INCREASING`] 的完整根因。
@@ -1884,7 +1884,7 @@ mod tests {
 
     #[test]
     fn writer_supports_covers_ten_types() {
-        // 写入侧能力表：十种全部实现（DWA 于 W11 路B 补完）。
+        // 写入侧能力表：十种全部实现（含 DWAA / DWAB）。
         for c in [
             Compression::None,
             Compression::Rle,
@@ -1901,7 +1901,7 @@ mod tests {
         }
     }
 
-    // -- 7. DWAA / DWAB 写入（W11 路B）------------------------------------
+    // -- 7. DWAA / DWAB 写入 ------------------------------------
 
     /// DWA 有损往返：读回值与原始值在 `tol` 内（有损阈值见 `exr_dwa` 模块注释）。
     #[test]
@@ -2161,7 +2161,7 @@ mod tests {
         assert_eq!(forward, reversed, "平面传入顺序不得影响输出字节");
     }
 
-    /// W13互通对拍：`lineOrder` 必须与**实际块序**一致（本仓按y 升序写块）。
+    /// 互通对拍：`lineOrder` 必须与**实际块序**一致（本仓按y 升序写块）。
     ///
     /// 回归测试：原先 `header_for` 把 `lineOrder` 标成 `DECREASING_Y(1)`，
     /// 而 `write_scanline_image` 实际按 **y 升序**写块。官方读取器按声明的
@@ -2299,7 +2299,7 @@ mod tests {
     }
 
     // =======================================================================
-    //  8. flat 分块（tiled）写入 —— W14 路2
+    //  8. flat 分块（tiled）写入
     // =======================================================================
 
     /// tiled 往返断言：经 [`crate::exr::read_all_tiles`] 读回，逐位/容差内一致。
@@ -2450,7 +2450,7 @@ mod tests {
 
     #[test]
     fn tiled_write_dwaa_dwab_round_trips_within_lossy_bound() {
-        // DWAA/DWAB + tiled：DCT 块行数按**裁剪后**的 tile 高算（W13 坑#3）。
+        // DWAA/DWAB + tiled：DCT 块行数按**裁剪后**的 tile 高算（已知坑#3）。
         // 32×32 tile + 48 行图 ⇒ 末行 tile 只有 16 行 ⇒ 2×4 个 8×8 块而非 4×4。
         for comp in [Compression::Dwaa, Compression::Dwab] {
             for (w, h) in [(32u32, 48u32), (64u32, 48u32)] {
@@ -2468,7 +2468,7 @@ mod tests {
 
     #[test]
     fn tiled_edge_tiles_are_written_at_clipped_size_not_full_tile_size() {
-        // ⚠️ W13 坑#3 的直接钉死：64×48 图 + 32×32 tile。
+        // ⚠️ 已知坑#3 的直接钉死：64×48 图 + 32×32 tile。
         // 上排 tile 32 行 ⇒ 32×32×4B = 4096；下排 tile 只 16 行 ⇒ 2048。
         // 若按完整 tile 尺寸写，下排会是 4096 → 本测试判红。
         let (w, h) = (64u32, 48u32);

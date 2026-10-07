@@ -1,12 +1,12 @@
 //! codegen：AST → 引擎产物。
 //!
 //! v1（M0/M1）路径逐字保留：`codegen(&DocumentAst) -> CompileOutput`；
-//! v2（W3-A4）路径：`codegen_v2(&DocumentV2Ast) -> CompileV2Output`，落点为
+//! v2 路径：`codegen_v2(&DocumentV2Ast) -> CompileV2Output`，落点为
 //! prism-core 节点图（`Graph` + `Node.params` + `Node.bindings`）与属性通道
 //! （`PropertyChannel`），深语义（渲染 / 模拟步进 / 音频）留 Phase 2/3。
 //!
 //! # v2 语义决策（文档化）
-//! - **节点映射**（架构 §2.2 友好名 → 结构表）：layer text → S12 实体表示；
+//! - **节点映射**（友好名 → 结构表）：layer text → S12 实体表示；
 //!   layer particles → S4 确定性抽样；sim → S3 约束梯度流；stage3d sdf →
 //!   S12；stage3d material → S8 辐射传输；stage3d camera → S5 重参数化；
 //!   compose → S2 卷积（Merge(op) 汇点）。
@@ -212,7 +212,7 @@ pub struct AudioInfo {
     pub music: BTreeMap<String, f32>,
 }
 
-/// note 块摘要（B13 作曲系统）：块名 + 音阶 / 根音 / 速度 / 小节 / 种子 / 琶音开关。
+/// note 块摘要（作曲系统）：块名 + 音阶 / 根音 / 速度 / 小节 / 种子 / 琶音开关。
 ///
 /// 字段值经 codegen 白名单校验并回填缺省（缺省走情绪无关的通用作曲缺省）。
 #[derive(Debug, Clone, PartialEq)]
@@ -253,7 +253,7 @@ const NOTE_SCALES: [&str; 8] = [
     "mixolydian",
 ];
 
-/// theme 块美学参数摘要（v2；字段集与 v1 aesthetic 相同，见路线图 §3.6）。
+/// theme 块美学参数摘要（v2；字段集与 v1 aesthetic 相同，见）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ThemeInfo {
     /// teal-orange 调色开关。
@@ -285,7 +285,7 @@ pub struct SceneV2 {
     pub post: PostInfo,
     /// audio 参数。
     pub audio: Option<AudioInfo>,
-    /// note 块列表（B13 作曲系统；可多个）。
+    /// note 块列表（作曲系统；可多个）。
     pub notes: Vec<NoteInfo>,
 }
 
@@ -1014,7 +1014,7 @@ pub(crate) fn codegen_v2(doc: &DocumentV2Ast) -> Result<CompileV2Output, DslErro
             err_at(
                 e.line,
                 format!(
-                    "[P2105] expr '{}' 解析失败：{:?}\n  建议：受限表达式只支持变量 t/p/w/h、数字与 + - * / ( ) 运算（函数调用等完整语法随后续波次）",
+                    "[P2105] expr '{}' 解析失败：{:?}\n  建议：受限表达式只支持变量 t/p/w/h、数字与 + - * / ( ) 运算（函数调用等完整语法随后续版本）",
                     e.name, parse_err
                 ),
             )
@@ -1234,7 +1234,7 @@ fn build_sdf(b: &mut V2Builder, sdf: &SdfAst, si: usize) -> Result<NodeId, DslEr
         return Err(err_at(
             sdf.line,
             format!(
-                "[P1002] 未知的 sdf kind '{}'\n  建议：当前支持 sphere / box 两种基元（更多基元随几何波次接入）",
+                "[P1002] 未知的 sdf kind '{}'\n  建议：当前支持 sphere / box 两种基元（更多基元随几何模块接入）",
                 kind
             ),
         ));
@@ -1369,7 +1369,7 @@ fn build_layer(b: &mut V2Builder, layer: &LayerAst, si: usize) -> Result<NodeId,
         other => Err(err_at(
             layer.line,
             format!(
-                "[P1002] 未知的 layer 种类 '{}'\n  建议：当前支持 text / particles 两种图层（更多图层随渲染波次接入）",
+                "[P1002] 未知的 layer 种类 '{}'\n  建议：当前支持 text / particles 两种图层（更多图层随渲染模块接入）",
                 other
             ),
         )),
@@ -1952,7 +1952,7 @@ fn build_audio(audio: &AudioAst) -> Result<AudioInfo, DslError> {
     Ok(info)
 }
 
-/// note 块（B13）→ NoteInfo 摘要：scale/root/bpm/bars/seed/arpeggio 白名单 + 防呆。
+/// note 块 → NoteInfo 摘要：scale/root/bpm/bars/seed/arpeggio 白名单 + 防呆。
 fn build_note(note: &NoteAst) -> Result<NoteInfo, DslError> {
     let mut scale: String = NOTE_DEFAULT_SCALE.to_string();
     let mut root: i32 = NOTE_DEFAULT_ROOT;

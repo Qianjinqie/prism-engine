@@ -1,6 +1,6 @@
 //! **DNG 端到端探针**：给定 `.dng` 路径 → 走完整管线 → 打印关键诊断。
 //!
-//! 这是路C 的「样本驱动端到端测试入口」。用户未来丢一个真实相机 `.dng` 进来，
+//! 这是「样本驱动端到端测试入口」。用户未来丢一个真实相机 `.dng` 进来，
 //! **不需要再改任何代码**，直接跑：
 //!
 //! ```bash
@@ -14,7 +14,7 @@
 //! cargo run -p prism-io --example dng_probe -- --synth /tmp/t.dng \
 //!     --bits 12 --compression 7 --tile 16x16 --components 2
 //!
-//! # Deflate(ZIP) + Horizontal 预测器 + SubIFD 预览图（W12 路E）
+//! # Deflate(ZIP) + Horizontal 预测器 + SubIFD 预览图
 //! cargo run -p prism-io --example dng_probe -- --synth /tmp/d.dng \
 //!     --compression 8 --deflate-predictor 2 --preview 160x120 --diagnose
 //! ```

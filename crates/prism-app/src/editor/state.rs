@@ -1,13 +1,13 @@
 //! 编辑器状态机：图 + 选中节点 + 撤销/重做历史 + 增量失效。
 //!
-//! # 增量失效（本批次核心）
+//! # 增量失效（本轮核心）
 //! 见模块头 [`super`] 的说明。要点：用签名树的「改一个节点只影响其到根祖先链」
 //! 性质，把「受影响子图」精确算出——dirty 集合**恰好**是下游闭包，不多不少。
 //!
 //! # 为什么不直接改 `prism_core::Graph`
 //! core 的 [`Graph`] 是**只增**结构（`add_node` / `connect`，无 `remove_node`
 //! / `node_mut`），这是它的语义契约。编辑器需要「改参数 / 删节点」这些**非
-//! 只增**操作。为**不侵入 core**（避免与其它批次冲突），本模块持有自己的
+//! 只增**操作。为**不侵入 core**（避免与其它轮次冲突），本模块持有自己的
 //! 权威模型 [`EditorModel`]（节点表 + 边表），在需要签名 / canonical 字节时
 //! **现建**一张 `prism_core::Graph` 交给签名树。core 的签名 API 原样复用。
 //!
@@ -734,7 +734,7 @@ pub enum ExportError {
 /// 由模型构造默认参数 schema（UI 控件生成用）。
 ///
 /// 范围与步进取保守默认（数值 [0,1] 步进 0.01），真实 schema 由节点注册表
-/// （prism-core registry）在未来批次接入。
+/// （prism-core registry）在未来轮次接入。
 fn default_schemas(model: &EditorModel) -> BTreeMap<NodeId, Vec<ParamSpec>> {
     let mut map = BTreeMap::new();
     for node in model.nodes() {

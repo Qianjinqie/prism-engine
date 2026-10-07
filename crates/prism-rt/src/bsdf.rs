@@ -1,6 +1,6 @@
-//! Disney BSDF（W5-B2）：specular / diffuse / transmission 三瓣 + 多散射补偿。
+//! Disney BSDF：specular / diffuse / transmission 三瓣 + 多散射补偿。
 //!
-//! # 论文出处（路线图 §6.1 数据资产清单 #4：代码注释注明出处义务）
+//! # 论文出处（数据资产清单 #4：代码注释注明出处义务）
 //! - Disney 参数化（metalness / 感知 roughness / FD90 漫反修正）：B. Burley,
 //!   "Physically-Based Shading at Disney", SIGGRAPH 2012 Course: Practical
 //!   Physically Based Shading in Film and Game Production。
@@ -15,15 +15,15 @@
 //! - 多散射能量补偿框架：C. Kulla, A. Conty, "Revisiting Physically Based
 //!   Shading at Imageworks", SIGGRAPH 2017 Course——取其"单散射反照率预积分 +
 //!   亏损回填"结构；f0 影响按两端点（f0=0 / f0=1）线性插值、回填密度方向
-//!   解耦，白皮书 §3"解析近似按比例回填"的字面执行（简化声明：非完整
+//!  解耦，"解析近似按比例回填"的字面执行（简化声明：非完整
 //!   Kulla-Conty 双线性形式）。
 //!
-//! # glTF 同构（B3 `gltf.rs` PbrMaterial 字段一一对应，零转换）
+//! # glTF 同构（`gltf.rs` PbrMaterial 字段一一对应，零转换）
 //! `base_color` ↔ baseColorFactor、`metalness` ↔ metallicFactor、`roughness` ↔
 //! roughnessFactor、`ior` ↔ KHR_materials_ior。α = roughness²（Burley 感知映射）；
 //! 电介质 F0 = ((ior−1)/(ior+1))²（ior=1.5 → 0.04，与 glTF 默认 specular 常数一致）。
 //!
-//! # 确定性（D-29 / 架构 §4.3 格锚表）
+//! # 确定性（D-29 / 格锚表）
 //! 全部公式只含 ±×÷√（sqrt 为 IEEE 精确舍入运算，不在禁列）；方位角三角走
 //! [`crate::sampler`] 的 det 三角件；整数幂一律连乘（禁 pow）；能量表由 Sobol
 //! 纯函数流一次性构造（OnceLock，样本流 = hash 派生，无全局 RNG）。
@@ -131,9 +131,9 @@ pub fn reflect_dir(w_in: Vec3, n: Vec3) -> Vec3 {
 /// 在局部坐标系（+z = 几何法线）内采样 GGX VNDF 法线。
 /// 输入 `ve_local` = 局部视线方向（z > 0）；返回微表面法线。
 fn sample_vndf(ve_local: Vec3, alpha: f32, u1: f32, u2: f32) -> Vec3 {
-    // §3.2：拉伸到半球配置。
+    // 拉伸到半球配置。
     let vh = Vec3::new(alpha * ve_local.x, alpha * ve_local.y, ve_local.z).normalize();
-    // §4.1：正交基（lensq = 0 零叉积特例，errata 2019-06-17）。
+    // 正交基（lensq = 0 零叉积特例，errata 2019-06-17）。
     let lensq = vh.x * vh.x + vh.y * vh.y;
     let t1 = if lensq > 0.0 {
         Vec3::new(-vh.y, vh.x, 0.0) * (1.0 / lensq.sqrt())
@@ -141,17 +141,17 @@ fn sample_vndf(ve_local: Vec3, alpha: f32, u1: f32, u2: f32) -> Vec3 {
         Vec3::new(1.0, 0.0, 0.0)
     };
     let t2 = vh.cross(&t1);
-    // §4.2：投影圆盘参数化。
+    // 投影圆盘参数化。
     let r = u1.sqrt();
     let (c, s) = cos_sin(2.0 * PI * u2);
     let t1p = r * c;
     let mut t2p = r * s;
     let sc = 0.5 * (1.0 + vh.z);
     t2p = (1.0 - sc) * (1.0 - t1p * t1p).max(0.0).sqrt() + sc * t2p;
-    // §4.3：重投影回半球。
+    // 重投影回半球。
     let nz = (1.0 - t1p * t1p - t2p * t2p).max(0.0).sqrt();
     let nh = t1 * t1p + t2 * t2p + vh * nz;
-    // §3.4：反拉伸回椭球配置。
+    // 反拉伸回椭球配置。
     Vec3::new(alpha * nh.x, alpha * nh.y, nh.z.max(0.0)).normalize()
 }
 
@@ -503,7 +503,7 @@ pub struct BsdfSample {
 /// 采样上下文（PSR 路径空间正则化的 roughness 下限；0 = 不正则化）。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SampleCtx {
-    /// PSR 注入的最小 roughness（白皮书 §2：镜面 roughness 注入种子派生微抖动）。
+    /// PSR 注入的最小 roughness（镜面 roughness 注入种子派生微抖动）。
     pub psr_rough: f32,
 }
 
@@ -639,7 +639,7 @@ pub fn local_to_world(v_local: Vec3, n: Vec3) -> Vec3 {
     t * v_local.x + b * v_local.y + n * v_local.z
 }
 
-/// PSR 方向微抖动：切平面注入 ε 量级偏移（白皮书 §2 PSR；u 为样本流哈希
+/// PSR 方向微抖动：切平面注入 ε 量级偏移（PSR；u 为样本流哈希
 /// 坐标，确定性纯函数）。
 fn jitter_dir(dir: Vec3, n: Vec3, eps: f32, u: f32) -> Vec3 {
     let (t, b) = onb(n);

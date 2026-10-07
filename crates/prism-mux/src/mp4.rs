@@ -1,4 +1,4 @@
-//! MP4 容器写入（C4；路线图 C4 行 / §3.5：MP4(ISO-BMFF) + MJPEG + PCM）。
+//! MP4 容器写入（C4；§3.5：MP4(ISO-BMFF) + MJPEG + PCM）。
 //!
 //! 手写 ISO-BMFF：`ftyp` + `mdat`（全部样本）+ `moov`（`mvhd` + 视频 `trak` +
 //! 可选音频 `trak`）。视频轨为 MJPEG（逐帧同步样本），音频轨为 PCM（lpcm）。

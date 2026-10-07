@@ -1,4 +1,4 @@
-// prism-sim 布料 compute（D3）——XPBD 距离/弯曲约束投影。
+// prism-sim 布料 compute —— XPBD 距离/弯曲约束投影。
 //
 // # 对应关系（判对基准 = prism-physics/cloth.rs）
 // - 结构约束（水平 + 垂直相邻，rest = spacing）与弯曲约束（隔一，rest = 2·spacing）。

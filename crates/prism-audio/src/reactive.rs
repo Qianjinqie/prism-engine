@@ -1,14 +1,14 @@
-//! AudioReactive 烘焙（B6；白皮书 §20 第 4/5 条、架构 §4.4）。
+//! AudioReactive 烘焙（B6； 第 4/5 条）。
 //!
 //! 音频 → FFT 频段能量 → 参数通道表：第 **N** 帧读样本窗 `[N·hop, N·hop+win)`
 //! （补零过界），窗内容完全由 N 与缓冲决定——**帧级纯函数**，跳第 N 帧 ≡
-//! 顺序推进（seek 等价，白皮书 §19 音画同源 + §20 状态可重建）。
+//! 顺序推进（seek 等价， 音画同源 + 状态可重建）。
 //!
 //! 频段：`band_edges`（Hz，升序）把半谱切成 N−1 段（默认 bass/mid/air 三段
 //! = 边缘 `[0, 200, 2000, Nyquist]`）；段值 = 段内功率和，按满幅正弦单 bin
 //! 能量 `(win/4)²` 归一并钳到 [0, 1]（Hann 相干增益 0.5 → 单 bin 谱峰 win/4）。
 //!
-//! # EvalCtx 接线（架构 §4.4：状态在快照库，纯数据资产而非隐藏全局）
+//! # EvalCtx 接线（状态在快照库，纯数据资产而非隐藏全局）
 //!
 //! [`install_bake`] 把烘焙表写入 `EvalCtx.snapshots` 的固定槽位
 //! （[`reactive_slot`]，帧 0）；`nodes::AudioReactiveNode` / `AudioLevelNode`
@@ -205,8 +205,8 @@ impl ReactiveBake {
     }
 }
 
-/// 快照库槽位键（架构 §4.4 接线）：按 crate 标签经 PCG 派生的固定 256 位
-/// 标识——一个求值上下文装载一份 reactive 烘焙（多烘焙路由属求值层批次）。
+/// 快照库槽位键（接线）：按 crate 标签经 PCG 派生的固定 256 位
+/// 标识——一个求值上下文装载一份 reactive 烘焙（多烘焙路由属求值层轮次）。
 pub fn reactive_slot() -> Hash256 {
     const TAG: u64 = 0x0A0D_10A0_00B6_0001; // "audio reactive" B6 标记
     let mut key = [0_u8; 32];

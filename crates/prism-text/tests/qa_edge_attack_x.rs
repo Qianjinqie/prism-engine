@@ -1,7 +1,7 @@
-//! prism-text 边缘攻击补充（W5-B5 QA）：退化输入、极端参数、缓存键正确性、
+//! prism-text 边缘攻击补充（QA）：退化输入、极端参数、缓存键正确性、
 //! 布局/竖排确定性。每个断言标注"失败代表何种缺陷"。
 //!
-//! 与 `qa_edge_attack.rs`（任务书正条/golden）互补，专攻边界。
+//! 与 `qa_edge_attack.rs`（正条/golden）互补，专攻边界。
 
 use prism_text::cache::GlyphCache;
 use prism_text::layout::{layout_text, Align, TextParams};

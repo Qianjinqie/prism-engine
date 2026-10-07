@@ -1,6 +1,6 @@
-//! `prism-infra` — 开发者面基础设施（W10-C6）。
+//! `prism-infra` — 开发者面基础设施。
 //!
-//! 语义权威：《强大版路线图》§3.6（开发者面）与 C6 行（"MCP stdio JSON-RPC；
+//! 语义权威：开发者面与 C6 行（"MCP stdio JSON-RPC；
 //! batch matrix；自写 HTTP；数据包市场校验（add/list/remove）"）。
 //!
 //! # 四个出口（共用同一引擎门面，行为一致）
@@ -14,7 +14,7 @@
 //! # 支撑模块
 //! - [`jsonrpc`]：自写 JSON-RPC 2.0 编解码（值模型 + 请求/通知/响应 + 错误码）；
 //! - [`engine`]：引擎门面（DSL 编译 + 渲染 + PNG 编码），三个出口共用；
-//! - [`farm_wire`]：农场线格式（主节点 ⇄ worker 的任务 / 分片编解码，账四 U8）。
+//! - [`farm_wire`]：农场线格式（主节点 ⇄ worker 的任务 / 分片编解码）。
 //!
 //! # 硬约束
 //! - **零第三方依赖**（JSON-RPC / HTTP / TOML 子集 / base64 全部自写，仅 `std`）；

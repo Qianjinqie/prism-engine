@@ -1,6 +1,6 @@
-//! CA——chromatic aberration（B4 清单：CA——横向色散）。
+//! CA —— chromatic aberration（清单：CA —— 横向色散）。
 //!
-//! 语义权威：《强大版路线图》B4 行（CA）与《架构总设计》v2.4 §2.2（PostFX
+//! 语义权威：CA与（PostFX
 //! 卷积族效果特解）；宪章 C5（行业通用词汇）。
 //!
 //! # 实现

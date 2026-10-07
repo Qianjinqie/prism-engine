@@ -1,12 +1,12 @@
-//! random walk SSS（W5-B2）：白皮书 §4 —— 次表面随机游走。
+//! random walk SSS：—— 次表面随机游走。
 //!
 //! 路径：Fresnel 折射进入介质 → σ̄ 自由程随机游走（RGB 平均自由程
 //! `radius` 参数）→ HG 相函数改向（复用 [`crate::media`]）→ 表面事件按
 //! Fresnel 概率逃逸/内反射 → 逃逸点作为新着色点（Lambert 漫反 + NEE，
 //! 由 integrator 处理）。**红线：逃逸点禁二次 SSS 入射**（防路径树爆炸，
-//! 白皮书 §4）——integrator 挂接时以 `from_sss` 标志保证。
+//! ）——integrator 挂接时以 `from_sss` 标志保证。
 //!
-//! # 出处（路线图 §6.1 数据资产清单 #4 注释义务）
+//! # 出处（数据资产清单 #4 注释义务）
 //! - random walk BSSRDF 路径框架：E. Veach, "Robust Monte Carlo Methods for
 //!   Light Transport Simulation", PhD thesis, Stanford 1997（参与介质路径
 //!   积分）；工程参照：Pixar RenderMan 22+ / Blender Cycles 的 random walk
@@ -23,7 +23,7 @@
 //!   spectral 扩展位）。
 //! - 内部散射吞吐 ×= 反照率（单次散射着色 σs/σt = base_color）。
 //! - 全部随机数走 aux 游程流（(槽位, step) 纯函数寻址，不占 Sobol 维度
-//!   预算；架构 §4.4 hash 派生）。
+//!  预算； hash 派生）。
 //! - [`det_exp`]：位分解 + 泰勒级数，D-29 合规（与 [`crate::media::det_ln`]
 //!   同风格自足件，后续随 prism-math D-29 数学件上收）。
 
@@ -41,7 +41,7 @@ const AUX_PER_STEP: u32 = 8;
 /// 表面推进防自交偏移（相对平均自由程）。
 const PUSH_EPS: f32 = 1e-4;
 
-/// SSS 逃逸结果：逃逸点作为新着色点（白皮书 §4）。
+/// SSS 逃逸结果：逃逸点作为新着色点。
 #[derive(Debug, Clone, Copy)]
 pub struct SssExit {
     /// 逃逸点（世界空间）。
@@ -83,7 +83,7 @@ pub fn det_exp(x: f32) -> f32 {
     e * scale
 }
 
-/// random walk 次表面散射（白皮书 §4）。
+/// random walk 次表面散射。
 ///
 /// - `geo`：场景求交闭包（o, d) → (t, 外向法线)；integrator 侧由
 ///   `Scene::intersect_hit` 适配。
@@ -224,7 +224,7 @@ mod tests {
 
     #[test]
     fn sss_slab_transmission_is_monotonic_in_thickness() {
-        // 平板穿透率随厚度单调递减（任务书：衰减随厚度单调；各向同性 g=0）。
+        // 平板穿透率随厚度单调递减（衰减随厚度单调；各向同性 g=0）。
         let ctx = EvalCtx::new(0x5A5_001, 0, 0);
         let radius = 1.0f32;
         let albedo = Vec3::splat(0.9);

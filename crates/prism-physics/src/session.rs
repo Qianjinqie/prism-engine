@@ -1,10 +1,10 @@
-//! SimSession 框架（B7 骨架批）。
+//! SimSession 框架（骨架批）。
 //!
-//! 语义权威：路线图 §3.3（统一模拟框架：固定步长推进 + 会话内快照缓存 +
+//! 语义权威：统一模拟框架：固定步长推进 + 会话内快照缓存 +
 //! 子图签名判失效——"eval 是 t 的纯函数"在模拟上的实现）、D-9（五步序列与
 //! 会话机制）、D-28（快照键 = (子图签名, 帧)；LRU 逐出只影响重算不影响结果）、
-//! 《架构总设计》§4.4（seek 等价成立条件：跳第 N 帧 ≡ 顺序推进到第 N 帧，
-//! 逐字节）、§4.2（模拟节点快照键含自起点以来通道定义签名链——签名由调用方
+//! （seek 等价成立条件：跳第 N 帧 ≡ 顺序推进到第 N 帧，
+//! 逐字节）、（模拟节点快照键含自起点以来通道定义签名链——签名由调用方
 //! 经 A6 `graph_signature` 计算传入，本会话只以相等性判失效）。
 //!
 //! 与 prism-core 的咬合（L3 宿主 → L2 合法依赖）：快照库类型直接复用
@@ -30,7 +30,7 @@ use crate::xpbd::{DistanceConstraint, World};
 use crate::PhysicsError;
 
 // ---------------------------------------------------------------------------
-// 会话规格（初态 + 参数；W6 扩展位）
+// 会话规格（初态 + 参数；扩展位）
 // ---------------------------------------------------------------------------
 
 /// 粒子初态（下标即粒子 id）。
@@ -44,7 +44,7 @@ pub struct ParticleInit {
     pub inv_mass: f32,
 }
 
-/// 距离约束规格（W6 关节/密度/形状匹配等约束族在此并列扩展）。
+/// 距离约束规格（关节/密度/形状匹配等约束族在此并列扩展）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DistanceConstraintSpec {
     /// 约束 id（求解序格锚键）。
@@ -59,11 +59,11 @@ pub struct DistanceConstraintSpec {
     pub compliance: f32,
 }
 
-/// 会话模拟规格：初态 + 参数（D-28 的"当前帧参数"载体；W6 换 ForceField
+/// 会话模拟规格：初态 + 参数（D-28 的"当前帧参数"载体；后续阶段换 ForceField
 /// 族并扩约束集）。签名变化 = 规格变化（签名由调用方对图参数经 A6 计算）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct SimSpec {
-    /// 重力加速度（常量外力；W6 换 ForceField 族）。
+    /// 重力加速度（常量外力；后续阶段换 ForceField 族）。
     pub gravity: Vec3,
     /// 粒子初态。
     pub particles: Vec<ParticleInit>,
@@ -200,7 +200,7 @@ fn decode_state(bytes: &[u8]) -> Option<(Vec<Vec3>, Vec<Vec3>)> {
 ///
 /// 状态机不变式：`loaded` 为真时 `world` 是 `(sig, frame)` 的精确状态；快照
 /// 库是纯数据资产（非隐藏全局），命中与否只影响重算量、不影响结果——seek
-/// 等价（架构 §4.4）由此成立。
+/// 等价由此成立。
 #[derive(Debug)]
 pub struct SimSession {
     spec: SimSpec,
@@ -239,7 +239,7 @@ impl SimSession {
                 code: "P1003",
                 location: "SimSession::new".to_string(),
                 problem: "substeps = 0：子步数必须 ≥1".to_string(),
-                fix: "传 substeps ≥ 1（步数固定 → 确定性，白皮书 §8 第 3 条）".to_string(),
+                fix: "传 substeps ≥ 1（步数固定 → 确定性；步数是签名的组成部分）".to_string(),
             });
         }
         if iterations == 0 {
@@ -247,7 +247,7 @@ impl SimSession {
                 code: "P1004",
                 location: "SimSession::new".to_string(),
                 problem: "iterations = 0：迭代数必须 ≥1".to_string(),
-                fix: "传 iterations ≥ 1（迭代数固定 → 确定性，白皮书 §8 第 4 条）".to_string(),
+                fix: "传 iterations ≥ 1（迭代数固定 → 确定性；迭代数是签名的组成部分）".to_string(),
             });
         }
         spec.validate()?;
@@ -311,7 +311,7 @@ impl SimSession {
         }
         // 失效重建：从初态重推 0..=frame（签名变更判失效 / 快照被逐出）。
         // 确定性求解保证重推结果与历史逐位一致（测试把关：缓存命中与否不
-        // 影响结果——架构 §4.4 / D-28）。
+        // 影响结果—— / D-28）。
         self.world = self.spec.build_world()?;
         self.sig = sig;
         self.frame = 0;
@@ -478,7 +478,7 @@ mod tests {
     }
 
     /// 缓存失效（LRU 逐出等价）：快照不命中 → 从初态重推，结果与命中路径
-    /// 逐位一致（确定性不依赖缓存命中，D-28 / 架构 §4.4）。
+    /// 逐位一致（确定性不依赖缓存命中，D-28）。
     #[test]
     fn evicted_snapshots_recompute_bitwise_identical() {
         // 会话 A：完整快照链推进到 8。

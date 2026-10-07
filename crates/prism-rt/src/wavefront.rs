@@ -7,7 +7,7 @@
 //! BSDF/灯光语义与 [`crate::integrator`] 的 `trace_one` **逐位一致**——
 //! 因而 `wavefront::render_pixel` ≡ `integrator::render_pixel`（同器判对基准）。
 //!
-//! # 判对契约（路线图 Phase 4 验收）
+//! # 判对契约（验收）
 //! - 逐像素统计 diff ≤ 视觉等价阈值（本模块测试断言逐位相等，强于阈值）；
 //! - 确定性模式 md5：同 `EvalCtx` 两遍逐位一致。
 //!

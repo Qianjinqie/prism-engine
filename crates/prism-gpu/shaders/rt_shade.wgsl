@@ -1,4 +1,4 @@
-// prism-rt 着色/采样支撑 kernel（D2）——BSDF / NEE / MIS / 采样流，对齐 CpuRef。
+// prism-rt 着色/采样支撑 kernel —— BSDF / NEE / MIS / 采样流，对齐 CpuRef。
 //
 // # 对应关系（判对基准 = prism-rt/src/{sampler,bsdf,light,integrator}.rs）
 // - sample_index / sample_1d / sample_2d / aux_1d：Sobol 索引 ⊕ 掩码 + PCG 打散

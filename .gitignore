@@ -10,7 +10,7 @@
 **/*.wasm
 *.wasm.map
 
-# ---- 内部任务书（工作区内部产物，不入公开仓）----
+# ---- 本地工作区（不入公开仓）----
 .codebuddy/
 
 # ---- 依赖目录（仅 playwright 浏览器驱动，非引擎依赖）----
@@ -25,6 +25,8 @@ node_modules/
 *.golden.tmp
 *.orig
 *.rej
+# tools/backup.sh 的台账与快照：本地备份目录，不入公开仓
+/tools/backups/
 
 # ---- 编辑器 / 系统临时 ----
 *.swp

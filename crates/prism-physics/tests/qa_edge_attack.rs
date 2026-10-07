@@ -1,9 +1,9 @@
-//! QA 边界反例攻击（W3-B7 验收清单 C 项：物理骨架侧）。
+//! QA 边界反例攻击（验收清单 C 项：物理骨架侧）。
 //!
 //! 与 src 内单测的分工：单测覆盖"实现者预期的行为"，本文件从**对抗视角**
 //! 攻击公开 API 的边界——零长度/负值约束参数、奇异构型、极端刚度、快照
-//! 字节注入与破坏。断言依据：算法白皮书 §8/§25（XPBD 语义）、架构总设计
-//! §4.4（seek 等价）、兼容性宪章 C8/C18/C20（缓存三条件 / 防呆 / 禁静默）。
+//! 字节注入与破坏。断言依据：XPBD 语义、
+//! seek 等价、兼容性宪章 C8/C18/C20（缓存三条件 / 防呆 / 禁静默）。
 
 use prism_core::node::{Hash256, SnapshotStore};
 use prism_math::Vec3;
@@ -69,7 +69,7 @@ fn encode_state(positions: &[Vec3], velocities: &[Vec3]) -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
-// 攻击 1：XPBD 约束参数边界（白皮书 §8：C = |d| − rest）
+// 攻击 1：XPBD 约束参数边界（C = |d| − rest）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -103,7 +103,7 @@ fn zero_rest_length_converges_to_coincident_without_nan() {
 #[test]
 fn coincident_particles_report_residual_truthfully() {
     // 重合粒子 + rest=1：奇异构型分支（len < 1e-8）必须**如实返回残余**
-    // |C| = 1（白皮书 §25.5 纪律 3 / C20 不静默钳制），不得伪造收敛、
+    // |C| = 1（纪律 3 / C20 不静默钳制），不得伪造收敛、
     // 不得 panic、不得产生 NaN。
     let mut world = World::new(Vec3::splat(0.0));
     let a = world.add_particle(Vec3::new(0.5, 0.0, 0.0), Vec3::splat(0.0), 1.0);
@@ -184,7 +184,7 @@ fn negative_rest_length_in_world_path_is_rejected() {
 }
 
 // ---------------------------------------------------------------------------
-// 攻击 2：SimSession 快照路径（D-28 / 架构 §4.4 / C8）
+// 攻击 2：SimSession 快照路径（D-28 / / C8）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -220,7 +220,7 @@ fn snapshot_hit_restores_injected_bytes_proving_no_recompute() {
 fn corrupt_snapshot_falls_back_to_rebuild_bitwise_identical() {
     // 快照槽内容破坏（magic 错 + 长度截断）：decode 必须失败（绝不猜测
     // 解读，C8/C20），advance_to 落入失效重建，结果与干净会话顺序推进
-    // 逐位一致（架构 §4.4：缓存命中与否不影响结果）。
+    // 逐位一致（缓存命中与否不影响结果）。
     let mut s = session();
     let mut store = SnapshotStore::new();
     s.advance_to(SIG_A, 5, &mut store).unwrap();
@@ -266,6 +266,6 @@ fn out_of_order_seek_is_bitwise_identical_to_sequential() {
     assert_eq!(
         bits(&s),
         bits(&clean),
-        "乱序 seek 混合路径应与顺序推进逐位一致（架构 §4.4）"
+        "乱序 seek 混合路径应与顺序推进逐位一致（seek 等价铁律）"
     );
 }

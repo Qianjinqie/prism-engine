@@ -1,7 +1,7 @@
 //! 二级调色（B14：HSL 选区 / lift-gamma-gain / Power Window）。
 //!
-//! 语义权威：《强大版路线图》B14 行（二级调色：HSL 选区 / RGB 曲线 /
-//! lift-gamma-gain / Power Window）。本模块承载 HSL 选区、lift-gamma-gain、
+//! 语义权威：二级调色：HSL 选区 / RGB 曲线 /
+//! lift-gamma-gain / Power Window。本模块承载 HSL 选区、lift-gamma-gain、
 //! Power Window 三项；RGB 曲线在 [`crate::curves`]。
 //!
 //! # 选区数学（有断言）
@@ -199,7 +199,7 @@ impl LiftGammaGain {
     /// `x^(p/2^q) = (x^(1/2^q))^p`，其中 `x^(1/2^q)` 由 `q` 次 `sqrt` 得到、
     /// `(...)^p` 由连乘 [`pow_int`] 得到。
     ///
-    /// # 下溢处理（W8 二轮 P0-1）
+    /// # 下溢处理
     ///
     /// 若按 `(x^p)^(1/2^q)`（先连乘后开方）计算，`x < 1` 且 `p` 较大
     /// （如 `gamma = 1.4, x = 0.5 ⇒ p = 183`）时 `x^p → 0` **下溢**，开方仍 0。
@@ -468,7 +468,7 @@ mod tests {
 
     #[test]
     fn non_integer_gamma_midtones_do_not_underflow() {
-        // 回归（W8 二轮 P0-1 复现）：非整 gamma 中低调不得下溢归零。
+        // 回归（实测复现）：非整 gamma 中低调不得下溢归零。
         // 真值参照 x^(1/gamma)（阈值放宽以容纳有理逼近的量化误差）。
         let ref_pow = |x: f32, g: f32| x.powf(1.0 / g);
         for &(g, x) in &[

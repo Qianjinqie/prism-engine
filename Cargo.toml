@@ -2,7 +2,7 @@
 resolver = "2"
 members = ["crates/*"]
 
-# wasm32（D-14 手机测试链路）：opt-level="s" + lto 显著缩小 .wasm 体积（手机
+# wasm32（D-14 移动端验证链路）：opt-level="s" + lto 显著缩小 .wasm 体积（手机
 # 走流量下载）；panic=abort 与 wasm 目标默认行为一致，且去掉展开表。
 # 注意：此 profile 只影响 `--target wasm32-unknown-unknown`（native 仍走 dev）。
 [profile.wasm]

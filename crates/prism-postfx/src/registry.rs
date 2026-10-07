@@ -1,8 +1,8 @@
-//! 效果注册表（B4）：名称 → 效果工厂。
+//! 效果注册表：名称 → 效果工厂。
 //!
-//! 语义权威：《强大版路线图》B4 行（效果=节点，`post { chain [...] }` 任意
-//! 排序任意组合——注册表是 chain 按名取效果的索引）；《架构总设计》v2.4
-//! §2.2（PostFX = S2/S11/S5 特解族，节点暴露形态 = 效果节点）；注册表风格
+//! 语义权威：效果=节点，`post { chain [...] }` 任意
+//! 排序任意组合——注册表是 chain 按名取效果的索引；
+//! PostFX = S2/S11/S5 特解族，节点暴露形态 = 效果节点；注册表风格
 //! 与 prism-core `NodeRegistry` 一致（HashMap 索引 + 结构化三段式错误，
 //! 宪章 C18：在哪 / 什么事 / 怎么改；C19：必含建议段）。
 //!
@@ -58,7 +58,7 @@ impl fmt::Display for EffectError {
 impl std::error::Error for EffectError {}
 
 /// 效果注册表：名称 → 工厂（官方预置效果与后续数据包效果汇入同一张表，
-/// 对齐架构 §2.6.2"双通道汇入同一注册表"的形态）。
+/// 对齐"双通道汇入同一注册表"的形态）。
 #[derive(Debug, Default)]
 pub struct EffectRegistry {
     factories: HashMap<String, EffectFactory>,
@@ -107,7 +107,7 @@ impl EffectRegistry {
         self.factories.contains_key(name)
     }
 
-    /// 全部注册名，**字典序**（消序用排序，白皮书 §26 工程四律）。
+    /// 全部注册名，**字典序**（消序用排序， 工程四律）。
     pub fn names(&self) -> Vec<&str> {
         let mut names: Vec<&str> = self.factories.keys().map(String::as_str).collect();
         names.sort_unstable();
@@ -115,10 +115,10 @@ impl EffectRegistry {
     }
 }
 
-/// 官方预置效果注册表（B4 清单全集：12 效果 + denoise + warp）。
+/// 官方预置效果注册表（清单全集：12 效果 + denoise + warp）。
 ///
-/// 名称取路线图 B4 行 / 宪章 C4–C6 行业对照表词汇（`lut3d` = 宪章对照 #8
-/// "LUT（达芬奇、Resolve、Nuke）→ lut3d 节点"；`ca` = 路线图 B4 行 "CA"）。
+/// 名称取宪章 C4–C6 行业对照表词汇（`lut3d` = 宪章对照 #8
+/// "LUT（达芬奇、Resolve、Nuke）→ lut3d 节点"；`ca` = "CA"）。
 pub fn default_registry() -> EffectRegistry {
     let mut reg = EffectRegistry::new();
     // 逐条 register；官方预置名集无重复，重复即编程错误（unwrap 暴露）。
@@ -187,7 +187,7 @@ mod tests {
     #[test]
     fn default_registry_contains_b4_checklist() {
         let reg = default_registry();
-        // 路线图 B4 行 12 效果 + denoise + warp，一个不少。
+        // 12 效果 + denoise + warp，一个不少。
         for name in [
             "blur", "bloom", "vignette", "grain", "dissolve", "glitch", "grade", "ca",
             "sharpen", "plasma", "mandelbrot_bg", "lut3d", "denoise", "warp",

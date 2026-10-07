@@ -1,4 +1,4 @@
-//! `prism-media` — 多媒体嵌入（工作流 B11；路线图 B11 行 / 白皮书 §19；D-17 读入
+//! `prism-media` — 多媒体嵌入（工作流 B11；；D-17 读入
 //! 策略 / D-16 Mini Code / D-27 静态汇入制）。
 //!
 //! 素材本已存在，引擎只负责"读入 → 进图 → 被一切能力作用"：不生成、不转码。
@@ -7,7 +7,7 @@
 //!
 //! - [`source`] — 三类源抽象（image/video/audio_source）+ 读入策略 [`source::ReadKind`]
 //!   （D-17：ffmpeg 探测协作 + 原生降级），素材"能不能读"如实标注，永静默不失败；
-//! - [`timing`] — 时间映射器（direct/loop/pingpong/变速/Expr 五模式，白皮书 §19：
+//! - [`timing`] — 时间映射器（direct/loop/pingpong/变速/Expr 五模式，：
 //!   纯函数映射 + 帧间混合，seek 零成本且音画共享同一 f(t)）；
 //! - [`gif`] — GIF 原生解码（自研 LZW 解压 + 帧合成）；
 //! - [`apng`] — APNG 原生解码（复用 zlib inflate + PNG 滤波重建）；
@@ -15,8 +15,8 @@
 //! - [`audio`] — 音频源接入（复用 prism-audio WAV 解码）；
 //! - [`inflate`] — 自研 DEFLATE/zlib inflate（GIF/APNG 共用，禁第三方）；
 //! - [`nodes`] — embed 预置子图节点（`registry!` D-27 静态汇入 prism-core）；
-//! - [`nle`] — NLE 非线性编辑（U14：多轨时间线 + 裁剪/变速/倒放时间映射 +
-//!   转场混合 + §26 固定形状音频归约）。
+//! - [`nle`] — NLE 非线性编辑（多轨时间线 + 裁剪/变速/倒放时间映射 +
+//!  转场混合 + 固定形状音频归约）。
 //!
 //! # 确定性契约
 //!

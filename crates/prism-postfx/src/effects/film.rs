@@ -1,12 +1,12 @@
-//! 胶片仿真包（B14 清单：halation + 分层 bloom + 胶片曲线库 + 科学化颗粒）。
+//! 胶片仿真包（清单：halation + 分层 bloom + 胶片曲线库 + 科学化颗粒）。
 //!
-//! 语义权威：《算法白皮书》§15（halation + 科学化胶片颗粒）、§17（噪声派生
-//! 纪律）；《强大版路线图》B14 行与 §3.5（bloom 在线性域、halation 在胶片
+//! 语义权威：halation + 科学化胶片颗粒、（噪声派生
+//! 纪律）；B14 行与 （bloom 在线性域、halation 在胶片
 //! 层——两节点管线位置不同）。与 B4 `bloom` 的关系：`bloom` 是单层镜头光学
 //! 泛光；本包的 [`LayeredBloom`] 是多级扩散链（半径倍增、逐级衰减），
 //! [`Halation`] 在其上加"单向 + 波长染色"（红光晕而非白晕）。
 //!
-//! # 确定性纪律（架构 §4.3/§4.4；D-29）
+//! # 确定性纪律（D-29）
 //!
 //! 全部算子为求值纯函数；随机性一律经 prism-noise 的 PCG 整数 hash 派生
 //! （无私开 RNG）；零超越函数——胶片曲线用**分段线性/多项式**逼近
@@ -227,7 +227,7 @@ fn highlight_layer(window: &Fbuf16F, threshold: f32) -> Fbuf16F {
 pub struct LayeredBloom {
     /// 亮度阈值（线性域）。
     pub threshold: f32,
-    /// 扩散级数（白皮书 §15：8–12 级）。
+    /// 扩散级数（8–12 级）。
     pub levels: u32,
     /// 初始半径（逐级倍增）。
     pub base_radius: u32,
@@ -278,7 +278,7 @@ impl TileEffect for LayeredBloom {
 
 /// halation：高光提取 → 单向多级扩散 → 波长染色 → 加算。
 ///
-/// 波长权重使红光晕（R > G > B），对齐白皮书 §15"红光穿透基底更深"。
+/// 波长权重使红光晕（R > G > B），对齐"红光穿透基底更深"。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Halation {
     /// 亮度阈值。
@@ -404,7 +404,7 @@ impl TileEffect for HalationAndBloom {
     }
 
     fn eval_window(&self, window: &Fbuf16F) -> Fbuf16F {
-        // 固定序：先 halation 后 bloom（白皮书 §15 管线位置钉死）。
+        // 固定序：先 halation 后 bloom（管线位置钉死）。
         let after_hal = self.halation.eval_window(window);
         self.bloom.eval_window(&after_hal)
     }
@@ -414,7 +414,7 @@ impl TileEffect for HalationAndBloom {
 // FilmGrain —— 科学化颗粒（双尺度 + 曝光相关 + 按格式取整尺寸）
 // ---------------------------------------------------------------------------
 
-/// 胶片格式（颗粒尺寸预设；白皮书 §15 "按胶片格式取整颗粒尺寸参数"）。
+/// 胶片格式（颗粒尺寸预设； "按胶片格式取整颗粒尺寸参数"）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilmFormat {
     /// 35mm：细颗粒、小尺寸系数。

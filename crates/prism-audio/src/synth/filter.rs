@@ -1,4 +1,4 @@
-//! 状态变量滤波器 SVF（B12 合成器升级）：多模态 LP/HP/BP/Notch（TPT 拓扑）。
+//! 状态变量滤波器 SVF（合成器升级）：多模态 LP/HP/BP/Notch（TPT 拓扑）。
 //!
 //! 采用 **Topology-Preserving Transform**（Zavalishin）零延迟反馈 SVF——数值
 //! 稳定、通带到 Nyquist、系数只依赖 `tan(πf/SR)`。三状态 `(ic1, ic2)` 递推：

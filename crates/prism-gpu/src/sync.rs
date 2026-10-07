@@ -1,6 +1,6 @@
 //! 同步原语与 Pass 类型封闭枚举（GPU 基础设施，D0）。
 //!
-//! 语义权威：强大版路线图 D0 行（屏障/同步原语封装）、"GPU 用途全景"段
+//! 语义权威：屏障/同步原语封装、"GPU 用途全景"段
 //! （抽象层需覆盖的**形态封闭**五类 pass + 同步）、D-15（自研抽象层）、D-16
 //! （Mini Code：公开 API 面最小化）。
 //!
@@ -12,7 +12,7 @@
 //! 数据变换实现，可在 CPU 上真跑真测；真机的物理屏障（Vulkan pipeline
 //! barrier / WebGPU memory barrier）由 backend 依本模型派生指令，标注待接入。
 
-/// GPU pass 形态（封闭五类，路线图"GPU 用途全景"段）。
+/// GPU pass 形态（封闭五类）。
 ///
 /// 枚举封闭设计（D-15：引擎自定义有限形态），新增形态须同步抽象层设计文档。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,7 +25,7 @@ pub enum PassKind {
     TriangleRaster,
     /// ④ 纹理 / buffer 上传与读回（CPU↔GPU 数据搬运边界）。
     Transfer,
-    /// ⑤ 时间戳查询：效率标注（白皮书效率账）。
+    /// ⑤ 时间戳查询：效率标注（效率账）。
     TimestampQuery,
 }
 

@@ -1,4 +1,4 @@
-//! 时间映射器（B11；白皮书 §19 视频时间映射）。
+//! 时间映射器（B11； 视频时间映射）。
 //!
 //! **问题**：引擎时间轴 t → 素材内时间/帧索引（+ 音画同步）。
 //!
@@ -76,7 +76,7 @@ impl TimeMap {
 
     /// 时间映射的纯函数核心：`t`（秒）→ 归一化素材内时间 `u' ∈ [0, 1]`。
     ///
-    /// `u = t / dur` 为标准化引擎时间；各模式把 `u` 映射到 `u'`（白皮书 §19）。
+    /// `u = t / dur` 为标准化引擎时间；各模式把 `u` 映射到 `u'`。
     pub fn map(&self, t: f32) -> f32 {
         let u = t / self.dur;
         let v = match &self.mode {
@@ -200,7 +200,7 @@ fn sample_curve(samples: &[(f32, f32)], t: f32) -> f32 {
 /// 帧计数（供 seek 等价断言使用）。
 ///
 /// 直接按 [`TimeMap::frame_at`] 计算——与顺序播放使用**同一个纯函数**，
-/// 故"跳第 N 帧 ≡ 顺序播放到第 N 帧"是同一计算的两种调用方式（白皮书 §19）。
+/// 故"跳第 N 帧 ≡ 顺序播放到第 N 帧"是同一计算的两种调用方式。
 pub fn frame_index(map: &TimeMap, t: f32) -> (u32, u32) {
     let f = map.frame_at(t);
     let quant = quantize(map.map(t));
@@ -272,7 +272,7 @@ mod tests {
 
     #[test]
     fn seek_equivalent_to_sequential_playback() {
-        // 跳第 N 帧 ≡ 顺序播放（白皮书 §19：同一纯函数 f(t) 的两种调用）。
+        // 跳第 N 帧 ≡ 顺序播放（同一纯函数 f(t) 的两种调用）。
         let modes = [
             TimingMode::Direct,
             TimingMode::Loop,

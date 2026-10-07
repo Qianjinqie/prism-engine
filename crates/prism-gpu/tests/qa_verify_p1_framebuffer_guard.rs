@@ -244,7 +244,7 @@ fn g7_trait_defaults_present_and_non_panicking() {
     assert!(c.is_available(), "CpuRefBackend 恒可用");
     assert_eq!(c.backend_name(), "cpu-ref");
     // VulkanBackend：**不得 panic**；不可用；返回空帧（而非 unimplemented!()）。
-    // 注：Engineer 已将 VulkanBackend 升级为带探测上下文的实装（D1），构造走
+    // 注：Engineer 已将 VulkanBackend 升级为带探测上下文的实装，构造走
     // `new()`；渲染管线仍未实装 ⇒ 语义断言不变（不可用 + 空帧 + 不 panic）。
     let mut v = prism_gpu::vulkan::VulkanBackend::new();
     assert!(!v.is_available(), "VulkanBackend 未接入 ⇒ is_available() 须为 false");

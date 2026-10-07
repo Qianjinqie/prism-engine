@@ -1,8 +1,8 @@
 //! PQ（SMPTE ST 2084 / BT.2100 Perceptual Quantizer）HDR 传输函数。
 //!
-//! 语义权威：《强大版路线图》§3.5（"ST 2084 编码/解码纯数学 P0 完成+单测"）、
+//! 语义权威：ST 2084 编码/解码纯数学 P0 完成+单测、
 //! C2 行（"PQ/HLG OETF"）、D-29（"超越函数自研……禁 libm pow"）；
-//! 《算法白皮书》§25.3（确定性格锚）。公式常数取自 SMPTE ST 2084:2014
+//! 确定性格锚。公式常数取自 SMPTE ST 2084:2014
 //! （经 BT.2100-2 Table 4 复核）：
 //!
 //! ```text
@@ -111,7 +111,7 @@ mod tests {
 
     #[test]
     fn pq_roundtrip_signal_to_linear_and_back() {
-        // 往返一致性：编码 → 线性 → 编码（往返误差 < 1e-4，路线图验收项）。
+        // 往返一致性：编码 → 线性 → 编码（往返误差 < 1e-4，验收项）。
         for i in 0..=1000u32 {
             let s = i as f32 / 1000.0;
             let back = pq_oetf(pq_eotf(s));

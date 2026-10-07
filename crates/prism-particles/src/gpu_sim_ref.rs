@@ -1,8 +1,8 @@
-//! GPU 模拟的 CPU 仿真参考（D3）——百万粒子 compute 的判对基准。
+//! GPU 模拟的 CPU 仿真参考 —— 百万粒子 compute 的判对基准。
 //!
-//! # 定位（路线图 D3：GPU 百万粒子 compute，与 CpuRef 双实现互为判对）
+//! # 定位：GPU 百万粒子 compute，与 CpuRef 双实现互为判对。
 //! GPU 粒子 kernel（`crates/prism-gpu/shaders/sim_*.wgsl`）的真实实装待真机
-//! （D1 绑定 + D-14 手机 WebGPU）。本模块在**无 GPU 环境**下给出同构的 CPU
+//! （绑定 + D-14 手机 WebGPU）。本模块在**无 GPU 环境**下给出同构的 CPU
 //! 参考：实现 WGSL 的五个阶段（发射/积分/格键/基数排序/邻域），使 GPU kernel
 //! 上线时可逐位判对。
 //!

@@ -1,7 +1,7 @@
 //! MCP server（Model Context Protocol）——自写 JSON-RPC，零第三方 SDK。
 //!
-//! 语义权威：《强大版路线图》§3.6（"MCP stdio JSON-RPC：compile/render_frame/
-//! render_video/critique"，"自写 JSON-RPC"）与 MCP 规范
+//! 语义权威："MCP stdio JSON-RPC：compile/render_frame/
+//! render_video/critique"，"自写 JSON-RPC"与 MCP 规范
 //! （<https://spec.modelcontextprotocol.io/>）。
 //!
 //! # 设计
@@ -14,7 +14,7 @@
 //!
 //! # 确定性
 //! 无全局 RNG；`render_frame` 同输入同字节。工具描述（`inputSchema`）由参数
-//! 定义静态生成（路线图 §2.4："schema 由节点注册表自动生成"的当前落地形态）。
+//! 定义静态生成（"schema 由节点注册表自动生成"的当前落地形态）。
 
 use crate::engine::{self, RenderRequest};
 use crate::jsonrpc::{error_code, Json, Message, Response, RpcError};

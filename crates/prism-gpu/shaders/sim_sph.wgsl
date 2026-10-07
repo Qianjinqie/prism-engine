@@ -1,6 +1,6 @@
-// prism-sim SPH/PBF compute（D3）——两遍：密度求和 → 密度约束投影。
+// prism-sim SPH/PBF compute —— 两遍：密度求和 → 密度约束投影。
 //
-// # 对应关系（判对基准 = prism-physics/sph.rs；实现权威 = 白皮书 §9 PBF）
+// # 对应关系（判对基准 = prism-physics/sph.rs；实现权威 = PBF）
 // - 密度：ρ_i = Σ_j m·Poly6(|x_i − x_j|)（对齐 sph.rs::density_of）。
 // - 密度约束 C_i = ρ_i/ρ₀ − 1，投影走 XPBD 通式（对齐 DensityConstraint::project）。
 // - 压缩侧单向（C > 0 才修正；λ ≥ 0），对齐 sph.rs 的 PBF 稳定项。

@@ -1,9 +1,9 @@
-//! 矢量路径表达（B9 公共数据面）。
+//! 矢量路径表达（公共数据面）。
 //!
 //! [`Path`] 是多重子路径的矢量形状：每个子路径由 TTF 惯例的
 //! points/tags 表达——`tag=true` 的点是二次贝塞尔控制点、`false` 是锚点
 //! （on-curve）。这与 `prism-text`/`prism-raster` 的字形轮廓同构，故
-//! 直接复用 `prism-raster` 的扫描线光栅对接像素覆盖（白皮书 §16）。
+//! 直接复用 `prism-raster` 的扫描线光栅对接像素覆盖。
 //!
 //! 平铺（flatten）委托 `prism-raster::path::PathBuilder`——不重复造曲线
 //! 细分轮子；本文件只做"矢量化数据 → PathBuilder → 覆盖率"的适配。
@@ -121,7 +121,7 @@ pub fn flatten(path: &Path, transform: &Transform) -> Vec<Contour> {
     path.to_builder().flatten(transform)
 }
 
-/// 路径 → 覆盖率缓冲（对接 `prism-raster` 扫描线光栅；白皮书 §16）。
+/// 路径 → 覆盖率缓冲（对接 `prism-raster` 扫描线光栅）。
 pub fn rasterize_path(
     path: &Path,
     transform: &Transform,

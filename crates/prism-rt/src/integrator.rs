@@ -1,6 +1,6 @@
-//! 路径追踪积分器（W5-B2 集成收尾）。
+//! 路径追踪积分器（集成收尾）。
 //!
-//! # 范围（W5-B2 已接入）
+//! # 范围（已接入）
 //! Lambert 漫反 + 完美镜面基线之上，接入 Disney BSDF 全族（spec/diffuse/
 //! transmission 三瓣 + 多散射补偿）、四灯光族（方向/球/矩形/环境）、
 //! random walk SSS（BSDF 材质带 subsurface 时走 [`crate::sss`]）、
@@ -17,7 +17,7 @@
 //! max_bounces = 8 → 最高维度 5 + 8·6 + 4 = 57 < 64（Sobol 表内）。
 //! ```
 //!
-//! # 估计量结构（白皮书 §2）
+//! # 估计量结构
 //! - 每个非镜面事件对每个光源做 NEE（阴影射线 + 介质二值透射）；
 //!   方向光不可被 BSDF/相位抽样命中（非几何）→ 其 NEE 权重恒 1（不做
 //!   伪 MIS——否则系统性欠估，方向光解析关卡会暴露）；
@@ -28,7 +28,7 @@
 //!   可关）。
 //!
 //! # 确定性
-//! 渲染 = 纯函数复合：spp 均值走 prism-core reduce 固定形状（白皮书 §26，
+//! 渲染 = 纯函数复合：spp 均值走 prism-core reduce 固定形状（
 //! 像素级局部归约，禁跨 tile）；采样流只依赖 (种子, 像素, 样本, 维度)
 //! （D-28 像素域）→ tile 化不影响采样流，整幅与分块逐位一致（关卡 3）。
 
@@ -43,14 +43,14 @@ use crate::caustics::{mnee_mirror, mnee_refraction, Refractor};
 use crate::camera::{Camera, Ray};
 use crate::light::{ambient_background, nee_mis_weight, sample_nee};
 
-/// 光源（W5-B2：四族；对外沿用 integrator 命名，内部委托 [`crate::light`]）。
+/// 光源（四族；对外沿用 integrator 命名，内部委托 [`crate::light`]）。
 pub use crate::light::Light;
 use crate::media::HomogeneousMedium;
 use crate::sampler::SampleStream;
 use crate::sss::random_walk;
 
 // ---------------------------------------------------------------------------
-// 场景原语（B1 最小集）
+// 场景原语（最小集）
 // ---------------------------------------------------------------------------
 
 /// 球体。
@@ -126,7 +126,7 @@ impl Aabb {
     }
 }
 
-/// 材质（W5-B2：基线三型 + Disney PBR 全族）。
+/// 材质（基线三型 + Disney PBR 全族）。
 #[derive(Debug, Clone, Copy)]
 pub enum MaterialKind {
     /// Lambert 漫反射（反照率）。
@@ -191,7 +191,7 @@ fn material_subsurface(m: &MaterialKind) -> Option<(f32, Vec3, f32)> {
     }
 }
 
-/// 介质区域（B1：单一均匀介质盒；异质网格 W6+）。
+/// 介质区域（B1：单一均匀介质盒；异质网格待后续扩展）。
 #[derive(Debug, Clone)]
 pub struct MediumRegion {
     /// 区域包围盒。
@@ -342,7 +342,7 @@ impl Scene {
     /// 主射线最近命中距离（C1 深度 AOV 输出）：从 `ro` 沿 `rd` 投射单位
     /// 主射线，返回最近命中距离（世界单位）；无命中返回 None（背景/天空）。
     ///
-    /// 纯函数、零随机——深度通道是路径追踪的免费副产品（路线图 §3.4）。
+    /// 纯函数、零随机——深度通道是路径追踪的免费副产品。
     /// `t_max` 为远平面（超过即视作无命中）。
     pub fn primary_hit_distance(&self, ro: Vec3, rd: Vec3, t_max: f32) -> Option<f32> {
         self.intersect(ro, rd, t_max, None).map(|h| h.t)
@@ -467,7 +467,7 @@ struct PathState {
     prev_specular: bool,
 }
 
-/// 间接贡献钳制（ev ≥ 2 的加法；白皮书 §2 萤火钳制——仅间接）。
+/// 间接贡献钳制（ev ≥ 2 的加法； 萤火钳制——仅间接）。
 fn clamp_indirect(c: Vec3, ev: u32, limit: Option<f32>) -> Vec3 {
     match limit {
         Some(t) if ev >= 2 => Vec3::new(c.x.min(t), c.y.min(t), c.z.min(t)),
@@ -519,7 +519,7 @@ fn medium_collide(
         b.segment_interval(ro, rd, 0.0, t_max)?.0
     };
     // B1 介质区域为单一凸盒：直线段至多穿越一次，介质内剩余段
-    // [t_enter, exit] 上单次自由程抽样即完备（异质/多区域 W6+ 扩展为循环）。
+    // [t_enter, exit] 上单次自由程抽样即完备（异质/多区域后续扩展为循环）。
     let exit = b.segment_interval(ro, rd, t_enter, t_max)?.1;
     let u = stream.aux_1d(aux_dim, *steps);
     *steps += 1;
@@ -566,7 +566,7 @@ pub struct RenderParams {
     pub spp: u32,
     /// 最大弹射深度（事件段数上限；相机段不计）。
     pub max_bounces: u32,
-    /// 间接贡献萤火钳制阈值（白皮书 §2 固定常量 50×中灰；None = 关闭）。
+    /// 间接贡献萤火钳制阈值（固定常量 50×中灰；None = 关闭）。
     pub clamp_indirect: Option<f32>,
     /// 验证开关：true = 纯 NEE（BSDF 命中发光体不加权合并——能量对照用）。
     pub nee_only: bool,
@@ -731,7 +731,7 @@ fn trace_one(
             }
         }
 
-        // 焦散 MNEE（B2）：玻璃球折射链 k=2（PSR 由 BSDF 采样抖动兜底）。
+        // 焦散 MNEE：玻璃球折射链 k=2（PSR 由 BSDF 采样抖动兜底）。
         if !params.nee_only {
             let si = prism_core::SampleIndex {
                 frame: ctx.frame,
@@ -760,13 +760,13 @@ fn trace_one(
                     st.radiance = st.radiance + clamp_indirect(c, ev, params.clamp_indirect);
                 }
             }
-            // k=1 平面镜链：MNEE 兜底（白皮书 §2）。场景未显式注册镜面平板，
+            // k=1 平面镜链：MNEE 兜底。场景未显式注册镜面平板，
             // 故 k=1 链仅对显式镜面几何生效——当前基线场景无镜面板，跳过；
             // k=2 球面折射链已覆盖玻璃焦散主路径，PSR 抖动覆盖残余镜面流形。
-            let _ = mnee_mirror; // 接口已挂接（W6 镜面板几何注册后启用）
+            let _ = mnee_mirror; // 接口已挂接（镜面板几何注册后启用）
         }
 
-        // BSDF 抽样续弹。基线 Lambert / Mirror 走解析精确路径（B1 逐位兼容）；
+        // BSDF 抽样续弹。基线 Lambert / Mirror 走解析精确路径（逐位兼容）；
         // Disney PBR 走 [`Bsdf::sample`] 三瓣（含 SSS / 玻璃折射 / PSR 抖动）。
         let (u_lobe, _) = stream.sample_2d(bounce_dim(ev, SLOT_BSDF));
         let (u1, u2) = stream.sample_2d(bounce_dim(ev, SLOT_BSDF) + 1);
@@ -853,7 +853,7 @@ fn trace_one(
 }
 
 /// 像素渲染（纯函数）：spp 样本经 prism-core reduce 固定形状归约取均值
-/// （白皮书 §26；像素级局部归约，禁跨 tile）。
+/// （像素级局部归约，禁跨 tile）。
 pub fn render_pixel(
     scene: &Scene,
     cam: &Camera,
@@ -1238,7 +1238,7 @@ mod tests {
         println!("Beer 关卡：实测 = {mean:.6}，解析 = {expected:.6}（相对 {rel:.5}）");
     }
 
-    // ---- 关卡 5：W5-B2 端到端（金属粗糙度展宽 / 玻璃焦散能量 / SSS 厚度）----
+    // ---- 关卡 5：端到端（金属粗糙度展宽 / 玻璃焦散能量 / SSS 厚度）----
 
     /// 金属球 + 方向光的最小场景（Pbr 金属；粗糙度可变）。
     fn metal_scene(roughness: f32) -> (Scene, Camera) {

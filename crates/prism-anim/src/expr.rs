@@ -1,10 +1,10 @@
-//! 受限表达式求值骨架（工作流 A2；D-7 自研受限求值器；架构 §3.6 类图
+//! 受限表达式求值骨架（工作流 A2；D-7 自研受限求值器； 类图
 //! `PropertyChannel::eval(t)` 的表达式通道形态）。
 //!
 //! **本批范围（从简不过度设计）**：最小算术 `+ - * /`（含一元负号与括号）
 //! + 变量 `t`（时间，秒）/ `p`（进度 0–1）/ `w`（宽）/ `h`（高）。完整语法
 //! （函数白名单、`this.*`/节点引用、常量折叠、编译期环检测与行号）随 A4
-//! DSL v2 波次落地（路线图 §3.6）。
+//! DSL v2 落地。
 //!
 //! # 确定性与语义
 //!
@@ -112,7 +112,7 @@ impl fmt::Display for ExprError {
             ),
             Self::UnknownVar { pos, name } => write!(
                 f,
-                "位置 {pos}：未知变量 '{name}'。建议：本批仅支持变量 t（时间秒）/p（进度）/w（宽）/h（高）；完整变量集随 DSL v2 波次扩展。"
+                "位置 {pos}：未知变量 '{name}'。建议：本批仅支持变量 t（时间秒）/p（进度）/w（宽）/h（高）；完整变量集随 DSL v2 扩展。"
             ),
             Self::BadNumber { pos } => write!(
                 f,
@@ -132,7 +132,7 @@ impl fmt::Display for ExprError {
 
 impl std::error::Error for ExprError {}
 
-/// 编译好的表达式：源串 + AST（源串保留供通道定义哈希/调试，架构 §4.2）。
+/// 编译好的表达式：源串 + AST（源串保留供通道定义哈希/调试）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Expr {
     src: String,
@@ -182,7 +182,7 @@ impl Expr {
         self.eval(&ExprEnv { t, p: 0.0, w: 0.0, h: 0.0 })
     }
 
-    /// 原始源串（通道定义哈希的规范化输入之一，架构 §4.2）。
+    /// 原始源串（通道定义哈希的规范化输入之一）。
     pub fn source(&self) -> &str {
         &self.src
     }

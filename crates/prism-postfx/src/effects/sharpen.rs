@@ -1,6 +1,6 @@
-//! sharpen（B4 清单：sharpen——非锐化掩模）。
+//! sharpen（清单：sharpen —— 非锐化掩模）。
 //!
-//! 语义权威：《强大版路线图》B4 行（sharpen）；宪章 C4（行业概念：AE/PS
+//! 语义权威：sharpen；宪章 C4（行业概念：AE/PS
 //! Unsharp Mask 同名概念）。S2 卷积（模糊核）与线性组合的复合特解。
 //!
 //! # 实现

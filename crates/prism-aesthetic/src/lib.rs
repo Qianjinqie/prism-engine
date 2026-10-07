@@ -1,9 +1,9 @@
 //! `prism-aesthetic` — 二级调色与曲线（B14：HSL 选区 / RGB 曲线 /
 //! lift-gamma-gain / Power Window + 二级调色曲线库）。
 //!
-//! 语义权威：《强大版路线图》B14 行（二级调色：HSL 选区 / RGB 曲线 /
-//! lift-gamma-gain / Power Window）；《算法白皮书》§26（像素内固定序归约）；
-//! 架构 v2.4 §4.3/§4.4（tile 无关性、唯一随机性入口）。
+//! 语义权威：二级调色：HSL 选区 / RGB 曲线 /
+//! lift-gamma-gain / Power Window；像素内固定序归约；
+//! tile 无关性、唯一随机性入口。
 //!
 //! # 组成
 //!

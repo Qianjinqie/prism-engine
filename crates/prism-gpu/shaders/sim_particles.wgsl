@@ -1,4 +1,4 @@
-// prism-sim 百万粒子 compute（D3）——发射 / 力场 / 空间哈希 / radix sort 接入。
+// prism-sim 百万粒子 compute —— 发射 / 力场 / 空间哈希 / radix sort 接入。
 //
 // # 阶段（对齐 prism-particles/{emitter,force,sim}.rs）
 // ① emit：种子化发射（哈希派生，无全局 RNG，D-28 像素域精神）。

@@ -1,7 +1,7 @@
-//! NPR 风格化族（B14 清单：toon / 水彩 / Kuwahara / halftone / 像素化 / 素描）。
+//! NPR 风格化族（toon / 水彩 / Kuwahara / halftone / 像素化 / 素描）。
 //!
-//! 语义权威：《算法白皮书》§14（G-buffer 特征 + 像素算子统一框架；四风格
-//! 算子）；《强大版路线图》B14 行。每风格一个文件、各实现
+//! 语义权威：（G-buffer 特征 + 像素算子统一框架；四风格
+//! 算子）；B14 行。每风格一个文件、各实现
 //! [`prism_render::tile::TileEffect`]，附带 golden-file 与 seed 决定论测试。
 //!
 //! # halo 申报

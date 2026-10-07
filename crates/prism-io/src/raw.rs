@@ -1,8 +1,7 @@
-//! 相机 RAW 读入深度（U7）——DNG/IFD 解析 + Bayer 去马塞克 + 白平衡 + 色彩矩阵。
+//! 相机 RAW 读入深度——DNG/IFD 解析 + Bayer 去马塞克 + 白平衡 + 色彩矩阵。
 //!
-//! 语义权威：《强大版路线图》§4 U7 行（相机 RAW / EXR 深度）与账本「RAW =
-//! 白平衡 + 去马赛克卷积（S2）」。数学路径的次序由本模块固定并论证（见
-//! [`DngFile::develop`]）。
+//! 数学路径的次序由本模块固定并论证（见 [`DngFile::develop`]）：
+//! RAW = 白平衡 + 去马赛克卷积（S2 数学结构）。
 //!
 //! # 铁律
 //!
@@ -318,8 +317,8 @@ pub mod tags {
     /// 映射顺序是 **Linearization → Black Subtraction → Rescaling → Clipping**，
     /// 故本表在减黑电平**之前**应用。
     ///
-    /// > 注：任务书第 58 行写的 `0xC618` 是**错的**（`0xC618` = 50712 不是
-    /// > 任何 DNG 标签）；规范原文的 `LinearizationTable` 是 **0xC691 = 50833**。
+    /// > 注：`LinearizationTable` 标签号曾被写作 `0xC618`，那是**错的**
+    /// > （`0xC618` = 50712 不是任何 DNG 标签）；规范原文是 **0xC691 = 50833**。
     pub const LINEARIZATION_TABLE: u16 = 50833;
     /// `ColorMatrix1`（0xC621，**3×3 色彩矩阵**，SRATIONAL × 9）。
     pub const COLOR_MATRIX1: u16 = 50721;
@@ -334,8 +333,8 @@ pub mod tags {
     /// > DNGBackwardVersion tag to at least 1.2.0.0.
     ///
     /// `factor = 1` → 正常行序；`factor = 2` → **偶数行在前、奇数行在后**
-    /// （任务书所说的「奇偶行分离」，即它想表达的机制；任务书引用的
-    /// `tags & 0x8000` 是 dcraw/LibRaw 的私有实现细节，**不是 DNG 标签**）。
+    /// （即「奇偶行分离」所描述的机制；而 `tags & 0x8000` 是 dcraw/LibRaw 的
+    /// 私有实现细节，**不是 DNG 标签**）。
     pub const ROW_INTERLEAVE_FACTOR: u16 = 50975;
     /// `AnalogBalance`（0xC62A）。
     pub const ANALOG_BALANCE: u16 = 50727;
@@ -654,8 +653,8 @@ pub enum RawFormat {
 ///    矩阵与伪装的 CFA 相位重排马赛克，须先反解该矩阵才能得到真实 Bayer 布局；
 /// 5. **工程量与复用率**——上述（盒树遍历 + CRX 解码 + 反变换）是一条独立的
 ///    解析链，与 DNG 的 IFD 解析零复用，且 CRX 编码细节无公开规范可依
-///    （只能逆向），引入半正确实现违反确定性铁律。故按任务书
-///    「结构化拒绝，不假装能解析」处理。
+///    （只能逆向），引入半正确实现违反确定性铁律。故按下述原则处理：
+///    「结构化拒绝，不假装能解析」。
 pub fn probe_format(data: &[u8]) -> RawResult<RawFormat> {
     const LOC: &str = "raw::probe_format";
     if data.len() < 16 {
@@ -1478,7 +1477,7 @@ pub const MAX_UNPACK_SAMPLES: usize = 16 * 1024 * 1024;
 /// 样本序号固定 `k = 0..count` 升序，每个样本的提取只依赖 `k`、`bits` 与
 /// `fill_order`——**无迭代器 zip、无 `HashMap`**，同输入逐位可复现，
 /// debug / release 同结果（纯整数运算）。
-
+///
 /// 解一条 DNG Deflate(`Compression = 8` / `32946`) 载荷：**zlib 容器**，含 Adler-32 校验。
 ///
 /// # 为什么走 `zlib::decompress_verified` 而不是 `inflate_raw`
@@ -2099,9 +2098,9 @@ fn bradford_diagonal(src_xyz: [f32; 3], dst_xyz: [f32; 3]) -> Option<Mat3> {
 /// 2. **第二份（本函数）**：`crates/prism-io/src/raw.rs`（f32、白点为
 ///    `[f32; 3]` XYZ 三刺激值）。
 ///
-/// （任务书预期此处是「第三份」。全仓 grep `Bradford` / `CAT02` /
+/// （原以为此处是「第三份」。全仓 grep `Bradford` / `CAT02` /
 /// `bradford_adaptation` 只找到 prism-math 一份**代码实现**，故按实际代码
-/// 计数是第二份。若主理人另有并行分支/未合并的第三份，请告知以更新此注释。）
+/// 计数是第二份。如另有并行分支/未合并的第三份，请更新此注释。）
 ///
 /// # 为什么不能复用 prism-math 那份（依赖方向结论）
 ///
@@ -2109,8 +2108,8 @@ fn bradford_diagonal(src_xyz: [f32; 3], dst_xyz: [f32; 3]) -> Option<Mat3> {
 /// （已核验，未新增任何依赖）。分层约束是 `io ∈ L4`（**依赖方向向下**），
 /// `prism-math` 是色彩数学层，与 `prism-io` 同级或更上层。**若为了复用而在此
 /// 加 `prism-math` 依赖，就是让 L4 反向依赖同级/上层，破坏架构分层**——
-/// 任务书明确禁止。故只能在本文件内自研。代价是两份实现的常数与舍入精度
-/// 可能略有差异（f32 vs f64），**上报主理人裁决是否统一**。
+/// 分层约束禁止。故只能在本文件内自研。代价是两份实现的常数与舍入精度
+/// 可能略有差异（f32 vs f64），**是否统一留待架构裁决**。
 ///
 /// # 退化处理
 ///
@@ -2176,7 +2175,7 @@ impl MatrixChoice {
 /// | 34892 | Lossy JPEG | DNG 1.4 **新增**，本模块未实装（且仅限 LinearRaw 8 位） |
 /// | 52546 | JPEG XL | DNG 1.7 **新增**，本模块未实装 |
 ///
-/// # 仍**不支持**的取值清单（诚实边界，W12 路E 收口时复核）
+/// # 仍**不支持**的取值清单（诚实边界，实装 Deflate 时复核）
 ///
 /// 实装Deflate **不等于**「压缩方式全支持」。下列取值本模块**仍结构化拒绝**
 /// （见 [`compression_reject_hint`]），它们各有**具体**成因，不是「还没做」：
@@ -2221,7 +2220,7 @@ impl MatrixChoice {
 /// 故本模块走 [`prism_bytes::zlib`] 的 `decompress_verified`（**校验
 /// Adler-32**）而**不是** `inflate_raw`——两者只差容器，读错会全盘错位。
 ///
-/// 这一点任务书写的是「裸 DEFLATE、不带 zlib 头」，与规范原文相反；
+/// 这一点文档曾写作「裸 DEFLATE、不带 zlib 头」，与规范原文相反；
 /// 本实现以规范为准（并在此写清依据）。
 ///
 /// # `32946`（`0x80B2`）与 `8` 等价
@@ -2412,7 +2411,7 @@ impl DeflatePredictor {
 /// 故本模块走 [`prism_bytes::zlib`] 的 `decompress_verified`（**校验
 /// Adler-32**）而**不是** `inflate_raw`——两者只差容器，读错会全盘错位。
 ///
-/// 这一点任务书写的是「裸 DEFLATE、不带 zlib 头」，与规范原文相反；
+/// 这一点文档曾写作「裸 DEFLATE、不带 zlib 头」，与规范原文相反；
 /// 本实现以规范为准（并在此写清依据）。
 ///
 /// # `32946`（`0x80B2`）与 `8` 等价
@@ -2423,7 +2422,7 @@ impl DeflatePredictor {
 ///
 /// # 为什么 `6` 值得单独说明
 ///
-/// 任务书把 6 描述为「真实相机里不罕见的未压缩变体」。核对上述规范原文后该
+/// 曾把 6 描述为「真实相机里不罕见的未压缩变体」。核对上述规范原文后该
 /// 前提**不成立**：`6` 在 TIFF 6.0 里是 **Old JPEG（OJPEG）**，一种 90 年代
 /// 已被否决的 JPEG 草案，**DNG 规范的任何版本都没有定义过它**。所以写 6 的
 /// 文件**不是「合规 DNG 的未压缩变体」**，而是厂商私有扩展或不合规文件。
@@ -2437,7 +2436,7 @@ impl DeflatePredictor {
 /// 仅用于**错误文本拼接**（`Display`），故返回 `&'static str` 且不做分配。
 /// 未列举的取值走 `_` 分支给出通用成因。
 ///
-/// # W12 路E 的修订：`8` 与 `32946` 已移出本清单（**曾写错，必须改**）
+/// # `8` 与 `32946` 已移出本清单（**曾写错，必须改**）
 ///
 /// 旧版本在这里写着
 ///
@@ -2446,7 +2445,7 @@ impl DeflatePredictor {
 /// ```
 ///
 /// **"未实装 inflate" 是错误表述**：DEFLATE 解码真源早已存在于
-/// `prism-bytes`（`inflate.rs` / `zlib.rs`，W9 路G 建的零依赖叶子 crate），
+/// `prism-bytes`（`inflate.rs` / `zlib.rs`，零依赖叶子 crate），
 /// 且 `prism-io` 早已依赖它——缺的是**DNG 侧的接线**，不是解码能力本身。
 /// 一个错误的原因描述比「不支持」更糟：它会让后来人以为「补个依赖就行」。
 ///
@@ -2460,7 +2459,7 @@ impl DeflatePredictor {
 /// 「应视为过时；建议 TIFF 实现**识别并读取**该过时码，但只写正式码 `8`」。
 /// DNG 1.4 继承 TIFF 的这层约定，故本模块对 `32946` 与 `8` 一视同仁。
 ///
-/// # `34892` 为什么**不是** Deflate 的别名（任务书曾如此描述）
+/// # `34892` 为什么**不是** Deflate 的别名（曾如此描述）
 ///
 /// DNG 1.4 规范原文并列声明两个**语义完全不同**的新取值：
 ///
@@ -2573,7 +2572,7 @@ pub struct ExifInfo {
 
 /// GPS 子 IFD 的**原始数值转储**（**读、不解**）。
 ///
-/// 按任务书要求「读，不解」：本结构只把 GPS IFD 的条目按标签升序转成
+/// 按「读，不解」原则：本结构只把 GPS IFD 的条目按标签升序转成
 /// `(tag, 数值向量, ASCII)` 三元组，**不**做经纬度十进制度换算、**不**做
 /// UTC 解析、**不**做海拔正负号判读。消费方（如地理标注工具）自行解释。
 #[derive(Debug, Clone, PartialEq)]
@@ -2615,6 +2614,15 @@ pub struct DngFile {
 }
 
 impl DngFile {
+    /// 原始字节的只读视图（生命周期挂在 `self` 上）。
+    ///
+    /// 供**子 IFD** 解析用：SubIFD 的载荷偏移是**文件绝对偏移**，
+    /// 必须回到整份字节流上取，而不能只看 `ifd0` 已解析出的条目。
+    /// 见 [`crate::raw_sub_ifd`]。
+    pub fn data_slice(&self) -> &[u8] {
+        self.data.as_slice()
+    }
+
     /// 解析 DNG 字节流（先做 [`probe_format`]，非 DNG 一律结构化拒绝）。
     pub fn parse(data: &[u8]) -> RawResult<Self> {
         const LOC: &str = "raw::DngFile::parse";
@@ -2878,11 +2886,29 @@ impl DngFile {
             .unwrap_or(1)
     }
 
+    /// `Predictor`（0x013D）标签的**原始取值**（缺省 **1** = Null）。
+    ///
+    /// **只在 `Compression` 为 8 / 32946（Deflate）时有意义**——DNG 规范把
+    /// `Predictor` 定义在 Deflate 的章节下；其余压缩方式读到它也没有规范效力。
+    ///
+    /// 缺省返回 `1`（不预测）而非报错：TIFF 规定缺省即 1，按缺省解释
+    /// 比让整幅图不可读更贴近工程意图（与 [`DngFile::fill_order`] 的回退一致）。
+    ///
+    /// 标签值非有限 / 越界（`< 0` 或 `> u16::MAX`）时同样回退 `1`，
+    /// 并由 [`DeflatePredictor::from_code`] 之外的调用点按需报「未支持」。
+    pub fn deflate_predictor_code(&self) -> u16 {
+        self.ifd0
+            .first_number(tags::PREDICTOR, self.order)
+            .filter(|v| v.is_finite() && *v >= 0.0 && *v <= u16::MAX as f32)
+            .map(|v| v as u16)
+            .unwrap_or(1)
+    }
+
     /// **行交织因子**（`RowInterleaveFactor`，0xC71F = 50975，缺省 **1**）。
     ///
     /// DNG 1.6 原文见 [`tags::ROW_INTERLEAVE_FACTOR`]。语义：
     /// `factor = 1` → 正常行序；`factor = 2` → 偶数行在前、奇数行在后
-    /// （任务书所说的「奇偶行分离」；任务书引用的 `tags & 0x8000` 是
+    /// （即「奇偶行分离」；而 `tags & 0x8000` 是
     /// dcraw/LibRaw 的**私有实现细节**，DNG 规范里没有这个字段）。
     ///
     /// 标签值非有限 / 越界时**回退 1**（不交织）：DNG 规定缺省即 1，
@@ -2941,8 +2967,8 @@ impl DngFile {
     /// 返回 `None`（调用方按「无线性化」处理，**不报错** —— 真实文件里
     /// 这张表罕见，不该为一张可选表让整幅图不可读）。
     ///
-    /// > 注：任务书第 58 行写的 `0xC618` 是**错的**（`0xC618` = 50712，
-    /// > 不是任何 DNG 标签）；规范原文的 `LinearizationTable` 是
+    /// > 注：`LinearizationTable` 标签号曾被写作 `0xC618`，那是**错的**
+    /// > （`0xC618` = 50712，不是任何 DNG 标签）；规范原文是
     /// > **0xC691 = 50833**。
     pub fn linearization_table(&self) -> Option<Vec<u16>> {
         let raw = self.ifd0.numbers(tags::LINEARIZATION_TABLE, self.order)?;
@@ -3211,14 +3237,14 @@ impl DngFile {
     /// | **8 / 32946（Deflate(ZIP)）** | [`inflate_dng_zlib`]：zlib 容器解压（**校验 Adler-32**）+ [`DeflatePredictor`] 反预测 + [`unpack_bits`] |
     /// | 其他（含 6、34892、34712、52546 等） | 结构化拒绝，见 [`compression_reject_hint`] |
     ///
-    /// > [`inflate_dng_zlib`]：W12 路E 实装。走 `prism_bytes::zlib` 的
+    /// > [`inflate_dng_zlib`]：走 `prism_bytes::zlib` 的
     /// > `decompress_verified`（**不是** `inflate_raw`）——Deflate 在 TIFF 里
     /// > 是「zlib data format」，带 2 字节头 + 4 字节 Adler-32 尾，两者只差容器。
     /// > 裸 DEFLATE 流会被结构化拒绝（见 `dng_deflate_rejects_bare_deflate_stream`）。
     ///
     /// # `Compression = 6`：**为什么仍然拒绝**（诚实边界）
     ///
-    /// 任务书把 6 描述为「未压缩但带特定 tiling，或厂商自定义变体」。核对
+    /// 曾把 6 描述为「未压缩但带特定 tiling，或厂商自定义变体」。核对
     /// **Adobe DNG 规范原文**（1.4.0.0 / 1.6.0.0 / 1.7.1.0 的 `Compression`
     /// 章节）后，这个前提**不成立**：
     ///
@@ -3577,18 +3603,15 @@ impl DngFile {
         let bits = self.bits_per_sample();
         let fill = self.fill_order();
 
-        // ---- 预测器（缺省 1 = Null，与 TIFF 一致）----
-        let predictor_code = self
-            .ifd0
-            .first_number(tags::PREDICTOR, self.order)
-            .filter(|v| v.is_finite() && *v >= 0.0)
-            .map(|v| v as u32)
-            .unwrap_or(1);
-        let predictor_code = u16::try_from(predictor_code).unwrap_or(1);
+        // ---- 预测器（缺省 1 = Null，与 TIFF 一致；取值校验见 DeflatePredictor）----
+        let predictor_code = self.deflate_predictor_code();
         let predictor = DeflatePredictor::from_code(predictor_code).ok_or_else(|| {
             unsupported_err(
                 LOC,
-                format!("Predictor = {predictor_code}：{}", DeflatePredictor::reject_reason(predictor_code)),
+                format!(
+                    "Predictor = {predictor_code}，本模块只实现 1 / 2 / 34892 / 34893：{}",
+                    DeflatePredictor::reject_reason(predictor_code)
+                ),
                 "请用 Adobe DNG Converter 转存为「未压缩」或「lossless JPEG」DNG 后再读入；\
                  DNG 1.4 为 Compression=8 只定义了 7 个预测器取值",
             )
@@ -3761,7 +3784,7 @@ impl DngFile {
 
 
     // ===========================================================================
-//  W12 路E ·诚实边界（Deflate = 8 / 32946 与 SubIFD 预览）
+//  诚实边界（Deflate = 8 / 32946 与 SubIFD 预览）
 // ===========================================================================
 //
 // 本段把「做到了什么 / 没做到什么 / 依据在哪」集中写清，避免散落在各处
@@ -3785,14 +3808,14 @@ impl DngFile {
 //
 // 本模块据此走 `prism_bytes::zlib::decompress_verified`（**比对 Adler-32**）。
 //
-// **与任务书的分歧（如实记录）**：任务书要求「先核实TIFF 的 Deflate 是否是
+// **与既有预设的分歧（如实记录）**：曾有预设「先核实 TIFF 的 Deflate 是否是
 // 裸 DEFLATE 码流、不带 zlib 头」，其预设答案是「裸流」。核实结论**相反**，
-// 故本实现以规范为准。若按任务书原预设走`inflate_raw`，会把 zlib 头的
+// 故本实现以规范为准。若按原预设走 `inflate_raw`，会把 zlib 头的
 // `0x78` 当成 DEFLATE 块头解读，产出**看似合法实则全错**的像素——
 // 有测试专门钉死这一点（`dng_deflate_rejects_bare_deflate_stream`）。
 //
 // ---------------------------------------------------------------------------
-//  2. 32946 = 8，而 34892 ≠ 8（**任务书此处有事实错误**）
+//  2. 32946 = 8，而 34892 ≠ 8（**曾记此处有事实错误**）
 // ---------------------------------------------------------------------------
 //
 // DNG 1.4 规范原文并列声明两个语义**完全不同**的新取值：
@@ -3802,9 +3825,9 @@ impl DngFile {
 // Value = 34892: Lossy JPEG
 // ```
 //
-// 任务书把 `34892` 称作「Deflate 的 Adobe 历史别名」——**这是错的**。
+// 曾把 `34892` 称作「Deflate 的 Adobe 历史别名」——**这是错的**。
 // `34892` 是**有损基线 DCT**（仅允许 8 位 + `LinearRaw` / `PhotometricMask`）。
-// 若照任务书实现，一个有损 JPEG 的 DNG 会被喂进 inflate，产出全错像素
+// 若照此实现，一个有损 JPEG 的 DNG 会被喂进 inflate，产出全错像素
 // 而不报错——这比拒绝**危险得多**。故本模块对 `34892` 继续结构化拒绝。
 //
 // `34892` 在 PhotometricInterpretation 语境里另有含义（`LinearRaw`），
@@ -3879,7 +3902,7 @@ impl DngFile {
 // - **无真实相机样本**：所有往返验证都基于**本仓合成**的 DNG。
 //   合成器与读端共用同一份编码/解码约定，故「自洽」已证，
 //   但「与真实相机文件一致」**未证**（无样本）。
-// - **压缩器复用** `exr_write::deflate_zlib`（路L 的 fixed Huffman +
+// - **压缩器复用** `exr_write::deflate_zlib`（fixed Huffman +
 //   stored 取小）。它是本仓唯一已验证的真压缩 zlib 写入器；重写第二份
 //   只会制造「第二份实现 = 第二份 bug 面」。代价：写入侧对 DNG 布局
 //   （而非 EXR 布局）的适配由调用方负责。
@@ -4101,7 +4124,7 @@ impl DngFile {
     /// - **④ 内部 相机→XYZ→sRGB 串联**：色彩矩阵的输出是 CIE XYZ，
     ///   而本模块的交付面是 RGB 帧缓冲，故再乘 IEC 61966-2-1 的 XYZ→sRGB。
     ///   两级矩阵都在 f32 计算域一次求和完成（不拆成两次数值舍入）；
-    /// - **⑤ 量化只发生在交付边界**（§2.2 铁律）：内部全程 f32，仅写入
+    /// - **⑤ 量化只发生在交付边界**（铁律）：内部全程 f32，仅写入
     ///   `Fbuf16F` 时 round-to-nearest-even 量化一次。
     ///
     /// # 位深
@@ -7403,7 +7426,7 @@ mod tests {
 
     #[test]
     fn dng_linearization_table_uses_correct_tag_number() {
-        // 任务书写 0xC618 是错的；规范是 0xC691 = 50833。
+        // `0xC618` 是错的；规范是 0xC691 = 50833。
         assert_eq!(tags::LINEARIZATION_TABLE, 50833);
         assert_eq!(tags::LINEARIZATION_TABLE, 0xC691);
         assert_eq!(tags::BLACK_LEVEL_DELTA_H, 50715);
@@ -7572,7 +7595,7 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    //  W12 路E：Compression = 8 / 32946（Deflate）+ Predictor + SubIFD
+    //  Compression = 8 / 32946（Deflate）+ Predictor + SubIFD
     // -------------------------------------------------------------------
 
 
@@ -8128,11 +8151,11 @@ mod tests {
 
     #[test]
     fn dng_lossy_jpeg_34892_is_rejected_not_routed_to_inflate() {
-        // 任务书把 `34892` 描述成「Deflate 的 Adobe 历史别名」——**事实错误**。
+        // 曾把 `34892` 描述成「Deflate 的 Adobe 历史别名」——**事实错误**。
         // DNG 1.4 原文并列声明：`8: Deflate (ZIP)` 与 `34892: Lossy JPEG`，
         // 两者语义完全不同（后者是**有损**基线 DCT）。
         //
-        // 若照任务书实现，一个有损 JPEG 的 DNG 会被喂进 inflate，产出
+        // 若照此实现，一个有损 JPEG 的 DNG 会被喂进 inflate，产出
         // 「看起来合法实则全错」的像素——比明确拒绝**危险得多**。
         // 故钉死：`34892` 必须走结构化拒绝，且错误文本说清「有损」。
         let px = gradient(4, 4, 4096);

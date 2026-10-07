@@ -2,7 +2,7 @@
 //!
 //! # 为什么需要这条门禁
 //!
-//! 本项目历史上栽过"假绿第二次出现"——模块被注释禁用仍报全绿（账本 v2.5）。
+//! 本项目历史上栽过"假绿第二次出现"——模块被注释禁用仍报全绿。
 //! `#[ignore]` 与"注释掉测试"是**同一类假绿手段**：它让测试从验收清单上消失，
 //! 却让 `cargo test` 继续报 0 failed。本守卫把"消失"这件事本身变成可测量的：
 //! **全仓任何 `.rs` 文件里出现一处`#[ignore]`，或任何 `src/` 下的 doc 注释
@@ -317,9 +317,13 @@ fn scan_workspace() -> (Vec<Hit>, usize, PathBuf) {
     let self_path = std::fs::canonicalize(&self_path).unwrap_or(self_path);
 
     let mut files = Vec::new();
-    // 全仓Rust 源码树。`tools/` 亦纳入（路4 改tools/docs/ci，但 Rust 源码
+    // 全仓 Rust 源码树。`tools/` 亦纳入（tools/docs/ci，但 Rust 源码
     // 里的 `#[ignore]` 同样是假绿，必须一视同仁）。
-    for sub in ["crates", "examples", "tools"] {
+    //
+    // 源码根目录按实际存在的目录探测：仓库布局是 `crates/`，单文件源码
+    // 分发包布局是 `src/`（同一批文件，不同路径，见 tools/pack_source_txt.mjs）。
+    let src_root = if root.join("crates").is_dir() { "crates" } else { "src" };
+    for sub in [src_root, "examples", "tools"] {
         let d = root.join(sub);
         if d.is_dir() {
             collect_rs(&d, &mut files);

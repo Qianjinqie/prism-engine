@@ -1,18 +1,18 @@
-//! `prism-genart` — 生成艺术与矢量绘制节点（路线图 B9；白皮书 §16/§17；
-//! 架构 v2.4 §2.2 `genart { flowField/lsystem/… }` 行）。
+//! `prism-genart` — 生成艺术与矢量绘制节点（
+//!  `genart { flowField/lsystem/… }` 行）。
 //!
-//! # 六算法生成器（B9 定案，以路线图/白皮书为准）
+//! # 六算法生成器（定案，以为准）
 //! 依次为：流场（flow field）、差分生长（differential growth）、
 //! 细胞自动机（cellular automata）、Voronoi 艺术（Voronoi art）、
 //! 分形（fractal / Mandelbrot）、噪声调制（noise modulation）。每个生成器
 //! 都是一个 `MathStructure` 特解 + `registry!` 静态汇入（D-27），输出统一
 //! 为 [`prism_vector::Path`] 形状集合，可经 `prism-vector` 光栅化对接。
 //!
-//! # 绘制动画（B9）
+//! # 绘制动画
 //! - [`draw_on`]：路径**逐步绘制**（进度 s∈[0,1] 单调推进，接 `prism-anim`
-//!   track 采样进度）；复用 `prism-raster` 的扫描线光栅（draw-on 复用 W5-B5
+//!   track 采样进度）；复用 `prism-raster` 的扫描线光栅（draw-on 复用既有
 //!   光栅，非重复造）。
-//! - morph / humanize 落 `prism-vector`（B9 的另一半接口面）。
+//! - morph / humanize 落 `prism-vector`（另一半接口面）。
 //!
 //! # A6 图表能力（并入 B9）
 //! [`chart`]：简单图表节点（折线/柱状），复用生成艺术的路径面。

@@ -1,6 +1,6 @@
-//! 焦散（W5-B2）：MNEE 流形下一事件估计 + PSR 兜底（白皮书 §2 全部要点）。
+//! 焦散：MNEE 流形下一事件估计 + PSR 兜底（全部要点）。
 //!
-//! # 出处（路线图 §6.1 数据资产清单 #4 注释义务）
+//! # 出处（数据资产清单 #4 注释义务）
 //! - 流形探索：W. Jakob, S. Marschner, "Manifold Exploration: A Markov Chain
 //!   Monte Carlo Technique for the Rendering of General Spectral Effects",
 //!   EGSR 2012。
@@ -9,24 +9,24 @@
 //! - 路径空间正则化（PSR）：J. Hanika, A. Kaplanyan, C. Dachsbacher,
 //!   "Improved path space regularization for glossy and caustics rendering",
 //!   EGSR 2015——**兜底分层**：MNEE 不收敛的样本返回 None，由 BSDF 采样的
-//!   PSR 镜面抖动路径（[`crate::bsdf::SampleCtx::psr_rough`]，白皮书 §2
+//!  PSR 镜面抖动路径（[`crate::bsdf::SampleCtx::psr_rough`]，
 //!   "roughness 注入微抖动"）以拉宽后的 glossy 链覆盖，两层合成不降级。
 //! - D-30：k=2 球面折射链 = 漫射面 → 入球折射 → 出球折射 → 光源。
 //!
 //! # 牛顿与雅可比（D-29 确定性）
 //! - 切平面 2D 参数化：变量 (u,v) ∈ [−1,1]²（无量纲，偏移幅 `h` 缩放），
-//!   球链样本投影回球面归一（白皮书"镜面切平面参数化"）。
+//!  球链样本投影回球面归一（"镜面切平面参数化"）。
 //! - 残差 = 链末端方向与目标方向的横向偏差，投影到**固定基**（P→L 连线的
 //!   正交基）——基不随迭代旋转，差分无伪噪声。
 //! - 牛顿 3 步 + 残差增阻尼减半；雅可比 = 中心差分。
 //!   k=1 平面镜链约束线性（牛顿一步精确），其差分雅可比由解析解
 //!   |det| = cosθ·h²/D²（Lagrange 恒等式）锚定测试；k=2 球面折射链同框架
-//!   差分（白皮书 §2"一般曲面有限差分"条款；解析雅可比列为 D-30 扩展位）。
+//!  差分（"一般曲面有限差分"条款；解析雅可比列为 D-30 扩展位）。
 //! - pdf_w = p_st/|det DΦ|：p_st = 1/4（(u,v) 均匀域），DΦ 为切平面到入射
 //!   方向的全链雅可比（差分）。面光源公式 pdf_w = (p_st/|J|)·(cosθ_l/d²)
 //!   的几何因子（cosθ/d²）在 DΦ 中自然出现（平面镜解析验证），两式等价。
 //! - 全程 ±×÷√（sqrt 为 IEEE 精确舍入运算），无 libm、无全局 RNG；
-//!   多初值随机数走 aux 游程流（架构 §4.4）。
+//!  多初值随机数走 aux 游程流。
 
 use prism_core::{EvalCtx, SampleIndex};
 use prism_math::Vec3;
@@ -56,13 +56,13 @@ pub struct CausticsSample {
     pub weight: Vec3,
 }
 
-/// 牛顿步数上限（白皮书 §2：牛顿 3 步）。
+/// 牛顿步数上限（牛顿 3 步）。
 const NEWTON_STEPS: usize = 3;
 /// 收敛残差阈（切向角偏差，rad 量级）。
 const RES_EPS: f32 = 1.0e-4;
 /// 雅可比中心差分步长（无量纲坐标）。
 const DIFF_EPS: f32 = 1.0e-4;
-/// 多初值数 m（aux 流均摊，白皮书 §2 多初值框架）。
+/// 多初值数 m（aux 流均摊， 多初值框架）。
 const MNEE_MULTISTART: u32 = 4;
 
 /// 射线与球最近正交点（t > 0 的最小根）；无正根 None。
@@ -155,7 +155,7 @@ fn newton2(mut residual: impl FnMut(f32, f32) -> Option<[f32; 2]>, u0: f32, v0: 
 // k=1：平面镜链（解析结构，差分雅可比由解析锚定）
 // ---------------------------------------------------------------------------
 
-/// 平面镜 MNEE 链（k=1，**解析**——白皮书 §2"平面镜面解析雅可比"）：
+/// 平面镜 MNEE 链（k=1，**解析**——"平面镜面解析雅可比"）：
 /// P → 镜面点反射 → L。镜像法直接给出流形解（L 关于镜面镜像 → 连线交镜面），
 /// 无需牛顿迭代；pdf 记 δ 约定 1.0（确定 P-L 对的流形解唯一，随机性全在
 /// 调用方的光源采样中，MIS 权重按非几何 NEE 处理 = 1）。
@@ -169,7 +169,7 @@ pub fn mnee_mirror(
     ctx: &EvalCtx,
     si: &SampleIndex,
 ) -> Option<CausticsSample> {
-    let _ = (ctx, si); // 解析链无随机数（保留签名与球链对称，aux 流 W6+ 扩展位）
+    let _ = (ctx, si); // 解析链无随机数（保留签名与球链对称，aux 流后续扩展位）
     let n = plane_n.normalize();
     // 镜像法：L 关于镜面镜像 → P→L' 连线与镜面交点 = 精确链解。
     let dist_l = (light - plane_p).dot(&n);
@@ -223,7 +223,7 @@ fn refract_chain(refr: &Refractor, p: Vec3, light: Vec3, x1: Vec3) -> Option<(Ve
     Some((x2, w_out, e))
 }
 
-/// 球面折射 MNEE 链（k=2，白皮书 §2 / D-30）：P → 入球折射 → 出球折射 → L。
+/// 球面折射 MNEE 链（k=2， / D-30）：P → 入球折射 → 出球折射 → L。
 /// 多初值 m=4（aux 流均摊）；任一初值收敛即返回该分支样本（期望语义：
 /// 估计量 = Σ_i f·吞吐_i/(m·pdf_i)，不收敛初值贡献 0）。
 #[allow(clippy::too_many_arguments)]

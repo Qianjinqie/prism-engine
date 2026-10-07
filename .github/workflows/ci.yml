@@ -8,22 +8,27 @@
 #      upload-artifact / download-artifact），不引 dtolnay/rust-toolchain 之类
 #      第三方 action。rustc 直接用 ubuntu-latest 预装的 rustup，避免供应链面。
 #   3. **不许掩盖失败**：测试必须带 `--no-fail-fast`，否则第一个失败的 crate
-#      会让 cargo 立即停止，后面 24 个 crate 的结果全部丢失（历史上正是如此）。
+#      会让 cargo 立即停止，其余 crate 的结果全部丢失。
+#   4. **双布局**：仓库里源码在 `crates/`，单文件源码分发包里在同一批文件的
+#      `src/` 下（见 tools/pack_source_txt.mjs）。所以凡涉及源码路径的地方
+#      一律用 `$SRC_ROOT`，由下方 detect 步骤按实际存在的目录探测。
 #
-# 五个 job：
-#   ghost-guard  —— 幽灵写入防御（2026-10-06 事故后增设）：反向自证 + 基线判据。
-#                   秒级、无 cargo，**排在 native 之前**（native needs它）——
-#                   根因先于症状：源码被换掉时，先报"只增行零删除"，而不是
-#                   等13 分钟后报"测试挂了"。
-#   native      —— 编译 + 全量 2070 用例测试（唯一的"会不会挂"判据）
+# 六个 job：
+#   ghost-guard  —— 幽灵写入防御（反向自证 + 基线判据）。
+#                   秒级、无 cargo，**排在 native 之前**（native needs 它）——
+#                   根因先于症状：源码被换掉时先报"只增行零删除"，
+#                   而不是等native 跑完才报"测试挂了"。
+#                   同 job 内另跑开源卫生扫描（提交前拦住内部过程痕迹，
+#                   趁 git 历史还没被污染时）。
+#   native      —— 编译 + 全量用例测试（唯一的"会不会挂"判据）
 #   wasm        —— wasm32 独立 target-dir 构建 + 产物静态结构校验
 #   wasm-verify —— 10 份 .wgsl 基础解析（从 wasm job拆出，失败原因更聚焦）
 #   interop     —— DWA 与官方 OpenEXR 的跨实现对拍门禁（三态退出码）
 #   lint        —— node 宿主验证 host_test.mjs（CPU 参考 × JS 独立实现交叉判对）
 #
-# ghost-guard 与 native 的顺序不是随意的：事故当天 raw.rs 被无人运行的写入
-# 注入 254 行（E0592），若只有 native 门禁，要等编译+测试十几分钟才暴露，且
-# 症状（某个测试挂了）掩盖了根因（源码被换）。放在前面，几秒就能定位。
+# ghost-guard 与 native 的顺序不是随意的：源码文件被换掉时，若只有 native
+# 门禁，要等编译+测试十几分钟才暴露，且症状（某个测试挂了）掩盖了根因
+# （源码被换）。放在前面，几秒就能定位。
 # 另外 ghost-guard 必须真跑而不是"本地存在即可"——它同时跑 --self-test，
 # 检测逻辑一旦被改成恒过（比如为了让 CI 变绿而注释掉判据），这个 job 就红。
 #
@@ -42,7 +47,7 @@ on:
   pull_request:
   workflow_dispatch:
 
-# 同一分支的新 push 取消仍在跑的旧 run：2070 个用例约 13 分钟，
+# 同一分支的新 push 取消仍在跑的旧 run：全量用例耗时十几分钟，
 # 无人值守时排队会积压。
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -57,21 +62,27 @@ env:
   # 零第三方 crate ⇒ 网络不可用时也应能构建。CI 上不放 .cargo/config 锁网，
   # 只用 --locked 保证不新增依赖。
   RUST_BACKTRACE: "1"
+  # 源码根目录：仓库布局是 crates/，单文件分发包布局是 src/。
+  # 各job 在 checkout 之后用下面的 "detect source root" 步骤二选一。
+  SRC_ROOT: crates
 
 jobs:
   # ---------------------------------------------------------------------------
-  # ghost-guard —— 幽灵写入防御（2026-10-06 事故后增设，防线 3）。
+  # ghost-guard —— 幽灵写入防御（防线 3）。
   #
   # 为什么必须排在 native（编译+测试）**之前**：
-  #   今天的事故是 raw.rs 被注入 254 行 → E0592 → prism-io 编译不过。native job
-  #   要跑 13 分钟才在测试阶段报出"有测试挂了"，而根因是**源码被换了**。
-  #   ghost-guard 只跑纯文本分析（node，秒级，不需要 cargo），能在 native 开工
+  #   典型故障形态是某源文件被注入大量重复定义行 → E0592 → 该 crate 编译不过。
+  #   native job 要跑十几分钟才在测试阶段报出"有测试挂了"，而根因是**源码被换了**。
+  #   ghost-guard 只跑纯文本分析（node，秒级，不需要 cargo），能在 native 启动
   #   前就把"文件相对基线只增行、零删除"这种形状报出来。把便宜的判红放在前面，
   #   是为了让"根因"先于"症状"出现。
   #
   # 必须真跑在 CI 里：本job 同时执行 --check（对真实基线）与 --self-test
   # （反向自证）。若检测逻辑被改成恒过（例如为了"让它变绿"而注释掉判据），
   # --self-test 会立即判红，这个 job 随之失败——**这就是它不可被静音的原因**。
+  #
+  # 同 job 还跑开源卫生扫描（--self-test + 本体）。理由同上：检测器必须自己
+  # 先证明"还有判红能力"，否则清空词表就能让门禁变假绿。
   #
   # 零第三方依赖：只用 node 内置模块，无需 npm install。
   # ---------------------------------------------------------------------------
@@ -83,6 +94,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Detect source root (crates/ or src/)
+        run: |
+          if [ -d crates ]; then
+            echo "SRC_ROOT=crates" >> "$GITHUB_ENV"
+          elif [ -d src ]; then
+            echo "SRC_ROOT=src" >> "$GITHUB_ENV"
+          else
+            echo "::error::找不到源码目录（crates/ 或 src/）"; exit 1
+          fi
+          echo "源码根目录: $SRC_ROOT"
 
       - name: Show toolchain
         run: node --version
@@ -102,10 +124,32 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x tools/backup.sh
-          ./tools/backup.sh backup crates/prism-io/src/raw.rs
-          ./tools/backup.sh verify crates/prism-io/src/raw.rs \
-            tools/backups/crates_prism-io_src_raw.rs.bak
+          ./tools/backup.sh backup "$SRC_ROOT/prism-io/src/raw.rs"
+          ./tools/backup.sh verify "$SRC_ROOT/prism-io/src/raw.rs" \
+            "tools/backups/${SRC_ROOT}_prism-io_src_raw.rs.bak"
           ./tools/backup.sh status
+
+      # ------------------------------------------------------------------
+      # 开源卫生门禁（同一 job 内，零额外成本 —— 纯文本扫描，秒级）。
+      #
+      # 为什么必须有：内部过程痕迹（团队内部角色称谓、内部排期编号、
+      # "提及用户"的表述）一旦提交进 git 历史就**不可撤回**——开源仓的
+      # 历史是公开的。本门禁把"提交前发现"变成 CI 的一部分。
+      #
+      # 两条都要跑，缺一不可：
+      #   1) --self-test 注入 6 类痕迹 + 2 个技术义反例，必须逐条判红/判绿
+      #      ——证明词表还有判红能力。若有人把词表删空，这个 job 立刻红。
+      #   2) 本体必须 exit 0——真实仓库当前必须干净。
+      #
+      # 词表与文件类型集合固化在 tools/hygiene_scan.mjs 里。**手工 grep 极易
+      # 漏扩展名**（曾漏 .toml，导致 Cargo.toml 注释里的编号整整一轮没被发现），
+      # 所以判断"扫全了没有"的责任归脚本，不归人。
+      # ------------------------------------------------------------------
+      - name: Hygiene scan self-test (must detect injected markers)
+        run: node tools/hygiene_scan.mjs --self-test
+
+      - name: Hygiene check (no internal process markers in repo)
+        run: node tools/hygiene_scan.mjs
 
   # ---------------------------------------------------------------------------
   # native —— 权威门禁：整个 workspace 能不能编译 + 全部测试是否通过。
@@ -120,6 +164,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Detect source root (crates/ or src/)
+        run: |
+          if [ -d crates ]; then
+            echo "SRC_ROOT=crates" >> "$GITHUB_ENV"
+          elif [ -d src ]; then
+            echo "SRC_ROOT=src" >> "$GITHUB_ENV"
+          else
+            echo "::error::找不到源码目录（crates/ 或 src/）"; exit 1
+          fi
+          echo "源码根目录: $SRC_ROOT"
 
       - name: Show toolchain
         run: |
@@ -226,6 +281,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Detect source root (crates/ or src/)
+        run: |
+          if [ -d crates ]; then
+            echo "SRC_ROOT=crates" >> "$GITHUB_ENV"
+          elif [ -d src ]; then
+            echo "SRC_ROOT=src" >> "$GITHUB_ENV"
+          else
+            echo "::error::找不到源码目录（crates/ 或 src/）"; exit 1
+          fi
+          echo "源码根目录: $SRC_ROOT"
+
       - name: Show toolchain
         run: |
           rustc --version
@@ -258,7 +324,7 @@ jobs:
       # --no-test：host_test.mjs 由 lint job 单独跑（它需要下载 artifact）。
       # 这里只做"构建 + 存在性"，让 job 失败原因保持单一。
       - name: Build wasm (independent target-dir)
-        run: cd crates/prism-gpu/web && ./build.sh --no-test
+        run: cd "$SRC_ROOT/prism-gpu/web" && ./build.sh --no-test
 
       # 显式复核隔离目录确实被使用（build.sh 若被改坏，这里能发现）。
       # 判据：独立目录 target/wasm32/ 必须存在，且 native 的 target/debug/
@@ -282,14 +348,14 @@ jobs:
       # 静态结构校验：产物存在 / 体积合理 / 21 个导出 + 14 个导入符号齐全。
       # 用 WebAssembly.Module.imports+exports，无需提供 env.* 桩函数。
       - name: Verify wasm artifact (exports/imports/size)
-        run: node crates/prism-gpu/web/ci_wasm_verify.mjs crates/prism-gpu/web/prism_gpu.wasm
+        run: node "$SRC_ROOT/prism-gpu/web/ci_wasm_verify.mjs" "$SRC_ROOT/prism-gpu/web/prism_gpu.wasm"
 
       # 交给 lint job 用（host_test.mjs 需要这个文件）。
       - name: Upload wasm artifact
         uses: actions/upload-artifact@v4
         with:
           name: prism-gpu-wasm
-          path: crates/prism-gpu/web/prism_gpu.wasm
+          path: ${{ env.SRC_ROOT }}/prism-gpu/web/prism_gpu.wasm
           retention-days: 7
           if-no-files-found: error
 
@@ -310,14 +376,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Detect source root (crates/ or src/)
+        run: |
+          if [ -d crates ]; then
+            echo "SRC_ROOT=crates" >> "$GITHUB_ENV"
+          elif [ -d src ]; then
+            echo "SRC_ROOT=src" >> "$GITHUB_ENV"
+          else
+            echo "::error::找不到源码目录（crates/ 或 src/）"; exit 1
+          fi
+          echo "源码根目录: $SRC_ROOT"
+
       - name: Show toolchain
         run: node --version
 
       - name: WGSL smoke parse
-        run: node crates/prism-gpu/web/ci_wgsl_smoke.mjs crates/prism-gpu/shaders
+        run: node "$SRC_ROOT/prism-gpu/web/ci_wgsl_smoke.mjs" "$SRC_ROOT/prism-gpu/shaders"
 
   # ---------------------------------------------------------------------------
-  # interop —— DWA(DWAA/DWAB) 与官方 OpenEXR 的跨实现对拍门禁（W13 P0-1）。
+  # interop —— DWA(DWAA/DWAB) 与官方 OpenEXR 的跨实现对拍门禁。
   #
   # 【为什么必须独立成job，而不是塞进 native】
   #   * 依赖不同：需要系统 OpenEXR（libopenexr-dev），而 native job 刻意
@@ -349,6 +426,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Detect source root (crates/ or src/)
+        run: |
+          if [ -d crates ]; then
+            echo "SRC_ROOT=crates" >> "$GITHUB_ENV"
+          elif [ -d src ]; then
+            echo "SRC_ROOT=src" >> "$GITHUB_ENV"
+          else
+            echo "::error::找不到源码目录（crates/ 或 src/）"; exit 1
+          fi
+          echo "源码根目录: $SRC_ROOT"
 
       - name: Show toolchain
         run: |
@@ -390,7 +478,7 @@ jobs:
       - name: interop_gate --self-test (judge reverse self-proof)
         run: |
           set -o pipefail
-          node crates/prism-io/tests/interop/interop_gate.mjs --self-test 2>&1 | tee interop-selftest.log
+          node "$SRC_ROOT/prism-io/tests/interop/interop_gate.mjs" --self-test 2>&1 | tee interop-selftest.log
           echo "self-test 退出码=$?"
 
       # 环境不具备时显式 SKIP：中性结束 + job summary 留痕，**绝不**当成通过。
@@ -402,7 +490,7 @@ jobs:
           echo "### interop 门禁：SKIP（环境不具备）" >> "$GITHUB_STEP_SUMMARY"
           echo "官方 OpenEXR 装不上（pkg-config 查不到）。这是**验证工具缺失**，不是本仓代码问题。" >> "$GITHUB_STEP_SUMMARY"
           echo "门禁以 **SKIP(3)** 显式跳过——**不等于通过**。判据层已由上一步 --self-test 反向自证。" >> "$GITHUB_STEP_SUMMARY"
-          echo "若要真正对拍，请在本机装 \`libopenexr-dev\` + \`libimath-dev\` 后运行 \`node crates/prism-io/tests/interop/interop_gate.mjs\`。" >> "$GITHUB_STEP_SUMMARY"
+          echo "若要真正对拍，请在本机装 \`libopenexr-dev\` + \`libimath-dev\` 后运行 \`node $SRC_ROOT/prism-io/tests/interop/interop_gate.mjs\`。" >> "$GITHUB_STEP_SUMMARY"
           # 中性结束：不红（平台缺包不是本仓责任），但已显式留痕（非静默）。
           exit 0
 
@@ -413,7 +501,7 @@ jobs:
         if: env.HAS_OPENEXR == '1'
         run: |
           set -uo pipefail
-          node crates/prism-io/tests/interop/interop_gate.mjs --json interop-result.json 2>&1 | tee interop-gate.log
+          node "$SRC_ROOT/prism-io/tests/interop/interop_gate.mjs" --json interop-result.json 2>&1 | tee interop-gate.log
           RC=${PIPESTATUS[0]}
           echo "门禁退出码 = $RC  （0=真通过 / 1=判红 / 3=环境不具备）"
           if [ "$RC" -eq 3 ]; then
@@ -465,6 +553,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Detect source root (crates/ or src/)
+        run: |
+          if [ -d crates ]; then
+            echo "SRC_ROOT=crates" >> "$GITHUB_ENV"
+          elif [ -d src ]; then
+            echo "SRC_ROOT=src" >> "$GITHUB_ENV"
+          else
+            echo "::error::找不到源码目录（crates/ 或 src/）"; exit 1
+          fi
+          echo "源码根目录: $SRC_ROOT"
+
       - name: Show toolchain
         run: node --version
 
@@ -472,21 +571,21 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: prism-gpu-wasm
-          path: crates/prism-gpu/web
+          path: ${{ env.SRC_ROOT }}/prism-gpu/web
 
       - name: Verify downloaded artifact is present
         run: |
           set -euo pipefail
-          test -f crates/prism-gpu/web/prism_gpu.wasm \
+          test -f "$SRC_ROOT/prism-gpu/web/prism_gpu.wasm" \
             || { echo "::error::artifact 未下载到预期路径"; exit 1; }
-          ls -l crates/prism-gpu/web/prism_gpu.wasm
+          ls -l "$SRC_ROOT/prism-gpu/web/prism_gpu.wasm"
 
       # 唯一判据 = 退出码。不 grep 计数、不比对断言条数。
       - name: Run host_test.mjs
-        run: node crates/prism-gpu/web/host_test.mjs crates/prism-gpu/web/prism_gpu.wasm
+        run: node "$SRC_ROOT/prism-gpu/web/host_test.mjs" "$SRC_ROOT/prism-gpu/web/prism_gpu.wasm"
 
       # ------------------------------------------------------------------
-      # 合规自检（W16 用户特别要求：文件夹里必须有专门管合规的部分）。
+      # 合规自检（文件夹里必须有专门管合规的部分）。
       #
       # 排在 host_test **之后**：host_test 通过后本门禁才有意义，且两者互不
       # 掩盖 —— host_test 判数值对错，本门禁判"零第三方代码依赖 + 资产登记
@@ -510,5 +609,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: host-test-log
-          path: crates/prism-gpu/web/prism_gpu.wasm
+          path: ${{ env.SRC_ROOT }}/prism-gpu/web/prism_gpu.wasm
           retention-days: 7

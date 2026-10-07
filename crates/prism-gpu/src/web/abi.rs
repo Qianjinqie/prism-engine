@@ -1,4 +1,4 @@
-//! WebAssembly C-ABI：JS harness 可驱动的 Rust 导出（D-14 手机测试链路）。
+//! WebAssembly C-ABI：JS harness 可驱动的 Rust 导出（D-14 移动端验证链路）。
 //!
 //! # 为什么是这一套约定
 //!
@@ -102,7 +102,7 @@ const HIST_N: usize = 256;
 const HIST_BUCKETS: u32 = 256;
 
 // ---------------------------------------------------------------------------
-// D-14 补测：WGSL 内存布局常量（D3 模拟 + D2 wavefront 真机 dispatch）
+// D-14 补测：WGSL 内存布局常量（模拟 + wavefront 真机 dispatch）
 // ---------------------------------------------------------------------------
 //
 // # 为什么把这张表摆在 Rust 侧
@@ -261,7 +261,7 @@ pub const WF2_CAMERA_OFF: usize = 240;
 /// `SceneParams` uniform 在参数区内的偏移。
 pub const WF2_SCENE_OFF: usize = 336;
 
-// ---- U4 深化 B：GI 的 GPU compute 路径（`gpu.gi_compute`）----
+// ---- GI 的 GPU compute 路径（`gpu.gi_compute`）----
 //
 // 布局常量一律由 `gi_compute.wgsl` 的声明推导，`wgsl_lint.mjs` 规则 A 会拿本表
 // 与 WGSL 逐项复核（uniform 16B 对齐 + 宿主写入量自洽）。**禁止在本文件为 GI 的
@@ -486,7 +486,7 @@ struct Scratch {
     wf2_prim_mat: [u8; WF2_PRIM_MAT_BYTES as usize],
     /// D3/D2 的 uniform 参数区（5 份参数共用，按 `*_PARAMS_OFF` 切分）。
     params2: [u8; PARAMS_ARENA_BYTES],
-    // ---- U4 深化 B：GI GPU 路径的输入/输出工作区 ----
+    // ---- GI GPU 路径的输入/输出工作区 ----
     /// GI 探针 storage（`array<GiProbe>`）：输入位置/法线，读回落点（trace+project 写回）。
     gi_probes: [u8; GI_PROBES_BYTES as usize],
     /// GI 查询点 storage（`array<GiPoint>`）：输入位置，读回落点（interpolate 写出辐照度）。
@@ -6679,7 +6679,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // U4 深化 B：GI 的 GPU 路径 —— CPU 参考自洽性 + SH π 约定锚点
+    // GI 的 GPU 路径 —— CPU 参考自洽性 + SH π 约定锚点
     // -----------------------------------------------------------------------
 
     /// GI 无条件常量（保留，防未用告警；与 WGSL 编译期常量对表）。

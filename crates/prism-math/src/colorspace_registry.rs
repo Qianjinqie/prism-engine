@@ -1,6 +1,6 @@
 //! T4 色彩空间批量注册表：白点 + 原色 + 传递函数三元组的结构化定义与互转。
 //!
-//! 语义权威：《差距账本》T4（"ACES 全流程有了，几十种色彩空间/ICC 未铺"）、
+//! 语义权威：的分层约定（"ACES 全流程有了，几十种色彩空间/ICC 未铺"）、
 //! D-13（调校结果以 golden-file 固化）、D-16（Mini Code）、
 //! D-29（确定性数学件，禁 libm）、宪章 C17/C18（全链路确定性 + 错误三段式）。
 //!
@@ -19,7 +19,7 @@
 //!   **~3.2e-2**（逐元素最大）。既有常量是**拟合矩阵**（行和 = 1 但并非
 //!   由原色推导），本注册表给的是**由原色推导的精确值**。二者**不是同一口径**，
 //!   本轮不改既有文件（边界禁改），差异如实记录在「诚实边界」与汇报中，
-//!   留待主理人裁决是否统一。
+//!   留待裁决是否统一。
 //!
 //! # ⚠️⚠️⚠️ 警告：既有拟合常量与本注册表**不是同一口径**，绝不可混用 ⚠️⚠️⚠️
 //!
@@ -53,7 +53,7 @@
 //! - [`det_atan2`]：LCh 色相角需要 `atan2`，而 D-29 三角件只提供
 //!   `sin/cos/tan`。本模块**自带**一份 `atan2`（三次半角归约 + 15 次
 //!   Maclaurin），只用 `± × ÷` 与精确 `sqrt`（IEEE 精确运算），
-//!   跨平台逐位一致。**已知重复**：将来 D-29 三角件批次可把它上收到
+//!   跨平台逐位一致。**已知重复**：将来 D-29 三角件轮次可把它上收到
 //!   [`crate::det_trig`]；本轮不越界改那个文件。
 //! - 幂函数一律走 [`crate::det_pow::det_pow`]（D-29），不用 `powf`
 //!   （`powf` 落平台 libm，跨平台尾位不一致）。
@@ -208,7 +208,7 @@ fn det_atan_unit(t: f64) -> f64 {
 ///
 /// 象限归约 + [`det_atan_unit`]；`x = y = 0` 返回 `0.0`（不 panic，C18）。
 /// **重复声明**：`crate::det_trig` 无 `atan`，本函数为本模块私有实现，
-/// 未来 D-29 三角件批次应把它上收到 `det_trig`（本轮不改那个文件）。
+/// 未来 D-29 三角件轮次应把它上收到 `det_trig`（本轮不改那个文件）。
 #[inline]
 pub fn det_atan2(y: f64, x: f64) -> f64 {
     const FRAC_PI_2: f64 = std::f64::consts::FRAC_PI_2;
@@ -905,7 +905,7 @@ impl ColorSpaceDef {
 ///
 /// 取值出处：Lam, K. M. (1985) "Metamerism and colour constancy", PhD thesis,
 /// University of Bradford；亦见 ACES 官方 `Bradford.html` 参考实现与
-/// ICC 白皮书（自适应色度匹配的标准做法）。
+/// ICC （自适应色度匹配的标准做法）。
 pub const BRADFORD: Mat3d = [
     [0.8951, 0.2664, -0.1614],
     [-0.7502, 1.7135, 0.0367],
@@ -1170,7 +1170,7 @@ pub static COLOR_SPACES: [ColorSpaceDef; COLOR_SPACE_COUNT] = [
         representation: Representation::Rgb,
         transfer: TransferFunction::Linear,
     },
-    // 4. Adobe RGB (1998)：γ = 563/256 ≈ 2.19921875（Adobe 白皮书）。
+    // 4. Adobe RGB (1998)：γ = 563/256 ≈ 2.19921875（Adobe）。
     ColorSpaceDef {
         name: "adobergb1998",
         display_name: "Adobe RGB (1998)",
@@ -2016,7 +2016,7 @@ mod tests {
     #[test]
     fn bt2020_oetf_and_eotf_roundtrip_consistently() {
         let tf = TransferFunction::Bt2020;
-        // 任务书验收项：往返容差 1e-6。实测最坏 ~3.3e-16（f64 解析式），
+        // 验收项：往返容差 1e-6。实测最坏 ~3.3e-16（f64 解析式），
         // 经 D-29 f32 det_pow 后放大到 ~1e-7 量级，仍远低于阈值。
         let mut worst = 0.0f64;
         let mut worst_at = 0.0f64;
@@ -2048,7 +2048,7 @@ mod tests {
     #[test]
     fn bt2020_oetf_is_continuous_at_beta() {
         let tf = TransferFunction::Bt2020;
-        // **E = β 处的连续性**（任务书硬要求：两侧极限差 < 1e-9）。
+        // **E = β 处的连续性**（硬要求：两侧极限差 < 1e-9）。
         // 规范取值的 `α`/`β` 使两段**恒等连续**：`α·β^0.45 − (α−1) = 4.5·β`。
         // 实测 f64 缺口 2.39e-15 —— 那是「规范值只有 12 位有效数字」带来的
         // 残差，不是实现误差。阈值取 1e-9 留足余量。
@@ -2117,7 +2117,7 @@ mod tests {
     #[test]
     fn bt2020_endpoints_are_exact_zero_and_one() {
         let tf = TransferFunction::Bt2020;
-        // 端点（任务书硬要求）。
+        // 端点（硬要求）。
         assert_eq!(tf.encode(0.0).unwrap_or_else(|e| panic!("{e}")), 0.0, "E=0 → 0");
         assert!((tf.encode(1.0).unwrap_or_else(|e| panic!("{e}")) - 1.0).abs() < 1e-5);
         assert_eq!(tf.decode(0.0).unwrap_or_else(|e| panic!("{e}")), 0.0, "E'=0 → 0");
@@ -2147,7 +2147,7 @@ mod tests {
     fn bt2020_differs_from_srgb_at_the_same_value_with_measured_gap() {
         let bt = TransferFunction::Bt2020;
         let srgb = TransferFunction::Srgb;
-        // 任务书要求：断言 BT.2020 ≠ sRGB 并给出实测差。
+        // 要求：断言 BT.2020 ≠ sRGB 并给出实测差。
         // BT.2020 的 OETF 在整个 [0,1) 上**远高于** sRGB 的 EOTF ——
         // 因为两者口径本就不同（BT.2020 OETF = 线性→编码；
         // sRGB EOTF = 编码→线性）。为可比，这里统一比**同一函数方向**：
@@ -2227,7 +2227,7 @@ mod tests {
 
     #[test]
     fn rec2020_convert_is_same_source_as_the_hand_assembled_matrix() {
-        // 任务书验收项：`convert` 与手工装配矩阵同源（1e-9）。
+        // 验收项：`convert` 与手工装配矩阵同源（1e-9）。
         // 同白点（D65 → D65）⇒ 无 Bradford，路径最短、最容易定位差异。
         let rec = by_name("rec2020").unwrap_or_else(|e| panic!("{e}"));
         let lin = by_name("lineargb709").unwrap_or_else(|e| panic!("{e}"));
@@ -2261,7 +2261,7 @@ mod tests {
 
     #[test]
     fn rec2020_preserves_black_and_white_through_the_transfer_function() {
-        // 任务书验收项：黑白点保持。
+        // 验收项：黑白点保持。
         let def = by_name("rec2020").unwrap_or_else(|e| panic!("{e}"));
         let black = def.to_xyz([0.0, 0.0, 0.0]).unwrap_or_else(|e| panic!("{e}"));
         for v in black.iter() {

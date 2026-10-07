@@ -1,4 +1,4 @@
-//! 多段 EQ（B12）：级联 biquad（RBJ Audio EQ Cookbook 系数），低架 / 峰 / 高架。
+//! 多段 EQ：级联 biquad（RBJ Audio EQ Cookbook 系数），低架 / 峰 / 高架。
 //!
 //! 每段是一个 Direct-Form-I 双二次滤波器，系数由中心频率/增益/Q 在 `process`
 //! 前一次性算出（仅 ±×÷ 与 [`crate::det`] 三角件，D-29 确定性）。多段按**固定

@@ -1,4 +1,4 @@
-//! ISO-BMFF 盒原语（C4；路线图 C4 行 / §3.5：ftyp/moov/trak/mdat，手写）。
+//! ISO-BMFF 盒原语（C4；§3.5：ftyp/moov/trak/mdat，手写）。
 //!
 //! 提供最小的 ISO Base Media File Format 盒构建原语：`FullBox`（版本+标志）、
 //! 容器盒（内含子盒）、以及 `mdat` 媒体数据盒以**大盒（64 位尺寸）**形式承载

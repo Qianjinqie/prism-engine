@@ -1,5 +1,5 @@
-//! `prism-anim` — 属性通道数学件库（工作流 A2；白皮书 §11 Spring 解析解 /
-//! §17 噪声；架构 v2.4 S7 闭式线性响应 + S9 分段多项式的特解宿主）。
+//! `prism-anim` — 属性通道数学件库（工作流 A2； Spring 解析解 /
+//!  噪声； S7 闭式线性响应 + S9 分段多项式的特解宿主）。
 //!
 //! 内容：
 //!
@@ -7,11 +7,11 @@
 //!   宪章 C5/C14 行业词汇）；
 //! - [`track`] — 关键帧轨道（插值 + 边界规则）与循环模式（direct/loop/pingpong）；
 //! - [`spring`] — 阻尼弹簧**闭式解析解**（欠阻尼/临界/过阻尼三分支，O(1)
-//!   无迭代，seek 即求值；白皮书 §11）；
+//!  无迭代，seek 即求值）；
 //! - [`expr`] — 受限表达式求值骨架（最小算术 + 变量 t/p/w/h；完整语法随
-//!   A4 DSL 波次）；
+//!   A4 DSL 落地）；
 //! - [`presets`] — 预置特解参数包（弹簧预设，命名对照 React Spring 惯例）；
-//! - [`Wiggle`] — 噪声驱动抖动通道（接 `prism-noise`，白皮书 §17）。
+//! - [`Wiggle`] — 噪声驱动抖动通道（接 `prism-noise`）。
 //!
 //! # 确定性契约
 //!
@@ -40,7 +40,7 @@ use prism_noise::fbm::Fbm;
 // Wiggle 通道（噪声驱动抖动；A2 文件清单内置于 lib.rs，体量小不单开文件）
 // ---------------------------------------------------------------------------
 
-/// Wiggle 通道：噪声驱动的参数抖动（AE wiggle 同概念，白皮书 §17）。
+/// Wiggle 通道：噪声驱动的参数抖动（AE wiggle 同概念）。
 ///
 /// 值 = `amplitude × fbm(seed, t·frequency)`：value-noise 基 + 指定倍频程
 /// （lacunarity 2、gain 0.5），fbm 输出归一化 `[-1, 1]`，故值域为
@@ -75,10 +75,10 @@ impl Wiggle {
     }
 }
 
-/// EvalCtx 种子混合（架构 §4.4）：`seed = hash(通道种子， 全局种子， 节点id)`。
+/// EvalCtx 种子混合：`seed = hash(通道种子， 全局种子， 节点id)`。
 ///
 /// 整数哈希派生 = 全引擎唯一随机源；通道层不私开 RNG。PCG 整数运算跨平台
-/// 逐位一致（白皮书 §17）。第 4 格放通道域分隔常量（PCG 按槽位加盐，混入
+/// 逐位一致。第 4 格放通道域分隔常量（PCG 按槽位加盐，混入
 /// 0 也不会与低元哈希混淆）。
 pub fn mix_seeds(channel_seed: u64, global_seed: u64, node_id: u64) -> u64 {
     const ANIM_CHANNEL_TAG: u64 = 0xA11A_0000_0000_0001;
@@ -193,7 +193,7 @@ pub(crate) mod det {
 
     /// exp(x) = 2^(x·log₂e)，f64 全精度。
     ///
-    /// 下溢（x ≲ −745）按 0 返回、上溢按 +∞ 返回——白皮书 §11 附注"钳为
+    /// 下溢（x ≲ −745）按 0 返回、上溢按 +∞ 返回—— 附注"钳为
     /// 收敛态"的确定性形态；次正规区间精度降级按文档化舍入处理。
     pub fn exp_f64(x: f64) -> f64 {
         if x.is_nan() {
@@ -271,7 +271,7 @@ mod tests {
         assert!((det::cos_f64(std::f64::consts::FRAC_PI_3) - 0.5).abs() < 1e-12);
     }
 
-    /// det_exp 对照 std f64 exp；下溢钳 0、上溢钳 +∞（白皮书 §11 附注）。
+    /// det_exp 对照 std f64 exp；下溢钳 0、上溢钳 +∞（附注）。
     #[test]
     fn det_exp_matches_reference_and_saturates() {
         let mut x = -50.0_f64;

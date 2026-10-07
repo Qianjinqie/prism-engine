@@ -104,7 +104,7 @@ pub(crate) mod js {
         /// `binding: i`（见 `abi.rs` 的 `bind_group_of` 与 `web/index.html` 胶水）。
         /// 多 bind group 能力（group 0/1/2/3）由本参数解锁——generate/shade/extend
         /// 静态引用 `@group(1)`/`@group(2)`/`@group(3)` 资源，旧签名硬编码 group 0
-        /// 无法为它们建 bind group（D2 的"待决策"缺口）。
+    /// 无法为它们建 bind group（"待决策"缺口）。
         pub fn prism_create_bind_group(
             device: u32,
             pipeline: u32,
@@ -195,7 +195,7 @@ pub struct AdapterSummary {
 /// native 目标返回默认值（全 false、空名），仅用于编译期接口一致性。
 pub fn adapter_summary(_device: GpuHandle) -> AdapterSummary {
     // 摘要信息由 harness JS 侧直接从 GPUAdapterInfo 组装后回传文本；
-    // Rust 侧目前只需提供类型占位，保证接口稳定（D1 骨架）。
+    // Rust 侧目前只需提供类型占位，保证接口稳定（骨架）。
     AdapterSummary::default()
 }
 

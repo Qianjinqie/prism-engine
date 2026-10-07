@@ -1,12 +1,12 @@
-//! Graph(t) 纯函数求值调度（A1 第二批）。
+//! Graph(t) 纯函数求值调度。
 //!
-//! 语义权威：架构总设计 v2.4 §4.1（一帧求值时序：Graph(t) 纯函数调度）、
-//! §4.4（确定性操作化：随机性 = hash(种子, 节点id, 帧, pixel, 样本[, 维度])
-//! 唯一入口；有状态模拟 = EvalCtx 快照库装配后投影一步，D-28）、白皮书 §26
+//! 语义权威：一帧求值时序：Graph(t) 纯函数调度、
+//! （确定性操作化：随机性 = hash(种子, 节点id, 帧, pixel, 样本[, 维度])
+//! 唯一入口；有状态模拟 = EvalCtx 快照库装配后投影一步，D-28）、
 //! （任何归约点一律走 `reduction_shape` 固定形状）。
 //!
 //! 求值契约：`eval` 无隐藏状态——同 (图, 注册表, 采样面, 子图签名, EvalCtx)
-//! 两遍求值，全帧输出逐字节一致（路线图 Phase 1 关卡 1）；求值顺序 = 拓扑序
+//! 两遍求值，全帧输出逐字节一致（关卡 1）；求值顺序 = 拓扑序
 //! + 按 node_id 稳定 tie-break。签名缓存本批只落 eval 侧键类型
 //! （`SnapshotKey`，缓存存储归 A6）。
 
@@ -67,7 +67,7 @@ pub struct SamplePlane {
     /// 像素坐标。样本流经 `SampleIndex.pixel` 派生——同节点不同像素必不同
     /// 流（防网格伪影，D-28；tile 编排接入后坐标换算归 A5）。
     pub pixel: (u32, u32),
-    /// 每像素样本数（≥1）。样本合并走固定形状归约（白皮书 §26 归约点）。
+    /// 每像素样本数（≥1）。样本合并走固定形状归约（归约点）。
     pub spp: u32,
 }
 
@@ -110,14 +110,14 @@ impl EvalOutput {
     }
 }
 
-/// Graph(t) 一帧求值（架构 §4.1）：拓扑序 + 按 node_id 稳定 tie-break 逐
+/// Graph(t) 一帧求值：拓扑序 + 按 node_id 稳定 tie-break 逐
 /// 节点调度特解三操作；无隐藏状态。
 ///
-/// 签名口径：`sig` 必须来自 snapshot_signature()（A6 签名计算），与 session.rs 口径一致。
+/// 签名口径：`sig` 必须来自 snapshot_signature()（签名计算），与 session.rs 口径一致。
 ///
 /// 调度语义（本批域）：
 /// - 组合归约：`Feed` 单进单出；`Merge(Plus | Multiply)` 在标量/向量域按
-///   [`reduction_shape`] 固定形状归约（白皮书 §26：任何归约点不得私定结合
+///  [`reduction_shape`] 固定形状归约（任何归约点不得私定结合
 ///   序）。其余组合方式需要图像/几何域 Payload，结构化报错不静默（C20）。
 /// - 采样节点（meta.capabilities.sample）：spp 个 `SampleIndex`（dimension
 ///   = 0，样本流由特解按 D-28 纯函数派生）经固定形状归约取均值。
@@ -160,7 +160,7 @@ pub fn eval(
             .expect("meta_of 命中则 resolve 必命中");
 
         // 节点级上下文：种子 / 帧 / 格约定来自 ctx，节点 id 按本节点注入
-        // （架构 §3.6：全局种子 / 节点id / 帧号由求值器注入）。
+        // （全局种子 / 节点id / 帧号由求值器注入）。
         let node_ctx = EvalCtx {
             global_seed: ctx.global_seed,
             node_id: id,
@@ -202,10 +202,10 @@ pub fn eval(
 }
 
 // ---------------------------------------------------------------------------
-// 组合归约（白皮书 §26：归约点唯一形状入口）
+// 组合归约（归约点唯一形状入口）
 // ---------------------------------------------------------------------------
 
-/// 组合方式的图输入归约（架构 §3.5）。本批域：标量/向量代数子集。
+/// 组合方式的图输入归约。本批域：标量/向量代数子集。
 fn reduce_by_composition(
     composition: &Composition,
     inputs: Vec<Payload>,
@@ -238,7 +238,7 @@ fn reduce_by_composition(
             problem: "该组合方式的归约语义需要图像/几何域 Payload（本批仅标量/向量代数域）"
                 .to_string(),
             fix: "标量/向量域请用 Merge(Plus) 或 Merge(Multiply)；图像域合成（over/screen/\
-                  mask）、链式（Chain）、CSG、MIS、表示切换（Dual）随对应宿主 crate 波次接入"
+                  mask）、链式（Chain）、CSG、MIS、表示切换（Dual）随对应宿主 crate 接入"
                 .to_string(),
         }),
     }
@@ -301,7 +301,7 @@ fn domain_mismatch_p3011(a: &Payload, b: &Payload) -> EvalError {
 }
 
 // ---------------------------------------------------------------------------
-// 采样路径（架构 §4.4：SampleIndex 纯函数派生 = 唯一随机性入口）
+// 采样路径（SampleIndex 纯函数派生 = 唯一随机性入口）
 // ---------------------------------------------------------------------------
 
 /// 采样节点求值：spp 个样本（dimension = 0）→ 固定形状归约求和 → 均值。
@@ -347,7 +347,7 @@ fn sample_mean(
 /// 快照读：按 (子图签名, 帧) 读一帧状态并解码为 [`Payload`]。
 ///
 /// 字节不被识别时返回 `None`（绝不猜测，宪章 C20）；LRU 逐出策略随 A6
-/// 存储批次落地——逐出只影响重算、不影响结果（seek 等价）。
+/// 存储轮次落地——逐出只影响重算、不影响结果（seek 等价）。
 pub fn snapshot_read(ctx: &EvalCtx, sig: Hash256, frame: u64) -> Option<Payload> {
     let key: SnapshotKey = (sig, frame);
     ctx.snapshots.get(&key).and_then(|bytes| payload_from_bytes(bytes))
@@ -428,13 +428,13 @@ mod tests {
         DualityPair, KernelKind, LatticePlan, Node, OpCapabilities, ParamValue, StructureMeta,
     };
 
-    /// 测试用子图签名（A6 signature.rs 落地前由调用方提供的占位签名）。
+    /// 测试用子图签名（signature.rs 落地前由调用方提供的占位签名）。
     const TEST_SIG: Hash256 = [0xCD; 32];
 
     // —— 测试特解 ——
 
     /// 常量源：apply(Empty) → 标量 MILLI/1000（特解常量按类型编码——resolve
-    /// 缺 SolvedParams 参数位，缺口已上报，参数装配随 A2 属性通道批次落）。
+    /// 缺 SolvedParams 参数位，缺口已上报，参数装配随 A2 属性通道轮次落）。
     #[derive(Debug)]
     struct ConstSourceSpec<const MILLI: u32> {
         meta: StructureMeta,
@@ -527,7 +527,7 @@ mod tests {
         }
     }
 
-    /// 采样特解（S4）：样本流 = splitmix 纯函数派生（架构 §4.4 唯一随机性
+    /// 采样特解（S4）：样本流 = splitmix 纯函数派生（唯一随机性
     /// 入口的测试实例）——同 (frame, pixel, sample, dim, node_id) 同值。
     #[derive(Debug)]
     struct SampleSpec {
@@ -548,7 +548,7 @@ mod tests {
         }
     }
 
-    /// splitmix64 终化函数（整数运算跨平台逐位一致，白皮书 §17）。
+    /// splitmix64 终化函数（整数运算跨平台逐位一致）。
     fn hash_mix(seed: u64, x: u64) -> u64 {
         let mut z = seed ^ x;
         z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
@@ -569,7 +569,7 @@ mod tests {
             h = hash_mix(h, ((si.pixel.0 as u64) << 32) | si.pixel.1 as u64);
             h = hash_mix(h, si.sample as u64);
             h = hash_mix(h, si.dimension as u64);
-            // u64 高 24 位 → f32 ∈ [0, 1)（格点间局部插值域，白皮书 §25.3）。
+            // u64 高 24 位 → f32 ∈ [0, 1)（格点间局部插值域）。
             Payload::Scalar((h >> 40) as f32 / 16_777_216.0)
         }
     }
@@ -1128,7 +1128,7 @@ mod tests {
 
     #[test]
     fn node_params_flow_through_graph_construction() {
-        // 节点参数（Params）随节点进图；绑定列表就位（A2 通道解算的图侧载体）。
+        // 节点参数（Params）随节点进图；绑定列表就位（通道解算的图侧载体）。
         let mut node = Node::new(6, StructureId::PiecewisePolynomial, Composition::Feed);
         node.params.set("value", ParamValue::F32(1.5));
         node.bindings.push(crate::node::NodeBinding {

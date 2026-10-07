@@ -1,4 +1,4 @@
-//! Marschner 毛发散射 **CPU 侧 golden vector 生成器**（U3 毛发深化 B 收口）。
+//! Marschner 毛发散射 **CPU 侧 golden vector 生成器**（毛发深化 B 收口）。
 //!
 //! # 存在的理由：CPU/GPU 从未对拍过
 //!

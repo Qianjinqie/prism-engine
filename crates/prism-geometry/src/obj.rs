@@ -1,4 +1,4 @@
-//! OBJ/MTL 精简导入（白皮书 §12；架构 v2.4 S12 mesh 导入特解）。
+//! OBJ/MTL 精简导入（S12 mesh 导入特解）。
 //!
 //! # 范围（从简）
 //!
@@ -237,7 +237,7 @@ pub fn parse_obj_with_mtl(obj: &str, mtl: &str) -> Result<(Vec<ObjMesh>, Vec<Str
 
 /// 解析 MTL 文本 → (材质名 → PbrMaterial 近似映射, 报告)。
 ///
-/// 近似映射（白皮书 §12：与 B2 Disney 参数对齐）：
+/// 近似映射（与 B2 Disney 参数对齐）：
 /// - `Kd r g b` → base_color（alpha 取 1）；
 /// - `Ns` → roughness = `sqrt(2/(Ns+2))`（Phong 指数→GGX 粗糙度标准近似）；
 /// - metalness 固定 0（MTL 无金属度概念，逐材质报告注明）；

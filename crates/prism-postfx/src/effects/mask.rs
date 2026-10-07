@@ -1,10 +1,10 @@
 //! 遮罩 / ROTO 族（C1）：形状遮罩 / alpha 遮罩 / 深度遮罩 / 通道遮罩 +
 //! 羽化 / 反相 / 布尔组合。
 //!
-//! 语义权威：《强大版路线图》§3.4（"遮罩族：`PathMask`（矢量蒙版，复用
+//! 语义权威：遮罩族：`PathMask`（矢量蒙版，复用
 //! prism-raster）、`LumaKey`/`ChromaKey`（亮度/色度抠像）、Roto（手绘路径 +
-//! 羽化 + 参数随时间 = Expr 驱动的动态遮罩）"）；《算法白皮书》§18（"PathMask：
-//! 矢量蒙版复用 §16 光栅（羽化 = 覆盖率梯度展宽）；Roto 动态 = 路径参数接属性
+//! 羽化 + 参数随时间 = Expr 驱动的动态遮罩）；（"PathMask：
+//! 矢量蒙版复用光栅（羽化 = 覆盖率梯度展宽）；Roto 动态 = 路径参数接属性
 //! 通道"；"LumaKey/ChromaKey：在 YCbCr/HSV 特征域做阈值 + 软过渡（不是 RGB
 //! 硬键），spill suppression 内建"）。
 //!
@@ -55,7 +55,7 @@ impl Mask {
     }
 }
 
-/// 遮罩布尔 / 一元算子（白皮书 §18 布尔组合）。
+/// 遮罩布尔 / 一元算子（布尔组合）。
 ///
 /// 全部逐像素运算：`Union`/`Intersect`/`Subtract` 为集合算子（min/max/饱和减），
 /// `Invert` 反相，`Add`/`Multiply` 软组合。两操作数尺寸必须一致。
@@ -101,7 +101,7 @@ pub fn combine(op: MaskOp, a: &Mask, b: &Mask) -> Mask {
     out
 }
 
-/// 羽化：对遮版做半径 `r` 的 box 展宽（覆盖率梯度展宽，白皮书 §18）。
+/// 羽化：对遮版做半径 `r` 的 box 展宽（覆盖率梯度展宽）。
 ///
 /// 逐像素取 `(2r+1)²` 邻域均值，边缘钳制复制——与 blur 同约定（tile 无关性：
 /// halo = r）。固定序归约（行主序 tap）。
@@ -178,7 +178,7 @@ impl PathMask {
     }
 }
 
-/// 亮度抠像（LumaKey）：按 Rec.709 亮度软阈值（白皮书 §18 特征域软过渡）。
+/// 亮度抠像（LumaKey）：按 Rec.709 亮度软阈值（特征域软过渡）。
 ///
 /// 亮度 `L = 0.2126R + 0.7152G + 0.0722B`（BT.709 常量，固定）；
 /// 阈值带 `[low, high]` 内线性软过渡（不是硬键）：`L < low → 0`、
@@ -223,7 +223,7 @@ impl LumaKey {
 ///
 /// 键色 `key`（RGB）；逐像素转 YCbCr（BT.601 固定系数），按**色度距离**
 /// 软阈值（`tolerance` 内 0、`softness` 带内线性过渡）——仅色度参与，
-/// 亮度不敏感（白皮书 §18：特征域而非 RGB 硬键）。`spill` ∈ [0,1] 为
+/// 亮度不敏感（特征域而非 RGB 硬键）。`spill` ∈ [0,1] 为
 /// 溢出抑制强度：把像素中超出键绿色通道的绿色部分按强度削平。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ChromaKey {
@@ -272,7 +272,7 @@ impl ChromaKey {
 
     /// 溢出抑制 + 遮版应用：键绿色通道过量的部分按强度削平，再乘遮版。
     ///
-    /// spill suppression（白皮书 §18 内建）：对键色主通道（取键色最大分量
+    /// spill suppression（内建）：对键色主通道（取键色最大分量
     /// 所在通道）做 `c = min(c, max(other two channels) + (1−spill)·excess)`
     /// ——绿色边缘过量绿被削到两邻通道水平。
     pub fn process(&self, fb: &Fbuf16F) -> Fbuf16F {
@@ -413,7 +413,7 @@ impl TileEffect for ChromaKeyEffect {
 }
 
 /// 深度遮罩（DepthMask）：按深度 AOV 软阈值产出遮版（深度图喂色彩/遮罩，
-/// 路线图 §3.4"按距离调色"的地基）。
+/// "按距离调色"的地基）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DepthMask {
     /// 近阈值（AOV 小 = 近）。

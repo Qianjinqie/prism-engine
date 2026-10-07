@@ -1,4 +1,4 @@
-//! 第 2 轮独立复核探针（QA 严过关）—— DSL 裸标志分支。
+//! 第 2 轮独立复核探针—— DSL 裸标志分支。
 //! 验证 P1 修复（value=None 分支）未引入新问题：原本应报错的空值字段是否被误当 true。
 
 use prism_dsl::{compile_v2, DslError};

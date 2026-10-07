@@ -1,6 +1,6 @@
-//! OpenEXR 容器读入（U7）——分块浮点容器 + 多通道 AOV + Z/Float deep。
+//! OpenEXR 容器读入——分块浮点容器 + 多通道 AOV + Z/Float deep。
 //!
-//! 语义权威：《强大版路线图》§4 U7 行（相机 RAW / EXR 深度）与账本「EXR =
+//! 语义权威：的分层约定——「EXR =
 //! 分块浮点容器（tile 已有）」。
 //!
 //! # 铁律
@@ -122,7 +122,7 @@ pub const LINE_ORDER_DECREASING: u8 = 1;
 /// 权威依据 = OpenEXR 3.1.5 `ImfLineOrder.h:23`
 /// （`INCREASING_Y = 0, // first scan line has lowest y coordinate`）。
 ///
-/// 【W13 互通对拍抓到的第三个真实容器层 bug】本仓写入器原先把 `lineOrder`
+/// 【互通对拍抓到的第三个真实容器层 bug】本仓写入器原先把 `lineOrder`
 /// 标成 [`LINE_ORDER_DECREASING`]（= 1），而 `write_scanline_image` 实际
 /// 是按 **y 升序**写块（`for b in 0..blocks`，块首行号 `b * lpb` 递增）。
 /// 二者矛盾 → 官方读取器按 `lineOrder` 声明的顺序**倒着**走偏移表，
@@ -367,7 +367,7 @@ pub fn rle_decompress(data: &[u8]) -> ExrResult<Vec<u8>> {
     let mut i = 4usize;
     while i < data.len() {
         // ⚠️ 控制字节的极性是「**负 = 字面段，非负 = 行程**」——
-        // 见 [`rle_decompress_raw`] 顶部依据（W13 互通对拍抓到的第四个真实 bug）。
+        // 见 [`rle_decompress_raw`] 顶部依据（互通对拍抓到的第四个真实 bug）。
         let ctrl = data[i] as i8;
         i += 1;
         if ctrl < 0 {
@@ -416,7 +416,7 @@ pub fn rle_decompress(data: &[u8]) -> ExrResult<Vec<u8>> {
 /// （分别在 DWA 块头的 `rleUncompressedSize` / `rleRawSize`），故数据体**不含**
 /// [`rle_decompress`] 那个 4 字节长度头。
 ///
-/// # ⚠️ 控制字节极性：**负 = 字面段，非负 = 行程**（W13 抓到的第四个真实 bug）
+/// # ⚠️ 控制字节极性：**负 = 字面段，非负 = 行程**（抓到的第四个真实 bug）
 ///
 /// 权威依据 = OpenEXR 3.1.5 `ImfRle.cpp:89` `rleUncompress`：
 ///
@@ -587,13 +587,13 @@ fn decompress_block(
         other if other.is_exr_compress() => {
             crate::exr_compress::decompress_block(other, data, ctx)?
         }
-        // DWAA / DWAB（W13 互通对拍接上）：DWA 块有自己的四区布局
+        // DWAA / DWAB（互通对拍接上）：DWA 块有自己的四区布局
         // （unknown/AC/DC/RLE）+ 通道分类，负载不能当裸数据处理。
         //
         // ⚠️ 分块（tiled）DWA 此前**完全没有接入**本分派表：官方写的
         // tiled DWA 文件一律报「压缩类型 8/9 尚未接入解压分派」。这是
         // 「`is_supported()` 已标 true 但分派表漏登记」的典型缺口——
-        // 由 W13 矩阵的 tiled 整列暴露。
+        // 由该矩阵的 tiled 整列暴露。
         Compression::Dwaa | Compression::Dwab => {
             let chans: Vec<(String, PixelType, bool)> = ctx
                 .channels
@@ -958,7 +958,7 @@ impl ExrImage {
 
     /// 合成 RGBA [`Fbuf16F`]（`R`/`G`/`B` 缺则补 0、`A` 缺则补 1.0）。
     ///
-    /// 交付量化只发生在此处（§2.2）；通道值不做色调映射。
+    /// 交付量化只发生在此处；通道值不做色调映射。
     pub fn to_fbuf16f(&self) -> Fbuf16F {
         let w = self.header.data_window.width();
         let h = self.header.data_window.height();
@@ -1394,7 +1394,7 @@ fn read_scanline_block(
 let raw = if header.compression.is_dwa() {
         // DWA 需要通道上下文（分类依赖通道名/类型/pLinear），不能只吃裸负载。
         //
-        // ⚠️ **逐块「压不小就原样存」回退**（W13 互通对拍抓到的第七个真实 bug）：
+        // ⚠️ **逐块「压不小就原样存」回退**（互通对拍抓到的第七个真实 bug）：
         // 官方 `ImfOutputFile.cpp:584` 写每个块时做
         // ```cpp
         // int compSize = compressor->compress(...);
@@ -1648,7 +1648,7 @@ impl DeepImage {
 /// # 支持范围（重要）
 ///
 /// **只实现「每个像素至多 1 个样本」的单点 deep**（sample count ≤ 1），
-/// 这是 deep 最常见形态（Z/Float AOV 的深度图）与任务书指定的目标形态。
+/// 这是 deep 最常见形态（Z/Float AOV 的深度图）与本模块的目标形态。
 /// 多点 deep（每像素 > 1 样本，如体积雾/半透明）的**数据布局与解包已完整
 /// 实现**（本函数照常解出全部样本并写入 [`DeepPixel::samples`]），
 /// 但**不做**多重样本特有的语义工作：不做合并/排序重排、不做 ID 通道
@@ -2578,7 +2578,7 @@ mod tests {
         let mut chunks: Vec<Vec<u8>> = Vec::new();
         for ty in 0..rows {
             for tx in 0..cols {
-                // 【W13 修正】边缘 tile 的负载**按裁剪后的尺寸**写，**不补齐**
+                // 修正记录：边缘 tile 的负载**按裁剪后的尺寸**写，**不补齐**
                 // 到完整 tile 尺寸。权威依据：官方写出的 64×48 图像 /
                 // 32×32 tile，tile(0,1) 的 DWA 头 `dcUncompressedCount = 8`
                 // = `ceil(32/8) × ceil(16/8)`（16 = 48 − 32，裁剪后的行数）。

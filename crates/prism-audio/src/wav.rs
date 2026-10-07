@@ -1,4 +1,4 @@
-//! WAV 读写（B6）：16/24/32 bit PCM，逐字节往返一致。
+//! WAV 读写：16/24/32 bit PCM，逐字节往返一致。
 //!
 //! 规范：RIFF 容器，`fmt ` 块 16 字节 PCM 头 + `data` 块；未知块按 RIFF
 //! 词对齐跳过。编码格式：位深 16/24 用整数 PCM（format tag 1），位深 32 用
@@ -137,7 +137,7 @@ pub fn decode_wav(bytes: &[u8]) -> AudioResult<PcmBuffer> {
                     ));
                 }
                 data = Some((body,));
-                break; // data 之后不再关心（B6 写出器也不产生附加块）
+                break; // data 之后不再关心（写出器也不产生附加块）
             }
             _ => {}
         }

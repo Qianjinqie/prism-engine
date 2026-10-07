@@ -1,7 +1,7 @@
 //! mesh→SDF 烘焙：brick 8³ 稀疏化 + 广义 winding number 符号 + BVH 最近距离
-//! （白皮书 §7；架构 v2.4 S12 对偶切换 bake 特解）。
+//! （S12 对偶切换 bake 特解）。
 //!
-//! # 烘焙语义（白皮书 §7）
+//! # 烘焙语义
 //!
 //! - 仅表面附近 brick 精确化（三角形 AABB 外扩 `pad_voxels` 决定激活范围）；
 //!   近场距离对候选三角形做精确最近点查询。
@@ -18,7 +18,7 @@ use crate::bvh::{mesh_triangles, Bvh, Triangle};
 use prism_math::Vec3;
 use std::collections::HashMap;
 
-/// brick 边长（体素数，白皮书 §7：brick 8³）。
+/// brick 边长（体素数，：brick 8³）。
 pub const BRICK: usize = 8;
 
 /// 烘焙参数。
@@ -66,7 +66,7 @@ impl BakedSdf {
     /// 有符号距离查询（内负外正）。
     ///
     /// 命中激活 brick → 三线性插值（近场精确）；
-    /// 场内未激活 → winding 判号后返回 ±spacing（安全下界，白皮书"远场距离下界"）；
+    /// 场内未激活 → winding 判号后返回 ±spacing（安全下界，"远场距离下界"）；
     /// 场外 → 返回到场域 AABB 的距离（正下界）。
     pub fn dist(&self, p: Vec3) -> f32 {
         let f = (p - self.origin) * (1.0 / self.spacing);
@@ -84,7 +84,7 @@ impl BakedSdf {
         let key = pack_brick(bkey(0), bkey(1), bkey(2));
         let Some(cell) = self.bricks.get(&key) else {
             // 未激活：内部深处或外部空腔——winding 判号，幅度取安全下界 spacing。
-            // 病态置信判定（白皮书 §7）：|w| 不在 0/±1 置信带 → 符号不可信，
+            // 病态置信判定：|w| 不在 0/±1 置信带 → 符号不可信，
             // 按 exterior 处理（正值下界）。计数披露在烘焙期完成（dist 为 &self）。
             let w = self.bvh.winding_number(p);
             if !winding_pathological(w) && w > 0.5 {
@@ -127,7 +127,7 @@ pub fn pack_brick(bx: u64, by: u64, bz: u64) -> u64 {
     (bx << 42) | (by << 21) | bz
 }
 
-/// winding number 置信判定（白皮书 §7：病态网格按 exterior 处理——永不静默）。
+/// winding number 置信判定（病态网格按 exterior 处理——永不静默）。
 ///
 /// 置信带：|w| ≤ 0.05（可靠外部）、|w| ≥ 0.95（可靠内部）、[0.45, 0.55)
 /// （表面过渡带，w 在表面上本就无定义）；带外即**病态**。病态体素的符号
@@ -265,7 +265,7 @@ pub fn bake_triangles(
                     if pathological && !near_surface {
                         report.degenerate_winding += 1;
                     }
-                    // 白皮书 §7 契约：病态体素**按 exterior 处理**（永不静默）——
+                    //  契约：病态体素**按 exterior 处理**（永不静默）——
                     // 符号判定不区分近远场（近场过渡体素 w 落在病态带同样不可信，
                     // 判外取 |d| 正值），计数仍只报远离表面的真病态。
                     let inside = !pathological && w > 0.5;

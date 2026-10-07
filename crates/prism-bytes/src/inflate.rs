@@ -236,7 +236,7 @@ fn inflate_stored(br: &mut BitReader<'_>, out: &mut Vec<u8>) -> BytesResult<()> 
 /// **返回 `(字面表, 距离表)` 两个独立表**——这是 RFC 的硬要求，也是本 crate
 /// 修掉的第二个历史缺陷：旧 `prism-io` 侧只建了一张 288 项的字面表并把它
 /// 同时当字面表与距离表用，导致 fixed 块里**任何回溯都会解出错误符号**。
-/// fixed 距离码是 5 位定长、30 项（§3.2.5 表）。
+/// fixed 距离码是 5 位定长、30 项（表）。
 fn fixed_tables() -> (Huffman, Huffman) {
     let mut lit_lengths = vec![0u8; 288];
     for (i, l) in lit_lengths.iter_mut().enumerate() {
@@ -725,7 +725,7 @@ mod tests {
     #[test]
     fn fixed_huffman_backreference_decodes() {
         // 回归守卫：旧 `prism-io` 侧把 288 项字面表**同时**当距离表用，
-        // fixed 块里的任何回溯都解错。本测试覆盖 §3.2.6 的 5 位距离码。
+        // fixed 块里的任何回溯都解错。本测试覆盖的 5 位距离码。
         let stream = deflate_fixed(&[
             FixedOp::Lit(b'A' as u16),
             FixedOp::Match(257, 0, 0, 0), // 长度 3、距离 1 → "AAAA"

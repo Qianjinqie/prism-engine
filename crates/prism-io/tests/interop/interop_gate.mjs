@@ -98,7 +98,7 @@ export const THRESHOLDS = {
    *   ⇒ 35/36 格 ≤ 4.19，**只有 1 格**离群。
    * 离群格 = `dwaa-half-scan-1-noise`：我们 MAX_ABS 1.085e-01，官方 1.939e-03。
    *
-   * 【为什么是 10 而不是 100 —— W13 P0-3 的收紧】
+   * 【为什么是 10 而不是 100 —— 阈值收紧】
    * 原阈值 100 有两个硬伤：
    *   1. **对实际分布宽 24 倍**：中位数 2.00、次差 4.18，35/36 格在 4.19 以下，
    *      阈值却开到 100 —— 判据在绝大多数格上根本不生效。
@@ -121,7 +121,7 @@ export const THRESHOLDS = {
   /**
    * 方向 D：官方写出文件的**压缩有效性上限**（file_bytes / raw_payload_bytes）。
    *
-   * 【为什么需要它 —— W13 P1·缺陷 4】
+   * 【为什么需要它 —— 已知缺陷 4】
    * 官方 `ImfOutputFile.cpp:584` 有一处块级「压不小就原样存」回退：
    *     if (compSize < _lineBuffer->dataSize) { 用压缩数据 }
    * 该分支**只能被官方写出的 .exr 触发**，全仓无 .exr fixture ⇒
@@ -158,14 +158,14 @@ export const THRESHOLDS = {
  */
 export const KNOWN_ISSUES = [
   {
-    // ✅ 已修（W14 路1）。条目**保留**（按纪律：不直接删条目），改为记录
+    // ✅ 已修。条目**保留**（按纪律：不直接删条目），改为记录
     // 「症状 → 真正根因 → 修法 → 复测实测值」，供后来者查证。
     id: "KI-DWA-QUANT-1CH-NOISE",
     cell: "dwaa-half-scan-1-noise",
     metric: "方向 C 劣化比 ratio_abs",
     measured: 55.96975639705099,
     status: "fixed",
-    fixed_in: "W14 路1",
+    fixed_in: "量化改用官方 quantize()",
     measured_after_fix: 1.0,
     threshold: 10,
     // ⚠️ 旧版此处写的根因（「我们量化步长比官方粗，官方对非 CSC 通道用更细的
@@ -201,14 +201,14 @@ export const KNOWN_ISSUES = [
     blocks_gate: false,
   },
   {
-    // W14 路2：tiled 列实装后，同一根因在 `dwab-half-tile-1-noise` 上同样命中。
+    // tiled 列实装后，同一根因在 `dwab-half-tile-1-noise` 上同样命中。
     // 修法与 scanline 那一格完全相同（同一份 dwa_compress），故一并转已修。
     id: "KI-DWA-QUANT-1CH-NOISE-TILED",
     cell: "dwab-half-tile-1-noise",
     metric: "方向 C 劣化比 ratio_abs",
     measured: 55.96975639705099,
     status: "fixed",
-    fixed_in: "W14 路1",
+    fixed_in: "量化改用官方 quantize()",
     measured_after_fix: 1.0,
     threshold: 10,
     root_cause:
@@ -237,7 +237,7 @@ export function judgeKnownIssue(spec) {
 }
 
 /**
- * **非门禁方向**的已定位缺陷登记（W14 路2 实装 tiled 时暴露）。
+ * **非门禁方向**的已定位缺陷登记（实装 tiled 时暴露）。
  *
  * 【为什么单列一份、不混进 KNOWN_ISSUES】
  * `KNOWN_ISSUES` 是**对拍门禁格子**的附注（会被 judgeC/judgeD 命中并打印）。
@@ -247,7 +247,7 @@ export function judgeKnownIssue(spec) {
  *
  * 【纪律：不许拿「未实装」含糊，也不许因为「矩阵照不到」就当它不存在】
  * tiled 实装前，ZIP/RLE 只用于扫描线，且**从未与官方对拍**（无 .exr fixture）——
- * 这正是本项目栽过两次的假绿同构：**没覆盖 ≠ 没问题**。W14 路2 用一个
+ * 这正是本项目栽过两次的假绿同构：**没覆盖 ≠ 没问题**。这里用一个
  * 一次性诊断程序（已删除）遍历十种压缩 × tiled，官方读回结果如下：
  *
  * ```text
@@ -263,7 +263,7 @@ export function judgeKnownIssue(spec) {
  *   rle    EXCEPTION "Unexpected tile block length"  ❌ 官方拒绝
  * ```
  *
- * 【归属已确证，不是 W14 路2 的回归】同一份数据走**扫描线**入口
+ * 【归属已确证，不是 tiled 实装的回归】同一份数据走**扫描线**入口
  * （`write_image`，本路只改了一处 `write_header(...)?` 的 `?`，函数体其余字节相同）
  * 得到**完全相同**的失败：`scanline zip → checksum=nan`、
  * `scanline rle → EXCEPTION`。故根因在 `exr_write` 的
@@ -352,7 +352,7 @@ function probeOfficialEnv() {
 }
 
 // ===========================================================================
-// 【环境缺失 vs 本仓代码坏了 —— 必须区分（W13 P0-2）】
+// 【环境缺失 vs 本仓代码坏了 —— 必须区分】
 // 历史缺陷：Rust harness **编译失败**曾被报成 `SKIP:` + 退出码 3。那意味着
 // 「本仓代码坏了」被伪装成「环境不具备」，掩盖真失败 —— 这比没有门禁更危险。
 // 现在严格二分：
@@ -639,7 +639,7 @@ export function selfTest() {
       ),
       `${KNOWN_ISSUES.length} 条记录`
     );
-    // W14 路1：条目转「已修」时的纪律 —— 不得静默删除（删掉就没人查得到
+    // 条目转「已修」时的纪律 —— 不得静默删除（删掉就没人查得到
     // 曾经踩过什么），也不得只写「已修」而不给复测值（那等于没有证据）。
     add(
       "KNOWN_ISSUES 纪律: 已修条目须保留在册并附修法与复测实测值",
@@ -777,7 +777,7 @@ export function selfTest() {
     );
   }
 
-  // ---- 5b. 编码器缺陷登记簿纪律：矩阵照不到的缺陷必须显式登记（W14 路2）==-
+  // ---- 5b. 编码器缺陷登记簿纪律：矩阵照不到的缺陷必须显式登记（tiled 实装）==-
   // 反假绿：**「矩阵照不到」不等于「没问题」**。ZIP/RLE 的编码器缺陷正是
   // 因为矩阵只跑 DWA 而长期隐身，tiled 实装后才被官方读回暴露出来。
   {

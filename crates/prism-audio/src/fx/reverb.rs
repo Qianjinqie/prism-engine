@@ -1,4 +1,4 @@
-//! 混响（B12）：Schroeder 梳状+全通级联 与 FDN 反馈延迟网。
+//! 混响：Schroeder 梳状+全通级联 与 FDN 反馈延迟网。
 //!
 //! # Schroeder 结构
 //!

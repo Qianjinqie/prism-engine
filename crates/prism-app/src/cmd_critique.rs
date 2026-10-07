@@ -1,7 +1,7 @@
 //! `prism-app critique` 子命令：critic 闭环 CLI 出口（C5；A8 智能辅助并入）。
 //!
-//! 语义权威：《强大版路线图》§3.5（critic 内建为引擎命令且接增量渲染）、§4 C5
-//! 行（analyze/critique/suggest/apply + `--autofix`）、§3.6（CLI 三出口之一）。
+//! 语义权威：critic 内建为引擎命令且接增量渲染、 C5
+//! 行（analyze/critique/suggest/apply + `--autofix`）、CLI 三出口之一。
 //! 核心逻辑在 [`prism_aesthetic::cmd`]（CriticCommand）与 [`prism_aesthetic::critic_loop`]；
 //! A8 智能辅助建议在 [`prism_ai::assist`]（D-11 引擎内确定性 mock）。本文件只做
 //! CLI 适配（子命令分发 + 从引擎渲染取帧）。

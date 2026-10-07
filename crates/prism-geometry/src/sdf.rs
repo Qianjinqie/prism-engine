@@ -1,4 +1,4 @@
-//! SDF 域算子与 sphere tracing（白皮书 §6 / B3；架构 v2.4 S1 SDF 场 + S12 域算子）。
+//! SDF 域算子与 sphere tracing（/ B3； S1 SDF 场 + S12 域算子）。
 //!
 //! 域算子是自由函数（输入/输出均为距离值），[`crate::csg::Csg`] 树直接复用它们组合子场
 //! ——CSG 与域算子只有这一份实现（D-16）。displace 接 [`prism_noise`] 的 simplex fbm。
@@ -48,13 +48,13 @@ pub fn smooth_subtraction(a: f32, b: f32, k: f32) -> f32 {
     smooth_intersection(a, -b, k)
 }
 
-/// displace 用的 fbm 参数（octaves 4–6 为白皮书 §17 推荐档，取 4）。
+/// displace 用的 fbm 参数（octaves 4–6 为推荐档，取 4）。
 const DISPLACE_FBM: Fbm = Fbm { octaves: 4, lacunarity: 2.0, gain: 0.5 };
 
 /// 默认 displace octaves（与 LOD 满档一致，见 [`crate::lod`]）。
 pub const DEFAULT_DISPLACE_OCTAVES: u32 = 4;
 
-/// 域位移：基场距离叠加 simplex fbm 噪声（白皮书 §7/§17——分形岩石/地形的来源）。
+/// 域位移：基场距离叠加 simplex fbm 噪声（——分形岩石/地形的来源）。
 ///
 /// `amp` 为位移幅度，`freq` 为噪声空间频率，`seed` 接引擎全局种子派生（确定性）。
 #[inline]
@@ -96,7 +96,7 @@ pub struct TraceHit {
     pub t: f32,
 }
 
-/// sphere tracing：沿射线按 SDF 值步进求交（白皮书 B3；`rd` 必须为单位向量）。
+/// sphere tracing：沿射线按 SDF 值步进求交（B3；`rd` 必须为单位向量）。
 ///
 /// 命中语义：
 /// - 起点已在体内或表面上（`dist(ro) ≤ hit_eps`）→ 命中 `t = 0`（渲染侧自遮挡约定）；

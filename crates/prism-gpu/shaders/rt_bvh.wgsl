@@ -1,4 +1,4 @@
-// prism-rt BVH 遍历 kernel（D2）——对应 prism-geometry/bvh.rs 的 ray_intersect。
+// prism-rt BVH 遍历 kernel —— 对应 prism-geometry/bvh.rs 的 ray_intersect。
 //
 // # 与 CpuRef 对齐
 // - 扁平节点数组（左子恒 = id+1，内部节点 right_child 异于 0），同 bvh.rs。

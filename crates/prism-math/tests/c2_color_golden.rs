@@ -1,7 +1,7 @@
 //! C2 色彩管线 golden-file 固化测试。
 //!
-//! 语义权威：《强大版路线图》D-13（"调校结果以 golden-file 固化"）、
-//! §3.5 验收项（"ACES 对拍 ±0.01；PQ 编解码往返 <1e-4；10bit PNG 往返一致"）。
+//! 语义权威：D-13（"调校结果以 golden-file 固化"）、
+//!  验收项（"ACES 对拍 ±0.01；PQ 编解码往返 <1e-4；10bit PNG 往返一致"）。
 //!
 //! # 固化方式
 //! 对固定输入样本（灰阶 + 原色 + 超亮），逐值打印 ACES/PQ/HLG/ACEScg 输出，
@@ -72,7 +72,7 @@ const ACES_FINGERPRINT: [u32; 27] = [
 
 #[test]
 fn pq_golden_roundtrip_within_tolerance() {
-    // PQ 编解码往返（§3.5 验收 <1e-4）。
+    // PQ 编解码往返（验收 <1e-4）。
     for i in 0..=256u32 {
         let y = i as f32 / 256.0;
         let back = pq_eotf(pq_oetf(y));

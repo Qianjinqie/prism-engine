@@ -1,11 +1,11 @@
-//! PCG integer hashing — the engine's primitive randomness source (whitepaper §17).
+//! PCG integer hashing — the engine's primitive randomness source .
 //!
 //! All functions are pure, stateless and integer-only (multiply / shift / xor),
 //! so identical arguments yield bitwise-identical results on every platform;
-//! integer hashing is a determinism obligation, not a style choice (§17).
+//! integer hashing is a determinism obligation, not a style choice .
 //! This is the primitive layer beneath the engine-wide derivation
 //! `hash(global_seed, node_id, frame, pixel, sample[, dimension])`
-//! (architecture v2.4 §4.4): callers pack their own integers into
+//! callers pack their own integers into
 //! `(seed, x[, y[, z[, w]]])`. Seed `0` and coordinate `0` are valid inputs.
 //!
 //! Provenance: PCG RXS-M-XS permutation, M. E. O'Neill 2014, "PCG: A Family of

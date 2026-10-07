@@ -17,7 +17,7 @@ use prism_anim::{Expr, ExprEnv, Keyframe, LoopMode, Spring, Track};
 // ---------------------------------------------------------------------------
 
 /// QA 测试内的独立 RK4 参考（f64 步进；与 spring.rs 测试内实现**分别书写**，
-/// 互为对照来源，状态方程同白皮书 §11：x'=v, v'=ω²(T−x)−2ζωv）。
+/// 互为对照来源，状态方程同：x'=v, v'=ω²(T−x)−2ζωv）。
 fn rk4_reference(spring: &Spring, t_end: f32, dt: f64) -> f64 {
     let (omega, zeta) = (spring.omega as f64, spring.zeta as f64);
     let target = spring.target as f64;
@@ -38,7 +38,7 @@ fn rk4_reference(spring: &Spring, t_end: f32, dt: f64) -> f64 {
 }
 
 /// C-①：ζ→1 邻域（分支判定半径 CRITICAL_EPS=1e-3 两侧各放三点）逐一对照
-/// RK4，验收线 < 1e-3（路线图 §4 Phase 1 关卡 1）。ζ=0.999/1.001 恰在
+/// RK4，验收线 < 1e-3（Phase 1 关卡 1）。ζ=0.999/1.001 恰在
 /// 闭区间内走临界分支，0.9989/1.0011 刚好跨出——覆盖切换边界两侧。
 #[test]
 fn qa_spring_zeta_near_one_matches_rk4() {

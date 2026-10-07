@@ -78,10 +78,10 @@ fn cmap_count(lo: u32, hi: u32) -> usize {
 }
 
 // ===========================================================================
-//  A1：完整性锚点
+//  完整性锚点
 // ===========================================================================
 
-/// A1：资产可解析为 TrueType 容器，逐表校验和全通过，表集齐备。
+/// 资产可解析为 TrueType 容器，逐表校验和全通过，表集齐备。
 #[test]
 fn a1_asset_is_wellformed_truetype() {
     let ot = OtFont::parse(FONT_MULTISCRIPT).expect("内嵌资产应可解析");
@@ -104,7 +104,7 @@ fn a1_asset_is_wellformed_truetype() {
     assert_eq!(f.units_per_em(), 1000);
 }
 
-/// A2：SHA-256 锚点 —— 锁定入库资产的字节（重跑生成器后若漂移即转红）。
+/// SHA-256 锚点 —— 锁定入库资产的字节（重跑生成器后若漂移即转红）。
 ///
 /// 生成是纯函数（`mf::build_font` 确定性），故「重生成 = 入库字节」本身也是一条
 /// 断言：任何源码改动导致字节变化，都必须显式更新此处的 SHA 并说明原因。
@@ -127,17 +127,17 @@ fn a2_sha256_and_size_locked() {
     assert!(FONT_MULTISCRIPT.len() > 2000, "资产应有实质内容，实际 {} B", FONT_MULTISCRIPT.len());
 }
 
-/// A3：生成器两次运行逐字节一致（确定性）。
+/// 生成器两次运行逐字节一致（确定性）。
 #[test]
 fn a3_generator_is_deterministic() {
     assert_eq!(mf::build_font(), mf::build_font());
 }
 
 // ===========================================================================
-//  A4..A6：码位覆盖对比（改前 0 → 改后 N）
+//  码位覆盖对比（改前 0 → 改后 N）
 // ===========================================================================
 
-/// A4：阿拉伯码位覆盖 > 0（内嵌 PrismSansSC 子集为 **0**）。
+/// 阿拉伯码位覆盖 > 0（内嵌 PrismSansSC 子集为 **0**）。
 #[test]
 fn a4_arabic_codepoints_present() {
     // 对比基线：中文子集不含阿拉伯字形。
@@ -152,7 +152,7 @@ fn a4_arabic_codepoints_present() {
     assert_eq!(n, 30, "应覆盖 U+0627–U+064A 全部 30 个已分配阿拉伯字母（≥28）");
 }
 
-/// A5：天城文码位覆盖 > 0（内嵌子集为 **0**）。
+/// 天城文码位覆盖 > 0（内嵌子集为 **0**）。
 #[test]
 fn a5_devanagari_codepoints_present() {
     let zh = prism_text::font_regular();
@@ -172,7 +172,7 @@ fn a5_devanagari_codepoints_present() {
     }
 }
 
-/// A6：拉丁 A–Z 码位覆盖完整（26）。
+/// 拉丁 A–Z 码位覆盖完整（26）。
 #[test]
 fn a6_latin_codepoints_present() {
     assert_eq!(cmap_count(0x0041, 0x005A), 26, "拉丁 A–Z 全覆盖");
@@ -184,10 +184,10 @@ fn a6_latin_codepoints_present() {
 }
 
 // ===========================================================================
-//  A7..A8：GSUB 真表 vs 66 B 空壳
+//  GSUB 真表 vs 66 B 空壳
 // ===========================================================================
 
-/// A7：GSUB 从 **66 B 空壳（0 特征 0 查找）** 变为真表（5 特征 5 查找）。
+/// GSUB 从 **66 B 空壳（0 特征 0 查找）** 变为真表（5 特征 5 查找）。
 #[test]
 fn a7_gsub_is_real_not_empty_shell() {
     // ---- 对比基线：内嵌资产的 66 B 空壳 ----
@@ -216,7 +216,7 @@ fn a7_gsub_is_real_not_empty_shell() {
     assert_eq!(kinds, vec![1, 1, 1, 1, 4], "4 SingleSubst + 1 LigatureSubst");
 }
 
-/// A8：GPOS `abvm` 真表（1 特征 MarkToBasePos）。
+/// GPOS `abvm` 真表（1 特征 MarkToBasePos）。
 #[test]
 fn a8_gpos_abvm_markbase() {
     let ot = OtFont::parse(FONT_MULTISCRIPT).expect("容器");
@@ -229,10 +229,10 @@ fn a8_gpos_abvm_markbase() {
 }
 
 // ===========================================================================
-//  A9：阿拉伯四态端到端（不同上下文 → 不同 gid → 不同像素）
+//  阿拉伯四态端到端（不同上下文 → 不同 gid → 不同像素）
 // ===========================================================================
 
-/// A9：阿拉伯 `"سلام"` → 整形层合并 lam-alef、其余字母拿到正确四态字形（非 .notdef）。
+/// 阿拉伯 `"سلام"` → 整形层合并 lam-alef、其余字母拿到正确四态字形（非 .notdef）。
 ///
 /// 串 `U+0633 SEEN U+0644 LAM U+0627 ALEF U+0645 MEEM`（"سلام"，真实词）。
 /// 整形层把 `LAM+ALEF` 合并为**一个 lam-alef 连字簇**（呈现形 U+FEFB），
@@ -340,9 +340,9 @@ fn a9c_all_four_states_per_letter() {
 }
 
 // ===========================================================================
-//  A10：lam-alef 连字端到端
+//  lam-alef 连字端到端
 // ===========================================================================
-/// A10：`LAM + ALEF` → **合成一个连字字形**（不是两个），且真的画出来。
+/// `LAM + ALEF` → **合成一个连字字形**（不是两个），且真的画出来。
 #[test]
 fn a10_lam_alef_ligature_end_to_end() {
     let (fb, gids, _, _) = shape_gsub_raster("\u{0644}\u{0627}", 64.0);
@@ -367,10 +367,10 @@ fn a10_lam_alef_ligature_end_to_end() {
 }
 
 // ===========================================================================
-//  A11：天城文 i-matra 前置重排 + 记号附着
+//  天城文 i-matra 前置重排 + 记号附着
 // ===========================================================================
 
-/// A11：`KA + i-matra` → **i-matra 字形出现在基字之前**（前置重排生效）。
+/// `KA + i-matra` → **i-matra 字形出现在基字之前**（前置重排生效）。
 #[test]
 fn a11_devanagari_i_matra_reordered_before_base() {
     let f = font_multiscript();
@@ -397,10 +397,10 @@ fn a11_devanagari_i_matra_reordered_before_base() {
 }
 
 // ===========================================================================
-//  A12：逐像素可复现
+//  逐像素可复现
 // ===========================================================================
 
-/// A12：同输入两次 → 位图 `to_bits()` 一致（确定性铁律）。
+/// 同输入两次 → 位图 `to_bits()` 一致（确定性铁律）。
 #[test]
 fn a12_rendering_is_byte_deterministic() {
     for text in ["\u{0628}", "\u{0644}\u{0627}", "\u{0633}\u{0644}\u{0627}\u{0645}", "\u{0915}\u{093F}", "AZ"] {
@@ -430,12 +430,12 @@ fn a12b_single_glyph_render_deterministic_and_distinct() {
 }
 
 // ===========================================================================
-//  A13：诚实边界
+//  诚实边界
 // ===========================================================================
 
-/// A13：诚实记录 —— 资产是**含二次贝塞尔的近似结构**，不是精确书法形。
+/// 诚实记录 —— 资产是**含二次贝塞尔的近似结构**，不是精确书法形。
 ///
-/// W11 起字形由「矩形折线」升级为「笔画化轮廓 + off-curve 控制点」，故不再
+/// 字形由「矩形折线」升级为「笔画化轮廓 + off-curve 控制点」，故不再
 /// 断言 4 点矩形；改为断言：轮廓**至少一个环含 off-curve 控制点**（曲线存在），
 /// 且多锚点（≥4）。仍不假装字体美观（诚实边界见模块头与 A14）。
 #[test]
@@ -465,10 +465,10 @@ fn a13b_uncovered_arabic_letters_fall_back_to_notdef() {
 }
 
 // ===========================================================================
-//  A14..A24：W11 扩充验收（小写/数字/标点、曲线、28+ 阿拉伯、天城文、确定性）
+//  扩充验收（小写/数字/标点、曲线、28+ 阿拉伯、天城文、确定性）
 // ===========================================================================
 
-/// A14：小写字母 a–z 全部命中且非 `.notdef`。
+/// 小写字母 a–z 全部命中且非 `.notdef`。
 #[test]
 fn a14_lowercase_letters_mapped() {
     let f = font_multiscript();
@@ -481,7 +481,7 @@ fn a14_lowercase_letters_mapped() {
     assert_eq!(cmap_count(0x0061, 0x007A), 26, "拉丁 a–z 全覆盖");
 }
 
-/// A15：数字 0–9 全部命中且非 `.notdef`。
+/// 数字 0–9 全部命中且非 `.notdef`。
 #[test]
 fn a15_digits_mapped() {
     let f = font_multiscript();
@@ -493,7 +493,7 @@ fn a15_digits_mapped() {
     assert_eq!(cmap_count(0x0030, 0x0039), 10, "数字 0–9 全覆盖");
 }
 
-/// A16：常用标点（. , ! ? - : ; ( ) '）全部命中且非 `.notdef`。
+/// 常用标点（. , ! ? - : ; ( ) '）全部命中且非 `.notdef`。
 #[test]
 fn a16_punctuation_mapped() {
     let f = font_multiscript();
@@ -504,7 +504,7 @@ fn a16_punctuation_mapped() {
     }
 }
 
-/// A17：**off-curve（二次贝塞尔控制点）确实存在**（本路技术核心）。
+/// **off-curve（二次贝塞尔控制点）确实存在**（本路技术核心）。
 #[test]
 fn a17_off_curve_control_points_present() {
     let f = font_multiscript();
@@ -519,7 +519,7 @@ fn a17_off_curve_control_points_present() {
     assert!(any, "至少一个字形须含 off-curve 点");
 }
 
-/// A18：含曲线字形（off-curve）的计数足够多 —— 不是个别特例。
+/// 含曲线字形（off-curve）的计数足够多 —— 不是个别特例。
 #[test]
 fn a18_many_glyphs_have_curves() {
     let f = font_multiscript();
@@ -530,7 +530,7 @@ fn a18_many_glyphs_have_curves() {
     assert!(with_off >= 100, "含曲线字形应 ≥100，实际 {with_off}");
 }
 
-/// A19：阿拉伯 28 字母（本资产覆盖 30）的四态 gid 两两互异。
+/// 阿拉伯 28 字母（本资产覆盖 30）的四态 gid 两两互异。
 #[test]
 fn a19_arabic_all_letters_four_states_distinct() {
     let map = mf::arabic_glyph_map();
@@ -551,7 +551,7 @@ fn a19_arabic_all_letters_four_states_distinct() {
     }
 }
 
-/// A20：天城文新基字（क ख ग घ ङ / च छ ज झ ञ 等）均映射到互异 gid。
+/// 天城文新基字（क ख ग घ ङ / च छ ज झ ञ 等）均映射到互异 gid。
 #[test]
 fn a20_devanagari_base_consonants_mapped_distinct() {
     let f = font_multiscript();
@@ -568,7 +568,7 @@ fn a20_devanagari_base_consonants_mapped_distinct() {
     assert_eq!(gids.len(), cps.len(), "各基字 gid 应互异");
 }
 
-/// A21：天城文独立元音 + i-matra + virama 覆盖，且 virama/i-matra 零宽。
+/// 天城文独立元音 + i-matra + virama 覆盖，且 virama/i-matra 零宽。
 #[test]
 fn a21_devanagari_vowels_and_matras() {
     let f = font_multiscript();
@@ -580,7 +580,7 @@ fn a21_devanagari_vowels_and_matras() {
     assert_eq!(f.advance(vir), 0, "virama 零宽");
 }
 
-/// A22：**确定性（两次生成 sha256 相同）** —— 独立于生成器进程的字节级锚定。
+/// **确定性（两次生成 sha256 相同）** —— 独立于生成器进程的字节级锚定。
 #[test]
 fn a22_generator_two_runs_same_sha256() {
     let a = mf::build_font();
@@ -593,7 +593,7 @@ fn a22_generator_two_runs_same_sha256() {
     assert_eq!(a, FONT_MULTISCRIPT.to_vec(), "入库资产应等于现算结果");
 }
 
-/// A23：GSUB init/medi lookup 覆盖全部 Dual 字母（不止 BEH）。
+/// GSUB init/medi lookup 覆盖全部 Dual 字母（不止 BEH）。
 #[test]
 fn a23_gsub_covers_all_dual_letters() {
     let ot = OtFont::parse(FONT_MULTISCRIPT).expect("容器");
@@ -612,7 +612,7 @@ fn a23_gsub_covers_all_dual_letters() {
     }
 }
 
-/// A24：端到端栅格 —— 拉丁小写/数字/天城文新基字均可画出非空像素。
+/// 端到端栅格 —— 拉丁小写/数字/天城文新基字均可画出非空像素。
 #[test]
 fn a24_new_glyphs_rasterize_ink() {
     let f = font_multiscript();

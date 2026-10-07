@@ -27,11 +27,11 @@
 //!
 //! **它不假装是相机产物**：不写 `EXIF`/`GPS` 子 IFD、不写 `XMP`。
 //! 但**会**按 [`DngSampleSpec::preview`] 写一张 **SubIFD 预览图**——因为真实相机
-//! DNG 普遍带它（路C「不写 SubIFD」的边界已由 W12 路E 还清）。
+//! DNG 普遍带它（「不写 SubIFD」的边界已由后续补齐）。
 //! 预览图自己的布局由 [`PreviewSpec::layout`] 决定（单 strip / 多 strip / tile），
 //! 三者都生成——否则读端的多 strip / tile 重组路径在测试里永远拿不到真实输入。
 //!
-//! # 支持的压缩方式（W12 路E 扩展）
+//! # 支持的压缩方式
 //!
 //! | `Compression` | 编码路径 |
 //! |---|---|
@@ -46,7 +46,7 @@
 //!
 //! [`diagnose_dng`] 走**完整管线**（不是只读标签）：
 //!
-//! `parse` → `read_raw_samples`（按 `Compression` 分派 1/7）→ `cfa_pattern` →
+//! `parse` → `read_raw_samples`（按 `Compression` 分派 1/7/8/32946）→ `cfa_pattern` →
 //! `develop`（线性化 → 减黑 → 重标定 → 去马塞克 → 白平衡 → 色彩矩阵），
 //! 然后报出尺寸 / CFA 布局 / 压缩方式 / 位深 / 去马赛克后三通道统计量。
 //!
@@ -59,6 +59,44 @@
 //!
 //! 全模块零 `unwrap` / `expect` / `panic!`；所有尺寸/偏移/位深都做
 //! `checked_mul` / `checked_add` 并在越界时返回结构化 [`RawError`]。
+//!
+//! # 诚实边界
+//!
+//! ## Deflate 是否与 TIFF / DNG 规范完全一致
+//!
+//! **容器口径**：按 Adobe《Photoshop TIFF Technical Notes》（TIFF 6.0 补充，
+//! `Compression = 8` 的规范原文；DNG 1.4 的 `Deflate (ZIP)` 继承它）——
+//! 每个 strip / tile 是**一条完整 zlib 流**（2 字节头 + DEFLATE +
+//! 4 字节 Adler-32），故编码走 [`crate::exr_write::deflate_zlib`]、
+//! 解码走 [`prism_bytes::zlib::decompress_verified`]（**校验 Adler-32 值**）。
+//!
+//! > 既有的「裸 DEFLATE、不带 zlib 头」描述**与规范原文相反**；
+//! > 本实现以规范为准。测试 [`synth_deflate_round_trips_through_full_pipeline`]
+//! > 与读端 [`raw::DngFile::read_raw_samples_deflate`] 共用这一口径。
+//!
+//! **未做的**：DNG 1.4 允许 Deflate 配 `Predictor` 3/ 34894 / 34895
+//! （Floating Point 系列，供**浮点** RAW 用），本模块只实装四个**整数**
+//! 取值 `1 / 2 / 34892 / 34893`，其余结构化拒绝（见
+//! [`raw::DeflatePredictor`]）。Deflate 用于 32 位浮点 / 深度图 / 语义掩膜
+//! 这些 DNG 1.4 扩展用途**也不在本模块范围**（本模块只做 CFA 单通道整数）。
+//!
+//! ## SubIFD 解到什么程度
+//!
+//! [`crate::raw_subifd`] 解出**元数据 + 像素**：布局 `1`（未压缩）/`7`（无损
+//! JPEG）/`8`/`32946`（Deflate）**解出像素**，其余（6 / 34892 / 34712 / 52546）
+//! **只报元数据并在 `note` 写明为何不解**。strip 与 tile **两种布局都支持**
+//! （含图边界处标称尺寸越界的裁剪）。
+//!
+//! **不做的**：不做色彩空间转换（`PreviewColorSpace` / `YCbCrSubSampling`
+//! 只解析不应用），交错的 `SamplesPerPixel = 3` 样本按 `[(y*w+x)*spp+c]`
+//! **如实返回**，由调用方解释。
+//!
+//! ## 仍不支持的 `Compression` 取值
+//!
+//! `2/3/4`（CCITT）、`5`（LZW）、`6`（OJPEG，规范从未定义）、
+//! `34712`（JPEG 2000）、`34892`（**Lossy JPEG**，非 Deflate 别名）、
+//! `52546`（JPEG XL）—— 逐条成因见 [`raw::compression_reject_hint`]。
+//! 合成器**只生成** `1 / 7 / 8 / 32946`，其余一律结构化拒绝。
 
 use std::path::Path;
 
@@ -130,9 +168,9 @@ impl Default for PreviewLayout {
 ///
 /// # 为什么要有这个
 ///
-/// 路C 诚实边界里写「不写 SubIFD 预览」，理由是「对本链路的验证目标无影响」。
+/// 诚实边界里写「不写 SubIFD 预览」，理由是「对本链路的验证目标无影响」。
 /// 但**真实相机 DNG 普遍带 SubIFD 预览图**，缺了它就意味着
-/// 「能读主图但看不到预览」——这条边界该还（W12 路E）。
+/// 「能读主图但看不到预览」——这条边界已补齐。
 ///
 /// # 预览图的典型形态
 ///
@@ -252,7 +290,7 @@ pub struct DngSampleSpec {
     pub deflate_predictor: u16,
     /// 预览图规格（`Some` = 在 SubIFD 里写一张预览图）。
     ///
-    /// `None` = 不写 SubIFD（保持路C「不假装完整」的立场）。
+    /// `None` = 不写 SubIFD（保持「不假装完整」的立场）。
     pub preview: Option<PreviewSpec>,
     /// 逐 CFA 位置的黑电平。
     pub black_level: [u32; 4],
@@ -684,7 +722,7 @@ fn split_cfa_components(row: &[u16], nf: usize) -> Vec<Vec<u16>> {
 ///
 /// `prism-bytes` 只有解压、没有压缩器（该 crate 的诚实边界明确写着）。
 /// 而 `exr_write::deflate_zlib` 已是**本仓唯一**的真压缩 zlib 写入器
-/// （路L 实装，且有「能被 `prism_bytes::inflate` 逐位解回」的测试）。
+/// （已实装，且有「能被 `prism_bytes::inflate` 逐位解回」的测试）。
 /// 再写一份只会制造**第二份实现 = 第二份 bug 面**，正是 `prism-bytes`
 /// 模块文档里批评的那种技术债。故**复用**。
 fn deflate_block(
@@ -1139,7 +1177,7 @@ pub fn synthesize_dng(spec: &DngSampleSpec) -> RawResult<Vec<u8>> {
         ));
     }
 
-    // ---- 6. SubIFD 预览图（W12 路E）----
+    // ---- 6. SubIFD 预览图 ----
     //
     // 版式：主载荷之后**依次**放 `[SubIFD 目录+堆][预览载荷]`。
     // `SubIFDs` 是单值 LONG（内联），故回填它的偏移**不改变 IFD0 长度**，
@@ -1561,7 +1599,7 @@ impl DngDiagnostics {
         ));
         s.push_str(&format!("白平衡增益: {:?}\n", self.wb_gain));
         s.push_str(&format!("色彩矩阵  : {}\n", self.matrix_source));
-        // SubIFD 预览（W12 路E）：无预览时显式说明「无」，不留空。
+        // SubIFD 预览：无预览时显式说明「无」，不留空。
         if self.sub_ifds.is_empty() {
             s.push_str("SubIFD预览: 无（文件未带SubIFDs 标签）\n");
         } else {
@@ -1910,10 +1948,10 @@ mod tests {
 
     #[test]
     fn all_unsupported_compression_values_reject_structurally() {
-        // 任务书第 4 项：2/3/4/5/8/34712/34892 等取值全部**结构化拒绝**
+        // 结构化拒绝清单：2/3/4/5/8/34712/34892 等取值全部**结构化拒绝**
         // （不是 panic、不是静默错值），且错误文本要点名该取值。
         //
-        // **W12 路E 更新**：`8` 与 `32946`（Deflate）已从「不支持」升为
+        // **更新**：`8` 与 `32946`（Deflate）已从「不支持」升为
         // 「支持」，故移出本清单（它们由 `deflate_*` 系列测试单独覆盖）。
         let cases: [(u16, &str); 10] = [
             (2, "CCITT"),
@@ -1966,7 +2004,7 @@ mod tests {
 
     #[test]
     fn compression_six_rejection_cites_dng_spec_boundary() {
-        // 单独钉死 6：任务书认为 6 是「未压缩变体」，但 DNG 规范从未定义 6。
+        // 单独钉死 6：常见说法认为 6 是「未压缩变体」，但 DNG 规范从未定义 6。
         // 错误文本必须**明确**说清这一点，避免下游误以为「换个tiling 就能读」。
         let hint = crate::raw::compression_reject_hint(6);
         assert!(hint.contains("DNG 规范从未定义"), "6 的成因须写明规范边界：{hint}");
@@ -2580,7 +2618,7 @@ mod tests {
         hit
     }
     // -------------------------------------------------------------------
-    //  W12 路E：Deflate 合成 + SubIFD 预览
+    //  Deflate 合成 + SubIFD 预览
     // -------------------------------------------------------------------
 
     /// 复刻 `synthesize_dng` 的主图图案规则（**独立写一遍**，不复用被测代码）。

@@ -1,15 +1,15 @@
-//! `prism-geometry` — 几何域 crate（路线图 B3；架构 v2.4 S12 实体表示 + S10 层次 + S1 标量场）。
+//! `prism-geometry` — 几何域 crate（架构 v2.4 S12 实体表示 + S10 层次 + S1 标量场）。
 //!
 //! 模块一览：
 //!
 //! - [`primitive`] — 解析图元族闭式 SDF（球/盒/平面/圆柱/圆环/胶囊）与 [`primitive::Sdf`] trait。
 //! - [`sdf`] — SDF 域算子（并/交/差/平滑变体）、displace（接 prism-noise）与 sphere tracing。
 //! - [`csg`] — CSG 树：组合方式直接复用 [`sdf`] 域算子函数（D-16 避免双实现）。
-//! - [`bvh`] — SAH-BVH：射线求交 + 最近点 + 广义 winding number（一树两用，白皮书 §6/§7）。
-//! - [`mesh_sdf`] — mesh→SDF 烘焙：brick 8³ 稀疏化 + winding number 符号（白皮书 §7）。
+//! - [`bvh`] — SAH-BVH：射线求交 + 最近点 + 广义 winding number（一树两用）。
+//! - [`mesh_sdf`] — mesh→SDF 烘焙：brick 8³ 稀疏化 + winding number 符号。
 //! - [`det_math`] — D-29 确定性数学件（det_atan2/det_asin/det_cos_sin；禁 libm）。
-//! - [`gltf`] — glTF 精简导入（手写 JSON 子集解析，禁 serde；白皮书 §12）。
-//! - [`obj`] — OBJ/MTL 精简导入（白皮书 §12）。
+//! - [`gltf`] — glTF 精简导入（手写 JSON 子集解析，禁 serde）。
+//! - [`obj`] — OBJ/MTL 精简导入。
 //! - [`lod`] — LOD 链（从简）：步进 eps 随距离放大 + displace octaves 随距离衰减。
 //!
 //! # 确定性契约
@@ -18,7 +18,7 @@
 //! 烘焙同输入同字节（逐体素独立计算，无跨体素浮点累积）。只用 `+ - × ÷`、
 //! `min/max/clamp/floor/abs/sqrt` 等 IEEE 精确或确定性运算；超越函数（atan2/
 //! asin/sin/cos 等）一律走 [`det_math`] 确定性件（纯 IEEE 运算，同输入逐位一致，
-//! 禁 libm）；禁 fma 内建（白皮书 §6 附注）。
+//! 禁 libm）；禁 fma 内建（附注）。
 
 pub mod bvh;
 pub mod csg;

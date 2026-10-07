@@ -1,6 +1,6 @@
-//! vignette（B4 清单：vignette——径向压暗）。
+//! vignette（清单：vignette —— 径向压暗）。
 //!
-//! 语义权威：《强大版路线图》B4 行（vignette）；宪章 C4（行业概念：AE /
+//! 语义权威：vignette；宪章 C4（行业概念：AE /
 //! 达芬奇 Lens Vignette 同名概念，词汇直用）。
 //!
 //! # 实现

@@ -1,6 +1,6 @@
-//! QA 攻击性边界测试（W6-B11：prism-media）。
+//! QA 攻击性边界测试（prism-media）。
 //!
-//! 作者：严过关（QA）。攻击目标（确定性 + 防御缺失 + 边界）：
+//! 攻击目标（确定性 + 防御缺失 + 边界）：
 //! 1. timing：五模式边界（负 t、NaN、dur/fps=0、Loop 负半轴、Speed k=0/负/NaN、
 //!    SpeedCurve/Expr 空 samples）、seek 等价、frame_pair 契约。
 //! 2. gif：魔数/截断/坏 LZW/无调色板拦截（结构化错误非 panic）。

@@ -37,7 +37,7 @@ pub mod shaders;
 pub mod web;
 
 // ----------------------------------------------------------------------------
-// Vulkan 原生后端（D1）
+// Vulkan 原生后端
 // ----------------------------------------------------------------------------
 //
 // 手写 `dlopen`/`dlsym` + `#[repr(C)]` Vulkan struct 声明，**零第三方 crate**
@@ -77,7 +77,7 @@ pub use metal::MetalBackend;
 //     - [`sync`]：五类 pass 形态 + 屏障/同步推导
 //
 // 依赖边界（D-15）：零第三方 crate 承诺延伸至 GPU 侧；本 crate 仅依赖
-// `prism-math`（数学）。注意 `prism-core` 依赖本 crate（A5 骨架方向），
+// `prism-math`（数学）。注意 `prism-core` 依赖本 crate（骨架方向），
 // 故此处不得反向依赖 prism-core；`scan` 用本地 `ScanShape` 复刻
 // `reduction_shape`（D-26 单点定义）的树形语义，二者口径由测试对齐。
 // GPU 真机路径（Vulkan/WebGPU/Metal 手写绑定）标注待接入。
@@ -863,7 +863,7 @@ mod framebuffer_bounds {
 
     /// 后端能力查询：Vulkan 桩不可用且渲染不 panic（返回空缓冲）。
     ///
-    /// 注：Vulkan 已升级为带探测上下文的实装（D1），构造走 `new()`；渲染管线
+    /// 注：Vulkan 已升级为带探测上下文的实装，构造走 `new()`；渲染管线
     /// 仍未实装 ⇒ 语义不变（不可用 + 空帧）。
     #[test]
     fn vulkan_backend_is_unavailable_and_never_panics() {

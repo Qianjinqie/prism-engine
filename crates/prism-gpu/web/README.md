@@ -1,4 +1,4 @@
-# Prism GPU Harness（D-14 手机测试路径）
+# Prism GPU Harness（D-14 移动端验证路径）
 
 单页 HTML：`index.html`。手机浏览器（Chrome/Edge 113+、Safari 18+）打开即用，
 无需本地环境。载体 = wasm（`wasm32-unknown-unknown`）+ WebGPU 手写绑定。
@@ -240,7 +240,7 @@ D2 wavefront 从"只编译"升级为"真 dispatch + 与 CPU 参考逐元素判�
 | 真机层 | `realgpu_check.mjs`（有头 Chromium + WebGPU adapter） | 真 `createShaderModule`、真 dispatch、真读回逐字节比对 | —— |
 
 本轮真机层一次性抓出 4 个静态层漏掉的真缺陷（`pendingErrors` 跨测试项泄漏等），
-详见 `docs/文档八件套/施工日历.md` v4.7 条目——**这就是"两层必须分开"的直接证据**。
+详见 §16 的覆盖台账——**这就是"两层必须分开"的直接证据**。
 
 ### 16 个 compute 入口的覆盖台账（`shader.dispatch_census`）
 

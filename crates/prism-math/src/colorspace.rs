@@ -1,12 +1,12 @@
 //! 色彩空间转换：线性 sRGB ↔ ACEScg（AP1）矩阵与色域常量。
 //!
-//! 语义权威：《强大版路线图》§2.2（线性高精度色彩管线）、§3.5（"工作色域从
+//! 语义权威：线性高精度色彩管线、（"工作色域从
 //! linear-sRGB primaries 切到 ACEScg（AP1）只换两个 3×3 矩阵"）、P0 预留
 //! `ColorSpace` 枚举与矩阵常量。矩阵常数取自 ACES 官方（SMPTE ST 2065-1 /
 //! ACEScg AP1 primaries），经 Stephen Hill 拟合件与 Unity `ACES.hlsl` 复核。
 //!
 //! # 配色空间枚举
-//! [`ColorSpace`] 声明节点的输入/输出色彩空间（§3.5："色彩空间是每个节点的
+//! [`ColorSpace`] 声明节点的输入/输出色彩空间（"色彩空间是每个节点的
 //! 显式参数，不是全局魔法"），变换链在 [`crate::colorspace::TransformChain`]。
 //!
 //! # 白点
@@ -16,7 +16,7 @@
 /// 3×3 颜色矩阵（行主序：`m[r][c]`）。
 pub type Mat3 = [[f32; 3]; 3];
 
-/// 色彩空间枚举（§2.2 / §3.5 显式声明；与 `prism-render::linear` 对接）。
+/// 色彩空间枚举（显式声明；与 `prism-render::linear` 对接）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorSpace {
     /// 场景线性（引擎内部工作域 = 线性 sRGB primaries，白点 D65）。
@@ -122,7 +122,7 @@ pub fn acescg_to_srgb(rgb: [f32; 3]) -> [f32; 3] {
     mat3_apply(&ACESCG_TO_SRGB, rgb)
 }
 
-/// 色彩变换链：按声明的输入/输出色彩空间组织变换（§3.5"色彩节点链"）。
+/// 色彩变换链：按声明的输入/输出色彩空间组织变换（"色彩节点链"）。
 ///
 /// 当前覆盖 `LinearSrgb ↔ AcesCg ↔ Aces2065` 三个线性域的矩阵互转；
 /// 显示域（sRGB/PQ/HLG）OETF 由 [`crate::aces`]/[`crate::pq`]/[`crate::hlg`]

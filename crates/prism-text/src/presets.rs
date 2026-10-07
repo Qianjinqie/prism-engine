@@ -1,4 +1,4 @@
-//! 排版预置：Caption 字幕条与 Kinetic 逐字动画（任务书 B5；接 prism-anim）。
+//! 排版预置：Caption 字幕条与 Kinetic 逐字动画（接 prism-anim）。
 //!
 //! - **Caption**：底部自适应宽底条 + 居中多行文本（水平 layout 全规则
 //!   复用：禁则/换行/对齐）；

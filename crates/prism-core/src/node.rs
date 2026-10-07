@@ -1,6 +1,6 @@
-//! 节点模型 v2 数据结构（A1 第一批）。
+//! 节点模型 v2 数据结构。
 //!
-//! 语义权威：《架构总设计》v2.4 §3（节点三元组 / 三问接口 / §3.6 类图）与
+//! 语义权威：节点三元组 / 三问接口 / 类图与
 //! D-22（数学结构第一性）、D-27（registry! 静态汇入制）、D-28（EvalCtx 快照库
 //! + SampleIndex 像素域）。
 //!
@@ -18,7 +18,7 @@ use prism_math::Vec3;
 /// `signature.rs` 落地；本批仅定型类型供快照键使用。
 pub type Hash256 = [u8; 32];
 
-/// 节点唯一标识。节点 id 生活在格 Zᵏ 上（架构 §4.3），直接用整数。
+/// 节点唯一标识。节点 id 生活在格 Zᵏ 上，直接用整数。
 pub type NodeId = u64;
 
 // ---------------------------------------------------------------------------
@@ -27,8 +27,8 @@ pub type NodeId = u64;
 
 /// 数学结构标识（D-22：节点三元组的"结构"位）。
 ///
-/// 官方段 1–12 对应《架构总设计》§1.2 十二结构总表；用户段 `Custom` 自 S13 起
-/// （架构 §2.6.1 L4），`crate_name` 由 `registry!` 宏在定义所在 crate 的展开点
+/// 官方段 1–12 对应十二结构总表；用户段 `Custom` 自 S13 起
+/// （L4），`crate_name` 由 `registry!` 宏在定义所在 crate 的展开点
 /// 自动捕获（`env!("CARGO_CRATE_NAME")`），同编号跨 crate 天然隔离冲突。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum StructureId {
@@ -107,10 +107,10 @@ impl fmt::Display for StructureId {
 }
 
 // ---------------------------------------------------------------------------
-// 三问元数据（架构 §3.2；白皮书 §25 核/对偶/格）
+// 三问元数据（核/对偶/格）
 // ---------------------------------------------------------------------------
 
-/// 问一：核是什么（白皮书 §25.1 五种化身 + 无核服务）。
+/// 问一：核是什么（五种化身 + 无核服务）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KernelKind {
     /// 未回答（注册汇入时被三问校验拒绝）。
@@ -129,7 +129,7 @@ pub enum KernelKind {
     NoKernel,
 }
 
-/// 问二：配对哪一侧（白皮书 §25.2 五对偶）。
+/// 问二：配对哪一侧（五对偶）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DualityPair {
     /// 未回答（注册汇入时被三问校验拒绝）。
@@ -146,7 +146,7 @@ pub enum DualityPair {
     ContentDigest,
 }
 
-/// 问三：格锚了吗（白皮书 §25.3：哪些量锚 Zᵏ、哪些量允许格间插值）。
+/// 问三：格锚了吗（哪些量锚 Zᵏ、哪些量允许格间插值）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LatticePlan {
     /// 未回答（注册汇入时被三问校验拒绝）。
@@ -160,7 +160,7 @@ pub enum LatticePlan {
     },
 }
 
-/// 能力面声明（架构 §3.3：三操作接口全集，能力缺失是类型级事实）。
+/// 能力面声明（三操作接口全集，能力缺失是类型级事实）。
 /// `apply` 为必答主操作恒可用；`invert` / `sample` 按能力显式声明。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OpCapabilities {
@@ -170,7 +170,7 @@ pub struct OpCapabilities {
     pub sample: bool,
 }
 
-/// 三问注册元数据（架构 §3.2）。由特解作者（内核贡献者）填写，
+/// 三问注册元数据。由特解作者（内核贡献者）填写，
 /// 使用者无感；注册汇入时校验，问不齐注册表拒绝（三段式结构化报错，宪章 C18）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct StructureMeta {
@@ -182,7 +182,7 @@ pub struct StructureMeta {
     pub duality: DualityPair,
     /// 问三：格锚了吗。
     pub lattice: LatticePlan,
-    /// 能力面（invert / sample 支持与否，架构 §2.6.1 L3 / §3.3）。
+    /// 能力面（invert / sample 支持与否， L3）。
     pub capabilities: OpCapabilities,
 }
 
@@ -200,10 +200,10 @@ impl StructureMeta {
 }
 
 // ---------------------------------------------------------------------------
-// 数据包裹与求值上下文（架构 §3.6 类图；D-28）
+// 数据包裹与求值上下文（类图；D-28）
 // ---------------------------------------------------------------------------
 
-/// 结构间传递的数据包裹（架构 §3.3：域/陪域按结构定义，Payload 统一包裹）。
+/// 结构间传递的数据包裹（域/陪域按结构定义，Payload 统一包裹）。
 /// 变体随各结构特解落地按需扩充（第二批求值引擎接续）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Payload {
@@ -215,10 +215,10 @@ pub enum Payload {
     Empty,
 }
 
-/// 格上下文：确定性在格 Zᵏ 上的约定载体（白皮书 §25.3 / 架构 §4.3 格锚定规则表）。
+/// 格上下文：确定性在格 Zᵏ 上的约定载体（/ 格锚定规则表）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LatticeCtx {
-    /// 定点相位的小数位数（Q32.32 约定 = 32；白皮书 §23 采样回放）。
+    /// 定点相位的小数位数（Q32.32 约定 = 32； 采样回放）。
     pub fixed_point_frac_bits: u32,
 }
 
@@ -235,7 +235,7 @@ pub type SnapshotKey = (Hash256, u64);
 ///
 /// 模拟类节点（S3 约束族）的 apply 语义 = 调度器自快照库装配（上一帧状态，
 /// 当前帧参数）后投影一步。LRU 逐出只影响重算、不影响结果——seek 等价成立。
-/// LRU 上限策略随求值接线批次（eval.rs 第二批）落地，本批定型存取接口。
+/// LRU 上限策略随求值接线轮次（eval.rs 第二轮）落地，本轮定型存取接口。
 #[derive(Debug, Clone, Default)]
 pub struct SnapshotStore {
     entries: HashMap<SnapshotKey, Vec<u8>>,
@@ -268,8 +268,8 @@ impl SnapshotStore {
     }
 }
 
-/// 求值上下文（架构 §3.6 类图）：全局种子 / 节点 id / 帧号由求值器注入，
-/// 自定义特解不得私开 RNG（§2.6.3 护栏：SampleIndex hash 派生 = 唯一随机源）。
+/// 求值上下文（类图）：全局种子 / 节点 id / 帧号由求值器注入，
+/// 自定义特解不得私开 RNG（护栏：SampleIndex hash 派生 = 唯一随机源）。
 #[derive(Debug, Clone)]
 pub struct EvalCtx {
     /// 全局种子（格 Zᵏ）。
@@ -300,7 +300,7 @@ impl EvalCtx {
 /// 样本索引（D-28 定型）：随机求积的纯函数派生键。
 ///
 /// 样本流 = hash(全局种子, 节点id, 帧, pixel, 样本索引[, 维度])——同节点不同
-/// 像素必不同流（防网格伪影）；任何结构的 sample 不得私开 RNG（架构 §4.4）。
+/// 像素必不同流（防网格伪影）；任何结构的 sample 不得私开 RNG。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SampleIndex {
     /// 帧号。
@@ -316,13 +316,13 @@ pub struct SampleIndex {
 }
 
 // ---------------------------------------------------------------------------
-// 求值器统一接口：作用 / 求逆 / 采样三操作（架构 §3.3）
+// 求值器统一接口：作用 / 求逆 / 采样三操作
 // ---------------------------------------------------------------------------
 
 /// 12 结构统一求值器接口。每个特解 = 本 trait 的一个实现 + 一份三问元数据
 /// + 能力面声明。三操作是接口全集；能力面在 [`StructureMeta::capabilities`]
 /// 显式声明——`invert` / `sample` 的默认实现为 panic，注册表保证未声明能力
-/// 不会被调度（能力缺失从静默缺陷变为类型级事实，架构 §3.3）。
+/// 不会被调度（能力缺失从静默缺陷变为类型级事实）。
 pub trait MathStructure {
     /// 三问元数据（作者填写；注册汇入时校验，问不齐注册表拒绝）。
     fn meta(&self) -> &StructureMeta;
@@ -352,7 +352,7 @@ pub trait MathStructure {
 }
 
 // ---------------------------------------------------------------------------
-// 节点三元组：结构 / 特解参数 / 组合方式（架构 §3.1 / §3.5）
+// 节点三元组：结构 / 特解参数 / 组合方式
 // ---------------------------------------------------------------------------
 
 /// 节点端口方向。
@@ -374,7 +374,7 @@ pub struct Port {
     pub index: u8,
 }
 
-/// 合并归约算子（架构 §3.5 `Merge(op)`：Compose 树、混音）。
+/// 合并归约算子（`Merge(op)`：Compose 树、混音）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MergeOp {
     /// over（常规覆盖合成）。
@@ -389,7 +389,7 @@ pub enum MergeOp {
     Mask,
 }
 
-/// CSG 布尔变体（架构 §3.5 `Csg(op, k)`：min/max/smooth）。
+/// CSG 布尔变体（`Csg(op, k)`：min/max/smooth）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CsgOp {
     /// 并（min）。
@@ -406,7 +406,7 @@ pub enum CsgOp {
     SmoothSubtract,
 }
 
-/// 组合方式（架构 §3.5 六种归约算子）。
+/// 组合方式（六种归约算子）。
 #[derive(Debug, Clone, PartialEq)]
 pub enum Composition {
     /// 默认图边（单进单出）：一切连线。
@@ -431,7 +431,7 @@ pub struct ChannelRef {
 }
 
 /// 参数绑定：把节点的一个参数接到一条属性通道（类图 `Node --> PropertyChannel`，
-/// "参数绑定 Node.bindings，非 §3.5 六种组合方式"，架构 §2.3 对照表）。
+/// "参数绑定 Node.bindings，非六种组合方式"， 对照表）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeBinding {
     /// 被绑定的参数名（Params 的键）。
@@ -457,7 +457,7 @@ pub enum ParamValue {
 /// 特解参数包（节点三元组的"特解参数"位）：有序键值集合。
 ///
 /// 内部用 `BTreeMap` 固定键序，序列化输出逐字节确定（节点签名与存档的输入，
-/// 架构 §4.2 / 宪章 C13）。
+///  / 宪章 C13）。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Params {
     entries: BTreeMap<String, ParamValue>,
@@ -489,19 +489,19 @@ impl Params {
         self.entries.is_empty()
     }
 
-    /// 按字典序遍历全部 (参数名, 参数值)——键序固定，遍历序确定（U13 编辑器
+    /// 按字典序遍历全部 (参数名, 参数值)——键序固定，遍历序确定（编辑器
     /// 参数 schema 生成用；只读访问器，不改变 canonical 字节语义）。
     pub fn iter(&self) -> impl Iterator<Item = (&String, &ParamValue)> {
         self.entries.iter()
     }
 
-    /// 参数名有序切片（键序升序，U13 编辑器 UI 控件生成用）。
+    /// 参数名有序切片（键序升序，编辑器 UI 控件生成用）。
     pub fn names(&self) -> Vec<&String> {
         self.entries.keys().collect()
     }
 
     /// 序列化为 canonical 字节（键按字典序固定；大端编码；值带类型 tag）。
-    /// 供节点签名（A6）与存档序列化消费，同参数集必得同字节。
+    /// 供节点签名与存档序列化消费，同参数集必得同字节。
     pub fn to_canonical_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         for (name, value) in &self.entries {
@@ -531,9 +531,9 @@ impl Params {
     }
 }
 
-/// 图节点（架构 §3.6 类图 `Node`）：节点三元组的实例形态。
+/// 图节点（类图 `Node`）：节点三元组的实例形态。
 ///
-/// `signature()` 方法属签名树（A6 / signature.rs，第二批），本批不落。
+/// `signature()` 方法属签名树（signature.rs，第二批），本批不落。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Node {
     /// 节点唯一标识。
@@ -544,7 +544,7 @@ pub struct Node {
     pub params: Params,
     /// 组合方式位：本节点如何与图连接。
     pub composition: Composition,
-    /// 参数绑定：哪些参数接属性通道（A2）。
+    /// 参数绑定：哪些参数接属性通道。
     pub bindings: Vec<NodeBinding>,
 }
 

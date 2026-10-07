@@ -1,4 +1,4 @@
-//! 关键帧轨道与循环模式（工作流 A2；S9 分段多项式特解，架构 v2.4 §6.1）。
+//! 关键帧轨道与循环模式（工作流 A2；S9 分段多项式特解）。
 //!
 //! [`Track`] 是关键帧的有序集合：相邻两帧之间按左帧的 [`EasingKind`] 缓动
 //! 插值（AE 语义：缓动归属段起点，宪章对照示例 `0s: -80 easeOutCubic, 1.2s: 0`）。
@@ -12,18 +12,18 @@
 //!   比较、不落入任何段，不得进入段查找）；`t` 为 ±∞ 时走首/末钳制分支
 //!   （`t < 首帧` / `t ≥ 末帧`）早退；
 //! - 同时刻多帧（构造时稳定排序）：后者生效（最后一条 time ≤ t 的帧为段
-//!   左端，段长为 0 时直接取右帧值）——确定性规则，DSL 层（A4）将以
+//!   左端，段长为 0 时直接取右帧值）——确定性规则，DSL 层将以
 //!   "关键帧时间倒序/重复"防呆规则预警（宪章 C18）。
 //!
 //! [`LoopMode`] 把 `[0, duration]` 上的表现按 direct/loop/pingpong 铺满整条
-//! 时间轴（白皮书 §19 时间映射公式的 A2 通道形态：`u mod 1` 与三角折返）。
+//! 时间轴（时间映射公式的 A2 通道形态：`u mod 1` 与三角折返）。
 
 use crate::easing::EasingKind;
 
 /// 关键帧：时刻（秒）、值、以及**以本帧为段起点**时的缓动函数。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Keyframe {
-    /// 时刻（秒，格间浮点插值的端点皆格锚语义见架构 §4.3）。
+    /// 时刻（秒，格间浮点插值的端点皆格锚语义见）。
     pub time: f32,
     /// 值。
     pub value: f32,
@@ -95,7 +95,7 @@ impl Track {
     }
 }
 
-/// 循环模式（direct / loop / pingpong；白皮书 §19 时间映射三段式的通道形态）。
+/// 循环模式（direct / loop / pingpong； 时间映射三段式的通道形态）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoopMode {
     /// 直通：`[0, duration]` 之外钳制（首前取首、末后取末）。
@@ -236,7 +236,7 @@ mod tests {
             let mapped = LoopMode::Direct.map(t, 1.0);
             assert!((tr.sample(mapped) - want).abs() < 1e-6, "Direct t={t}");
         }
-        // Loop：周期回绕，t=duration 整回绕到 0（白皮书 §19 u mod 1）。
+        // Loop：周期回绕，t=duration 整回绕到 0（u mod 1）。
         let cases_loop = [(0.0, 0.0), (0.5, 5.0), (1.0, 0.0), (1.5, 5.0), (2.0, 0.0)];
         for (t, want) in cases_loop {
             let mapped = LoopMode::Loop.map(t, 1.0);

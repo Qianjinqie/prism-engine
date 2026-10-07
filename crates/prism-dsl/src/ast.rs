@@ -1,4 +1,4 @@
-//! AST：v1（M0/M1）文档模型逐字保留；v2（W3-A4）新增全块语法模型。
+//! AST：v1（M0/M1）文档模型逐字保留；v2 新增全块语法模型。
 //!
 //! # v2 建模策略
 //! - **单位字面量**：[`TimeVal`] / [`AngleVal`] 保留"原值 + 单位"，解析期不做
@@ -9,7 +9,7 @@
 //! - **结构固定的条目**（stage3d 内的 camera / sdf / material / light、
 //!   transition、anim 关键帧）用专用强类型，保证核心语义可靠。
 
-// 纯数据模型：个别 v1 字段 / 变体暂未被 codegen 消费（为后续波次保留语义位置），
+// 纯数据模型：个别 v1 字段 / 变体暂未被 codegen 消费（为后续扩展保留语义位置），
 // 逐个标注会污染定义，此处模块级豁免。
 #![allow(dead_code)]
 
@@ -75,7 +75,7 @@ pub(crate) struct TimelineAst {
     pub(crate) fps: Option<u32>,
 }
 
-/// aesthetic 块（v2 的 theme 块复用本类型：字段集相同，见路线图 §3.6）。
+/// aesthetic 块（v2 的 theme 块复用本类型：字段集相同，见）。
 pub(crate) struct AestheticAst {
     pub(crate) teal_orange: bool,
     pub(crate) contrast: Option<f32>,
@@ -312,7 +312,7 @@ pub(crate) struct AudioAst {
     pub(crate) line: usize,
 }
 
-/// note 块（B13）：`note "主题" { scale major root 60 bpm 120 bars 4 seed 7 }`。
+/// note 块：`note "主题" { scale major root 60 bpm 120 bars 4 seed 7 }`。
 ///
 /// 作曲系统 DSL 入口——音阶/根音/速度/小节数/种子驱动 [`prism_audio`] 的
 /// 作曲引擎；字段沿用 [`NamedField`] 通用模型，codegen 白名单校验。

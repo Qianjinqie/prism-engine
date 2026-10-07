@@ -1,4 +1,4 @@
-//! 确定性任务队列：确定序出队 + 幂等 + 固定重试（白皮书 §26 工程四律）。
+//! 确定性任务队列：确定序出队 + 幂等 + 固定重试（工程四律）。
 //!
 //! # 确定序，不是到达序
 //!
@@ -9,13 +9,13 @@
 //!
 //! **反例说明为什么不能用到达序**：到达序依赖 `submit` 的调用时序，而时序
 //! 依赖线程调度；调度依赖机器负载；机器负载依赖环境。所以到达序**不是输入的
-//! 函数**，而确定序是。任务书"禁止用到达时间排序"正是此意。
+//! 函数**，而确定序是。"禁止用到达时间排序"这条要求正是此意。
 //!
 //! # 幂等
 //!
 //! 已完成的 [`TaskId`] 记入 `BTreeSet`；重复提交时若 id 已在集合中，直接返回
 //! [`SubmitOutcome::Duplicate`]，**不重复执行**。完成的判定只看 id（配置哈希 +
-//! 帧区间）——因为同 id 意味着输入逐字节相同，输出必然逐字节相同（§4.2 公理，
+//! 帧区间）——因为同 id 意味着输入逐字节相同，输出必然逐字节相同（公理，
 //! 与 `incremental` 的复用纪律同源）。
 //!
 //! # 重试
@@ -75,7 +75,7 @@ impl Default for RetryPolicy {
     }
 }
 
-/// 历史吞吐账本：配置哈希 → 已完成帧数（**纯计数，不记时间**）。
+/// 历史吞吐记录：配置哈希 → 已完成帧数（**纯计数，不记时间**）。
 ///
 /// 只作为**同优先级内的 tie-break** 影响出队顺序，**不影响结果**。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -84,7 +84,7 @@ pub struct ThroughputLedger {
 }
 
 impl ThroughputLedger {
-    /// 空账本。
+    /// 空记录。
     pub fn new() -> ThroughputLedger {
         ThroughputLedger::default()
     }
@@ -100,7 +100,7 @@ impl ThroughputLedger {
         self.frames.get(&config_hash).copied().unwrap_or(0)
     }
 
-    /// 账本是否为空。
+    /// 记录是否为空。
     pub fn is_empty(&self) -> bool {
         self.frames.is_empty()
     }
@@ -123,7 +123,7 @@ impl ThroughputLedger {
 /// - 之后才是纯内容字段（配置哈希 / 帧区间），保证**同吞吐档内**仍是确定的
 ///   内容序。
 ///
-/// **确定性论证**：吞吐账本只计**帧数**（纯计数，不记时间——记时间就引入环境
+/// **确定性论证**：吞吐记录只计**帧数**（纯计数，不记时间——记时间就引入环境
 /// 依赖），而"哪些任务已完成"是**内容派生**的（完成集合只取决于执行了哪些
 /// 任务，不取决于完成顺序）。所以整个键仍是 `(任务集, 已完成集)` 的纯函数，
 /// 与到达序、机器数、进程数无关。测试
@@ -147,7 +147,7 @@ impl DequeueKey {
     fn of(task: &FrameTask, ledger: &ThroughputLedger) -> DequeueKey {
         DequeueKey {
             priority: task.priority,
-            // 纯计数；账本内部已用 saturating_add 兜住溢出。
+            // 纯计数；记录内部已用 saturating_add 兜住溢出。
             frames_done: ledger.frames_of(task.config_hash),
             config_hash: task.config_hash,
             start: task.frames.start,
@@ -230,7 +230,7 @@ impl FarmQueue {
         self.pending.is_empty()
     }
 
-    /// 吞吐账本（只读）。
+    /// 吞吐记录（只读）。
     pub fn ledger(&self) -> &ThroughputLedger {
         &self.ledger
     }
@@ -358,7 +358,7 @@ mod tests {
     fn throughput_ledger_changes_order_but_not_execution_set() {
         // 历史吞吐只影响"顺序"，不影响"执行集合"——结果逐位一致的前提。
         let tasks: Vec<FrameTask> = vec![task(b"a", 0, 9, 1), task(b"b", 10, 19, 1)];
-        // 无账本：按 (优先级, 吞吐档, 配置哈希, 帧区间) 定序 ⇒ 配置哈希定序。
+        // 无记录：按 (优先级, 吞吐档, 配置哈希, 帧区间) 定序 ⇒ 配置哈希定序。
         let mut q1: FarmQueue = FarmQueue::new();
         for t in &tasks {
             let _ = q1.submit(*t);
@@ -373,7 +373,7 @@ mod tests {
             let _ = q2.submit(*t);
         }
         let with_history: Vec<TaskId> = drain(&mut q2);
-        assert_ne!(plain, with_history, "吞吐账本应能改变出队顺序（本例如此）");
+        assert_ne!(plain, with_history, "吞吐记录应能改变出队顺序（本例如此）");
         assert_eq!(
             with_history.first().map(|id| id.config_hash),
             Some(ConfigHash::of_bytes(b"b")),
@@ -399,7 +399,7 @@ mod tests {
             "优先级 0 的任务必须先出队，哪怕它有吞吐记账"
         );
 
-        // 账本只计帧数，不计时间 ⇒ 纯计数。
+        // 记录只计帧数，不计时间 ⇒ 纯计数。
         let mut l: ThroughputLedger = ThroughputLedger::new();
         assert!(l.is_empty());
         assert_eq!(l.frames_of(ConfigHash::of_bytes(b"a")), 0);

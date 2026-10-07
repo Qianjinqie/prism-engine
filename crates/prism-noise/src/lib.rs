@@ -1,11 +1,11 @@
 //! `prism-noise` — deterministic scalar-field primitives for the Prism engine
-//! (roadmap workstream A3; whitepaper §17; architecture v2.4 S1/S4 primitive layer).
+//! (roadmap workstream A3; ; S1/S4 primitive layer).
 //!
 //! Contents:
 //!
 //! - [`pcg`] — PCG integer hashing, the engine's only randomness primitive.
 //!   The engine-wide sample stream `hash(global_seed, node_id, frame, pixel,
-//!   sample[, dimension])` (architecture v2.4 §4.4) packs its integers into
+//!  sample[, dimension])` packs its integers into
 //!   these `(seed, x[, y[, z[, w]]])` entry points. This crate holds no RNG
 //!   state and exposes only pure scalar functions; higher layers do the packing.
 //! - [`value`] — value noise: lattice hash + quintic interpolation.

@@ -1,10 +1,10 @@
 //! 合成图节点（C1）：Compose 树——双输入合成算子任意嵌套、层序决定论、
 //! 混合模式（over/plus/screen/multiply/mask）。
 //!
-//! 语义权威：《强大版路线图》§3.4（"节点式无限层：Composite2D 从平铺层列表
+//! 语义权威："节点式无限层：Composite2D 从平铺层列表
 //! 升级为 Compose 树：双输入合成算子（over/plus/screen/multiply/mask）任意
-//! 嵌套；平铺列表 = 树的退化形式，完全兼容；层数无上限"）；《架构总设计》v2.4
-//! §3.5（`Merge(op)` 归约算子）；prism-core `node::MergeOp`。
+//! 嵌套；平铺列表 = 树的退化形式，完全兼容；层数无上限"；
+//! `Merge(op)` 归约算子；prism-core `node::MergeOp`。
 //!
 //! # 确定性关键
 //!
@@ -142,7 +142,7 @@ pub fn merge(op: MergeOp, a: &LayerBuf, b: &LayerBuf) -> LayerBuf {
 
 /// 合成图节点（Compose 树）：叶子 = 输入层，内部 = 双输入合成算子。
 ///
-/// 平铺层列表 = 退化树（左结合链）（路线图 §3.4）；层数无上限（求值按需
+/// 平铺层列表 = 退化树（左结合链）；层数无上限（求值按需
 /// 递归，流式）。同树同求值序 ⇒ 逐位一致（层序决定论）。
 #[derive(Debug, Clone, PartialEq)]
 pub enum ComposeNode {
@@ -184,7 +184,7 @@ impl ComposeNode {
 
     /// 求值：递归合并，返回合成结果。
     ///
-    /// 归约纪律（白皮书 §26）：多路同 op 的平铺链经 [`reduce`] 走固定形状
+    /// 归约纪律：多路同 op 的平铺链经 [`reduce`] 走固定形状
     /// 结合树——但为保持"逐层 over"的层序语义（over 非结合时结果依赖层序），
     /// 本求值对 `Merge` 节点严格按**树形**（左结合）递归，不重组；层序决定论
     /// 由此保证。返回 None 表示叶为空（不应发生）。
@@ -216,7 +216,7 @@ impl ComposeNode {
     }
 }
 
-/// 雾合成：按深度把雾色线性插值到颜色上（路线图 §3.4：2D 元素进 3D 雾被
+/// 雾合成：按深度把雾色线性插值到颜色上（例：2D 元素进 3D 雾被
 /// 正确雾化）。`density` ∈ [0,1]，1 = 完全雾色；`aov` 为该像素深度 AOV
 /// （0 近 1 远）。
 pub fn apply_fog(rgba: [f32; 4], fog_color: [f32; 3], aov: f32, density: f32) -> [f32; 4] {
@@ -300,7 +300,7 @@ mod tests {
 
     #[test]
     fn flat_layers_degenerate_into_left_chain() {
-        // 平铺列表 = 左结合树（完全兼容，路线图 §3.4）。
+        // 平铺列表 = 左结合树（完全兼容）。
         let l0 = solid(1, 1, [0.0, 0.0, 0.0, 1.0]);
         let l1 = solid(1, 1, [0.5, 0.5, 0.5, 1.0]);
         let l2 = solid(1, 1, [1.0, 1.0, 1.0, 1.0]);

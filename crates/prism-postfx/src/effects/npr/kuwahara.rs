@@ -1,6 +1,6 @@
-//! Kuwahara（B14 NPR 族：油画笔触保边滤波）。
+//! Kuwahara（NPR 族：油画笔触保边滤波）。
 //!
-//! 语义权威：《算法白皮书》§14 第 2 条——"广义 Kuwahara——像素邻域分区（8
+//! 语义权威：第 2 条——"广义 Kuwahara——像素邻域分区（8
 //! 象限圆盘）各自算均值/方差，取方差最小的均值——笔画感保边缘"。
 //!
 //! # 实现
@@ -69,7 +69,7 @@ impl TileEffect for Kuwahara {
                                 n += 1.0;
                             }
                         }
-                        // 亮度通道方差做主判据（RGB 方差同序，白皮书取亮度结构）。
+                        // 亮度通道方差做主判据（RGB 方差同序，取亮度结构）。
                         let mean_l = (sum[0] + sum[1] + sum[2]) / (3.0 * n);
                         let mean_sq_l = (sum_sq[0] + sum_sq[1] + sum_sq[2]) / (3.0 * n);
                         let var = mean_sq_l - mean_l * mean_l;

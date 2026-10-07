@@ -1,4 +1,4 @@
-// prism-sim 公共定义（D3）——百万粒子 compute 的共享件。
+// prism-sim 公共定义 —— 百万粒子 compute 的共享件。
 //
 // # 对应关系（判对基准 = prism-physics/{sph,cloth}.rs + prism-particles/*）
 // - 空间哈希：cell = 核半径 h；哈希键 = floor(p/h)（对齐 sph.rs::SpatialHash）。

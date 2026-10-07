@@ -2,7 +2,7 @@
 // oexr_interop.cpp — 官方 OpenEXR 3.1.5 的 DWA 比特流对拍辅助程序。
 //
 // 【定位：验证工具，不是项目依赖】
-//   本文件**不进 crates/**、不链接进任何 Rust 产物、不出现在任何 Cargo.toml、
+//   本文件**不进源码树**、不链接进任何 Rust 产物、不出现在任何 Cargo.toml、
 //   没有 build.rs。Rust 侧（prism-io）只通过**文件字节**与本程序交互：
 //     gen  <out.exr> <w> <h> <spec> <seed>   官方写 .exr
 //     dump <in.exr> <out.txt>                官方读 .exr，导出像素位模式
@@ -13,7 +13,7 @@
 // 【为什么官方 OpenEXR 是"规范源"】
 //   DWA 是有损压缩，其编码端的选择（规则表 / 量化口径 / Huffman 表）由官方
 //   实现定义。本仓目标是"官方能读我们的、我们能读官方的"，故凡两侧不一致，
-//   一律以官方为准（任务书 P1 第 1/2 条）。
+//   一律以官方为准。
 //
 // 编译（两个 -I 都要给：OpenEXR 3 头在 /usr/include/OpenEXR，Imath 在 /usr/include/Imath）：
 //   g++ -std=c++14 oexr_interop.cpp -o oexr_interop \

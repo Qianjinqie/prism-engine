@@ -1,4 +1,4 @@
-//! TTF/OTF 字体二进制解析（路线图 B5；白皮书 §16 文字管线输入端）。
+//! TTF/OTF 字体二进制解析（文字管线输入端）。
 //!
 //! 解析 TrueType 子集所需最小表集：`head`（unitsPerEm / indexToLocFormat）、
 //! `hhea`（度量行高）、`maxp`（字形数）、`hmtx`（步进宽）、`cmap`

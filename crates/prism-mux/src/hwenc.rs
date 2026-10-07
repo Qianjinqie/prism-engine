@@ -1,4 +1,4 @@
-//! 硬件编码器适配层（C7；路线图 C7 行 / §3.5 三层策略 ②）。
+//! 硬件编码器适配层（C7； 三层策略 ②）。
 //!
 //! **设计 + 骨架，真机启用**（Phase 4）：VideoToolbox（macOS）/ MediaFoundation
 //! （Windows）/ NVENC（Linux + N 卡）/ VAAPI（Linux 通用）。本模块只定义**厂商无关

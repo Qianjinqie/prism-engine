@@ -1,9 +1,9 @@
-//! 特解注册表（A1 第一批）：双通道汇入 + 三问校验 + `registry!` 静态汇入制。
+//! 特解注册表：双通道汇入 + 三问校验 + `registry!` 静态汇入制。
 //!
-//! 语义权威：《架构总设计》v2.4 §2.6.2（registry! 与 alias.rs 双通道汇入同一
+//! 语义权威：（registry! 与 alias.rs 双通道汇入同一
 //! 注册表，运行时无差别）、D-27（静态汇入制：宏在定义所在 crate 内展开为
 //! `__prism_collect(reg)` 式注册函数，可执行 crate 启动时静态汇入一次，禁
-//! inventory / proc-macro）、§3.2（三问注册：问不齐注册表拒绝，三段式结构化
+//! inventory / proc-macro）、（三问注册：问不齐注册表拒绝，三段式结构化
 //! 报错——在哪 / 缺哪问 / 怎么补，宪章 C18/C19）。
 //!
 //! 双通道形态：官方特解（alias 通道，alias.rs 随 A4 落地）与自定义特解
@@ -61,7 +61,7 @@ impl fmt::Display for RegistryError {
 
 impl std::error::Error for RegistryError {}
 
-/// 特解注册表：官方通道与 `registry!` 通道汇入的同一张表（架构 §2.6.2）。
+/// 特解注册表：官方通道与 `registry!` 通道汇入的同一张表。
 /// 运行时无差别——求值调度只认 [`StructureId`]，不认通道来源。
 #[derive(Debug, Default)]
 pub struct NodeRegistry {
@@ -462,7 +462,7 @@ mod tests {
         // 自定义通道：registry! 静态汇入。
         __prism_collect(&mut reg);
 
-        // 两条通道汇入同一张表：运行时无差别（架构 §2.6.2）。
+        // 两条通道汇入同一张表：运行时无差别。
         assert_eq!(reg.len(), 2);
         let ctx = EvalCtx::new(0, 1, 0);
         let official = reg

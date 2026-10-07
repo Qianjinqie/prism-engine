@@ -1,12 +1,12 @@
 //! 数据包市场：manifest 校验（semver / 许可证 / 资产清单）+ 本地库管理
 //! （add / list / remove）。
 //!
-//! 语义权威：《强大版路线图》§2.4（"数据包节点不是代码，是预制子图 + 参数预设
+//! 语义权威：（"数据包节点不是代码，是预制子图 + 参数预设
 //! + 资产的纯数据"；"市场/分发 = 校验 manifest（semver、许可证、资产清单）后
 //! 落库，无动态代码加载，安全面极小"）与 C6（"数据包市场校验 add/list/remove"）、
 //! D-8（插件=数据包，无动态代码加载）、D-23（数据即组件）。
 //!
-//! # 包目录布局（§2.4）
+//! # 包目录布局
 //! ```text
 //! mypack/
 //!   manifest.toml          # name(kebab-case)/semver/license/provides/engine
@@ -24,7 +24,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// 许可证白名单（SPDX 标识符子集；路线图 §2.4 "许可证白名单"）。
+/// 许可证白名单（SPDX 标识符子集；"许可证白名单"）。
 pub const LICENSE_ALLOWLIST: &[&str] = &[
     "MIT",
     "Apache-2.0",

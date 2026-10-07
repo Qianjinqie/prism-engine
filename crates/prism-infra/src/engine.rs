@@ -116,7 +116,7 @@ pub fn render_frame(
 /// 渲染单帧并编码为 PNG 字节（内存中，不落盘）。
 ///
 /// `prism_io::save_png` 落盘版走文件；此处复用其 PNG 编码器输出到内存，
-/// 供 MCP `render_frame` 直接返回 PNG 字节（路线图验收 6）。
+/// 供 MCP `render_frame` 直接返回 PNG 字节（验收 6）。
 ///
 /// # Errors
 /// 同 [`render_frame`]；PNG 编码失败 → [`EngineError`]。

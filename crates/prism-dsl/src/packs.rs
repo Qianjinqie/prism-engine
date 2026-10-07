@@ -1,6 +1,6 @@
 //! import packs 装包：清单模型 + 最小 TOML 解析骨架 + engine 版本范围校验。
 //!
-//! # 最小可用语义（W3-A4）
+//! # 最小可用语义
 //! - DSL 内联清单：`import packs "名" { engine ">=0.4, <0.5" provides { ... } }`；
 //! - TOML 清单骨架：`PackManifest::parse_toml` 支持最小子集
 //!   （`key = "value"` 行 + `[provides]` 段），包文件加载留 Phase 2/3；

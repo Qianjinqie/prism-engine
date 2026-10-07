@@ -26,7 +26,7 @@ pub use cache_manifest::{
 };
 
 // ---------------------------------------------------------------------------
-// U12：自定义生态分发层——数据包市场 + 特解包签名
+// 自定义生态分发层——数据包市场 + 特解包签名
 // ---------------------------------------------------------------------------
 
 pub mod distribution;
@@ -38,7 +38,7 @@ pub use distribution::{
 };
 
 // ---------------------------------------------------------------------------
-// A5：RGBA16F 半精度帧缓冲——tile 渲染的存储域（f16 存储、f32 计算，§2.2）
+// A5：RGBA16F 半精度帧缓冲——tile 渲染的存储域（f16 存储、f32 计算）
 // ---------------------------------------------------------------------------
 
 pub mod fbuf;
@@ -46,7 +46,7 @@ pub mod fbuf;
 pub use fbuf::{f16_to_f32, f32_to_f16, Fbuf16F};
 
 // ---------------------------------------------------------------------------
-// U11：场景与材质互操作（USD `.usda` 文本解析 + MaterialX → 特解参数包）
+// 场景与材质互操作（USD `.usda` 文本解析 + MaterialX → 特解参数包）
 // ---------------------------------------------------------------------------
 
 pub mod usd;
@@ -54,7 +54,7 @@ pub mod usd;
 pub mod materialx;
 
 // ---------------------------------------------------------------------------
-// U7：相机 RAW（DNG IFD 解析 + Bayer 去马塞克 + 白平衡 + 色彩矩阵）
+// 相机 RAW（DNG IFD 解析 + Bayer 去马塞克 + 白平衡 + 色彩矩阵）
 // ---------------------------------------------------------------------------
 
 pub mod raw;
@@ -85,7 +85,7 @@ pub mod raw_lossless_jpeg_encode;
 /// ```
 pub mod raw_dng_synth;
 
-/// DNG **SubIFD 预览图解析**（W12 路E）。
+/// DNG **SubIFD 预览图解析**。
 ///
 /// 真实相机 DNG 普遍在 `SubIFDs`（0x014A）里带一张小预览图；本模块解析该
 /// 子 IFD 链，在压缩方式受支持（1 / 7 / 8 / 32946）时**解出像素**，
@@ -104,14 +104,16 @@ pub use raw_dng_synth::{
     PreviewLayout, PreviewSpec,
 };
 
-pub use raw_subifd::{parse_sub_ifds, sub_ifd_offsets, SubIfdImage};
+pub use raw_subifd::{
+    decode_sub_ifd, list_sub_ifds, parse_sub_ifds, sub_ifd_offsets, SubIfdImage, SubIfdInfo,
+};
 
 pub use raw_lossless_jpeg::{
     decode_lossless_jpeg, interleave_row_map, HuffTable, LosslessImage, Predictor, MAX_SSSS,
 };
 
 // ---------------------------------------------------------------------------
-// U7：OpenEXR 容器（分块浮点 + 多通道 AOV + Z/Float deep；手写 inflate）
+// OpenEXR 容器（分块浮点 + 多通道 AOV + Z/Float deep；手写 inflate）
 // ---------------------------------------------------------------------------
 
 pub mod exr;

@@ -1,5 +1,5 @@
 // ===========================================================================
-// gate_editor.mjs — prism_editor.wasm 的构建门禁（U13 编辑器）。
+// gate_editor.mjs — prism_editor.wasm 的构建门禁。
 //
 // 零第三方依赖（只用 node 内建 module），与 wgsl_lint.mjs / host_test.mjs 同哲学：
 // 把"只有真机能暴露"的缺陷提前到构建阶段拦下。检查四道门：

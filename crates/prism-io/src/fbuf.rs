@@ -1,13 +1,13 @@
-//! RGBA16F 半精度帧缓冲（A5）。
+//! RGBA16F 半精度帧缓冲。
 //!
-//! 语义权威：《强大版路线图》§4 A5 行（RGBA16F 缓冲）与 §2.2（内部帧缓冲统一
+//! 语义权威：RGBA16F 缓冲与 （内部帧缓冲统一
 //! RGBA16F——f16 存储、f32 计算，内存省一半、精度足够，8bit 量化只发生在
-//! 交付边界）；《架构总设计》v2.4 §4.3 格锚（RGBA16F 半浮点的确定性纪律——
+//! 交付边界）； 格锚（RGBA16F 半浮点的确定性纪律——
 //! 半浮点存储、运算位模式精确往返）。
 //!
 //! # 确定性纪律
 //! - **存储域是格**：每通道为 16 位 IEEE 754 binary16 位模式（`u16`）——
-//!   整数存储，同值同位模式，跨平台逐位一致（白皮书 §25.3）；
+//!  整数存储，同值同位模式，跨平台逐位一致；
 //! - **计算域是 f32**：读出（f16→f32 精确扩展，无舍入）→ 运算 → 写入
 //!   （f32→f16 round-to-nearest-even）。对一切 f16 可表示值，往返位模式
 //!   精确——无漂移累积通道；
@@ -183,7 +183,7 @@ impl Fbuf16F {
         }
     }
 
-    /// 交付边界：RGBA16F → RGBA8 [`prism_gpu::Framebuffer`]（§2.2：8bit 量化
+    /// 交付边界：RGBA16F → RGBA8 [`prism_gpu::Framebuffer`]（8bit 量化
     /// 只发生在这里）。量化约定与 `prism_gpu` 的 `channel_to_u8` 一致。
     pub fn to_framebuffer(&self) -> prism_gpu::Framebuffer {
         let mut fb = prism_gpu::Framebuffer::new(self.width, self.height);
@@ -263,7 +263,7 @@ mod tests {
 
     #[test]
     fn f16_rne_mantissa_carry_bumps_exponent() {
-        // 回归（W4-B4 发现）：正规路径尾数 RNE 进位（0x3FF → 0x400）必须
+        // 回归（实测发现）：正规路径尾数 RNE 进位（0x3FF → 0x400）必须
         // 清尾数并令指数 +1；原实现阈值误写 0x0800，exp16 为奇数时进位
         // 被位模式吞掉（如 0.4998… 错档为 0.25）。逐指数档验证：
         for e in 1u16..15 {

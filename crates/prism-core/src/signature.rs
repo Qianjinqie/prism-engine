@@ -1,9 +1,9 @@
 //! 子图签名树（S10 内容↔摘要，A6）。
 //!
-//! 语义权威：《架构总设计》v2.4 §4.2（节点签名 = hash(StructureId, 特解参数
+//! 语义权威：（节点签名 = hash(StructureId, 特解参数
 //! 序列化, 各子签名, 属性通道变化特征)；"属性通道变化特征" = 通道定义哈希，
-//! 非瞬时值；缓存键五元组 + tile 维度；256 位哈希以无碰撞为公理）、§4.4/D-28
-//! （模拟快照键 = (子图签名, 帧)，签名含通道定义哈希）、白皮书 §24（子树哈希
+//! 非瞬时值；缓存键五元组 + tile 维度；256 位哈希以无碰撞为公理）、/D-28
+//! （模拟快照键 = (子图签名, 帧)，签名含通道定义哈希）、（子树哈希
 //! 自底向上：改一个节点只影响其自身到根的祖先链）、宪章 C13（缓存键含
 //! schema_version 与 engine_version，旧版本缓存只失效重建、永不误复用）。
 //!
@@ -15,24 +15,24 @@
 //!   定义哈希)；内部节点在此基础上追加各子签名（槽位升序）——**改一个节点只
 //!   影响其自身到根的祖先链，兄弟子树签名逐位不变**（C3 增量渲染的根基）；
 //! - **通道定义哈希**：本批定义输入接口 [`ChannelDef`]（枚举 tag + 定义
-//!   canonical 字节），property.rs（A2 并行批次）落地后由其通道枚举直接产出；
+//!   canonical 字节），property.rs（并行轮次）落地后由其通道枚举直接产出；
 //!   本批不 import property.rs（任务红线）；
 //! - **缓存键**：hash(schema_version, engine_version, 子图签名, 分辨率, spp 档,
-//!   tile)（架构 §4.2 五元组 + tile；C13 版本入键）；
+//!  tile)（五元组 + tile；C13 版本入键）；
 //! - **快照咬合**：签名类型即 [`crate::node::Hash256`]（[u8; 32]），直接充当
 //!   [`crate::node::SnapshotKey`] 的签名位，键类型零改动（D-28）。
 //!
-//! # 与架构 §4.2 公式的偏差声明（有意为之，评审留档）
+//! # 与公式的偏差声明（有意为之，评审留档）
 //! 公式列举四要素未含 Composition 与 NodeId；两者均进入求值输出（`Merge`
 //! 算子决定归约语义；`node_id` 经 `EvalCtx`/`SampleIndex` 进入随机样本流），
-//! 漏项将破坏"同签名 ⇒ 逐字节可复用"公理（§4.2），故按公理补全。补全不影响
+//! 漏项将破坏"同签名 ⇒ 逐字节可复用"公理，故按公理补全。补全不影响
 //! 增量性：id 与组合方式在参数编辑期间不变，祖先链影响域不变。
 //!
 //! # SHA-256 双实现说明（规范缺口，上报项）
-//! 架构 §6.1 将 SHA-256 安放在 prism-io，而依赖方向（§6.3：io∈L4 → core∈L2）
+//!  将 SHA-256 安放在 prism-io，而依赖方向（io∈L4 → core∈L2）
 //! 禁止 prism-core 依赖 prism-io。故本文件内置模块私有的同一 FIPS 180-4 实现
 //! （整数运算，零依赖；与 prism-io::sha256 以同一组 FIPS 官方向量分别验收）。
-//! 后续批次建议把 SHA-256 下沉 prism-core（或 prism-math）单一实现，prism-io
+//! 后续轮次建议把 SHA-256 下沉 prism-core（或 prism-math）单一实现，prism-io
 //! 改为依赖复用——涉及 Cargo.toml，超出本批文件红线，仅上报不私改。
 
 use std::collections::BTreeMap;
@@ -147,18 +147,18 @@ const CACHE_KEY_TAG: &[u8; 15] = b"PRISM-CACHE-KEY";
 const SNAPSHOT_TAG: &[u8; 14] = b"PRISM-SNAPSHOT";
 
 // ---------------------------------------------------------------------------
-// 通道定义哈希（§4.2"属性通道变化特征"的输入接口）
+// 通道定义哈希（"属性通道变化特征"的输入接口）
 // ---------------------------------------------------------------------------
 
 /// 属性通道定义（签名侧视角的最小形状）。
 ///
-/// "属性通道变化特征 = 通道定义（规格/AST）哈希，非瞬时值"（架构 §4.2）：
+/// "属性通道变化特征 = 通道定义（规格/AST）哈希，非瞬时值"：
 /// 瞬时值相同而定义不同的通道必须不同签名，否则模拟快照误复用。枚举本体
 /// （Const/Track/Spring/Expr/Wiggle/Remap/Loop …）与判别值归 property.rs
-/// （A2 并行批次）；本批只按 `tag + def_bytes` 消费字节，不 import property.rs。
+/// （并行轮次）；本轮只按 `tag + def_bytes` 消费字节，不 import property.rs。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelDef {
-    /// 通道种类枚举 tag（A2 通道枚举的判别值；u16 大端进哈希）。
+    /// 通道种类枚举 tag（通道枚举的判别值；u16 大端进哈希）。
     pub tag: u16,
     /// 通道定义参数的 canonical 字节（枚举 tag 之后的部分，由 A2 侧按其
     /// canonical 风格产出；内容变更 → 哈希变更 → 祖先链签名失效）。
@@ -219,7 +219,7 @@ impl From<GraphError> for SignatureError {
 // ---------------------------------------------------------------------------
 
 /// 结构位 canonical 字节：官方段 = tag 0 + 序号 u16 大端；用户段 = tag 1 +
-/// 编号 u16 大端 + 长度前缀 crate 名（跨 crate 隔离进签名，架构 §2.6.1 L4）。
+/// 编号 u16 大端 + 长度前缀 crate 名（跨 crate 隔离进签名， L4）。
 fn structure_bytes(id: &StructureId) -> Vec<u8> {
     let mut out = Vec::new();
     match id.ordinal() {
@@ -346,7 +346,7 @@ pub fn graph_canonical_bytes(graph: &Graph) -> Vec<u8> {
 ///
 /// 节点签名 = hash(域分隔 tag, schema 版本, node_id, StructureId, Composition,
 /// params canonical, 通道变化特征, 各子签名槽位升序)。改一个节点 → 仅其自身
-/// 到根的祖先链签名变化，兄弟子树签名逐位不变（白皮书 §24）。
+/// 到根的祖先链签名变化，兄弟子树签名逐位不变。
 pub fn graph_signatures(
     graph: &Graph,
     defs: &ChannelDefs,
@@ -447,16 +447,16 @@ pub fn graph_signature(graph: &Graph, defs: &ChannelDefs) -> Result<Hash256, Sig
 // 缓存键与快照键咬合
 // ---------------------------------------------------------------------------
 
-/// 缓存键渲染维度（架构 §4.2 五元组 + tile + 帧）。
+/// 缓存键渲染维度（五元组 + tile + 帧）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CacheDims {
     /// 渲染分辨率宽（像素）。
     pub width: u32,
     /// 渲染分辨率高（像素）。
     pub height: u32,
-    /// spp 档位（草稿/标准/电影 → 档号；逼近阶显式标价，架构 §25.4.4）。
+    /// spp 档位（草稿/标准/电影 → 档号；逼近阶显式标价）。
     pub spp_tier: u32,
-    /// tile 坐标（tile 维度，与 §4.1 query 一致）。
+    /// tile 坐标（tile 维度，与 query 一致）。
     pub tile: (u32, u32),
     /// 引擎版本（调用方把语义化版本打包为 u64，如 major<<32 | minor<<16 | patch）。
     pub engine_version: u64,
@@ -468,7 +468,7 @@ pub struct CacheDims {
 }
 
 /// 增量渲染缓存键 = hash(域分隔 tag, schema_version, engine_version, 子图签名,
-/// 分辨率, spp 档, tile, 帧)（架构 §4.2 + 宪章 C13 + D-28：旧 schema / 旧版本 /
+/// 分辨率, spp 档, tile, 帧)（+ 宪章 C13 + D-28：旧 schema / 旧版本 /
 /// 旧维度 / **旧帧**的缓存永不误复用，只会静默失效重建）。
 pub fn cache_key(subgraph: &Hash256, dims: &CacheDims) -> Hash256 {
     let mut buf = Vec::with_capacity(8 + 32 + 28);
@@ -485,7 +485,7 @@ pub fn cache_key(subgraph: &Hash256, dims: &CacheDims) -> Hash256 {
     sha256(&buf)
 }
 
-/// 模拟节点快照键的签名位（架构 §4.4 / D-28）：hash(子图签名 ++ 自起点以来
+/// 模拟节点快照键的签名位（/ D-28）：hash(子图签名 ++ 自起点以来
 /// 通道定义签名链)。链为空时输出仍区别于裸子图签名（域分隔）。与
 /// [`crate::node::SnapshotKey`] = (本函数输出, 帧) 咬合使用。
 pub fn snapshot_signature(subgraph: &Hash256, channel_chain: &[Hash256]) -> Hash256 {
@@ -778,7 +778,7 @@ mod tests {
         // 定义字节相同、枚举 tag 不同 → 定义哈希不同（瞬时值相同≠定义相同）。
         let d3 = defs(&[("wind", 4, b"expr:sin(t*3)*8")]);
         let s3 = graph_signatures(&g, &d3).unwrap();
-        assert_ne!(s1[&3], s3[&3], "枚举 tag 属通道定义，进哈希（§4.2）");
+        assert_ne!(s1[&3], s3[&3], "枚举 tag 属通道定义，进哈希");
     }
 
     #[test]
@@ -888,7 +888,7 @@ mod tests {
             "node_id 进签名（同签名⇒同输出公理的补全项）"
         );
 
-        // 结构不同：官方段 vs 用户段（crate 名隔离进签名，§2.6.1 L4）。
+        // 结构不同：官方段 vs 用户段（crate 名隔离进签名， L4）。
         let mut ge = Graph::new();
         let mut gf = Graph::new();
         ge.add_node(leaf(1, StructureId::ScalarField, 1.0)).unwrap();
@@ -936,7 +936,7 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // 缓存键（架构 §4.2 五元组 + tile；C13 版本入键）
+    // 缓存键（五元组 + tile；C13 版本入键）
     // ------------------------------------------------------------------
 
     #[test]
@@ -981,7 +981,7 @@ mod tests {
         let s_b = snapshot_signature(&sub, &chain_b);
 
         assert_eq!(s_empty, snapshot_signature(&sub, &[]), "同链同签名");
-        assert_ne!(s_a, s_b, "通道定义签名链不同 → 快照签名不同（§4.2 链语义）");
+        assert_ne!(s_a, s_b, "通道定义签名链不同 → 快照签名不同（链语义）");
         assert_ne!(s_empty, sub, "域分隔：快照签名 ≠ 裸子图签名");
 
         // 咬合 node.rs 的 SnapshotStore：键类型零改动。

@@ -1,10 +1,10 @@
-//! Tile 网格与 halo 协议（A5）。
+//! Tile 网格与 halo 协议。
 //!
-//! 语义权威：《强大版路线图》§4 A5 行（TileGrid + 全帧效果 halo 协议，含
-//! 最小 halo 测试效果：3×3 box blur）与 §2.1（tile 渲染：帧 → tile 网格，
-//! 每 tile 独立调度求值，内存峰值与输出分辨率解耦）；《架构总设计》v2.4
-//! §4.3（tile 无关性三规则：① per-tile 效果原地求值 ② 大半径全帧效果走
-//! halo 扩展协议 ③ 跨 tile 与整幅渲染逐字节一致）；《算法白皮书》§26
+//! 语义权威：TileGrid + 全帧效果 halo 协议，含
+//! 最小 halo 测试效果：3×3 box blur（tile 渲染：帧 → tile 网格，
+//! 每 tile 独立调度求值，内存峰值与输出分辨率解耦）；
+//! （tile 无关性三规则：① per-tile 效果原地求值 ② 大半径全帧效果走
+//! halo 扩展协议 ③ 跨 tile 与整幅渲染逐字节一致）；
 //! （tile 级是天然并行安全区——**禁止跨 tile 浮点归约**，本模块全部求值
 //! 均为像素级局部运算，无任何跨 tile 合并）。
 //!
@@ -50,7 +50,7 @@ impl Tile {
     }
 }
 
-/// tile 网格：帧 → tile 划分（tile 尺寸可参数化，路线图 §2.1）。
+/// tile 网格：帧 → tile 划分（tile 尺寸可参数化）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TileGrid {
     /// 帧宽（像素）。
@@ -111,7 +111,7 @@ impl TileGrid {
     }
 
     /// 全部 tile，**行主序固定遍历序**（拼接回写的确定性序；格序特例，
-    /// 白皮书 §26 工程四律之"消序用排序"）。
+    ///  工程四律之"消序用排序"）。
     pub fn tiles(&self) -> impl Iterator<Item = Tile> + '_ {
         let cols: u32 = self.cols();
         let rows: u32 = self.rows();
@@ -119,7 +119,7 @@ impl TileGrid {
     }
 }
 
-/// 全帧效果的 tile 化求值协议（架构 §4.3 tile 无关性规则②；白皮书 §26：
+/// 全帧效果的 tile 化求值协议（tile 无关性规则②；：
 /// 像素级局部运算，无跨 tile 归约）。
 ///
 /// 效果 = 「输入窗口 → 同尺寸输出窗口」的逐像素纯函数：输出像素 p 只读
@@ -128,7 +128,7 @@ impl TileGrid {
 /// ≥ `halo_radius()`，或窗口边缘恰为帧边界——编排器按申报半径扩采保证
 /// 前者，帧边界处两者天然重合（tile 边界与整幅逐字节一致的正确性条件）。
 pub trait TileEffect {
-    /// 邻域半径（像素）。0 = per-tile 原地效果（架构 §4.3 规则①）。
+    /// 邻域半径（像素）。0 = per-tile 原地效果（规则①）。
     fn halo_radius(&self) -> u32;
 
     /// 对窗口求值：输入/输出同尺寸（RGBA16F 位模式缓冲；f32 运算域，
@@ -136,11 +136,11 @@ pub trait TileEffect {
     fn eval_window(&self, window: &Fbuf16F) -> Fbuf16F;
 }
 
-/// 3×3 box blur——最小 halo 测试效果（路线图 §4 A5 行点名，供 Phase 1
+/// 3×3 box blur——最小 halo 测试效果（供 Phase 1
 /// 验收 2 的 halo 用例；`halo_radius = 1`）。
 ///
 /// 9 tap 按行主序（左上 → 右下）固定顺序求和、÷ 9——像素内固定序归约
-/// （白皮书 §26），与 tile 划分无关；f32 域运算、写回量化 f16（架构 §4.3
+/// 与 tile 划分无关；f32 域运算、写回量化 f16（
 /// 格锚：半浮点存储、运算位模式精确往返）。
 pub struct BoxBlur3;
 

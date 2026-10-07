@@ -3,10 +3,10 @@
 //! `PolygonWinding` 是扫描线光栅的数学内核特解：任意点对多边形的
 //! winding 数（水平射线法）——光栅覆盖率正是该谓词在像素面积上的积分。
 //!
-//! 参数装配说明：求值器 SolvedParams 注入位随 A2 批次落地（eval.rs 已
+//! 参数装配说明：求值器 SolvedParams 注入位随 A2 轮次落地（eval.rs 已
 //! 记账）；本特解以实例状态携带路径（`Default` = 空路径，winding 恒 0，
 //! 数学上诚实非桩），`with_path` 供直接构造。图接线（fbuf 载荷）随 C1
-//! Compose 波次接入。
+//! Compose 接入。
 
 use prism_core::node::{
     DualityPair, EvalCtx, KernelKind, LatticePlan, MathStructure, OpCapabilities, Payload,

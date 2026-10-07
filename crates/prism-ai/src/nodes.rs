@@ -1,4 +1,4 @@
-//! AI mock 节点（B10 → prism-core 注册表；D-27 静态汇入制）。
+//! AI mock 节点（→ prism-core 注册表；D-27 静态汇入制）。
 //!
 //! 本文件实现一个确定性 [`MathStructure`] 特解，经 `registry!`（宏展开为
 //! `__prism_collect(reg)` 注册函数）静态汇入 [`NodeRegistry`]——可执行 crate

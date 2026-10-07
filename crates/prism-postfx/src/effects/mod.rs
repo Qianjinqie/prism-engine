@@ -1,7 +1,7 @@
-//! 后处理效果族（B4 清单 12 项，每效果一个文件，全部实现
+//! 后处理效果族（清单 12 项，每效果一个文件，全部实现
 //! [`prism_render::tile::TileEffect`]）。
 //!
-//! # halo 申报纪律（架构 v2.4 §4.3 tile 无关性三规则）
+//! # halo 申报纪律（tile 无关性三规则）
 //!
 //! 效果分两类：
 //!
@@ -11,7 +11,7 @@
 //!   整幅逐字节一致；本 crate 关卡 1 复验并贴 md5）；
 //! - **位置键控效果**（空间图案锚定坐标）：grain / glitch / vignette /
 //!   dissolve / plasma / Mandelbrot_bg——图案锚在**窗口局部坐标**上。
-//!   `TileEffect::eval_window` 不携带全局原点（A5 trait 只读对接，本 crate
+//!   `TileEffect::eval_window` 不携带全局原点（trait 只读对接，本 crate
 //!   不得改动 prism-render），故此类效果的整幅求值即规范语义（post 链的
 //!   CPU 参考路径），其 halo 只对"输入读"部分申报（如 glitch 的位移读带）。
 //!   tile 协议要承载它们需要 `eval_window` 增全局原点上下文——缺口上报

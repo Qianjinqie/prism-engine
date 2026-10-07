@@ -1,6 +1,6 @@
 
 // ===========================================================================
-// host_test.mjs — 最小 WASM 宿主，验证 D-14 手机测试链路的 wasm 侧本身正确。
+// host_test.mjs — 最小 WASM 宿主，验证 D-14 移动端验证链路的 wasm 侧本身正确。
 //
 // 用途：在没有浏览器的环境（CI / 开发机）里证明——
 //   1. `.wasm` 能被 `WebAssembly.instantiate` 加载（导出/导入签名齐全）；
@@ -449,7 +449,7 @@ function runItem(id) {
 
 // --- gpu.gi_compute：GI GPU 路径的 JS 独立实现交叉判对 ---
 //
-// 【U4 深化 B 新增】`gpu.gi_compute` 无 device 时 SKIP（第 6 节覆盖其 SKIP 语义）。
+// `gpu.gi_compute` 无 device 时 SKIP（第 6 节覆盖其 SKIP 语义）。
 // 这里再补一个**第三份独立实现**：用 JS（f32 逐式模拟）复算整条 GI 流水线
 // （SDF sphere tracing → 半球采样 → SH-L2 投影 → 最近探针重建 + Lambert），
 // 与 Rust CPU 参考（abi.rs 的 gi_*_ref 族）应逐位一致，且其 FNV 指纹应与
@@ -737,7 +737,7 @@ function runItem(id) {
 {
   const a = runItem("wgsl.structural");
   check("wgsl.structural PASS（12 个 WGSL 结构自检）", a.code === STAT.PASS, a.code === STAT.FAIL ? a.detail : "");
-  // 【U4 深化 B 改动】新增 `gi_compute.wgsl` 一个 D2 内核（GI GPU 路径），
+  // 新增 `gi_compute.wgsl` 一个 D2 内核（GI GPU 路径），
   // 结构性自检数由 11 增至 12。改断言数值即可，不改语义。
   check("wgsl.structural 覆盖 10 个 D2/D3/D4 + 2 个 D0 内核", (a.detail.match(/PASS/g) || []).length === 12);
   const b = runItem("shader.params");
@@ -747,7 +747,7 @@ function runItem(id) {
 section("4. WGSL 源导出（宿主可直接复用 Rust 侧同一份源码）");
 {
   const n = x.prism_shader_count();
-  // 【U4 深化 B 改动】新增 `gi_compute.wgsl`，shader 数由 9 增至 10。
+  // 新增 `gi_compute.wgsl`，shader 数由 9 增至 10。
   check("shader 数 = 10", n === 10, `${n} 个`);
   let total = 0;
   for (let i = 0; i < n; i += 1) {

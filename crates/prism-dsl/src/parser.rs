@@ -1,6 +1,6 @@
 //! 解析器：token 流 → AST（递归下降 + 就地语义防呆）。
 //!
-//! v1（M0/M1）解析规则与错误消息逐字保留；v2（W3-A4）新增全块语法：
+//! v1（M0/M1）解析规则与错误消息逐字保留；v2 新增全块语法：
 //! movie / theme / import packs / scene(v2) / transition / layer / sim /
 //! stage3d / compose / anim / expr / audio / post。
 //!
@@ -268,7 +268,7 @@ impl Parser {
             }
         };
         if kw != "scene" {
-            // W3-A4：v2 块出现在 v1 入口时给出升级指引；其余消息保持 v1 原样。
+            // v2 块出现在 v1 入口时给出升级指引；其余消息保持 v1 原样。
             let v2_hint: &str = if matches!(
                 kw.as_str(),
                 "movie" | "theme" | "transition" | "anim" | "expr" | "import"
@@ -1326,7 +1326,7 @@ impl Parser {
         Ok(AudioAst { fields, line: kw_line })
     }
 
-    /// note 块（B13）：`note "主题" { scale major root 60 bpm 120 bars 4 seed 7 }`
+    /// note 块：`note "主题" { scale major root 60 bpm 120 bars 4 seed 7 }`
     /// （开放字段，codegen 白名单）。作曲系统的 DSL 入口。
     fn parse_note(&mut self, kw_line: usize) -> Result<NoteAst, DslError> {
         let (name, _) = self.expect_str("note 名称")?;

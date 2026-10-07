@@ -1,16 +1,16 @@
-//! 累计缓冲：progressive 累加 + 固定形状归约均值（白皮书 §26）。
+//! 累计缓冲：progressive 累加 + 固定形状归约均值。
 //!
 //! # 两条均值通道（语义分工）
 //! - [`AccumBuffer::running_mean`]：f64 顺序累加（固定像素序、固定 pass 序
 //!   ——逐位可复现），供 progressive 预览。
 //! - [`AccumBuffer::canonical_mean`] / [`mean_samples`]：prism-core `reduce`
-//!   固定形状树（§26 串行参考语义），**md5 锚定的规范输出**。
+//!  固定形状树（串行参考语义），**md5 锚定的规范输出**。
 //! 同一数据两条通道结合序不同、结果可差舍入，但各自逐位可复现；验收关卡
 //! "累计一致性"：push 8 个单样本 pass 的 canonical 均值 ≡ 一次 spp=8 渲染
 //! （逐位一致）。
 //!
 //! # 内存说明
-//! B1 CpuRef 保存逐 pass 样本（小分辨率验证用）；规模化流式归约属 W5 分块
+//! B1 CpuRef 保存逐 pass 样本（小分辨率验证用）；规模化流式归约属后续分块
 //! 流水线（内存策略另行评审），此处不做。
 
 use prism_core::reduce;
@@ -90,7 +90,7 @@ impl AccumBuffer {
 }
 
 /// 样本集均值（spp 均值的唯一出口）：prism-core `reduce` 固定形状树
-/// （白皮书 §26），逐位可复现；空集返回 [0,0,0,0]（单位元）。
+/// 逐位可复现；空集返回 [0,0,0,0]（单位元）。
 pub fn mean_samples(samples: &[[f32; 4]]) -> [f32; 4] {
     if samples.is_empty() {
         return [0.0; 4];

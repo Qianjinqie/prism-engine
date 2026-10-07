@@ -1,6 +1,6 @@
-// prism-rt wavefront 队列 kernel（D2）——生成/着色/扩展/连接 四阶段。
+// prism-rt wavefront 队列 kernel —— 生成/着色/扩展/连接 四阶段。
 //
-// # 设计（对应路线图 D2 行"wavefront 队列 kernel：生成/着色/扩展/连接 各阶段"）
+// # 设计（D2：wavefront 队列 kernel——生成/着色/扩展/连接 四阶段）
 // 活路径按状态分组批量处理，避免分支发散：
 //   ① 生成（rt_generate）：相机射线 → 队列项（对齐 CpuRef 相机段）。
 //   ② 着色（rt_shade）：NEE 直接光 + 发光命中 + MNEE 焦散（对齐 integrator 主循环

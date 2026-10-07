@@ -1,6 +1,6 @@
-//! glTF 精简导入（白皮书 §12；架构 v2.4 S12 mesh 导入特解）。
+//! glTF 精简导入（S12 mesh 导入特解）。
 //!
-//! # 范围（白皮书 §12：五块子集）
+//! # 范围（五块子集）
 //!
 //! 只解析 scenes/nodes（平移缩放）、meshes/primitives（POSITION/NORMAL/TEXCOORD_0/indices）、
 //! materials 的 pbrMetallicRoughness（含 KHR_materials_ior / sheen / clearcoat 扩展）。

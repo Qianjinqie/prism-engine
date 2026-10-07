@@ -36,7 +36,7 @@ mod cmd_critique;
 mod cmd_http;
 mod cmd_mcp;
 mod cmd_pack;
-// U13 编辑器逻辑在库目标（lib.rs）中，binary 复用同一份实现（避免双编译漂移）。
+// 编辑器逻辑在库目标（lib.rs）中，binary 复用同一份实现（避免双编译漂移）。
 
 // ===========================================================================
 //  内置演示模式常量（与历史版本保持一致的行为与产物路径）
@@ -131,7 +131,7 @@ enum CliError {
 fn main() {
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
 
-    // ---- 子命令分发（batch / mcp / http / pack；W10-C6 开发者面）-----------
+    // ---- 子命令分发（batch / mcp / http / pack；开发者面）-----------
     if let Some(sub) = raw_args.first().map(String::as_str) {
         let rest: &[String] = &raw_args[1..];
         let code: Option<i32> = match sub {

@@ -1,4 +1,4 @@
-//! QA 攻击性测试（Edward）— Phase 4 D4 SDF 字形烘焙 + atlas（`prism-text`）。
+//! QA 攻击性测试 — Phase 4 D4 SDF 字形烘焙 + atlas（`prism-text`）。
 //!
 //! 攻击面：
 //! * 编码/解码语义（`decode_distance` 镜面、锚点）；

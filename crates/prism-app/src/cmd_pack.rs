@@ -1,6 +1,6 @@
 //! `prism-app pack` 子命令：数据包市场本地库管理（add / list / remove）。
 //!
-//! 语义权威：《强大版路线图》§2.4 / C6（"数据包市场校验（add/list/remove）"）、
+//! 语义权威：/ C6（"数据包市场校验（add/list/remove）"）、
 //! D-8（插件=数据包，无动态代码加载）。核心逻辑在 [`prism_infra::plugin`]，
 //! 本文件只做 CLI 适配（子命令分发 + 库根目录约定）。
 //!
