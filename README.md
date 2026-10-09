@@ -116,32 +116,6 @@ node tools/compliance_check.mjs --self-test   # 反向自证：应判红，证�
 
 ---
 
-## 确定性打包（发布方）
-
-如需从完整仓库重新生成分发 TXT：
-
-```bash
-node tools/pack_source_txt.mjs
-# 产物：dist/prism-engine-v1.0-source.txt
-# 连跑两次，输出 SHA-256 一致即证明确定性打包成立
-```
-
-打包范围严格限定为：`crates/`（→ `src/`）、`docs/合规/`（→ `Compliance/`）、`docs/开发者指南.md`、`tools/`、`.github/`、`.cargo/`、`examples/`、`Cargo.toml`、`Cargo.lock`。刻意**排除** `docs/设计/`、`target/`、`node_modules/`、`dist/` 本身及一切中间产物。
-
----
-
-## 贡献
-
-欢迎 Issue 与 Pull Request。提交前请保持：
-
-- `cargo test --workspace --release` 全绿；
-- `node tools/hygiene_scan.mjs` 报 0 处内部痕迹；
-- `node tools/compliance_check.mjs` 9/9 通过。
-
-更详细的架构与扩展指南见解包后的 `开发者指南.md`。
-
----
-
 ## 许可证
 
 本项目以 **Apache License 2.0** 发布。详见 [`LICENSE`](LICENSE) 文件。
