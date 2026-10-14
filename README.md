@@ -1,3 +1,5 @@
+<p align="right">[English](README.en.md) | **简体中文** | [日本語](README.ja.md) | [한국어](README.ko.md) | [Español](README.es.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Português (BR)](README.pt-BR.md) | [Русский](README.ru.md)</p>
+
 # Prism Engine
 
 > 零依赖、确定性的 Rust 媒体引擎 —— 以**单文件 TXT 分发**：下载一个 14 MB 文本，运行解包脚本即得完整 26-crate 源码树，无需 npm / pip / ffmpeg / OpenEXR。
