@@ -124,3 +124,6 @@ node tools/compliance_check.mjs --self-test   # 反向自证：应判红，证�
 本项目以 **Apache License 2.0** 发布。详见 [`LICENSE`](LICENSE) 文件。
 
 > 合规提示：Apache-2.0 要求保留版权与许可声明；基于本引擎再行分发时，请保留 `Compliance/` 下的归属声明与资产登记。
+
+**注：其他语言版本如有翻译错误，请以本版本（简体中文）为准**
+
