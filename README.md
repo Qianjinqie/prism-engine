@@ -63,8 +63,6 @@ cargo test --workspace --release
 | `Cargo.toml` / `Cargo.lock` / `.cargo/` | 构建必需件（workspace members 已指向 `src/*`） |
 | `examples/` | `prism-dsl` 测试用样例（`include_str!` 读取，缺了编译不过） |
 
-> 设计权威文档（`docs/设计/`）**不随分发**，仅留在发布方的完整仓库中。
-
 ---
 
 ## 模块概览
