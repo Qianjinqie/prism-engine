@@ -7,6 +7,11 @@
 //!   **实测**）与符号按基线 x 累加混排，整体以 `center_x` 居中；
 //!   [`FormulaPart::Limits`] 限位组只做 ∫ / ∑ 等大型算子的**纵向堆叠**
 //!   （advance 计入 0，不横向双计——v3-F 任务 5·缺陷 3）；
+//! - [`math_gap`] + [`GapKind`]：数学间距表（LaTeX 原子间距的工程
+//!   近似）——二元算子两侧呼吸、变量与括号 / 变量与变量贴近、上下标与
+//!   ∫ 与被积式贴合（零 / 负间距）；由 [`assemble_formula`] 在相邻
+//!   部件间接入（限位组旁恒 0；文本 run 边界自带显式空格时抑制，
+//!   不与 run 内空格双计）；
 //! - [`flatten_strokes`]：开放安全平铺——引擎 `flatten` 为填充语义会給
 //!   未闭合子路径补闭合点，本 helper 精确裁掉该补点，使 ∫ / ∑ / √ 等
 //!   开放笔画描边时不被错误闭合（架构 §7.1 平铺纪律）。
@@ -43,9 +48,22 @@ pub const LIM_GAP_K: f32 = 0.12;
 /// [`assemble_formula`] 的 `StaticText` 管线，位置由本常量换算基线）。
 pub const LIM_CAP_K: f32 = 0.72;
 /// 符号描边宽系数（`size·SYM_STROKE_K`，下限 [`MIN_SYM_STROKE_W`]）。
-pub const SYM_STROKE_K: f32 = 0.07;
+///
+/// v3 排版升级：0.07 → 0.05——分数线 / 符号描边粗细 ≈ 字高的
+/// 0.04–0.06 倍（LaTeX 分数线比例），整体向 LaTeX 细杠气质靠拢。
+pub const SYM_STROKE_K: f32 = 0.05;
 /// 符号描边宽下限（px，小字号可读性）。
 pub const MIN_SYM_STROKE_W: f32 = 1.5;
+/// 二元算子两侧呼吸间距（em；LaTeX `\medmuskip` 4/18em ≈ 0.22 气质，
+/// 大于普通符号间隙 [`SYM_GAP`]）。
+pub const MATH_GAP_BREATH: f32 = 0.22;
+/// 变量与变量之间的小间距（em；贴近但可辨）。
+pub const MATH_GAP_THIN: f32 = 0.05;
+/// ∫ / ∑ / ∏ 与被积式之间的负间距（em；贴合——LaTeX 大算子与被积式
+/// 之间无气隙）。
+pub const MATH_GAP_TIGHT: f32 = -0.04;
+/// 标点（逗号 / 分号 / 冒号）之后的间距（em；LaTeX `\thinmuskip` 气质）。
+pub const MATH_GAP_PUNCT: f32 = 0.17;
 /// 圆 / 椭圆四次贝塞尔逼近常数（标准 0.5523）。
 const K_CIRCLE: f32 = 0.5523;
 
@@ -234,6 +252,222 @@ pub fn symbol_path(kind: SymbolKind, size: f32) -> PathBuilder {
     scale_builder(&unit, s)
 }
 
+// ---- 数学间距表（v3 排版升级：向 LaTeX 原子间距看齐） ----
+
+/// 间距原子类别（LaTeX 原子类型的工程近似；供 [`math_gap`] 查表）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GapKind {
+    /// 二元算子 / 关系符（= + − × ÷ ≤ ≥ ≈ ≠ ⇒ → ∪ ∩ ∈ ± …）：两侧呼吸。
+    Binary,
+    /// 变量 / 数字 / 希腊变量字母（x y f t a b n ε δ π θ Δ ∂ …）。
+    Var,
+    /// 左括号 / 根号（与内容贴近）。
+    Open,
+    /// 右括号 / 竖线。
+    Close,
+    /// 上下标（与基座零 / 负间距）。
+    Script,
+    /// 大型算子 ∫ ∑ ∏（与被积式贴合）。
+    BigOp,
+    /// 函数名（lim / sin / cos …；与左括号、变量贴近）。
+    Func,
+    /// 标点（, ; : .）。
+    Punct,
+    /// 撇号标记 ′（`f′` 贴基座）。
+    Mark,
+    /// 量词 ∀ ∃（与被约束变量贴近）。
+    Quant,
+    /// 边界已带显式空白 ⇒ 间距抑制（不与 run 内空格双计）。
+    Spaced,
+    /// 其余（∞ / dy/dx 等）。
+    Ord,
+}
+
+/// 数学间距表（em 单位）：`prev` → `next` 的横向间距。
+///
+/// 规则（向 LaTeX 原子间距看齐）：
+/// - 二元算子**两侧**呼吸（[`MATH_GAP_BREATH`]，大于普通间隙
+///   [`SYM_GAP`]；两侧皆算子时只记一份，不叠加）；
+/// - 变量与括号 / 变量与变量贴近（0 / [`MATH_GAP_THIN`]）；
+/// - 上下标与基座、∫ 与被积式：零或负间距（[`MATH_GAP_TIGHT`]，贴合）；
+/// - 函数名 / 撇号 / 量词边界零间距（`sin(x)` / `f′` / `∀e`）；
+/// - 边界任一侧为 [`GapKind::Spaced`]（文本 run 自带显式空格）⇒ 0，
+///   避免与 run 内空格双计。
+pub fn math_gap(prev: GapKind, next: GapKind) -> f32 {
+    use GapKind::{
+        Binary, BigOp, Close, Func, Mark, Open, Punct, Quant, Script, Spaced,
+        Var,
+    };
+    // 显式空白边界：间距抑制。
+    if matches!(prev, Spaced) || matches!(next, Spaced) {
+        return 0.0;
+    }
+    match (prev, next) {
+        // 上下标贴基座 / 贴后续 run。
+        (Script, _) | (_, Script) => 0.0,
+        // ∫ / ∑ / ∏：与被积式负间距贴合；被二元算子引领时保留算子侧呼吸。
+        (BigOp, Var) => MATH_GAP_TIGHT,
+        (Binary, BigOp) => MATH_GAP_BREATH,
+        (BigOp, _) | (_, BigOp) => 0.0,
+        // 二元算子两侧呼吸。
+        (Binary, _) | (_, Binary) => MATH_GAP_BREATH,
+        // 撇号 / 量词：零间距。
+        (Mark, _) | (_, Mark) => 0.0,
+        (Quant, _) | (_, Quant) => 0.0,
+        // 括号与内容：零间距。
+        (Open, _) | (_, Close) => 0.0,
+        // 变量与变量：小间距。
+        (Var, Var) => MATH_GAP_THIN,
+        // 函数名边界：零间距。
+        (Func, _) | (_, Func) => 0.0,
+        // 标点之后：thin。
+        (Punct, _) => MATH_GAP_PUNCT,
+        _ => 0.0,
+    }
+}
+
+/// 公式文本中常见的函数名（首词 / 尾词识别用）。
+const FUNC_NAMES: [&str; 16] = [
+    "arcsin", "arccos", "arctan", "arccot", "lim", "sin", "cos", "tan", "cot", "sec", "csc", "ln",
+    "log", "exp", "max", "min",
+];
+
+/// 符号的间距原子类别。
+fn sym_gap_kind(kind: SymbolKind) -> GapKind {
+    match kind {
+        SymbolKind::Minus
+        | SymbolKind::Times
+        | SymbolKind::Approx
+        | SymbolKind::Le
+        | SymbolKind::Ge
+        | SymbolKind::Ne
+        | SymbolKind::PlusMinus
+        | SymbolKind::Divide
+        | SymbolKind::Implies
+        | SymbolKind::Arrow
+        | SymbolKind::Union
+        | SymbolKind::Intersect
+        | SymbolKind::Element => GapKind::Binary,
+        SymbolKind::Integral | SymbolKind::Sum | SymbolKind::Product => GapKind::BigOp,
+        SymbolKind::Sup(_) | SymbolKind::Sub(_) => GapKind::Script,
+        SymbolKind::Prime => GapKind::Mark,
+        SymbolKind::Sqrt => GapKind::Open,
+        SymbolKind::Forall | SymbolKind::Exists => GapKind::Quant,
+        SymbolKind::Epsilon
+        | SymbolKind::Delta
+        | SymbolKind::Pi
+        | SymbolKind::Theta
+        | SymbolKind::DeltaBig
+        | SymbolKind::Partial => GapKind::Var,
+        SymbolKind::Lim => GapKind::Func,
+        SymbolKind::DyDx | SymbolKind::Inf => GapKind::Ord,
+    }
+}
+
+/// 文本 run 左缘的间距原子（空 / 前导空白 ⇒ [`GapKind::Spaced`]）。
+fn text_left_kind(text: &str) -> GapKind {
+    match text.chars().next() {
+        None => GapKind::Spaced,
+        Some(c) if c.is_whitespace() => GapKind::Spaced,
+        Some(c) => char_gap_kind(c, text, true),
+    }
+}
+
+/// 文本 run 右缘的间距原子（空 / 尾随空白 ⇒ [`GapKind::Spaced`]）。
+fn text_right_kind(text: &str) -> GapKind {
+    match text.chars().last() {
+        None => GapKind::Spaced,
+        Some(c) if c.is_whitespace() => GapKind::Spaced,
+        Some(c) => char_gap_kind(c, text, false),
+    }
+}
+
+/// 单字符间距原子（`at_left` 决定函数名按首词 / 尾词匹配）。
+fn char_gap_kind(c: char, text: &str, at_left: bool) -> GapKind {
+    match c {
+        '0'..='9' => GapKind::Var,
+        'a'..='z' | 'A'..='Z' => {
+            if func_name_at_edge(text, at_left) {
+                GapKind::Func
+            } else {
+                GapKind::Var
+            }
+        }
+        '(' | '[' | '{' => GapKind::Open,
+        ')' | ']' | '}' | '|' => GapKind::Close,
+        '+' | '-' | '*' | '/' | '=' | '<' | '>' => GapKind::Binary,
+        '−' | '×' | '÷' | '±' | '≤' | '≥' | '≈' | '≠' | '→' | '⇒' | '∈' | '∪' | '∩' => {
+            GapKind::Binary
+        }
+        ',' | ';' | ':' | '.' => GapKind::Punct,
+        _ => GapKind::Ord,
+    }
+}
+
+/// 文本首 / 尾是否为函数名（词边界安全：相邻字符须为非字母或串端）。
+fn func_name_at_edge(text: &str, at_left: bool) -> bool {
+    FUNC_NAMES.iter().any(|f| {
+        if at_left {
+            text.starts_with(f)
+                && text[f.len()..]
+                    .chars()
+                    .next()
+                    .map_or(true, |c| !c.is_alphabetic())
+        } else {
+            text.ends_with(f)
+                && text[..text.len() - f.len()]
+                    .chars()
+                    .next_back()
+                    .map_or(true, |c| !c.is_alphabetic())
+        }
+    })
+}
+
+/// 部件左缘的间距原子（限位组视作 Spaced：对横向间距透明）。
+fn part_left_kind(part: &FormulaPart) -> GapKind {
+    match part {
+        FormulaPart::Text(t, ..) => text_left_kind(t),
+        FormulaPart::Sym(k, ..) => sym_gap_kind(*k),
+        FormulaPart::Limits { .. } => GapKind::Spaced,
+    }
+}
+
+/// 部件右缘的间距原子（限位组视作 Spaced：对横向间距透明）。
+fn part_right_kind(part: &FormulaPart) -> GapKind {
+    match part {
+        FormulaPart::Text(t, ..) => text_right_kind(t),
+        FormulaPart::Sym(k, ..) => sym_gap_kind(*k),
+        FormulaPart::Limits { .. } => GapKind::Spaced,
+    }
+}
+
+/// 部件名义字号（间距折算用）。
+fn part_size(part: &FormulaPart) -> f32 {
+    match part {
+        FormulaPart::Text(_, _, s, _) | FormulaPart::Sym(_, s, _) => *s,
+        FormulaPart::Limits { size, .. } => *size,
+    }
+}
+
+/// 相邻部件横向间距（px）：[`math_gap`] 查表 × 两侧较大字号。
+///
+/// 限位组（纵向堆叠注解）两侧间距恒 0（透明）；非有限 / 非正字号 ⇒ 0。
+fn boundary_gap(prev: &FormulaPart, next: &FormulaPart) -> f32 {
+    if matches!(prev, FormulaPart::Limits { .. }) || matches!(next, FormulaPart::Limits { .. }) {
+        return 0.0;
+    }
+    let g = math_gap(part_right_kind(prev), part_left_kind(next));
+    if g == 0.0 {
+        return 0.0;
+    }
+    let s = part_size(prev).max(part_size(next));
+    if s.is_finite() && s > 0.0 {
+        g * s
+    } else {
+        0.0
+    }
+}
+
 /// 文本 run 与符号按基线混排为轨道列表，整体以 `center_x` 水平居中。
 ///
 /// 算法（架构 §4.2 / R5）：
@@ -243,6 +477,8 @@ pub fn symbol_path(kind: SymbolKind, size: f32) -> PathBuilder {
 ///    `max_width = INFINITY`、`Align::Center`）；符号 advance =
 ///    包围盒右缘（含曲线控制点，保守）+ `SYM_GAP·size`；
 ///    [`FormulaPart::Limits`] advance = **0**（只纵向堆叠，见其文档）；
+///    相邻部件间再插入 [`math_gap`] 间距（× 两侧较大字号；限位组旁为
+///    0，文本 run 边界自带显式空格时抑制——不双计）；
 /// 3. 左缘 = `center_x − total/2`，逐 run 发射：文本 →
 ///    `StaticText`（`center_x = pen + w/2`，`y = baseline_y`）；
 ///    符号 → y 翻转变换后每轮廓一条描边 `PathTrack`；
@@ -269,7 +505,11 @@ pub fn assemble_formula(parts: &[FormulaPart], center_x: f32, baseline_y: f32) -
             FormulaPart::Limits { .. } => 0.0,
         })
         .collect();
-    let total: f32 = advances.iter().sum();
+    // 1b) 相邻部件数学间距（`math_gap` 表；限位组透明；末部件后无间距）。
+    let gaps: Vec<f32> = (0..parts.len().saturating_sub(1))
+        .map(|i| boundary_gap(&parts[i], &parts[i + 1]))
+        .collect();
+    let total: f32 = advances.iter().sum::<f32>() + gaps.iter().sum::<f32>();
     if !total.is_finite() {
         return tracks;
     }
@@ -283,7 +523,7 @@ pub fn assemble_formula(parts: &[FormulaPart], center_x: f32, baseline_y: f32) -
     let mut limit_anchors: Vec<Option<LimitAnchor>> = Vec::new();
     let mut pen = center_x - total * 0.5;
     let mut prev_op: Option<LimitAnchor> = None;
-    for (part, adv) in parts.iter().zip(advances.iter()) {
+    for (i, (part, adv)) in parts.iter().zip(advances.iter()).enumerate() {
         pens.push(pen);
         match part {
             FormulaPart::Text(..) => pen += adv,
@@ -296,6 +536,8 @@ pub fn assemble_formula(parts: &[FormulaPart], center_x: f32, baseline_y: f32) -
             }
             FormulaPart::Limits { .. } => limit_anchors.push(prev_op),
         }
+        // 部件后接数学间距（末部件 / 限位组旁恒 0）。
+        pen += gaps.get(i).copied().unwrap_or(0.0);
     }
 
     // 3) 发射（pen 全部取自预走表，与 advance 表同源）。
@@ -718,20 +960,28 @@ fn unit_dydx(b: &mut PathBuilder) {
     push_x(b, 0.72, 0.0, K);
 }
 
-/// ∫：高挑 S 形（宽 ~0.62，高 ~0.98，底探到基线下）。
+/// ∫：高挑 S 形（宽 ~0.62，高 ~1.22 ≈ 行高 0.72 的 1.7 倍，底探到基线下）。
+///
+/// v3 排版升级：旧几何高 0.98（≈1.36 倍行高）偏小；拉高到 1.22 后与
+/// LaTeX 显示式积分号（1.6–1.8 倍行高）比例看齐。宽度不变（advance 稳
+/// 定），单开放子路径结构不变（`flatten_strokes` 回归锁保持）。
 fn unit_integral(b: &mut PathBuilder) {
-    b.move_to(Point::new(0.44, 0.86));
-    b.quad_to(Point::new(0.06, 0.80), Point::new(0.12, 0.52));
-    b.quad_to(Point::new(0.18, 0.24), Point::new(0.38, 0.16));
-    b.quad_to(Point::new(0.62, 0.10), Point::new(0.56, -0.12));
+    b.move_to(Point::new(0.44, 0.98));
+    b.quad_to(Point::new(0.06, 0.92), Point::new(0.12, 0.60));
+    b.quad_to(Point::new(0.18, 0.28), Point::new(0.38, 0.18));
+    b.quad_to(Point::new(0.62, 0.12), Point::new(0.56, -0.24));
 }
 
-/// ∑：上横 + 左尖中点 + 下横（单开放笔画，宽 0.70，高 0.60）。
+/// ∑：上横 + 左尖中点 + 下横（单开放笔画，宽 0.82，高 0.92）。
+///
+/// v3 排版升级：旧几何 0.70×0.60 与普通字母同档，无「大算子」气质；
+/// 拉高到 0.92（≈1.28 倍帽高）、加宽到 0.82，向 LaTeX 显示式 ∑ 看齐。
+/// 仍为 5 点单开放折线（`flatten_strokes` 五段回归锁保持）。
 fn unit_sum(b: &mut PathBuilder) {
-    b.move_to(Point::new(0.0, 0.60));
-    b.line_to(Point::new(0.70, 0.60));
-    b.line_to(Point::new(0.30, 0.30));
-    b.line_to(Point::new(0.70, 0.0));
+    b.move_to(Point::new(0.0, 0.92));
+    b.line_to(Point::new(0.82, 0.92));
+    b.line_to(Point::new(0.35, 0.46));
+    b.line_to(Point::new(0.82, 0.0));
     b.line_to(Point::new(0.0, 0.0));
 }
 
@@ -791,14 +1041,17 @@ fn unit_partial(b: &mut PathBuilder) {
     b.quad_to(Point::new(0.32, 0.52), Point::new(0.40, 0.44));
 }
 
-/// ∏：大 pi 乘积号（双腿 + 顶横；宽 0.50，高 0.58）。
+/// ∏：大 pi 乘积号（双腿 + 顶横；宽 0.58，高 0.88）。
+///
+/// v3 排版升级：旧几何高 0.58 与 ∑ 的旧值同档偏小；拉高到 0.88 与
+/// 新 ∑ 同档（大算子家族一致），向 LaTeX 显示式 ∏ 看齐。
 fn unit_product(b: &mut PathBuilder) {
-    b.move_to(Point::new(0.08, 0.0));
-    b.line_to(Point::new(0.08, 0.58));
-    b.move_to(Point::new(0.42, 0.0));
-    b.line_to(Point::new(0.42, 0.58));
-    b.move_to(Point::new(0.0, 0.58));
-    b.line_to(Point::new(0.50, 0.58));
+    b.move_to(Point::new(0.10, 0.0));
+    b.line_to(Point::new(0.10, 0.88));
+    b.move_to(Point::new(0.48, 0.0));
+    b.line_to(Point::new(0.48, 0.88));
+    b.move_to(Point::new(0.0, 0.88));
+    b.line_to(Point::new(0.58, 0.88));
 }
 
 /// ≈：双波浪约等（上下两行 S 波；宽 ~0.48，高 ~0.48）。
@@ -944,12 +1197,16 @@ fn unit_inf(b: &mut PathBuilder) {
     push_ellipse(b, 0.74, 0.28, 0.24, 0.26);
 }
 
-/// √：左下斜笔 → 顶横 → 右短竖（单开放笔画，宽 0.68，高 0.56）。
+/// √：左下斜笔 → 顶横 → 右短竖（单开放笔画，宽 0.80，高 0.78）。
+///
+/// v3 排版升级：旧几何高 0.56 仅齐字母帽高，根号罩不住被开方式；
+/// 顶升高到 0.78（超出帽高 0.72），向 LaTeX 根号（延伸至被开方项
+/// 之上）看齐。仍为 4 点单开放折线。
 fn unit_sqrt(b: &mut PathBuilder) {
-    b.move_to(Point::new(0.02, 0.06));
-    b.line_to(Point::new(0.24, 0.54));
-    b.line_to(Point::new(0.68, 0.54));
-    b.line_to(Point::new(0.68, 0.40));
+    b.move_to(Point::new(0.02, 0.08));
+    b.line_to(Point::new(0.28, 0.78));
+    b.line_to(Point::new(0.80, 0.78));
+    b.line_to(Point::new(0.80, 0.56));
 }
 
 /// ′：帽高短斜笔（宽 0.24，顶 0.74）。
@@ -1756,5 +2013,115 @@ mod tests {
         assert_eq!(text_run_width("", FontKind::Bold, 30.0, 1.0), 0.0);
         assert_eq!(text_run_width("x", FontKind::Bold, f32::NAN, 1.0), 0.0);
         assert_eq!(text_run_width("x", FontKind::Bold, -1.0, 1.0), 0.0);
+    }
+
+    // -----------------------------------------------------------------------
+    // v3 排版升级：数学间距表（math_gap）接入与符号比例重调
+    // -----------------------------------------------------------------------
+
+    /// 二元算子两侧呼吸间距 > 变量-括号贴近间距，且 > 普通符号间隙
+    /// `SYM_GAP`；变量与变量为可辨小间距。
+    #[test]
+    fn math_gap_binary_breathing_beats_var_paren_tightness() {
+        let breath_r = math_gap(GapKind::Binary, GapKind::Var);
+        let breath_l = math_gap(GapKind::Var, GapKind::Binary);
+        let var_paren = math_gap(GapKind::Var, GapKind::Open);
+        let paren_var = math_gap(GapKind::Open, GapKind::Var);
+        assert!(
+            breath_r > var_paren && breath_l > paren_var,
+            "二元算子两侧（{breath_r} / {breath_l}）须大于变量-括号（{var_paren} / {paren_var}）"
+        );
+        assert!(
+            breath_r > SYM_GAP && breath_l > SYM_GAP,
+            "呼吸间距须大于普通符号间隙 {SYM_GAP}"
+        );
+        let vv = math_gap(GapKind::Var, GapKind::Var);
+        assert!(vv > 0.0 && vv < SYM_GAP, "变量间小间距贴近：{vv}");
+    }
+
+    /// 上下标与基座、∫ 与被积式：零 / 负间距（贴合），明显小于普通间隙；
+    /// 函数名 / 撇号 / 量词 / 显式空白边界同样零间距（不双计）。
+    #[test]
+    fn math_gap_scripts_and_bigops_stay_tight() {
+        assert!(math_gap(GapKind::Var, GapKind::Script) <= 0.0, "上标贴基座");
+        assert!(math_gap(GapKind::Var, GapKind::Script) <= 0.0, "下标贴基座");
+        assert!(math_gap(GapKind::BigOp, GapKind::Var) <= 0.0, "∫ 贴被积式");
+        assert!(math_gap(GapKind::Var, GapKind::Script) < SYM_GAP);
+        assert!(math_gap(GapKind::BigOp, GapKind::Var) < SYM_GAP);
+        assert_eq!(math_gap(GapKind::Var, GapKind::Mark), 0.0, "f′ 贴基座");
+        assert_eq!(math_gap(GapKind::Func, GapKind::Open), 0.0, "sin( 贴");
+        assert_eq!(math_gap(GapKind::Quant, GapKind::Var), 0.0, "∀e 贴");
+        assert_eq!(math_gap(GapKind::Spaced, GapKind::Binary), 0.0, "显式空白抑制");
+        assert_eq!(math_gap(GapKind::Binary, GapKind::Spaced), 0.0, "显式空白抑制");
+    }
+
+    /// 接入验证：紧凑 run「x − y」减号两侧呼吸间距落地（跨 Sym 的
+    /// 盒缘跨度 = 呼吸 + 符号 advance + 呼吸，逐位可算）；「x(y)」
+    /// 变量-括号零间距——前者明显宽于后者。
+    #[test]
+    fn assemble_formula_wires_math_gap_between_tight_runs() {
+        let minus = assemble_formula(
+            &[
+                FormulaPart::Text(String::from("x"), FontKind::Bold, 40.0, TEXT_RGBA),
+                FormulaPart::Sym(SymbolKind::Minus, 40.0, TEXT_RGBA),
+                FormulaPart::Text(String::from("y"), FontKind::Bold, 40.0, TEXT_RGBA),
+            ],
+            480.0,
+            300.0,
+        );
+        let paren = assemble_formula(
+            &[
+                FormulaPart::Text(String::from("x"), FontKind::Bold, 40.0, TEXT_RGBA),
+                FormulaPart::Text(String::from("(y)"), FontKind::Bold, 40.0, TEXT_RGBA),
+            ],
+            480.0,
+            300.0,
+        );
+        // 第一段文本右盒缘 → 第二段文本左盒缘的跨度（盒缘 = 中心 ∓ 半宽）。
+        let span_after_first = |tracks: &[Track]| -> f32 {
+            let statics: Vec<&StaticText> = tracks
+                .iter()
+                .filter_map(|t| match t {
+                    Track::Static(s) => Some(s),
+                    _ => None,
+                })
+                .collect();
+            assert!(statics.len() >= 2, "至少两段文本 run");
+            let w1 = text_run_width(&statics[0].content, FontKind::Bold, 40.0, 0.0);
+            let w2 = text_run_width(&statics[1].content, FontKind::Bold, 40.0, 0.0);
+            (statics[1].center_x.unwrap() - w2 * 0.5) - (statics[0].center_x.unwrap() + w1 * 0.5)
+        };
+        let g_paren = span_after_first(&paren);
+        assert!(g_paren.abs() < 1e-3, "变量-括号零间距：{g_paren}");
+        let span = span_after_first(&minus);
+        let expect = MATH_GAP_BREATH * 40.0
+            + symbol_advance(&symbol_path(SymbolKind::Minus, 40.0), 40.0)
+            + MATH_GAP_BREATH * 40.0;
+        assert!(
+            (span - expect).abs() < 1e-3,
+            "减号两侧呼吸间距落地：{span} vs {expect}"
+        );
+        assert!(span > g_paren + 1.0, "二元算子间距明显大于变量-括号贴近");
+    }
+
+    /// 比例重调锁定：∫ 高 ≈ 行高 0.72 的 1.6–1.8 倍；符号描边（分数线）
+    /// 0.04–0.06·size；∑ / ∏ 升至大算子尺寸；√ 顶超出帽高。
+    #[test]
+    fn symbol_proportions_lean_latex() {
+        let size = 40.0f32;
+        let int_bb = ink_bbox(&symbol_path(SymbolKind::Integral, size));
+        let ratio = (int_bb[3] - int_bb[2]) / (0.72 * size);
+        assert!((1.6..=1.8).contains(&ratio), "∫ 高 / 行高 = {ratio}");
+        let stroke = size * SYM_STROKE_K;
+        assert!(
+            (0.04 * size..=0.06 * size).contains(&stroke),
+            "分数线粗细 = {stroke}"
+        );
+        for kind in [SymbolKind::Sum, SymbolKind::Product] {
+            let bb = ink_bbox(&symbol_path(kind, size));
+            assert!(bb[3] > 0.85 * size, "{kind:?} 大算子高度不足：{}", bb[3]);
+        }
+        let sqrt_bb = ink_bbox(&symbol_path(SymbolKind::Sqrt, size));
+        assert!(sqrt_bb[3] >= 0.75 * size, "√ 顶升高：{}", sqrt_bb[3]);
     }
 }

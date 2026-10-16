@@ -110,6 +110,17 @@ const PREVIEW_S2_FRAMES: u32 = 271;
 /// 与哑场景的 0.5s 叠化区之前（帧 256 起进入转场混合，窗止于 252）。
 const PREVIEW_WINDOW: (usize, usize) = (36, 252);
 
+/// 上下文层 alpha（S2 轴标签 / HUD / 底部文案；3B1B 分层：主 1.0 /
+/// 上下文 ~0.55 / 结构 ~0.25）。
+const ALPHA_CTX: f32 = 0.55;
+/// 上下文层文案色（S2 底部打字文案 / 开幕目标字幕：冷白 alpha 0.50）。
+const TEXT_CTX_RGBA: [f32; 4] = [TEXT_RGBA[0], TEXT_RGBA[1], TEXT_RGBA[2], 0.50];
+
+/// 把颜色压到上下文层 alpha（轴标签 / HUD 专用；主曲线保持 1.0 主层）。
+fn ctx(color: [f32; 4]) -> [f32; 4] {
+    [color[0], color[1], color[2], ALPHA_CTX]
+}
+
 fn main() {
     // ---- 预览模式（v3-B 交付项）：PRISM_PREVIEW_S2=N ⇒ 只渲染 S2 内容
     // 窗内均匀 N 帧，过任务 B 后处理链（bloom → grade → vignette）后
@@ -703,7 +714,7 @@ pub fn scene_s2() -> ClipSpec {
         content: String::from("x"),
         font: FontKind::Bold,
         size: axes::AXIS_LABEL_SIZE,
-        color: TEXT_RGBA,
+        color: ctx(TEXT_RGBA),
         at: 3.5,
         in_sec: 0.5,
         letter_spacing: 0.0,
@@ -717,7 +728,7 @@ pub fn scene_s2() -> ClipSpec {
         content: String::from("y"),
         font: FontKind::Bold,
         size: axes::AXIS_LABEL_SIZE,
-        color: TEXT_RGBA,
+        color: ctx(TEXT_RGBA),
         at: 3.5,
         in_sec: 0.5,
         letter_spacing: 0.0,
@@ -778,11 +789,25 @@ pub fn scene_s2() -> ClipSpec {
     }
     tracks.extend(formula);
 
-    // ---- 底部文案（8.0 打字机 12cps，y=500）----
+    // ---- 开幕目标字幕（0.8 打字机 12cps，2.8 淡出；本节目标一句话；
+    // [节奏重剪] 上下文层 alpha 0.50）----
+    tracks.push(typewriter(
+        "先认识舞台：直角坐标系",
+        24.0,
+        TEXT_CTX_RGBA,
+        0.8,
+        500.0,
+        12.0,
+        false,
+        Some(2.8),
+        0.4,
+    ));
+
+    // ---- 底部文案（8.0 打字机 12cps，y=500；[节奏重剪] 上下文层 alpha）----
     tracks.push(typewriter(
         "每一条光滑曲线，都是变化的故事",
         26.0,
-        TEXT_RGBA,
+        TEXT_CTX_RGBA,
         8.0,
         500.0,
         12.0,

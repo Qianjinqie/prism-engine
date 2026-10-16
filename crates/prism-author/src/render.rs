@@ -23,7 +23,7 @@ use prism_text::{font_bold, font_regular};
 
 use crate::easing::EasingKind;
 use crate::spec::{
-    Background, ClipSpec, CounterText, DynPathTrack, FontKind, ImageSource, PathTrack,
+    Background, ClipSpec, CounterText, DynPathTrack, FontKind, ImageSource, MorphSpec, PathTrack,
     SequenceTrack, ShapeKind, Track, Transition, WipeDir,
 };
 
@@ -1011,6 +1011,69 @@ fn draw_path_track(fbuf: &mut Fbuf16F, p: &PathTrack, t: f32, env: f32) {
     );
 }
 
+/// Morph 轨道在场景时间 `t` 的当前折线（帧内求值）：
+/// `u = clamp((t - at) / dur, 0, 1)`，`e = ease(u)`，逐点
+/// `lerp(from[i], to[i], e)`。
+///
+/// - `dur <= 0`：`t >= at` 直接取 `to`（`u = 1`），否则取 `from`（`u = 0`）；
+/// - **点数不等时**：按索引配对，只渲染 `min(from.len(), to.len())` 个点，
+///   多出的点忽略（规格第 3 条）；
+/// - `from` / `to` 任一为空（或交集为空）时返回空 `Vec`，由调用方经
+///   [`polyline_valid`] 跳过，不 panic。
+///
+/// 确定性：(from, to, at, dur, ease, t) 的纯函数，无隐藏状态。
+fn morph_points_at(m: &MorphSpec, t: f32) -> Vec<[f32; 2]> {
+    let u = if m.dur > 0.0 {
+        ((t - m.at) / m.dur).clamp(0.0, 1.0)
+    } else if t >= m.at {
+        1.0
+    } else {
+        0.0
+    };
+    let e = m.ease.apply(u);
+    // 点数不等：按索引配对渲染 min(from.len(), to.len()) 个点，多出的忽略。
+    let n = m.from.len().min(m.to.len());
+    let mut pts: Vec<[f32; 2]> = Vec::with_capacity(n);
+    for i in 0..n {
+        pts.push([
+            lerp(m.from[i][0], m.to[i][0], e),
+            lerp(m.from[i][1], m.to[i][1], e),
+        ]);
+    }
+    pts
+}
+
+/// 绘制时间参数化折线变形轨道（[`Track::Morph`] 的渲染实现）：
+/// 每帧经 [`morph_points_at`] 求出当前折线后，进入与 [`draw_path_track`]
+/// **完全相同的校验与光栅核心**（[`polyline_valid`] + [`paint_polyline`]）
+/// ——描边 / 填充 / `closed` / `draw_sec` 绘制进度 / fade 淡入淡出一套
+/// 代码，零新光栅逻辑。
+///
+/// 违约跳过（不 panic）： morph 后点数 < 2 / 坐标非有限 / `env <= 0` /
+/// 颜色 alpha 归零。
+fn draw_morph(fbuf: &mut Fbuf16F, m: &MorphSpec, t: f32, env: f32) {
+    if env <= 0.0 {
+        return;
+    }
+    let pts = morph_points_at(m, t);
+    if !polyline_valid(&pts) {
+        return;
+    }
+    let mut col = m.color;
+    col[3] *= env;
+    paint_polyline(
+        fbuf,
+        &pts,
+        col,
+        m.width,
+        m.fill,
+        m.draw_sec,
+        m.closed,
+        t,
+        m.at,
+    );
+}
+
 /// 绘制时间参数化折线轨道（[`Track::DynPath`] 的渲染实现）：
 /// 每帧求值 `geom(t)`（场景绝对时间）后，经与 [`draw_path_track`] 完全
 /// 相同的校验与光栅核心（[`polyline_valid`] + [`paint_polyline`]）渲染。
@@ -1883,6 +1946,13 @@ pub(crate) fn render_rgba_frames(spec: &ClipSpec) -> Vec<Vec<u8>> {
                     }
                     draw_path_track(&mut fbuf, p, t, env);
                 }
+                Track::Morph(m) => {
+                    let env = fade_factor(t, m.at, m.in_sec, m.out_sec, m.out_at, spec.duration);
+                    if env <= 0.0 {
+                        continue;
+                    }
+                    draw_morph(&mut fbuf, m, t, env);
+                }
                 Track::DynPath(d) => {
                     let env = fade_factor(t, d.at, d.in_sec, d.out_sec, d.out_at, spec.duration);
                     if env <= 0.0 {
@@ -2105,6 +2175,203 @@ mod transition_dissolve_tests {
             (revealed as f32 / (w * h) as f32 - 0.5).abs() < 0.1,
             "中点显影比例应接近 0.5（实测 {revealed} / {}）",
             w * h
+        );
+    }
+}
+
+// ===========================================================================
+// 任务 4 测试：Track::Morph 动画原语（端点恒等 / Linear 中点 / draw_sec 与
+// PathTrack 同比例截断 / fade 语义与 PathTrack 一致）
+// ===========================================================================
+
+#[cfg(test)]
+mod morph_track_tests {
+    use super::*;
+
+    /// 构造默认 MorphSpec（白描边、无淡变、Linear、dur=1、at=0）；
+    /// 各测试按需用 struct update 覆写字段。
+    fn morph_spec(from: Vec<[f32; 2]>, to: Vec<[f32; 2]>) -> MorphSpec {
+        MorphSpec {
+            from,
+            to,
+            color: [1.0, 1.0, 1.0, 1.0],
+            width: 2.0,
+            fill: false,
+            at: 0.0,
+            in_sec: 0.0,
+            out_sec: 0.0,
+            out_at: None,
+            draw_sec: 0.0,
+            closed: false,
+            ease: EasingKind::Linear,
+            dur: 1.0,
+        }
+    }
+
+    /// 构造小画幅 ClipSpec（fps=6、时长 1s ⇒ 帧时刻 0, 1/6, ..., 1）。
+    fn clip(tracks: Vec<Track>) -> ClipSpec {
+        ClipSpec {
+            width: 48,
+            height: 48,
+            fps: 6,
+            duration: 1.0,
+            background: Background::DarkGlow,
+            jpeg_quality: 90,
+            tracks,
+        }
+    }
+
+    /// 端点恒等：t = at 时几何逐点等于 `from`；t = at+dur 时等于 `to`；
+    /// 越界（t < at / t > at+dur）分别钳到 `from` / `to`。
+    #[test]
+    fn geometry_equals_from_at_start_and_to_at_end() {
+        let m = MorphSpec {
+            at: 1.0,
+            dur: 2.0,
+            ease: EasingKind::CubicInOut,
+            ..morph_spec(
+                vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]],
+                vec![[0.0, 0.0], [20.0, 5.0], [5.0, 20.0]],
+            )
+        };
+        assert_eq!(morph_points_at(&m, 1.0), m.from, "t = at 须等于 from");
+        assert_eq!(morph_points_at(&m, 3.0), m.to, "t = at+dur 须等于 to");
+        assert_eq!(morph_points_at(&m, 0.0), m.from, "t < at 钳到 from");
+        assert_eq!(morph_points_at(&m, 9.0), m.to, "t > at+dur 钳到 to");
+    }
+
+    /// Linear 中点：t = at + dur/2 时 u = 0.5、e = 0.5，几何为逐点中点。
+    #[test]
+    fn linear_ease_midpoint_is_per_point_midpoint() {
+        let m = morph_spec(
+            vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]],
+            vec![[0.0, 0.0], [20.0, 5.0], [5.0, 20.0]],
+        );
+        let mid = morph_points_at(&m, 0.5); // at=0, dur=1 ⇒ u=0.5
+        assert_eq!(
+            mid,
+            vec![[0.0, 0.0], [15.0, 2.5], [7.5, 15.0]],
+            "Linear 中点须为逐点中点"
+        );
+    }
+
+    /// 点数不等：按索引配对渲染 `min(from.len(), to.len())` 个点，
+    /// 多出的点忽略。
+    #[test]
+    fn mismatched_point_counts_pair_by_index_and_ignore_extra() {
+        let m = morph_spec(
+            vec![[0.0, 0.0], [10.0, 0.0], [99.0, 99.0]],
+            vec![[0.0, 0.0], [20.0, 4.0]],
+        );
+        assert_eq!(morph_points_at(&m, 0.0).len(), 2, "应只渲染 2 个点");
+        assert_eq!(
+            morph_points_at(&m, 1.0),
+            vec![[0.0, 0.0], [20.0, 4.0]],
+            "t=at+dur 时等于 to 的前 2 点（from 多出的第 3 点忽略）"
+        );
+        let m2 = morph_spec(vec![[0.0, 0.0], [10.0, 0.0]], vec![[0.0, 0.0], [20.0, 4.0], [99.0, 99.0]]);
+        assert_eq!(morph_points_at(&m2, 1.0).len(), 2, "to 多出的点同样忽略");
+    }
+
+    /// draw_sec 与 PathTrack 语义一致（同比例截断）：同一时刻、同一几何
+    /// （Morph 求值结果直通 PathTrack），两条轨渲染帧逐字节相同；且
+    /// draw_sec 截断真实生效（半途帧 != 全显帧）。
+    #[test]
+    fn draw_sec_matches_path_track_truncation() {
+        // 静态方形折线（from == to ⇒ Morph 任意时刻几何即该方形）。
+        let sq: Vec<[f32; 2]> = vec![[6.0, 6.0], [42.0, 6.0], [42.0, 42.0], [6.0, 42.0]];
+        let m = MorphSpec {
+            draw_sec: 0.5,
+            closed: true,
+            ..morph_spec(sq.clone(), sq.clone())
+        };
+        // t = 1/6 ⇒ draw 进度 p = (1/6)/0.5 = 1/3（落在首段中部，非顶点）。
+        let path = PathTrack {
+            points: morph_points_at(&m, 1.0 / 6.0),
+            color: m.color,
+            width: m.width,
+            fill: m.fill,
+            at: m.at,
+            in_sec: m.in_sec,
+            out_sec: m.out_sec,
+            out_at: m.out_at,
+            draw_sec: m.draw_sec,
+            closed: m.closed,
+        };
+        let full = PathTrack {
+            draw_sec: 0.0, // 立即全显
+            ..path.clone()
+        };
+        let fm = render_rgba_frames(&clip(vec![Track::Morph(m)]));
+        let fp = render_rgba_frames(&clip(vec![Track::Path(path)]));
+        let ff = render_rgba_frames(&clip(vec![Track::Path(full)]));
+        assert_eq!(
+            fm[1], fp[1],
+            "draw_sec=0.5 @ t=1/6：Morph 与等价 PathTrack 帧逐字节一致（同比例截断）"
+        );
+        assert_ne!(fm[1], ff[1], "draw_sec 进度截断须真实生效（半途 != 全显）");
+    }
+
+    /// fade 语义与 PathTrack 一致：`out_at = Some(a)` 且 `out_sec = 0` 时
+    /// `t >= a` 硬切（env = 0，画面与纯背景逐字节一致）；`t < a` 时与
+    /// 等价 PathTrack 帧一致；in_sec / out_sec 斜坡值与 PathTrack 共用
+    /// 同一 `fade_factor`（直接校验端点）。
+    #[test]
+    fn fade_semantics_match_path_track() {
+        let m = MorphSpec {
+            at: 0.0,
+            in_sec: 0.0,
+            out_sec: 0.0,
+            out_at: Some(0.5), // 绝对锚点；out_sec = 0 ⇒ t >= 0.5 硬切
+            ..morph_spec(
+                vec![[6.0, 6.0], [42.0, 6.0], [42.0, 42.0]],
+                vec![[6.0, 20.0], [42.0, 20.0], [42.0, 42.0]],
+            )
+        };
+        // t = 1/3（帧索引 2）时的等价 PathTrack（同几何、同 fade 参数）。
+        let path = PathTrack {
+            points: morph_points_at(&m, 1.0 / 3.0),
+            color: m.color,
+            width: m.width,
+            fill: m.fill,
+            at: m.at,
+            in_sec: m.in_sec,
+            out_sec: m.out_sec,
+            out_at: m.out_at,
+            draw_sec: m.draw_sec,
+            closed: m.closed,
+        };
+        let fm = render_rgba_frames(&clip(vec![Track::Morph(m)]));
+        let fp = render_rgba_frames(&clip(vec![Track::Path(path)]));
+        let fb = render_rgba_frames(&clip(vec![])); // 纯背景
+        assert_eq!(
+            fm[3], fb[3],
+            "t=0.5 >= out_at ⇒ env=0 硬切，帧与纯背景逐字节一致"
+        );
+        assert_ne!(fm[2], fb[2], "t=1/3 < out_at ⇒ 轨道可见");
+        assert_eq!(fm[2], fp[2], "t<out_at：Morph 与等价 PathTrack 帧逐字节一致");
+        assert_eq!(fm[3], fp[3], "t>=out_at：两者同样硬切");
+        // in_sec / out_sec 斜坡（Morph 与 PathTrack 共用 fade_factor）。
+        assert_eq!(fade_factor(0.25, 0.25, 0.5, 0.0, None, 1.0), 0.0, "t=at 淡入为 0");
+        assert_eq!(
+            fade_factor(0.75, 0.25, 0.5, 0.0, None, 1.0),
+            1.0,
+            "t=at+in_sec 淡入满"
+        );
+        assert_eq!(
+            fade_factor(0.75, 0.0, 0.0, 0.5, None, 1.0),
+            0.5,
+            "out_sec 中点（out_start=0.5）淡出过半"
+        );
+        assert_eq!(
+            fade_factor(0.5, 0.0, 0.0, 0.0, Some(0.5), 1.0),
+            0.0,
+            "out_at + out_sec=0 ⇒ 硬切"
+        );
+        assert_eq!(
+            fade_factor(0.4999, 0.0, 0.0, 0.0, Some(0.5), 1.0),
+            1.0,
+            "硬切锚点前一刻仍满显"
         );
     }
 }

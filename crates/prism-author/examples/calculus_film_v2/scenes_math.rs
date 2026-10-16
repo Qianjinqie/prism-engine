@@ -15,15 +15,18 @@
 //! 引擎原语 `CounterText::out_at`（spec.rs；render.rs `out_start_of`）
 //! 令文本轨可指定**绝对消失时刻**（`out_sec=0` 硬切 / `>0` 短淡出），
 //! 同位置多条顺序轨据此轮流显现、无叠字。PRD 的分拍阶跃由此原样落地：
-//! - S3：m = 3.0000→2.0000（Linear，[7.0, 14.0]；PRD 检查点
+//! - S3：m = 3.0000→2.0000（Linear，[7.0, 12.0]；PRD 检查点
 //!   3.0/2.5/2.25/2.125/2.0 的最大偏差 0.143，出现在 PRD 仅要求
-//!   「就位」的 8.5s 处）；四条离散割线改以鬼影标记轨呈现
-//!   （live 线滚过对应 h 值的时刻，PRD 8.5/10.0/11.5/13.0 附近）。
+//!   「就位」的 8.5s 处）；三条离散割线改以鬼影标记轨呈现
+//!   （live 线滚过对应 h 值的时刻，h=0.5/0.25/0.125 ↔ 9.5/10.6/11.2s）。
 //! - S3 ε/δ 带：自 appearance 起连续收缩（CubicIn）至 PRD 端点值
 //!   （ε=1.00→0.25、δ=0.4142→0.1180，端点满足 δ=√(1+ε)−1 精确），
 //!   标签数字同步滚——保证「屏幕上数学永远正确」优先于 1s 卡点收缩。
-//! - S4：a: −2→2 单段 Linear（[3.5, 13.5]），四体联动全程跟随；
-//!   定格脉冲落在 a=2（PRD 为 a=1，单段 HUD 端点即末值）。
+//!   [节奏重剪] 收缩窗收至 12.0（ε [3.5,12.0] / δ [5.0,12.0]）：切线
+//!   定格后 12.0–14.5 为 2.5s 顿悟静止定格，画面无新元素入场。
+//! - S4：a: −2→2 单段 Linear（[3.5, 12.5]），四体联动全程跟随；
+//!   [节奏重剪] 扫过窗由 10s 压至 9s，a=2 末态静态定格由 3s 延至
+//!   4s（fast-fast-SLOW 的收尾慢段）；定格脉冲拍与中间文案拍删除。
 //!   **PRD 勘误**：S4 分镜与 §6 的「a=−0.5 ⇒ m=−1.0000」自相矛盾
 //!   （切线 y=ax−a²/2 的斜率是 a=−0.5）；本实现取恒等式 m≡a。
 //! - S5：**PRD 四拍阶跃原样**（3.0/4.5/6.0/7.5 各 1.5s）——n=2/4/8/32
@@ -37,6 +40,22 @@
 //!   不解耦）；双 HUD f(x)/F′(x) 以 QuadIn 滚 0→4——4u² ≡ f(2u) 读数
 //!   恒等**精确**（单缓动 Counter 无法复合 f∘ease：x 若走 CubicInOut，
 //!   屏上与真实 f 偏差最大 1.0，恒等铁律优先于扫描缓动口味）。
+//!
+//! # 节奏分层（3B1B 呼吸节奏重剪：主 1.0 / 上下文 ~0.55 / 结构 ~0.25）
+//!
+//! - **顿悟停顿**：关键揭示后 2.0–3.0s 静止定格（无新元素入场、HUD
+//!   停止滚动、已有元素保持）——S3 切线定格 m=2.0000 后 12.0–14.5
+//!   （2.5s）；S5 面积答案 S=2.6667 后 11.0–13.0（2.0s）；S6
+//!   F′(x)=f(x) 重合公式后 10.0–12.5（2.5s）。
+//! - **透明度分层**：HUD 读数 / 轴标签 / 区间标记 / 答案小字压到上下
+//!   文层 alpha 0.55（[`ctx`]）；底部打字文案与开幕目标字幕压到 0.50
+//!   （[`TEXT_CTX_RGBA`]）；坐标网格维持 axes.rs 既有 alpha 0.10（已
+//!   低于 0.25 结构层目标，axes.rs 禁改故保持）；主曲线 / 切线 / 面积
+//!   填充保持 1.0 主层不动。
+//! - **开幕目标字幕**：S3–S6 开头 0.8s 一条打字机字幕说明本节目标。
+//! - **总时长铁律**：场景帧数 496/496/496/436 与 90.000s / 2700 帧
+//!   闭环不动，只挪拍在场景内的位置与内容（省出的时间全部补给顿悟
+//!   停顿与片尾静态定格）。
 
 use std::sync::Arc;
 
@@ -51,6 +70,36 @@ use common::{
     CURVE_RGBA, GOLD_RGBA, PURPLE_RGBA, TEXT_RGBA,
 };
 use symbols::{FormulaPart, SymbolKind};
+
+// ---------------------------------------------------------------------------
+// 节奏分层常量与辅助（3B1B 呼吸节奏重剪）
+// ---------------------------------------------------------------------------
+
+/// 上下文层 alpha（HUD 读数 / 轴标签 / 区间标记；分层：主 1.0 /
+/// 上下文 ~0.55 / 结构 ~0.25）。
+const ALPHA_CTX: f32 = 0.55;
+
+/// 上下文层文案色（底部打字文案 / 开幕目标字幕：冷白 alpha 0.50）。
+const TEXT_CTX_RGBA: [f32; 4] = [TEXT_RGBA[0], TEXT_RGBA[1], TEXT_RGBA[2], 0.50];
+
+/// 把颜色压到上下文层 alpha（HUD / 标签专用；主曲线 / 切线 / 面积
+/// 填充保持 1.0 主层，不经过本函数）。
+fn ctx(color: [f32; 4]) -> [f32; 4] {
+    [color[0], color[1], color[2], ALPHA_CTX]
+}
+
+/// 轴网轨 + 轴标签上下文化：网格（`GRID_RGBA` alpha 0.10）本就低于
+/// 0.25 结构层目标（axes.rs 禁改故保持原值），仅把 Static 轴标签
+/// x / y 压到上下文层 alpha。
+fn axes_tracks_ctx(vp: &Viewport) -> Vec<Track> {
+    let mut tracks = axes::axes_tracks(vp);
+    for tr in tracks.iter_mut() {
+        if let Track::Static(s) = tr {
+            s.color[3] = ALPHA_CTX;
+        }
+    }
+    tracks
+}
 
 // ===========================================================================
 // 共享纯函数（数学唯一事实源；几何与 Counter 同源派生）
@@ -213,8 +262,19 @@ fn static_text(content: &str, size: f32, color: [f32; 4], at: f32, in_sec: f32, 
     })
 }
 
-/// 便捷：打字机轨。
-fn typewriter(content: &str, size: f32, color: [f32; 4], at: f32, y: f32, cps: f32, out_sec: f32) -> Track {
+/// 便捷：打字机轨（底部文案 / 开幕目标字幕共用）。`out_at` 为绝对
+/// 淡出锚点（`None` 时缺省锚定片尾 `duration − out_sec`）。
+#[allow(clippy::too_many_arguments)]
+fn typewriter(
+    content: &str,
+    size: f32,
+    color: [f32; 4],
+    at: f32,
+    y: f32,
+    cps: f32,
+    out_at: Option<f32>,
+    out_sec: f32,
+) -> Track {
     Track::Typewriter(TypewriterText {
         content: String::from(content),
         font: FontKind::Regular,
@@ -227,7 +287,7 @@ fn typewriter(content: &str, size: f32, color: [f32; 4], at: f32, y: f32, cps: f
         cursor_blink_hz: 1.2,
         in_sec: 0.4,
         out_sec,
-        out_at: None,
+        out_at,
         letter_spacing: 2.0,
         center_x: None,
     })
@@ -247,26 +307,32 @@ fn secant_m(h: f32) -> f32 {
     2.0 + h
 }
 
-/// live 割线的 h(t)：CubicInOut 1→0 over [7.0, 14.0]（HUD 同窗同参；[任务 1]
+/// live 割线的 h(t)：CubicInOut 1→0 over [7.0, 12.0]（HUD 同窗同参；[任务 1]
 /// f∘ease：动点 x=1+h 走缓动、y=f(x)=(1+h)² 由 x 派生，非独立缓动 y）。
+///
+/// [节奏重剪] 收敛窗由 7s 压至 5s：切线定格（12.0）后接 2.5s 顿悟静止
+/// 定格（12.0–14.5），窗外（t ≥ 12.0）冻结于 0（切线态）。
 fn s3_h(t: f32) -> f32 {
     if t <= 7.0 {
         1.0
-    } else if t >= 14.0 {
+    } else if t >= 12.0 {
         0.0
     } else {
-        1.0 - EasingKind::CubicInOut.apply((t - 7.0) / 7.0)
+        1.0 - EasingKind::CubicInOut.apply((t - 7.0) / 5.0)
     }
 }
 
-/// ε(t)：CubicIn 1.00→0.25 over [3.5, 15.0]（与 ε 带几何、ε 标签同参）。
+/// ε(t)：CubicIn 1.00→0.25 over [3.5, 12.0]（与 ε 带几何、ε 标签同参）。
+///
+/// [节奏重剪] 收缩终点由 15.0 提前至 12.0（切线定格时刻）：顿悟定格
+/// 12.0–14.5 内 ε/δ 带静止，无任何滚动 / 收缩运动。
 fn s3_eps(t: f32) -> f32 {
     if t <= 3.5 {
         1.0
-    } else if t >= 15.0 {
+    } else if t >= 12.0 {
         0.25
     } else {
-        let u = (t - 3.5) / 11.5;
+        let u = (t - 3.5) / 8.5;
         1.0 + (0.25 - 1.0) * EasingKind::CubicIn.apply(u)
     }
 }
@@ -278,14 +344,16 @@ fn s3_delta_of_eps(e: f32) -> f32 {
 
 /// δ(t)：端点取精确关系值，中点按同一 CubicIn 进度线性插值
 /// （与 δ 带几何、δ 标签恒等；端点 ε↔δ 关系精确）。
+///
+/// [节奏重剪] 收缩窗收至 [5.0, 12.0]（与 ε 带同步冻结于切线定格）。
 fn s3_delta(t: f32) -> f32 {
     let (d0, d1) = (s3_delta_of_eps(1.0), s3_delta_of_eps(0.25));
     if t <= 5.0 {
         d0
-    } else if t >= 15.0 {
+    } else if t >= 12.0 {
         d1
     } else {
-        let u = (t - 5.0) / 10.0;
+        let u = (t - 5.0) / 7.0;
         d0 + (d1 - d0) * EasingKind::CubicIn.apply(u)
     }
 }
@@ -346,7 +414,7 @@ pub fn scene_s3() -> ClipSpec {
     let mut tracks: Vec<Track> = Vec::new();
 
     // ---- 网格 + 坐标轴（0.5–2.0）----
-    tracks.extend(axes::axes_tracks(&vp));
+    tracks.extend(axes_tracks_ctx(&vp));
 
     // ---- f(x)=x² 曲线（1.5–2.5 draw 1.0s，33 点）----
     tracks.push(Track::Path(PathTrack {
@@ -396,29 +464,26 @@ pub fn scene_s3() -> ClipSpec {
         closed: true,
     }));
 
-    // ---- 水平虚线 y=1（3.0–3.5，5 段短 Path 从 y 轴到 P）----
+    // ---- 水平虚线 y=1（3.0 起 draw 0.3s，从 y 轴到 P；[节奏重剪] 原 5 段
+    // 短 Path 分拍（3.0+0.06i）合并为单条 draw 轨——分段本就 contiguous，
+    // 合并无视觉差异，省 4 条过程拍）----
     {
         let y_px = vp.to_px(0.0, 1.0)[1];
         let x_axis = vp.to_px(0.0, 0.0)[0];
         let xp = p_px[0];
-        let n = 5;
-        for i in 0..n {
-            let x0 = x_axis + (xp - x_axis) * (i as f32 / n as f32);
-            let x1 = x_axis + (xp - x_axis) * ((i + 1) as f32 / n as f32);
-            tracks.push(Track::Path(PathTrack {
-                points: vec![[x0, y_px], [x1, y_px]],
-                color: [GOLD_RGBA[0], GOLD_RGBA[1], GOLD_RGBA[2], 0.8],
-                width: 2.0,
-                fill: false,
-                at: 3.0 + 0.06 * i as f32,
-                in_sec: 0.2,
-                out_sec: 0.0,
-                out_at: None,
-                draw_sec: 0.25,
-                closed: false,
-            }));
-        }
-        tracks.push(static_text("L = 1", 24.0, GOLD_RGBA, 3.2, 0.3, y_px - 18.0, Some(425.0)));
+        tracks.push(Track::Path(PathTrack {
+            points: vec![[x_axis, y_px], [xp, y_px]],
+            color: [GOLD_RGBA[0], GOLD_RGBA[1], GOLD_RGBA[2], 0.8],
+            width: 2.0,
+            fill: false,
+            at: 3.0,
+            in_sec: 0.2,
+            out_sec: 0.0,
+            out_at: None,
+            draw_sec: 0.3,
+            closed: false,
+        }));
+        tracks.push(static_text("L = 1", 24.0, ctx(GOLD_RGBA), 3.2, 0.3, y_px - 18.0, Some(425.0)));
     }
 
     // ---- ε-带（3.5 起，CubicIn 收缩 1.00→0.25；水平带状 y∈[1−ε,1+ε]）----
@@ -443,18 +508,19 @@ pub fn scene_s3() -> ClipSpec {
             draw_sec: 0.0,
             closed: false,
         }));
-        // ε 标签：希腊符号 + 滚动数字（3.5 起，与带同参）。
+        // ε 标签：希腊符号 + 滚动数字（3.5 起，与带同参；[节奏重剪] 滚窗
+        // 收至 8.5s = 12.0 终点，顿悟定格内静止；上下文层 alpha）。
         let (mut pre, mut cnt) = greek_roll_readout(
             SymbolKind::Epsilon,
             " = ",
             120.0,
             26.0,
             26.0,
-            GOLD_RGBA,
+            ctx(GOLD_RGBA),
             1.0,
             0.25,
             3.5,
-            11.5,
+            8.5,
             EasingKind::CubicIn,
             2,
         );
@@ -499,11 +565,11 @@ pub fn scene_s3() -> ClipSpec {
             470.0,
             26.0,
             26.0,
-            CURVE_RGBA,
+            ctx(CURVE_RGBA),
             s3_delta_of_eps(1.0),
             s3_delta_of_eps(0.25),
             5.0,
-            10.0,
+            7.0,
             EasingKind::CubicIn,
             2,
         );
@@ -519,21 +585,35 @@ pub fn scene_s3() -> ClipSpec {
         tracks.push(Track::Counter(cnt));
     }
 
-    // ---- 底部文案 1（6.5 打字机；out_sec 反推淡出始于打字完成后）----
+    // ---- 开幕目标字幕（0.8 打字机，2.9 淡出；本节目标一句话）----
+    tracks.push(typewriter(
+        "把曲线放大到极致，看它变成什么",
+        24.0,
+        TEXT_CTX_RGBA,
+        0.8,
+        500.0,
+        12.0,
+        Some(2.9),
+        0.4,
+    ));
+
+    // ---- 底部文案 1（6.5 打字机；out_sec 反推淡出始于打字完成后；
+    // [节奏重剪] 文案压到上下文层 alpha 0.50）----
     tracks.push(typewriter(
         "无论 ε 多小，都能找到 δ，把曲线困在 L 附近",
         26.0,
-        TEXT_RGBA,
+        TEXT_CTX_RGBA,
         6.5,
         505.0,
         12.0,
+        None,
         7.5,
     ));
 
-    // ---- live 割线（7.0 draw 0.8s；h(t) Linear [7,14]；14.0 后空）----
+    // ---- live 割线（7.0 draw 0.8s；h(t) CubicInOut [7,12]；12.0 后空）----
     tracks.push(Track::DynPath(DynPathTrack {
         geom: Arc::new(move |t| {
-            if t < 7.0 || t > 14.0 {
+            if t < 7.0 || t > 12.0 {
                 return Vec::new();
             }
             let vp = s3_viewport_at(t);
@@ -553,20 +633,22 @@ pub fn scene_s3() -> ClipSpec {
         closed: false,
     }));
 
-    // ---- HUD：m = 3.0000 → 2.0000（7.0–14.0；与 h(t) 恒等）----
+    // ---- HUD：m = 3.0000 → 2.0000（7.0–12.0；与 h(t) 恒等）----
     // [任务 1] 经 `value_at` 共享 eased-h 纯函数，读数 = 2 + h(t) 逐位恒等
     // 几何（f∘ease 复合，单缓动 Counter 无法复现的缓动脉冲由 value_at 接管）。
+    // [节奏重剪] 滚窗 7.0→5.0s；12.0 起读数冻结于 2.0000（顿悟定格内
+    // HUD 停滚）；读数压到上下文层 alpha 0.55。
     tracks.push(Track::Counter(CounterText {
         prefix: String::from("m = "),
         from: secant_m(1.0),
         to: secant_m(0.0),
         at: 7.0,
-        dur_sec: 7.0,
+        dur_sec: 5.0,
         easing: EasingKind::Linear,
         decimals: 4,
         font: FontKind::Bold,
         size: 30.0,
-        color: GOLD_RGBA,
+        color: ctx(GOLD_RGBA),
         center_x: Some(170.0),
         y: 52.0,
         letter_spacing: 1.0,
@@ -576,8 +658,10 @@ pub fn scene_s3() -> ClipSpec {
         value_at: Some(Arc::new(|t| secant_m(s3_h(t)))),
     }));
 
-    // ---- 割线鬼影标记（h=1.0/0.5/0.25/0.125；alpha 0.25，片尾淡出）----
-    for (h, at) in [(1.0_f32, 8.5_f32), (0.5, 10.0), (0.25, 11.5), (0.125, 13.0)] {
+    // ---- 割线鬼影标记（h=0.5/0.25/0.125；alpha 0.25，片尾淡出；
+    // [节奏重剪] 收敛窗压至 [7,12] 后鬼影改钉在 h 精确穿越时刻
+    // 9.5/10.6/11.2；h=1.0 拍与 live 线起点冗余，删除）----
+    for (h, at) in [(0.5_f32, 9.5_f32), (0.25, 10.6), (0.125, 11.2)] {
         let a = vp.to_px(1.0, 1.0);
         let b = vp.to_px(1.0 + h, s3_f(1.0 + h));
         tracks.push(Track::Path(PathTrack {
@@ -594,10 +678,11 @@ pub fn scene_s3() -> ClipSpec {
         }));
     }
 
-    // ---- 切线定格（14.0 起，6px 亮金；geom 门控 14.0 前为空）----
+    // ---- 切线定格（12.0 起，6px 亮金；geom 门控 12.0 前为空；
+    // [节奏重剪] 14.0→12.0：此后 12.0–14.5 为 2.5s 顿悟静止定格）----
     tracks.push(Track::DynPath(DynPathTrack {
         geom: Arc::new(move |t| {
-            if t < 14.0_f32 {
+            if t < 12.0_f32 {
                 return Vec::new();
             }
             let vp = s3_viewport_at(t);
@@ -609,14 +694,15 @@ pub fn scene_s3() -> ClipSpec {
         color: [1.0, 0.90, 0.45, 1.0],
         width: 6.0,
         fill: false,
-        at: 14.0,        in_sec: 0.3,
+        at: 12.0,        in_sec: 0.3,
         out_sec: 0.0,
         out_at: None,
         draw_sec: 0.0,
         closed: false,
     }));
 
-    // ---- 定义式（15.0 draw 0.5s，画面上方中央）----
+    // ---- 定义式（14.5 draw 0.5s，画面上方中央；[节奏重剪] 15.0→14.5，
+    // 紧接顿悟定格 12.0–14.5 之后入场）----
     {
         let mut formula = symbols::assemble_formula(
             &[
@@ -639,11 +725,11 @@ pub fn scene_s3() -> ClipSpec {
         for tr in formula.iter_mut() {
             match tr {
                 Track::Static(s) => {
-                    s.at = 15.0;
+                    s.at = 14.5;
                     s.in_sec = 0.5;
                 }
                 Track::Path(p) => {
-                    p.at = 15.0;
+                    p.at = 14.5;
                     p.in_sec = 0.5;
                     p.draw_sec = 0.5;
                 }
@@ -653,12 +739,12 @@ pub fn scene_s3() -> ClipSpec {
         tracks.extend(formula);
     }
 
-    // ---- 底部文案 2（15.5 淡入）----
+    // ---- 底部文案 2（15.0 淡入；[节奏重剪] 15.5→15.0，上下文层 alpha）----
     tracks.push(static_text(
         "极限，是无限靠近的思想实验",
         26.0,
-        TEXT_RGBA,
-        15.5,
+        TEXT_CTX_RGBA,
+        15.0,
         0.5,
         505.0,
         None,
@@ -692,15 +778,18 @@ fn tangent_m(a: f32) -> f32 {
     a
 }
 
-/// a(t)：CubicInOut −2→2 over [3.5, 13.5]（HUD 同窗同参；[任务 1] f∘ease：
+/// a(t)：CubicInOut −2→2 over [3.5, 12.5]（HUD 同窗同参；[任务 1] f∘ease：
 /// 切点 x=a 走缓动、y=f(a)=a²/2 由 x 派生，切线/动点/引导线同源一致）。
+///
+/// [节奏重剪] 扫过窗由 10s 压至 9s：a=2 末态静态定格由 3s 延长至 4s
+/// （fast-fast-SLOW 的收尾慢段）；窗外（t ≥ 12.5）冻结端点值。
 fn s4_a(t: f32) -> f32 {
     if t <= 3.5 {
         -2.0
-    } else if t >= 13.5 {
+    } else if t >= 12.5 {
         2.0
     } else {
-        -2.0 + 4.0 * EasingKind::CubicInOut.apply((t - 3.5) / 10.0)
+        -2.0 + 4.0 * EasingKind::CubicInOut.apply((t - 3.5) / 9.0)
     }
 }
 
@@ -721,7 +810,7 @@ pub fn scene_s4() -> ClipSpec {
     let mut tracks: Vec<Track> = Vec::new();
 
     // ---- 网格 + 坐标轴（0.5–2.0）----
-    tracks.extend(axes::axes_tracks(&vp));
+    tracks.extend(axes_tracks_ctx(&vp));
 
     // ---- 抛物线 f(x)=x²/2（1.0–3.0 draw 2.0s，45 点）----
     tracks.push(Track::Path(PathTrack {
@@ -830,48 +919,50 @@ pub fn scene_s4() -> ClipSpec {
         closed: false,
     }));
 
-    // ---- HUD：m = −2.0000 → 2.0000（3.5–13.5；与 a(t) 恒等）----
+    // ---- HUD：m = −2.0000 → 2.0000（3.5–12.5；与 a(t) 恒等）----
     // [任务 1] 经 `value_at` 共享 eased-a 纯函数，读数 = a(t) 逐位恒等几何。
     // [任务 5·缺陷 1] 过零跳：单 Counter 从 −2 滚至 2，minus 在过零帧
     // 消失致居中锚整串右跳 ~6px（实测左缘 81→87）。拆正负两段、
-    // 8.5s（a=0 中点）硬切交接；正段 center_x 按 minus 实测字宽左补
+    // 8.0s（a=0 中点；[节奏重剪] 随扫过窗 [3.5,13.5]→[3.5,12.5] 由
+    // 8.5s 移至 8.0s）硬切交接；正段 center_x 按 minus 实测字宽左补
     // half-minus ⇒ 两段左缘逐位对齐。−0.0000 归一由 `counter_text`
-    // 保证交接帧同串同宽；硬切语义（t≥8.5 负段 env=0）免双显。
+    // 保证交接帧同串同宽；硬切语义（t≥8.0 负段 env=0）免双显。
+    // [节奏重剪] 两段 HUD 均压到上下文层 alpha 0.55。
     let minus_half = (symbols::text_run_width("m = -0.0000", FontKind::Bold, 30.0, 1.0)
         - symbols::text_run_width("m = 0.0000", FontKind::Bold, 30.0, 1.0))
         * 0.5;
-    // 负段：3.5–8.5（a: −2→0，值 ≤ 0；居中锚 170）。
+    // 负段：3.5–8.0（a: −2→0，值 ≤ 0；居中锚 170）。
     tracks.push(Track::Counter(CounterText {
         prefix: String::from("m = "),
         from: tangent_m(-2.0),
         to: 0.0,
         at: 3.5,
-        dur_sec: 5.0,
+        dur_sec: 4.5,
         easing: EasingKind::Linear,
         decimals: 4,
         font: FontKind::Bold,
         size: 30.0,
-        color: GOLD_RGBA,
+        color: ctx(GOLD_RGBA),
         center_x: Some(170.0),
         y: 52.0,
         letter_spacing: 1.0,
         in_sec: 0.3,
         out_sec: 0.0,
-        out_at: Some(8.5),
+        out_at: Some(8.0),
         value_at: Some(Arc::new(|t| tangent_m(s4_a(t)).min(0.0))),
     }));
-    // 正段：8.5–13.5（a: 0→2，值 ≥ 0；center_x 左补 half-minus 对齐左缘）。
+    // 正段：8.0–12.5（a: 0→2，值 ≥ 0；center_x 左补 half-minus 对齐左缘）。
     tracks.push(Track::Counter(CounterText {
         prefix: String::from("m = "),
         from: 0.0,
         to: tangent_m(2.0),
-        at: 8.5,
-        dur_sec: 5.0,
+        at: 8.0,
+        dur_sec: 4.5,
         easing: EasingKind::Linear,
         decimals: 4,
         font: FontKind::Bold,
         size: 30.0,
-        color: GOLD_RGBA,
+        color: ctx(GOLD_RGBA),
         center_x: Some(170.0 - minus_half),
         y: 52.0,
         letter_spacing: 1.0,
@@ -881,15 +972,20 @@ pub fn scene_s4() -> ClipSpec {
         value_at: Some(Arc::new(|t| tangent_m(s4_a(t)).max(0.0))),
     }));
 
-    // ---- 底部文案 1（8.5 打字机；out_sec 反推淡出始于打字完成后）----
+    // ---- [节奏重剪] 原底部文案 1（8.5s「切线的斜率随位置而变——这就是
+    // 导函数」）删除：其信息由 f′ 曲线 + f′(x)=x 标签 + 收尾文案承接，
+    // 文案减法换呼吸。----
+
+    // ---- 开幕目标字幕（0.8 打字机，2.9 淡出；本节目标一句话）----
     tracks.push(typewriter(
-        "切线的斜率随位置而变——这就是导函数",
-        26.0,
-        TEXT_RGBA,
-        8.5,
-        505.0,
+        "让切线滑起来，看斜率怎么变",
+        24.0,
+        TEXT_CTX_RGBA,
+        0.8,
+        500.0,
         12.0,
-        6.0,
+        Some(2.9),
+        0.4,
     ));
 
     // ---- 导函数曲线 f′(x)=x（9.0–10.5 draw 1.5s，亮紫 4px）----
@@ -933,37 +1029,20 @@ pub fn scene_s4() -> ClipSpec {
         tracks.extend(formula);
     }
 
-    // ---- 定格脉冲（13.5–14.5：B=(2,2) 处光环一次）----
-    tracks.push(Track::DynPath(DynPathTrack {
-        geom: Arc::new(move |t| {
-            if t < 13.5 || t > 14.5 {
-                return Vec::new();
-            }
-            let vp = s4_viewport_at(t);
-            let a = s4_a(t);
-            let p = vp.to_px(a, a);
-            let r = 5.0 + 12.0 * bump((t - 13.5) / 1.0);
-            circle_pts(p[0], p[1], r, 28)
-        }) as GeomFn,
-        color: [GOLD_RGBA[0], GOLD_RGBA[1], GOLD_RGBA[2], 0.9],
-        width: 2.5,
-        fill: false,
-        at: 13.5,
-        in_sec: 0.1,
-        out_sec: 0.0,
-        out_at: None,
-        draw_sec: 0.0,
-        closed: true,
-    }));
+    // ---- [节奏重剪] 原定格脉冲拍（13.5–14.5，B=(2,2) 处光环一次）删除：
+    // a(t) 末态定格本身即停顿（12.5 起切点/切线/动点全静止），光环属
+    // 过场冗余闪光。----
 
-    // ---- 底部文案 2（14.5 打字机）----
+    // ---- 底部文案 2（13.5 打字机；[节奏重剪] 14.5→13.5 承接末态定格，
+    // 上下文层 alpha 0.50）----
     tracks.push(typewriter(
         "导数，把斜率变成一个函数",
         26.0,
-        TEXT_RGBA,
-        14.5,
+        TEXT_CTX_RGBA,
+        13.5,
         505.0,
         12.0,
+        None,
         0.6,
     ));
 
@@ -1073,7 +1152,7 @@ pub fn scene_s5() -> ClipSpec {
     let mut tracks: Vec<Track> = Vec::new();
 
     // ---- 网格 + 坐标轴（0.5–2.0）----
-    tracks.extend(axes::axes_tracks(&vp));
+    tracks.extend(axes_tracks_ctx(&vp));
 
     // ---- 曲线 f(x)=x²（1.0–2.5 draw 1.5s，25 点）----
     tracks.push(Track::Path(PathTrack {
@@ -1089,12 +1168,12 @@ pub fn scene_s5() -> ClipSpec {
         closed: false,
     }));
 
-    // ---- 区间标记 0 / 2（2.5 淡入，x 轴下方）----
+    // ---- 区间标记 0 / 2（2.5 淡入，x 轴下方；上下文层 alpha）----
     {
         let p0 = vp.to_px(0.0, 0.0);
         let p2 = vp.to_px(2.0, 0.0);
-        tracks.push(static_text("0", 22.0, TEXT_RGBA, 2.5, 0.4, p0[1] + 26.0, Some(p0[0])));
-        tracks.push(static_text("2", 22.0, TEXT_RGBA, 2.5, 0.4, p2[1] + 26.0, Some(p2[0])));
+        tracks.push(static_text("0", 22.0, ctx(TEXT_RGBA), 2.5, 0.4, p0[1] + 26.0, Some(p0[0])));
+        tracks.push(static_text("2", 22.0, ctx(TEXT_RGBA), 2.5, 0.4, p2[1] + 26.0, Some(p2[0])));
     }
 
     // ---- Riemann 矩形：PRD 四拍阶跃（3.0/4.5/6.0/7.5 各 1.5s）----
@@ -1169,7 +1248,7 @@ pub fn scene_s5() -> ClipSpec {
             decimals: 0,
             font: FontKind::Bold,
             size: 28.0,
-            color: TEXT_RGBA,
+            color: ctx(TEXT_RGBA),
             center_x: Some(n_left + w * 0.5),
             y: 52.0,
             letter_spacing: 1.0,
@@ -1194,7 +1273,7 @@ pub fn scene_s5() -> ClipSpec {
             decimals: 4,
             font: FontKind::Bold,
             size: 28.0,
-            color: GOLD_RGBA,
+            color: ctx(GOLD_RGBA),
             center_x: Some(800.0),
             y: 52.0,
             letter_spacing: 1.0,
@@ -1221,7 +1300,7 @@ pub fn scene_s5() -> ClipSpec {
         decimals: 4,
         font: FontKind::Bold,
         size: 28.0,
-        color: GOLD_RGBA,
+        color: ctx(GOLD_RGBA),
         center_x: Some(800.0),
         y: 52.0,
         letter_spacing: 1.0,
@@ -1231,21 +1310,29 @@ pub fn scene_s5() -> ClipSpec {
         value_at: None,
     }));
 
-    // ---- 底部文案 1（8.0 打字机）----
+    // ---- [节奏重剪] 原底部文案 1（8.0s「矩形越多，和越接近真实的面积」）
+    // 删除：矩形生长的视觉自明，文案减法换顿悟呼吸。----
+
+    // ---- 开幕目标字幕（0.8 打字机，2.9 淡出；本节目标一句话）----
     tracks.push(typewriter(
-        "矩形越多，和越接近真实的面积",
-        26.0,
-        TEXT_RGBA,
-        8.0,
-        505.0,
+        "用矩形逼近曲线下的面积",
+        24.0,
+        TEXT_CTX_RGBA,
+        0.8,
+        500.0,
         12.0,
-        7.0,
+        Some(2.9),
+        0.4,
     ));
 
     // （曲线下面积由末拍阶梯的 9.0–11.0 morph 直接化身，无需独立填充轨；
     // PRD 工程表 P1-3：平滑 morph 替代 crossfade。）
 
-    // ---- 积分式（11.0 draw 1.2s，画面中央）----
+    // ---- [节奏重剪] 顿悟定格 11.0–13.0（2.0s）：S = 2.6667（8/3）答案
+    // 落定后静止——无新元素入场、HUD 停滚、矩形/曲线/面积保持。----
+
+    // ---- 积分式（13.0 draw 1.2s，画面中央；[节奏重剪] 11.0→13.0，让位
+    // 顿悟定格）----
     {
         let mut formula = symbols::assemble_formula(
             &[
@@ -1268,11 +1355,11 @@ pub fn scene_s5() -> ClipSpec {
         for tr in formula.iter_mut() {
             match tr {
                 Track::Static(s) => {
-                    s.at = 11.0;
+                    s.at = 13.0;
                     s.in_sec = 0.4;
                 }
                 Track::Path(p) => {
-                    p.at = 11.0;
+                    p.at = 13.0;
                     p.in_sec = 0.4;
                     p.draw_sec = 1.2;
                 }
@@ -1282,23 +1369,10 @@ pub fn scene_s5() -> ClipSpec {
         tracks.extend(formula);
     }
 
-    // ---- Σ → ∫ 演化（12.5：Σ 淡入 0.4s → 淡出，∫ 淡入）----
+    // ---- 金 ∫ 落版（14.6：定格后承接积分式的单独 ∫ 强调；[节奏重剪]
+    // 原 Σ→∫ 演化三拍——Σ 闪光（12.5）/ ∫（13.1）/ 演化箭头——删除，
+    // 合并为单 ∫ 落版拍）----
     {
-        // Σ：12.5 淡入 0.4s，13.1 淡出 0.4s（out_sec 锚定片尾的近似：
-        // 以短 in + 早 at 呈现「一闪」；∫ 常驻承接）。
-        let mut sigma = symbols::assemble_formula(
-            &[FormulaPart::Sym(SymbolKind::Sum, 44.0, GOLD_RGBA)],
-            430.0,
-            150.0,
-        );
-        for tr in sigma.iter_mut() {
-            if let Track::Path(p) = tr {
-                p.at = 12.5;
-                p.in_sec = 0.4;
-                p.draw_sec = 0.4;
-            }
-        }
-        tracks.extend(sigma);
         let mut integral = symbols::assemble_formula(
             &[FormulaPart::Sym(SymbolKind::Integral, 44.0, GOLD_RGBA)],
             530.0,
@@ -1306,31 +1380,27 @@ pub fn scene_s5() -> ClipSpec {
         );
         for tr in integral.iter_mut() {
             if let Track::Path(p) = tr {
-                p.at = 13.1;
+                p.at = 14.6;
                 p.in_sec = 0.5;
                 p.draw_sec = 0.5;
             }
         }
         tracks.extend(integral);
-        // 演化箭头（→）。
-        tracks.extend(symbols::assemble_formula(
-            &[FormulaPart::Sym(SymbolKind::Implies, 30.0, TEXT_RGBA)],
-            480.0,
-            150.0,
-        ));
     }
 
-    // ---- 底部文案 2（13.5 打字机）+ 右上角小字 ----
+    // ---- 底部文案 2（15.2 打字机）+ 右上角小字（[节奏重剪] 13.5→15.2，
+    // 收尾于顿悟定格之后；上下文层 alpha）----
     tracks.push(typewriter(
         "求和取极限，就是积分",
         26.0,
-        TEXT_RGBA,
-        13.5,
+        TEXT_CTX_RGBA,
+        15.2,
         505.0,
         12.0,
-        0.6,
+        None,
+        0.3,
     ));
-    tracks.push(static_text("8/3 = 2.6667", 20.0, GOLD_RGBA, 13.5, 0.5, 90.0, Some(830.0)));
+    tracks.push(static_text("8/3 = 2.6667", 20.0, ctx(GOLD_RGBA), 15.2, 0.5, 90.0, Some(830.0)));
 
     ClipSpec {
         width: common::WIDTH,
@@ -1397,7 +1467,7 @@ pub fn scene_s6() -> ClipSpec {
     let mut tracks: Vec<Track> = Vec::new();
 
     // ---- 网格 + 坐标轴（0.5–2.0）----
-    tracks.extend(axes::axes_tracks(&vp));
+    tracks.extend(axes_tracks_ctx(&vp));
 
     // ---- 链 A：f(x)=x²（1.0–3.0 draw 2.0s，25 点，青）----
     tracks.push(Track::Path(PathTrack {
@@ -1642,15 +1712,19 @@ pub fn scene_s6() -> ClipSpec {
         value_at: Some(Arc::new(|t| s6_fp(s6_x(t)))),
     }));
 
-    // ---- 底部文案 1（6.5 打字机）----
+    // ---- [节奏重剪] 原底部文案 1（6.5s「F 的变化率，正是 f 本身」）删除：
+    // 该句提前剧透重合揭示，删掉让顿悟定格更干净。----
+
+    // ---- 开幕目标字幕（0.8 打字机，2.9 淡出；本节目标一句话）----
     tracks.push(typewriter(
-        "F 的变化率，正是 f 本身",
-        26.0,
-        TEXT_RGBA,
-        6.5,
-        505.0,
+        "变化与累积，本是同一件事",
+        24.0,
+        TEXT_CTX_RGBA,
+        0.8,
+        500.0,
         12.0,
-        6.8,
+        Some(2.9),
+        0.4,
     ));
 
     // ---- F′ 重绘（9.0 draw 1.0s，亮金，与 f 完全重合）----
@@ -1667,7 +1741,8 @@ pub fn scene_s6() -> ClipSpec {
         closed: false,
     }));
 
-    // ---- F′(x) = f(x)（10.0 淡入，居中）----
+    // ---- F′(x) = f(x)（10.0 淡入，居中；[节奏重剪] 此后 10.0–12.5 为
+    // 2.5s 顿悟静止定格——重合公式落定，无新元素、HUD 停滚）----
     {
         let mut formula = symbols::assemble_formula(
             &[
@@ -1694,7 +1769,8 @@ pub fn scene_s6() -> ClipSpec {
         tracks.extend(formula);
     }
 
-    // ---- FTC 公式（10.5 draw 1.5s，画面中央）----
+    // ---- FTC 公式（12.5 draw 1.5s，画面中央；[节奏重剪] 10.5→12.5，让位
+    // 顿悟定格 10.0–12.5）----
     {
         let mut formula = symbols::assemble_formula(
             &[
@@ -1710,11 +1786,11 @@ pub fn scene_s6() -> ClipSpec {
         for tr in formula.iter_mut() {
             match tr {
                 Track::Static(s) => {
-                    s.at = 10.5;
+                    s.at = 12.5;
                     s.in_sec = 0.4;
                 }
                 Track::Path(p) => {
-                    p.at = 10.5;
+                    p.at = 12.5;
                     p.in_sec = 0.4;
                     p.draw_sec = 1.5;
                 }
@@ -1724,16 +1800,8 @@ pub fn scene_s6() -> ClipSpec {
         tracks.extend(formula);
     }
 
-    // ---- 底部文案 2（12.0 打字机）----
-    tracks.push(typewriter(
-        "微分与积分，互为逆运算",
-        26.0,
-        TEXT_RGBA,
-        12.0,
-        505.0,
-        12.0,
-        0.6,
-    ));
+    // ---- [节奏重剪] 原底部文案 2（12.0s「微分与积分，互为逆运算」）删除：
+    // FTC 公式即该句的精确表述，收尾让定理自己说话。----
 
     // ---- 两链合流脉冲（13.0–14.0：f 与 F 同步光环）----
     for (color, f) in [
@@ -2063,9 +2131,13 @@ mod tests {
         }
     }
 
-    /// [任务 5·缺陷 1] S4 HUD 过零左缘恒定：正负两段（8.5s 硬切）屏上
+    /// [任务 5·缺陷 1] S4 HUD 过零左缘恒定：正负两段（8.0s 硬切）屏上
     /// 串的左缘（center_x − 实测字宽/2）在过零前后必须逐位一致——修复前
     /// minus 消失致居中锚整串右跳 ~6px（实测左缘 81→87）。
+    ///
+    /// [节奏重剪] 分段随扫过窗 [3.5, 13.5]→[3.5, 12.5] 由 8.5s 移至
+    /// 8.0s（CubicInOut 过零中点）：跨段探针与段内采样窗同步调整，
+    /// 断言语义（左缘逐位一致）不变。
     #[test]
     fn s4_hud_left_edge_stable_across_zero_crossing() {
         let spec = scene_s4();
@@ -2097,21 +2169,21 @@ mod tests {
             c.center_x.unwrap()
                 - symbols::text_run_width(&readout(c, t), c.font, c.size, c.letter_spacing) * 0.5
         };
-        // 跨段：交接帧附近两段左缘一致（8.49 负段末 ↔ 8.51 正段首；
+        // 跨段：交接帧附近两段左缘一致（7.99 负段末 ↔ 8.01 正段首；
         // 对称时刻数字串相同，minus 补偿精确 ⇒ 容差 1e-3）。
-        let l_neg_end = left(neg, 8.49);
-        let l_pos_start = left(pos, 8.51);
+        let l_neg_end = left(neg, 7.99);
+        let l_pos_start = left(pos, 8.01);
         assert!(
             (l_neg_end - l_pos_start).abs() < 1e-3,
             "过零交接左缘跳变 {l_neg_end} vs {l_pos_start}（缺陷 1 回归）"
         );
         // 段内：各自左缘恒定（表格数字 ⇒ 容差 1e-3；旧 bug 为 ~6px 跳）。
         for i in 0..50 {
-            let t = 3.6 + i as f32 * 4.8 / 50.0;
+            let t = 3.6 + i as f32 * 4.3 / 50.0;
             assert!((left(neg, t) - l_neg_end).abs() < 1e-3, "负段左缘漂移 t={t}");
         }
         for i in 0..=50 {
-            let t = 8.6 + i as f32 * 4.8 / 50.0;
+            let t = 8.1 + i as f32 * 4.3 / 50.0;
             assert!(
                 (left(pos, t) - l_pos_start).abs() < 1e-3,
                 "正段左缘漂移 t={t}"

@@ -322,6 +322,59 @@ pub struct PathTrack {
     pub closed: bool,
 }
 
+/// 时间参数化折线变形轨道（Morph）：从折线 `from` 连续变形到折线 `to`，
+/// 用于数学动画（割线收敛成切线、公式符号变形等）。
+///
+/// 帧内求值（见 `render::draw_morph`）：按场景时间 `t` 计算
+/// `u = clamp((t - at) / dur, 0, 1)`，`e = ease(u)`，逐点
+/// `lerp(from[i], to[i], e)` 得到当前折线；随后进入与 [`PathTrack`]
+/// **完全相同的光栅核心**（`render::paint_polyline`）——描边 / 填充 /
+/// `closed` / `draw_sec` 绘制进度 / `at` / `in_sec` / `out_sec` /
+/// `out_at` 淡入淡出语义全部与 [`PathTrack`] 一致。
+///
+/// 点数不等时按索引配对，只渲染 `min(from.len(), to.len())` 个点（多出的
+/// 点忽略）。
+///
+/// 字段说明：本仓库无 `PathStyle` / `FillStyle` / `FadeSpec` 类型，按设计
+/// 指示照抄 [`PathTrack`] 的现有字段——`color` + `width` 即描边样式，
+/// `fill: bool` 即填充开关（填充色同 `color`），`at` / `in_sec` /
+/// `out_sec` / `out_at` 即淡入淡出；`dur <= 0` 时 `t >= at` 直接取 `to`。
+/// 折线家族（[`PathTrack`] / [`DynPathTrack`]）均无 `center_x`（几何为
+/// 绝对设备像素，文本变体的水平锚点语义不适用），故本结构亦不设该字段。
+#[derive(Debug, Clone)]
+pub struct MorphSpec {
+    /// 起点折线（设备像素）。
+    pub from: Vec<[f32; 2]>,
+    /// 终点折线（设备像素；与 `from` 同点数为正常情形）。
+    pub to: Vec<[f32; 2]>,
+    /// 颜色（直通 alpha 线性 RGBA，0..1；描边与填充共用）。
+    pub color: [f32; 4],
+    /// 描边宽度（px；`fill = false` 时生效）。
+    pub width: f32,
+    /// `true` = 闭合路径并填充（半透明面积）；`false` = 描边。
+    pub fill: bool,
+    /// 出现起始秒。
+    pub at: f32,
+    /// 淡入时长（秒）。
+    pub in_sec: f32,
+    /// 淡出时长（秒）；0 = 不淡出。
+    pub out_sec: f32,
+    /// 淡出绝对锚点（场景秒）；`Some(a)` 时淡出自 `a` 起（`out_sec` 秒内
+    /// 平滑归 0，`out_sec = 0` 时 `a` 处硬切）；`None` = 缺省锚定片尾
+    /// （`duration - out_sec`）。非有限值按 `None` 处理；早于 `at` 时钳到
+    /// `at`。语义与 [`PathTrack::out_at`] 一致。
+    pub out_at: Option<f32>,
+    /// 绘制进度动画时长（秒；0 = 立即全显，仅描边模式生效；语义与
+    /// [`PathTrack::draw_sec`] 一致）。
+    pub draw_sec: f32,
+    /// 是否闭合（描边时首尾相连画闭合段；填充时自动闭合）。
+    pub closed: bool,
+    /// 变形缓动（作用于进度 `u`）。
+    pub ease: EasingKind,
+    /// 变形时长（秒；`<= 0` 时 `t >= at` 直接显示 `to`，否则显示 `from`）。
+    pub dur: f32,
+}
+
 /// 动态几何闭包类型：场景绝对时间 `t`（秒）→ 设备像素折线。
 ///
 /// - 必须是纯函数（禁止内部可变状态、时钟、随机源）；
@@ -541,6 +594,9 @@ pub enum Track {
     Shape(ShapeTrack),
     /// 折线路径叠加层（自由曲线描边 / 面积填充，带绘制进度动画）。
     Path(PathTrack),
+    /// 时间参数化折线变形叠加层（Morph：从 `from` 连续变形到 `to`，
+    /// 与 [`PathTrack`] 共用光栅核心）。
+    Morph(MorphSpec),
     /// 时间参数化折线叠加层（每帧求值 `geom(t)`，与 [`PathTrack`] 共用
     /// 光栅核心）。
     DynPath(DynPathTrack),
