@@ -35,6 +35,8 @@ pub static SHADERS: &[(&str, &str)] = &[
     ("text.wgsl", include_str!("../shaders/text.wgsl")),
     // GI 的 GPU compute 路径（SDF sphere tracing 遮挡 + SH-L2 投影/重建）。
     ("gi_compute.wgsl", include_str!("../shaders/gi_compute.wgsl")),
+    // 背景渲染 GPU compute shader（demo `paint_background` 热点的 GPU 管线兜底）。
+    ("background.wgsl", include_str!("../shaders/background.wgsl")),
 ];
 
 /// 库文件：只被 `//!include` 引用，**不**作为独立测试项上传 GPU。

@@ -1,7 +1,7 @@
 //! 风格/二级调色攻击性边界测试。只写测试，不改源码。
 
 use prism_aesthetic::curves::{Curve, CurvePoint, CurveSet};
-use prism_aesthetic::secondary::{HslQualifier, LiftGammaGain, PowerWindow, WindowShape};
+use prism_aesthetic::secondary::{HslQualifier, LiftGammaGain, PowerWindow};
 
 /// 色相选区文档声称"红色在 0 与 1 处连通"（色相环形量）。
 /// 跨 0 选区 [0.9, 0.1]（红相绕环）应命中纯红（hue=0）。

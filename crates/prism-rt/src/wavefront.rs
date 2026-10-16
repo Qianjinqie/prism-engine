@@ -581,7 +581,8 @@ const _: () = {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::integrator::{render_pixel as ref_render_pixel, Aabb, Sphere};
+    use crate::bsdf::Bsdf;
+    use crate::integrator::{render_pixel as ref_render_pixel, Aabb, Paraboloid, Plane, Sphere};
 
     /// 参考整帧（逐像素经 integrator::render_pixel）。
     fn ref_render_frame(
@@ -643,6 +644,8 @@ mod tests {
                 radiance: Vec3::new(16.0, 13.0, 10.0),
             }],
             medium: None,
+            paraboloids: vec![],
+            planes: vec![],
         }
     }
 
@@ -817,5 +820,126 @@ mod tests {
             }
         }
         out
+    }
+
+    // ==================== E5 解析图元 wavefront ↔ integrator parity ====================
+
+    /// E5 parity 场景 A（PRD §6 / 架构 §6.3 S7 配置复刻）：金属抛物面
+    /// （z=x²+y²，r_max=1.2）+ 有限切片玻璃平面（切点 P=(0.8,0.8,1.28)、
+    /// 法线 normalize(-1.6,-1.6,1)、half_extent=0.85）+ 无限地面 +
+    /// 矩形面光 + 环境光。
+    fn e5_scene_a() -> Scene {
+        let gold = Bsdf::new(
+            Vec3::new(1.0, 0.76, 0.33),
+            1.0,
+            0.2,
+            1.5,
+            0.0,
+            0.0,
+            Vec3::splat(0.3),
+        );
+        let glass = Bsdf::new(
+            Vec3::splat(0.95),
+            0.0,
+            0.02,
+            1.5,
+            0.9,
+            0.0,
+            Vec3::splat(0.3),
+        );
+        Scene {
+            spheres: vec![],
+            boxes: vec![],
+            lights: vec![
+                Light::Rect {
+                    center: Vec3::new(0.0, 3.0, 0.0),
+                    edge_u: Vec3::new(1.2, 0.0, 0.0),
+                    edge_v: Vec3::new(0.0, 0.0, 1.2),
+                    radiance: Vec3::new(14.0, 12.0, 9.0),
+                },
+                Light::Ambient { radiance: Vec3::new(0.12, 0.14, 0.18) },
+            ],
+            medium: None,
+            paraboloids: vec![(Paraboloid { k: 1.0, r_max: 1.2 }, MaterialKind::Pbr(gold))],
+            planes: vec![
+                (
+                    Plane::new(Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), None),
+                    MaterialKind::Lambert { albedo: Vec3::new(0.18, 0.20, 0.24) },
+                ),
+                (
+                    Plane::new(
+                        Vec3::new(0.8, 0.8, 1.28),
+                        Vec3::new(-1.6, -1.6, 1.0),
+                        Some(0.85),
+                    ),
+                    MaterialKind::Pbr(glass),
+                ),
+            ],
+        }
+    }
+
+    /// E5 parity 场景 B：发光球（NEE/MIS 球光源路径）+ 金属抛物面 +
+    /// Lambert 地面——验 ShapeRef 索引错位不会在 MIS 权重上漂移。
+    fn e5_scene_b() -> Scene {
+        let gold = Bsdf::new(
+            Vec3::new(1.0, 0.76, 0.33),
+            1.0,
+            0.15,
+            1.5,
+            0.0,
+            0.0,
+            Vec3::splat(0.3),
+        );
+        let center = Vec3::new(0.0, 1.6, 0.2);
+        let radiance = Vec3::new(18.0, 15.0, 11.0);
+        Scene {
+            spheres: vec![(
+                Sphere { center, radius: 0.3 },
+                MaterialKind::Emissive { radiance },
+            )],
+            boxes: vec![],
+            lights: vec![Light::Sphere { center, radius: 0.3, radiance }],
+            medium: None,
+            paraboloids: vec![(Paraboloid { k: 1.0, r_max: 1.4 }, MaterialKind::Pbr(gold))],
+            planes: vec![(
+                Plane::new(Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), None),
+                MaterialKind::Lambert { albedo: Vec3::new(0.18, 0.20, 0.24) },
+            )],
+        }
+    }
+
+    /// 逐位对拍辅助：wavefront ≡ integrator（3 通道 to_bits 全等）。
+    fn assert_parity_bitwise(scene: &Scene, label: &str) {
+        let cam = cornell_camera();
+        let ctx = EvalCtx::new(77, 7, 3);
+        let res = (8, 8);
+        let params = RenderParams::new(4, 4);
+        let a = render_frame(scene, &cam, &ctx, res, &params);
+        let b = ref_render_frame(scene, &cam, &ctx, res, &params);
+        assert_eq!(a.len(), b.len());
+        for i in 0..a.len() {
+            for c in 0..3 {
+                assert_eq!(
+                    a[i][c].to_bits(),
+                    b[i][c].to_bits(),
+                    "{label} 像素 {i} 通道 {c}：wavefront {} ≠ integrator {}",
+                    a[i][c],
+                    b[i][c]
+                );
+            }
+        }
+        println!("parity 通过（{label}）：8×8 spp4 wavefront ≡ integrator（逐位）");
+    }
+
+    /// 判对 4（E5）：抛物面 + 玻璃切片 + 地面（Rect + Ambient）逐位对拍。
+    #[test]
+    fn wavefront_equals_integrator_bitwise_analytic_shapes() {
+        assert_parity_bitwise(&e5_scene_a(), "E5-A 抛物面/玻璃/地面");
+    }
+
+    /// 判对 5（E5）：球光源（NEE/MIS）+ 金属抛物面逐位对拍。
+    #[test]
+    fn wavefront_equals_integrator_bitwise_sphere_light_paraboloid() {
+        assert_parity_bitwise(&e5_scene_b(), "E5-B 球光源/抛物面");
     }
 }

@@ -1,0 +1,13 @@
+[package]
+name = "prism-anim-demo"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+prism-noise = { path = "../prism-noise" }
+prism-gpu = { path = "../prism-gpu" }
+prism-raster = { path = "../prism-raster" }
+prism-mux = { path = "../prism-mux" }
+prism-io = { path = "../prism-io" }
+prism-text = { path = "../prism-text" }
+prism-anim = { path = "../prism-anim" }

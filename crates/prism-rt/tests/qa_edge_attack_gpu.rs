@@ -50,6 +50,8 @@ fn cornell_scene() -> Scene {
             radiance: Vec3::new(16.0, 13.0, 10.0),
         }],
         medium: None,
+        paraboloids: vec![],
+        planes: vec![],
     }
 }
 
@@ -81,6 +83,8 @@ fn medium_scene() -> Scene {
             bounds: Aabb::new(Vec3::new(-1.0, -1.0, -1.0), Vec3::new(1.0, 3.0, 1.0)),
             medium: HomogeneousMedium::new(0.1, 0.9, 0.6),
         }),
+        paraboloids: vec![],
+        planes: vec![],
     }
 }
 
@@ -106,6 +110,8 @@ fn pbr_scene() -> Scene {
             radiance: Vec3::new(16.0, 13.0, 10.0),
         }],
         medium: None,
+        paraboloids: vec![],
+        planes: vec![],
     }
 }
 

@@ -17,6 +17,8 @@ fn ball_scene() -> Scene {
         boxes: Vec::<(Aabb, MaterialKind)>::new(),
         lights: Vec::new(),
         medium: None,
+        paraboloids: vec![],
+        planes: vec![],
     }
 }
 
@@ -61,6 +63,8 @@ fn rt_depth_empty_scene_all_miss() {
         boxes: Vec::new(),
         lights: Vec::new(),
         medium: None,
+        paraboloids: vec![],
+        planes: vec![],
     };
     let ctx = EvalCtx::new(1, 1, 0);
     let dm = render_depth(&scene, &cam(), &ctx, 4, 4, DepthParams::default());

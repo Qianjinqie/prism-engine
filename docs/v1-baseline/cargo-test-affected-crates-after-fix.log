@@ -1,0 +1,914 @@
+   Compiling prism-rt v0.1.0 (/workspace/media-engine/crates/prism-rt)
+   Compiling prism-ai v0.1.0 (/workspace/media-engine/crates/prism-ai)
+   Compiling prism-core v0.1.0 (/workspace/media-engine/crates/prism-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.62s
+     Running unittests src/lib.rs (target/debug/deps/prism_aesthetic-7314621637650e31)
+
+running 41 tests
+test cmd::tests::analyze_phase_returns_metrics ... ok
+test cmd::tests::apply_phase_is_pure_and_reversible_when_empty ... ok
+test cmd::tests::apply_phase_brightens_underexposed ... ok
+test cmd::tests::phase_names_are_stable ... ok
+test critic::tests::analyze_detects_color_cast ... ok
+test critic::tests::analyze_exposure_is_monotone_in_brightness ... ok
+test critic::tests::analyze_solid_gray_has_zero_contrast_and_sharpness ... ok
+test cmd::tests::critique_report_is_deterministic ... ok
+test critic::tests::empty_frame_is_safe ... ok
+test critic::tests::score_dim_is_one_in_tolerance_and_zero_beyond_hard ... ok
+test critic::tests::score_is_deterministic_same_input_same_score ... ok
+test critic::tests::sharpness_high_on_checkerboard_low_on_flat ... ok
+test critic::tests::diagnosis_hits_for_underexposed_gray_card ... ok
+test critic_loop::tests::apply_color_high_desaturates ... ok
+test critic_loop::tests::apply_exposure_low_brightens ... ok
+test critic_loop::tests::apply_suggestion_zero_strength_is_identity ... ok
+test critic_loop::tests::autofix_stops_when_already_good ... ok
+test critic_loop::tests::convergence_classifies_three_ways ... ok
+test critic::tests::well_exposed_midgray_scores_higher_than_black ... ok
+test cmd::tests::autofix_improves_and_records_rounds ... ok
+test critic_loop::tests::metrics_accumulator_averages_and_handles_empty ... ok
+test critic_loop::tests::suggest_is_derived_from_diagnoses_one_to_one ... ok
+test critic_loop::tests::loop_reuses_cache_on_second_round_identical_render ... ok
+test curves::tests::curve_set_neutral_is_identity_and_per_channel_applies ... ok
+test curves::tests::curve_set_is_deterministic ... ok
+test curves::tests::identity_curve_is_bit_exact_on_grid ... ok
+test curves::tests::monotone_curve_eval_is_clamped_and_linear_between_points ... ok
+test nodes::tests::node_collects_and_clamps ... ok
+test secondary::tests::full_range_qualifier_selects_everything ... ok
+test secondary::tests::gamma_brightens_midtones ... ok
+test secondary::tests::hue_qualifier_selects_only_red_hues ... ok
+test secondary::tests::lift_gamma_gain_neutral_is_bit_exact_identity ... ok
+test secondary::tests::lift_raises_shadows_gain_raises_highlights ... ok
+test secondary::tests::luma_qualifier_selects_shadows_only ... ok
+test secondary::tests::non_integer_gamma_midtones_do_not_underflow ... ok
+test secondary::tests::power_window_center_full_edge_zero ... ok
+test secondary::tests::rect_window_covers_corners_more_than_ellipse ... ok
+test secondary::tests::soft_range_boundary_is_continuous ... ok
+test critic_loop::tests::autofix_improves_underexposed_toward_target ... ok
+test critic_loop::tests::loop_round_is_deterministic_same_input_same_score ... ok
+test secondary::tests::secondary_neutral_is_identity_and_graded_is_bounded ... ok
+
+test result: ok. 41 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/qa_edge_attack_critic.rs (target/debug/deps/qa_edge_attack_critic-1ae2d9c994cce472)
+
+running 31 tests
+test ai_assist_all_preserves_order ... ok
+test ai_assist_direction_wording_differs ... ok
+test ai_assist_empty_dimension_is_structured_error ... ok
+test ai_assist_is_bitwise_deterministic ... ok
+test ai_assist_severity_clamp_and_seed_effect ... ok
+test critic_accumulator_empty_safe ... ok
+test critic_accumulator_averages ... ok
+test critic_apply_directions_correct ... ok
+test critic_apply_zero_strength_identity ... ok
+test critic_apply_is_pure ... ok
+test critic_color_cast_detects_red_dominance ... ok
+test critic_autofix_stops_when_good ... ok
+test critic_convergence_classification ... ok
+test critic_empty_frame_is_safe ... ok
+test critic_exposure_monotone_and_matches_ln ... ok
+test critic_command_phases_deterministic ... ok
+test critic_loop_reuse_matches_recompute ... ok
+test critic_loop_round_deterministic ... ok
+test critic_loop_tracks_rounds ... ok
+test critic_autofix_improves_two_rounds ... ok
+test critic_quality_node_clamps_and_unit ... ok
+test critic_score_dim_mapping_contract ... ok
+test critic_overexposed_diagnosis_high ... ok
+test critic_solid_frame_metrics_are_zero_where_expected ... ok
+test critic_sharpness_orders_checker_above_flat ... ok
+test critic_tiny_frames_safe ... ok
+test critic_suggest_one_to_one ... ok
+test critic_total_is_mean_of_five_dims ... ok
+test critic_underexposed_diagnosis_hits ... ok
+test critic_analyze_is_bitwise_deterministic ... ok
+test critic_score_is_bitwise_deterministic ... ok
+
+test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/qa_edge_attack_secondary.rs (target/debug/deps/qa_edge_attack_secondary-f571aae4d4d48525)
+
+running 11 tests
+test curve_eval_nan_input_no_panic ... ok
+test curve_monotone_detection_correct ... ok
+test curve_set_order_channel_then_master ... ok
+test curve_single_point_degenerate ... ok
+test full_range_default_qualifier_is_one_for_all ... ok
+test gamma_direction_is_correct ... ok
+test hue_red_selection_is_circularly_connected ... ok
+test hue_red_selection_nonwrapped_works ... ok
+test lgg_negative_input_no_nan ... ok
+test power_window_zero_feather_hard_edge ... ok
+test power_window_zero_radius_no_nan ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/qa_probe_secondary.rs (target/debug/deps/qa_probe_secondary-6f1254888a644c00)
+
+running 3 tests
+test probe_degenerate_smoke ... ok
+test probe_p1_3_hue_ring ... ok
+test probe_p0_1_gamma_accuracy ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/secondary_math.rs (target/debug/deps/secondary_math-ecae9d9ca5d467a8)
+
+running 6 tests
+test curves_neutral_identity_and_monotone ... ok
+test lift_gamma_gain_neutral_and_directions ... ok
+test hsl_qualifier_hue_wrap_and_ranges ... ok
+test power_window_weight_math ... ok
+test secondary_golden_fingerprint ... ok
+test secondary_is_deterministic ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/prism_ai-af1fea99480b7526)
+
+running 30 tests
+test assist::tests::advise_all_preserves_order ... ok
+test assist::tests::advise_distinguishes_dims_and_directions ... ok
+test assist::tests::advise_seed_changes_fingerprint ... ok
+test assist::tests::advise_is_deterministic_same_request_same_advice ... ok
+test assist::tests::empty_dimension_is_structured_error ... ok
+test assist::tests::severity_is_clamped_on_construction ... ok
+test assist::tests::severity_words_are_banded ... ok
+test assist::tests::unknown_dimension_normalizes_to_look ... ok
+test hash::tests::hash_is_deterministic_and_distinguishes ... ok
+test journal::tests::failed_stage_is_not_done_and_resumes_there ... ok
+test journal::tests::malformed_serialization_is_rejected ... ok
+test journal::tests::resume_skips_completed_stages ... ok
+test mock::tests::empty_prompt_is_rejected ... ok
+test mock::tests::max_words_caps_output ... ok
+test journal::tests::serialize_roundtrip_is_deterministic ... ok
+test mock::tests::mock_is_deterministic ... ok
+test mock::tests::mock_word_timings_are_monotonic_and_contiguous ... ok
+test mock::tests::salt_changes_output_deterministically ... ok
+test nodes::tests::node_collects_and_is_deterministic ... ok
+test provider::tests::fn_provider_adapter_is_usable ... ok
+test timings::tests::empty_input_yields_no_cues ... ok
+test timings::tests::golden_split_by_gap_and_limits ... ok
+test timings::tests::golden_split_by_max_duration ... ok
+test timings::tests::golden_split_by_max_words ... ok
+test timings::tests::non_monotonic_timestamps_rejected ... ok
+test timings::tests::split_is_deterministic ... ok
+test timings::tests::zero_max_words_rejected ... ok
+test pipeline::tests::resume_skips_completed_stages ... ok
+test pipeline::tests::pipeline_runs_all_stages_and_marks_done ... ok
+test pipeline::tests::draft_render_is_deterministic ... ok
+
+test result: ok. 30 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/qa_edge_attack.rs (target/debug/deps/qa_edge_attack-9949f733c33afbd4)
+
+running 23 tests
+test cue_color_node_deterministic ... ok
+test cue_color_node_nan_input_finite_output ... ok
+test cue_color_node_scalar_range_and_empty ... ok
+test cue_split_empty_and_single ... ok
+test cue_split_gap_boundary_exact ... ok
+test cue_split_max_duration_boundary_exact ... ok
+test cue_split_oversized_single_word_is_unsplittable ... ok
+test cue_split_rejects_zero_and_reversed_durations ... ok
+test cue_split_zero_max_words_rejected ... ok
+test fn_provider_propagates_errors ... ok
+test fnv1a_empty_anchor_and_avalanche ... ok
+test journal_deserialize_rejects_malformed ... ok
+test journal_equality_roundtrip_consistency ... ok
+test journal_resume_sequence ... ok
+test cue_split_deterministic_large ... ok
+test journal_serialize_roundtrip_state_preserved ... ok
+test mock_different_prompt_differs_and_salt_isolated ... ok
+test mock_empty_and_whitespace_prompt_rejected ... ok
+test mock_extreme_seed_and_utf8_deterministic ... ok
+test mock_max_words_zero_vs_bounded ... ok
+test pipeline_alt_seed_changes_frames ... ok
+test pipeline_frames_deterministic_and_sized ... ok
+test pipeline_resume_equivalent_to_full_run ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (target/debug/deps/prism_core-018fd3a1bee2a47a)
+
+running 88 tests
+test compose::tests::apply_fog_pulls_toward_fog_color_with_distance ... ok
+test compose::tests::compose_tree_eval_is_pure ... ok
+test compose::tests::flat_layers_degenerate_into_left_chain ... ok
+test compose::tests::compose_tree_layer_order_is_deterministic ... ok
+test compose::tests::flat_reduce_matches_left_chain_for_associative_op ... ok
+test compose::tests::mask_keeps_only_alpha_of_upper ... ok
+test compose::tests::multiply_and_screen_are_reference_formulas ... ok
+test compose::tests::over_upper_covers_lower_by_alpha ... ok
+test depth::tests::composite_near_layer_occludes_far ... ok
+test depth::tests::composite_order_swap_flips_result_deterministically ... ok
+test depth::tests::composite_tolerance_softens_edge ... ok
+test depth::tests::depth_aov_linear_maps_near_to_zero_far_to_one ... ok
+test depth::tests::depth_aov_log_is_monotone_and_normalized ... ok
+test depth::tests::ln_is_pure_and_monotone ... ok
+test depth::tests::ln_matches_reference_within_tolerance ... ok
+test depth::tests::soft_weight_near_beats_far ... ok
+test eval::tests::eval_output_canonical_bytes_are_id_ordered ... ok
+test eval::tests::eval_errors_are_actionable_with_advice ... ok
+test eval::tests::composition_reduction_domain_errors ... ok
+test eval::tests::md5_fingerprint_self_check ... ok
+test eval::tests::eval_twice_is_bit_identical_with_md5_fingerprint ... ok
+test eval::tests::multiply_merge_reduces_scalar_and_vec3 ... ok
+test eval::tests::node_params_flow_through_graph_construction ... ok
+test eval::tests::graph_eval_is_pure_function_of_frame ... ok
+test eval::tests::snapshot_bytes_roundtrip ... ok
+test eval::tests::sampler_node_is_reproducible_and_pixel_sensitive ... ok
+test eval::tests::snapshot_assembly_write_read_and_project ... ok
+test graph::tests::block_prereduction_changes_result_versus_global_tree ... ok
+test graph::tests::carry_counts_match_odd_tail_layers ... ok
+test graph::tests::ceil_log2_is_exact_integer_bound ... ok
+test graph::tests::cycle_detection_reports_cyclic_nodes_with_advice ... ok
+test graph::tests::dangling_and_conflicting_edges_are_rejected ... ok
+test graph::tests::duplicate_node_id_is_rejected ... ok
+test graph::tests::reduce_follows_pairwise_tree_association_order ... ok
+test graph::tests::pairwise_error_bound_holds_empirically ... ok
+test graph::tests::reduce_sorted_by_key_matches_manual_sort ... ok
+test graph::tests::reduce_unordered_sorts_key_before_association ... ok
+test graph::tests::reduction_shape_is_pure_function_of_n ... ok
+test graph::tests::same_n_different_data_yields_same_tree_and_same_float_association ... ok
+test graph::tests::shape_is_data_independent_and_key_is_pure_function_of_n ... ok
+test graph::tests::shape_leaf_slots_and_combine_count_conserved ... ok
+test graph::tests::topo_order_is_deterministic_with_id_tiebreak ... ok
+test node::tests::eval_ctx_and_snapshot_store_roundtrip ... ok
+test node::tests::node_triple_fields_compose ... ok
+test node::tests::params_canonical_bytes_are_insertion_order_independent ... ok
+test node::tests::sample_index_has_pixel_domain ... ok
+test graph::tests::shape_depth_equals_ceil_log2_across_scales ... ok
+test node::tests::structure_id_official_ordinals_and_custom_isolation ... ok
+test nodes::tests::c1_node_signatures_are_stable ... ok
+test nodes::tests::c1_structures_resolve_with_three_question_meta ... ok
+test nodes::tests::collect_rejects_double_registration ... ok
+test graph::tests::parallel_scheduling_of_same_shape_matches_serial_bitwise ... ok
+test nodes::tests::compose_merge_apply_returns_over_alpha ... ok
+test nodes::tests::depth_composite_apply_is_soft_weight ... ok
+test property::tests::const_channel_passthrough ... ok
+test nodes::tests::registry_macro_expands_collect_function ... ok
+test property::tests::expr_channel_evaluates ... ok
+test property::tests::loop_channel_three_modes ... ok
+test property::tests::sample_binding_writes_f32_param ... ok
+test property::tests::remap_channel_monotone_and_endpoints ... ok
+test property::tests::spring_channel_start_and_convergence ... ok
+test property::tests::track_channel_matches_direct_track ... ok
+test property::tests::wiggle_channel_seed_ctx_determinism ... ok
+test registry::tests::custom_index_below_13_is_rejected ... ok
+test registry::tests::declared_id_mismatch_is_rejected ... ok
+test registry::tests::dual_channels_merge_into_one_registry_runtime_indistinguishable ... ok
+test registry::tests::duplicate_conflict_same_crate_and_isolation_across_crates ... ok
+test registry::tests::missing_question_is_rejected_with_three_part_error ... ok
+test registry::tests::registry_macro_collects_into_same_registry ... ok
+test registry::tests::resolve_by_name_missing_definition_returns_none ... ok
+test signature::tests::cache_key_varies_across_all_dimensions ... ok
+test signature::tests::canonical_bytes_identical_for_equivalent_builds ... ok
+test signature::tests::channel_definition_change_propagates_up_the_chain ... ok
+test signature::tests::channel_definition_hash_distinguishes_inputs ... ok
+test signature::tests::cyclic_graph_is_rejected_not_looped ... ok
+test signature::tests::composition_id_and_structure_changes_alter_signature ... ok
+test signature::tests::empty_graph_has_defined_signature ... ok
+test signature::tests::node_canonical_bytes_insertion_order_independent ... ok
+test signature::tests::leaf_param_change_only_affects_ancestor_chain ... ok
+test signature::tests::equivalent_graphs_have_identical_signatures ... ok
+test signature::tests::node_signature_matches_graph_signatures_entry ... ok
+test signature::tests::snapshot_signature_feeds_snapshot_key ... ok
+test signature::tests::unknown_channel_is_structured_error_not_silent ... ok
+test signature::tests::single_byte_param_change_avalanches ... ok
+test tests::orbit_eye_differs_between_start_and_half ... ok
+test tests::orbit_eye_positions_symmetric_about_center ... ok
+test graph::tests::layered_parallel_equals_serial_for_all_topologies ... ok
+test signature::tests::sha256_matches_fips_vectors ... ok
+
+test result: ok. 88 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/acceptance_edge_cases.rs (target/debug/deps/acceptance_edge_cases-a4b5d6aa6a37eecf)
+
+running 8 tests
+test merge_plus_reduction_and_sample_mean_follow_fixed_shape ... ok
+test merge_plus_three_inputs_reduce_in_slot_order_pairwise_tree ... ok
+test reduce_association_order_at_boundaries_matches_manual_tree ... ok
+test params_canonical_bytes_byte_level_expectations ... ok
+test reduction_shape_boundaries_n0_to_n9 ... ok
+test snapshot_payload_bytes_reject_truncated_and_unknown_tag ... ok
+test snapshot_assembly_frame0_initial_and_same_frame_idempotent ... ok
+test sample_index_pixel_domain_is_collision_free_over_large_grid ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/qa_edge_attack.rs (target/debug/deps/qa_edge_attack-b21a4b61bde60028)
+
+running 7 tests
+test qa_core_sha256_matches_hashlib_via_channel_definition_hash ... ok
+test qa_remap_degenerate_out_span ... ok
+test qa_cycle_graph_signatures_error_p3005 ... ok
+test qa_remap_forward_endpoints_and_monotonic ... ok
+test qa_cycle_graph_canonical_bytes_no_panic ... ok
+test qa_remap_reversed_in_interval_endpoints_align ... ok
+test qa_self_loop_rejected ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/qa_ignore_guard.rs (target/debug/deps/qa_ignore_guard-ceb4b4421d03e29e)
+
+running 4 tests
+test detector_ignores_prose_mentions ... ok
+test detector_rejects_a_real_ignore ... ok
+test scan_covers_the_workspace ... ok
+test no_ignore_anywhere_in_workspace ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.86s
+
+     Running tests/qa_indep_probe_depth.rs (target/debug/deps/qa_indep_probe_depth-ae478b161bbf54a1)
+
+running 3 tests
+test p1_both_miss_no_nan ... ok
+test p1_per_pixel_depth_weights_differ_left_right ... ok
+test p1_miss_falls_back_to_layer_z ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/prism_gpu-ddd93cd747aa3be8)
+
+running 121 tests
+test framebuffer_bounds::cpu_ref_backend_huge_request_does_not_panic ... ok
+test framebuffer_bounds::framebuffer_limit_boundary_is_exact ... ok
+test framebuffer_bounds::framebuffer_new_extreme_dims_via_catch_unwind ... ok
+test framebuffer_bounds::framebuffer_resize_over_limit_does_not_panic ... ok
+test framebuffer_bounds::framebuffer_over_limit_is_refused_not_clamped ... ok
+test framebuffer_bounds::pixel_access_extreme_coords_never_panics ... ok
+test framebuffer_bounds::refused_framebuffer_is_inert_under_writes ... ok
+test metal::msl::tests::first_sample_matches_wgsl_entry ... ok
+test metal::msl::tests::msl_head_comment_declares_provenance ... ok
+test framebuffer_bounds::vulkan_backend_is_unavailable_and_never_panics ... ok
+test metal::tests::device_present_false_on_non_macos ... ok
+test metal::msl::tests::msl_preserves_inv_gate_and_euler_step ... ok
+test metal::tests::metal_stub_is_unavailable_and_stable_name ... ok
+test metal::tests::metal_stub_render_scene_returns_invalid_frame_without_panic ... ok
+test metal::tests::msl_first_sample_is_registered ... ok
+test metal::tests::probe_on_non_macos_reports_unsupported ... ok
+test scan::tests::scan_empty_input ... ok
+test scan::tests::blelloch_scan_matches_serial_reference_bitwise ... ok
+test scan::tests::scan_shape_matches_reduction_shape_depth ... ok
+test scan::tests::scan_is_deterministic_across_runs ... ok
+test shaders::tests::bracket_check_catches_unbalanced ... ok
+test framebuffer_bounds::framebuffer_new_extreme_dims_never_panics ... ok
+test shaders::tests::hair_scatter_has_no_entry_and_no_libm ... ok
+test shaders::tests::hair_scatter_i0_is_bezier_polynomial_no_loop ... ok
+test shaders::tests::hair_scatter_library_is_registered_and_self_contained ... ok
+test shaders::tests::hair_scatter_operation_order_is_m_then_n_then_a ... ok
+test shaders::tests::all_shaders_pass_structure_check ... ok
+test shaders::tests::include_expansion_is_acyclic_and_deduplicated ... ok
+test shaders::tests::hair_scatter_source_contains_required_formulas ... ok
+test shaders::tests::include_expansion_is_deterministic ... ok
+test shaders::tests::libm_detection_ignores_comments_but_catches_real_calls ... ok
+test shaders::tests::shader_lookup_by_name ... ok
+test shaders::tests::unresolved_symbol_detector_catches_real_machine_failures ... ok
+test shaders::tests::include_only_files_are_still_compilable_standalone ... ok
+test sort::tests::radix_sort_edge_cases ... ok
+test sort::tests::radix_matches_reference_sort ... ok
+test sort::tests::radix_sort_is_deterministic ... ok
+test sort::tests::radix_sort_is_stable ... ok
+test sync::tests::barrier_plan_is_deterministic ... ok
+test sync::tests::barrier_planner_derives_raw_between_write_and_read ... ok
+test sync::tests::barrier_planner_handles_waw_and_war ... ok
+test sync::tests::independent_resources_need_no_barrier ... ok
+test sync::tests::pass_kind_closed_set_semantics ... ok
+test tests::cpu_ref_backend_center_pixel_is_red ... ok
+test tests::cpu_ref_backend_corners_are_dark_background ... ok
+test tests::framebuffer_set_pixel_out_of_bounds_is_safe ... ok
+test tests::framebuffer_set_pixel_roundtrip_and_clamp ... ok
+test vulkan::loader::tests::api_version_packing_is_correct ... ok
+test vulkan::loader::tests::ffi_struct_layouts_match_vulkan_abi ... ok
+test vulkan::loader::tests::graphics_queue_family_absent_returns_none ... ok
+test vulkan::loader::tests::graphics_queue_family_selection_skips_non_graphics ... ok
+test vulkan::loader::tests::physical_device_type_mapping_is_total ... ok
+test vulkan::loader::tests::pick_best_device_prefers_discrete ... ok
+test vulkan::loader::tests::rtld_lazy_is_glibc_value_on_linux ... ok
+test vulkan::tests::availability_is_consistent_with_probe_report ... ok
+test vulkan::tests::backend_is_unavailable_and_name_is_stable ... ok
+test vulkan::tests::loader_open_contract_holds_or_is_absent ... ok
+test vulkan::tests::probe_failure_names_are_stable ... ok
+test vulkan::tests::default_matches_new ... ok
+test vulkan::tests::probe_report_fields_are_monotonic ... ok
+test vulkan::tests::render_scene_returns_invalid_frame_without_panic ... ok
+test web::abi::tests::abi_version_is_stable ... ok
+test web::abi::tests::all_layout_constants_are_16_aligned ... ok
+test web::abi::tests::alloc_write_readback_dealloc_roundtrip ... ok
+test web::abi::tests::byte_helpers_are_bounds_safe ... ok
+test web::abi::tests::cell_key_matches_wgsl_formula ... ok
+test web::abi::tests::check_wgsl_rejects_bad_args_and_accepts_good_source ... ok
+test web::abi::tests::claim_ready_device_falls_back_to_global_handle_after_slots_cleared ... ok
+test web::abi::tests::cloth_constraints_are_disjoint_and_reference_is_finite ... ok
+test web::abi::tests::cmp_f32_detects_real_deviation ... ok
+test shaders::tests::every_expanded_shader_has_no_unresolved_symbols ... ok
+test web::abi::tests::covered_entry_count_matches_ledger ... ok
+test vulkan::tests::repeated_construction_is_stable_and_leak_free ... ok
+test web::abi::tests::device_init_collect_claims_any_ready_ticket_not_just_global_device ... ok
+test web::abi::tests::device_init_is_two_phase_and_gates_on_readiness ... ok
+test web::abi::tests::dispatch_census_passes_without_device ... ok
+test web::abi::tests::coverage_ledger_matches_actual_entries ... ok
+test web::abi::tests::cpu_only_test_items_pass_on_native ... ok
+test web::abi::tests::f32_tolerance_is_tight_enough ... ok
+test web::abi::tests::gi_constant_env_reconstructs_to_pi_l0 ... ok
+test web::abi::tests::gi_cpu_reference_fingerprint_matches_independent_js ... ok
+test web::abi::tests::gi_cpu_reference_is_bitwise_deterministic ... ok
+test web::abi::tests::gi_layout_constants_are_16_aligned_and_consistent ... ok
+test web::abi::tests::gi_occlusion_reduces_visibility ... ok
+test web::abi::tests::gi_sdf_occlusion_matches_analytic ... ok
+test web::abi::tests::gi_test_body_skips_without_device ... ok
+test web::abi::tests::gpu_items_skip_on_native_without_device ... ok
+test web::abi::tests::gpu_test_bodies_do_not_panic_without_device ... ok
+test web::abi::tests::integer_comparators_detect_real_deviation ... ok
+test web::abi::tests::new_gpu_items_skip_cleanly_without_device ... ok
+test web::abi::tests::panic_in_test_body_is_converted_to_failure ... ok
+test web::abi::tests::params2_write_rejects_out_of_range ... ok
+test web::abi::tests::particles_reference_is_non_degenerate ... ok
+test web::abi::tests::path_slot_stride_matches_wgsl_layout ... ok
+test web::abi::tests::poly6_matches_wgsl_truncation ... ok
+test web::abi::tests::ready_device_rejects_unready_handle_with_actionable_message ... ok
+test web::abi::tests::result_and_error_buffers_are_nul_terminated ... ok
+test web::abi::tests::scene_sizes_are_self_consistent ... ok
+test web::abi::tests::scratch_addr_helpers_do_not_reenter_borrow ... ok
+test web::abi::tests::shader_source_exports_are_readable ... ok
+test web::abi::tests::slot_pack_unpack_roundtrip ... ok
+test web::abi::tests::sph_reference_is_non_degenerate ... ok
+test web::abi::tests::state_pack_unpack_roundtrip ... ok
+test web::abi::tests::test_manifest_is_well_formed ... ok
+test web::abi::tests::vec3_stride_is_16_and_state_slot_is_32 ... ok
+test web::abi::tests::wf_accumulate_ref_is_spp_mean ... ok
+test web::abi::tests::wf_initial_slots_exercise_both_branches ... ok
+test web::device::tests::native_backend_is_not_gpu_ready_and_falls_back_to_cpu ... ok
+test web::device::tests::plan_scan_produces_one_dispatch_with_expected_entry ... ok
+test web::device::tests::plan_sort_histogram_workgroups_match_count ... ok
+test web::device::tests::scan_config_rounds_up_to_workgroups ... ok
+test web::device::tests::scan_params_bytes_layout_matches_wgsl_declaration ... ok
+test web::device::tests::scan_wgsl_declares_padding_members ... ok
+test web::device::tests::uniform_params_bytes_are_sixteen_byte_aligned ... ok
+test web::device::tests::uniform_structs_have_no_implicit_tail_padding ... ok
+test web::device::tests::webgpu_wgsl_sources_pass_structure_check ... ok
+test web::tests::adapter_summary_default_is_empty ... ok
+test web::tests::detect_support_on_native_is_not_wasm_target ... ok
+test framebuffer_bounds::framebuffer_len_invariant_for_all_accepted_sizes ... ok
+test web::abi::tests::expanded_sources_have_no_dangling_include ... ok
+test web::abi::tests::every_covered_entry_appears_in_a_dispatch_chain ... ok
+
+test result: ok. 121 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+     Running tests/qa_background_gpu.rs (target/debug/deps/qa_background_gpu-96b5f4c016b39883)
+
+running 4 tests
+test deterministic_same_input_same_bytes ... ok
+test output_is_not_all_black_and_has_vertical_gradient ... ok
+test embedded_background_shader_passes_structure_check ... ok
+test channels_in_range_and_alpha_is_255 ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/qa_edge_attack_gpu.rs (target/debug/deps/qa_edge_attack_gpu-00f0b90e778548cb)
+
+running 46 tests
+test harness_device_lost_reflects_flag ... ok
+test scan_deterministic_two_pass ... ok
+test scan_overflow_wraps_not_panics ... ok
+test scan_shape_depth_matches_ceil_log2 ... ok
+test scan_shape_pairwise_pairing_structure ... ok
+test scan_single_element_identity ... ok
+test scan_zero_length_is_empty ... ok
+test scan_blelloch_bitwise_vs_serial_all_sizes ... ok
+test shaders_check_catches_truncation ... ok
+test shaders_libm_scanner_catches_builtins ... ok
+test shaders_lookup_by_name_all_present ... ok
+test sort_all_equal_keys_preserve_input_order ... ok
+test harness_four_requirements_present ... ok
+test sort_already_sorted_is_idempotent ... ok
+test sort_empty_input ... ok
+test sort_extreme_values ... ok
+test sort_keys_entry_matches_full_sort ... ok
+test sort_deterministic_two_pass ... ok
+test sort_reversed_input_sorts_correctly ... ok
+test sort_stability_across_digit_boundaries ... ok
+test sync_barriers_deterministic_and_ordered ... ok
+test sync_empty_sequence ... ok
+test sync_independent_resources_no_barrier ... ok
+test sync_passkind_access_semantics ... ok
+test sync_raw_barrier_between_write_and_read ... ok
+test sync_timestamp_produces_execution_barrier ... ok
+test sync_waw_barrier_between_two_writes ... ok
+test web_backend_dispatch_plans_valid ... ok
+test web_backend_native_never_ready_and_falls_back ... ok
+test web_detect_support_native_stable ... ok
+test web_scan_config_workgroups_round_up ... ok
+test wgsl_bvh_structure_present ... ok
+test shaders_all_pass_structural_check ... ok
+test wgsl_custom_trig_present_and_no_builtin_trig ... ok
+test wgsl_histogram_has_shift_param_matching_cpu_radix ... ok
+test wgsl_entry_binding_and_storage_static_shape ... ok
+test wgsl_scan_barrier_checker_rejects_known_bad_shaders ... ok
+test wgsl_scan_block_barriers_are_in_uniform_control_flow ... ok
+test wgsl_scan_block_requires_thread_activity_guard ... ok
+test wgsl_scan_block_source_has_activity_guard ... ok
+test wgsl_text_sdf_decode_mirrors_cpu ... ok
+test zero_third_party_dependency_lockfile ... ok
+test zero_third_party_dependency_prism_gpu ... ok
+test wgsl_no_third_party_include ... ok
+test sort_radix_matches_reference_all_sizes ... ok
+test libm_scan_gpu_rust_production_sources ... ok
+
+test result: ok. 46 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/qa_probe_b_gpu_fixes.rs (target/debug/deps/qa_probe_b_gpu_fixes-b6f9f3086ac46005)
+
+running 8 tests
+test probe1_det_trig_tan_matches_independent_f64_reference ... ok
+test probe3_scan_sim_detects_missing_activity_guard ... ok
+test probe4a_histogram_params_layout_matches_wgsl_struct ... ok
+test probe3b_scan_shader_has_all_five_stages_and_barriers ... ok
+test probe4c_wgsl_histogram_digit_extraction_is_shift_and_mask ... ok
+test probe2_scan_sim_matches_cpu_ref_all_sizes_bitwise ... ok
+test probe1_d29_no_libm_transcendentals_in_gpu_production_code ... ok
+test probe4b_gpu_bucket_distribution_matches_cpu_radix_all_sizes ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.36s
+
+     Running tests/qa_sweep_c1_panic.rs (target/debug/deps/qa_sweep_c1_panic-f91f2e2e764a3133)
+
+running 8 tests
+test a02_framebuffer_new_no_panic_via_catch_unwind ... ok
+test a01_framebuffer_new_extreme_dims_do_not_panic ... ok
+test a04_set_pixel_extreme_coords_do_not_panic ... ok
+test a05_channel_to_u8_nan_inf_via_set_pixel_no_panic ... ok
+test a06_cpu_ref_backend_degenerate_requests_do_not_panic ... ok
+test a07_cpu_ref_backend_nan_geometry_does_not_panic ... ok
+test a08_framebuffer_len_invariant_holds ... ok
+test a03_vulkan_backend_render_scene_does_not_panic ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/qa_verify_p1_framebuffer_guard.rs (target/debug/deps/qa_verify_p1_framebuffer_guard-d2dfafdde6521fc3)
+
+running 11 tests
+test g3_accepted_dims_pixel_len_invariant_strict ... ok
+test g10_refusal_semantics_and_render_latency_unchanged ... ok
+test g4b_dim_ceiling_boundary_is_exact ... ok
+test g5_set_pixel_out_of_range_never_panics ... ok
+test g1_new_extreme_dims_never_panics ... ok
+test g6_cpu_ref_render_scene_extreme_returns_promptly ... ok
+test g2_refusal_semantics_pixels_empty_dims_echoed ... ok
+test g7_trait_defaults_present_and_non_panicking ... ok
+test g9_legal_coords_survive_and_boundary_is_exact ... ok
+test g8_out_of_range_coords_dropped_never_row_wrap ... ok
+test g4_max_bytes_boundary_is_exact ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.82s
+
+     Running unittests src/lib.rs (target/debug/deps/prism_particles-6071719f5ae8b8c4)
+
+running 5 tests
+test gpu_sim_ref::tests::emit_is_frame_seeded ... ok
+test gpu_sim_ref::tests::cell_key_anchors ... ok
+test gpu_sim_ref::tests::neighbors_reciprocal_for_close_particles ... ok
+test gpu_sim_ref::tests::sort_by_cell_is_monotonic_and_stable ... ok
+test gpu_sim_ref::tests::gpu_sim_ref_bitwise_deterministic ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/particles_integration.rs (target/debug/deps/particles_integration-d0d50775bdcf576d)
+
+running 20 tests
+test distinct_seeds_diverge ... ok
+test emitter_node_apply_is_deterministic ... ok
+test empty_forces_yield_zero_accel ... ok
+test empty_sprites_identity ... ok
+test force_superposition_matches_sum ... ok
+test derive_is_bitwise_deterministic ... ok
+test gravity_only_parabolic_trajectory ... ok
+test lifetime_recycle_after_expiry ... ok
+test particle_nodes_register ... ok
+test reactive_drives_spawn_rate ... ok
+test reactive_modulation_maps_bands_to_gains ... ok
+test reactive_none_bake_unit_gain ... ok
+test reactive_zero_bands_yield_unit_gain ... ok
+test size_curve_decays_to_zero_at_death ... ok
+test slot_identity_differs_reproducibly ... ok
+test sprite_splat_marks_pixel ... ok
+test tile_halo_radius_reports_max ... ok
+test simulation_two_runs_bitwise_identical ... ok
+test snapshot_roundtrip_preserves_state ... ok
+test seek_equals_sequential_advance ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/qa_edge_attack_particles.rs (target/debug/deps/qa_edge_attack_particles-ea2070d7e194a070)
+
+running 18 tests
+test capacity_zero_pool_spawn_must_not_panic ... ok
+test extreme_rate_does_not_wrap ... ok
+test negative_dt_apply_forces_noop ... ok
+test capacity_zero_sim_step_must_not_panic ... ok
+test reactive_weight_length_mismatch_no_panic ... ok
+test reactive_nan_bands_yield_finite_gain ... ok
+test render_attack::nan_sprite_no_panic ... ok
+test render_attack::splat_kernel_peaks_at_center ... ok
+test render_attack::zero_radius_sprite_not_drawn ... ok
+test semi_implicit_euler_position_matches_closed_form ... ok
+test seek_backward_is_noop ... ok
+test truncated_snapshot_errors_not_panic ... ok
+test zero_dt_degrades_safely ... ok
+test zero_lifetime_particle_recycled_immediately ... ok
+test zero_rate_emits_nothing ... ok
+test seek_40_equals_sequential_40 ... ok
+test restore_then_continue_equals_sequential ... ok
+test two_runs_snapshot_bytes_identical ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/qa_indep_probe_r2.rs (target/debug/deps/qa_indep_probe_r2-8a128372238c6245)
+
+running 3 tests
+test particle_capacity_one_eviction ... ok
+test particle_zero_capacity_read_paths_no_panic ... ok
+test particle_zero_capacity_spawn_storm_no_panic ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/prism_rt-44942022a20d34dc)
+
+running 147 tests
+test accum::tests::accumulation_consistency_push8_equals_single_pass ... ok
+test accum::tests::running_and_canonical_agree_within_tolerance ... ok
+test accum::tests::mean_samples_accurate_and_deterministic ... ok
+test bsdf::tests::schlick_and_f0_anchors ... ok
+test bsdf::tests::ggx_d_peak_and_hemisphere_normalization ... ok
+test camera::tests::cast_ray_is_deterministic ... ok
+test camera::tests::center_pixel_dir_is_optical_axis ... ok
+test camera::tests::dof_origins_within_aperture_and_share_focal_point ... ok
+test camera::tests::fov_bounds_enforced - should panic ... ok
+test camera::tests::pinhole_center_ray_stays_near_axis ... ok
+test camera::tests::shutter_time_within_interval_and_degenerate_is_exact ... ok
+test caustics::tests::glass_sphere_chain_converges_and_conserves ... ok
+test caustics::tests::mirror_chain_matches_analytic ... ok
+test caustics::tests::mirror_chain_misses_return_none ... ok
+test caustics::tests::mnee_is_deterministic ... ok
+test depth::tests::depth_aov_from_rt_is_in_unit_interval ... ok
+test depth::tests::depth_is_deterministic_across_runs ... ok
+test depth::tests::depth_map_records_hit_distance ... ok
+test gi::probes::tests::adaptive_actually_subdivides ... ok
+test bsdf::tests::bsdf_sample_is_deterministic ... ok
+test gi::probes::tests::adaptive_beats_uniform_at_same_count ... ok
+test gi::probes::tests::adaptive_place_extreme_no_panic ... ok
+test bsdf::tests::vndf_sample_matches_energy_table ... ok
+test gi::probes::tests::adaptive_sample_irradiance_mismatched_lengths_no_panic ... ok
+test gi::probes::tests::adaptive_smooth_bitwise_deterministic ... ok
+test gi::probes::tests::adaptive_smooth_conserves_constant_field ... ok
+test gi::probes::tests::adaptive_smooth_extreme_no_panic ... ok
+test gi::probes::tests::adaptive_smooth_matches_grid_in_regular_case ... ok
+test gi::probes::tests::adaptive_smooth_order_independent ... ok
+test gi::probes::tests::adaptive_smooth_reduces_variance ... ok
+test gi::probes::tests::adaptive_smooth_satisfies_hull_containment ... ok
+test gi::probes::tests::adaptive_smooth_total_energy_can_increase_and_decrease ... ok
+test gi::probes::tests::bake_is_bitwise_deterministic ... ok
+test gi::probes::tests::bake_probe_grid_backward_compatible ... ok
+test gi::probes::tests::cmp_point_is_numerically_monotonic ... ok
+test gi::probes::tests::empty_grid_samples_zero ... ok
+test gi::probes::tests::end_to_end_multi_ge_single ... ok
+test gi::probes::tests::end_to_end_query_bitwise_deterministic ... ok
+test gi::probes::tests::extreme_inputs_no_panic ... ok
+test gi::probes::tests::from_grid_bridge_matches_grid_query ... ok
+test gi::probes::tests::grid_sample_and_smooth_res_mismatch_no_panic ... ok
+test gi::probes::tests::grid_smooth_total_energy_not_conserved ... ok
+test gi::probes::tests::interpolation_actually_varies ... ok
+test gi::probes::tests::low_and_high_budget_agree_directionally ... ok
+test gi::probes::tests::multi_bounce_bake_bitwise_deterministic ... ok
+test gi::probes::tests::multi_bounce_bake_ge_single_bounce ... ok
+test gi::probes::tests::multi_bounce_bake_matches_solver_exactly ... ok
+test gi::probes::tests::multi_bounce_bake_reports_bounces ... ok
+test gi::probes::tests::multi_bounce_bake_within_white_furnace_bound ... ok
+test gi::probes::tests::multi_bounce_budget_tiers_monotone ... ok
+test gi::probes::tests::smoothing_reduces_variance_and_identity_at_zero ... ok
+test gi::probes::tests::sort_dedup_points_keeps_numeric_order_with_zero ... ok
+test gi::probes::tests::trilinear_of_constant_field_is_constant ... ok
+test gi::sdf_gi::tests::ao_open_vs_enclosed ... ok
+test gi::sdf_gi::tests::budget_sanitization_no_panic ... ok
+test gi::sdf_gi::tests::empty_scene_is_fully_visible ... ok
+test gi::sdf_gi::tests::indirect_light_reduced_by_occlusion ... ok
+test gi::sdf_gi::tests::multi_bounce_bitwise_deterministic ... ok
+test gi::sdf_gi::tests::multi_bounce_budget_sanitization ... ok
+test gi::sdf_gi::tests::multi_bounce_convergence_flag ... ok
+test gi::sdf_gi::tests::multi_bounce_ge_one_bounce ... ok
+test gi::sdf_gi::tests::multi_bounce_monotone_and_converging ... ok
+test gi::sdf_gi::tests::multi_bounce_within_white_furnace_bound ... ok
+test gi::sdf_gi::tests::occlusion_and_ao_bitwise_deterministic ... ok
+test gi::sdf_gi::tests::occlusion_matches_analytic_boxes ... ok
+test gi::sdf_gi::tests::occlusion_matches_analytic_sphere ... ok
+test gi::sdf_gi::tests::occlusion_query_not_vacuous ... ok
+test gi::sdf_gi::tests::scene_sdf_from_rt_scene ... ok
+test gi::sh::tests::basis_is_orthogonal_on_sphere ... ok
+test gi::sh::tests::constant_env_reconstructs_to_pi_l0 ... ok
+test gi::sh::tests::constant_round_trip ... ok
+test gi::sh::tests::extreme_inputs_no_panic ... ok
+test gi::sh::tests::order_monotone_contrast ... ok
+test gi::sh::tests::project_is_bitwise_deterministic ... ok
+test gi::sh::tests::single_direction_sharpens_along_its_direction ... ok
+test gi::sh::tests::test_not_vacuous_wrong_basis_differs ... ok
+test gi::ssgi::tests::extreme_inputs_no_panic ... ok
+test gi::ssgi::tests::large_translation_invalidates ... ok
+test gi::ssgi::tests::no_hit_pixels_have_no_history ... ok
+test gi::ssgi::tests::reprojection_is_bitwise_deterministic ... ok
+test gi::ssgi::tests::static_camera_reprojection_is_identity ... ok
+test gi::ssgi::tests::translation_shifts_reprojection ... ok
+test gi::tests::bake_gi_frame_deterministic ... ok
+test gi::tests::extreme_params_no_panic ... ok
+test gi::tests::quality_budgets_are_monotone ... ok
+test gi::tests::quality_levels_agree_directionally ... ok
+test hair_scatter::tests::absorption_monotonic_in_sigma_a ... ok
+test hair_scatter::tests::absorption_reduces_trt ... ok
+test hair_scatter::tests::bessel_i0_matches_known_values ... ok
+test hair_scatter::tests::cross_impl_wgsl_matches_cpu ... ok
+test hair_scatter::tests::det_trig_helpers_match_reference ... ok
+test hair_scatter::tests::existing_api_bitwise_frozen ... ok
+test hair_scatter::tests::extreme_inputs_do_not_panic ... ok
+test hair_scatter::tests::f0_increases_r_lobe ... ok
+test hair_scatter::tests::full_api_is_backward_compatible ... ok
+test hair_scatter::tests::full_hemisphere_integral_consistent_across_grid_resolution ... ok
+test gi::probes::tests::adaptive_place_order_independent ... ok
+test hair_scatter::tests::full_scatter_matches_degenerate_resolution ... ok
+test hair_scatter::tests::geometry_projection_roundtrips ... ok
+test hair_scatter::tests::full_scatter_energy_conserved ... ok
+test hair_scatter::tests::m_full_is_deterministic ... ok
+test hair_scatter::tests::m_full_peaks_at_matching_sin ... ok
+test hair_scatter::tests::m_longitudinal_integrates_to_one ... ok
+test hair_scatter::tests::hemisphere_energy_bounded ... ok
+test hair_scatter::tests::phi_lobes_are_independent ... ok
+test hair_scatter::tests::precise_api_is_deterministic ... ok
+test hair_scatter::tests::precise_energy_is_bounded ... ok
+test hair_scatter::tests::scattering_is_deterministic ... ok
+test hair_scatter::tests::schlick_fresnel_monotonic_and_bounds ... ok
+test hair_scatter::tests::tt_stronger_than_r_in_forward_region ... ok
+test hair_scatter::tests::n_azimuth_integrates_to_one ... ok
+test integrator::tests::directional_light_matches_analytic ... ok
+test gi::probes::tests::adaptive_place_bitwise_deterministic ... ok
+test integrator::tests::medium_attenuation_matches_beer_law ... ok
+test integrator::tests::mis_finite_and_energy_consistent ... ok
+test bsdf::tests::energy_conservation_by_sampling ... ok
+test integrator::tests::tiled_render_equals_full_bitwise ... ok
+test integrator::tests::two_pass_render_bitwise_identical ... ok
+test light::tests::ambient_escape_semantics ... ok
+test light::tests::directional_cone_bounds_and_delta ... ok
+test light::tests::nee_mis_weights_by_kind ... ok
+test light::tests::rect_pdf_conversion_identity ... ok
+test light::tests::sphere_solid_angle_anchor_and_hit ... ok
+test media::tests::det_ln_matches_known_values ... ok
+test media::tests::free_path_mean_is_inverse_sigma_t ... ok
+test media::tests::phase_integrates_to_one_and_moments_match ... ok
+test media::tests::shadow_transmittance_matches_beers_law ... ok
+test sampler::tests::concentric_disk_is_uniform_in_unit_disk ... ok
+test sampler::tests::cone_dir_statistics ... ok
+test sampler::tests::cosine_hemisphere_statistics ... ok
+test sampler::tests::deterministic_trig_matches_known_constants ... ok
+test sampler::tests::onb_is_orthonormal_for_typical_normals ... ok
+test sampler::tests::sampler_is_pure_and_pixel_decorrelated ... ok
+test sampler::tests::scrambled_sobol_integration_error_decreases_monotonically ... ok
+test sampler::tests::sobol_dim0_is_van_der_corput ... ok
+test sampler::tests::sobol_first_2d_points_match_classic_pattern ... ok
+test sss::tests::det_exp_matches_f64_reference ... ok
+test sss::tests::sss_absorbs_with_dark_albedo ... ok
+test sss::tests::sss_is_deterministic ... ok
+test sss::tests::sss_slab_transmission_is_monotonic_in_thickness ... ok
+test integrator::tests::glass_sphere_caustics_energy_positive ... ok
+test integrator::tests::pbr_metal_roughness_broadens_highlight ... ok
+test wavefront::tests::wavefront_stats_self_consistent ... ok
+test wavefront::tests::wavefront_two_pass_bitwise_identical ... ok
+test wavefront::tests::wavefront_statistical_diff_within_threshold ... ok
+test wavefront::tests::wavefront_equals_integrator_bitwise ... ok
+test integrator::tests::cornell_convergence_monotone ... ok
+
+test result: ok. 147 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.08s
+
+     Running tests/qa_edge_attack.rs (target/debug/deps/qa_edge_attack-297443ea83329ba1)
+
+running 7 tests
+test medium_sigma_t_extremes_behave_like_beer_law ... ok
+test camera_fov_bounds_enforced ... ok
+test medium_sigma_t_zero_is_rejected ... ok
+test pinhole_aperture_zero_bitwise_identity ... ok
+test sobol_beyond_64_dims_fallback_is_deterministic ... ok
+test digital_shift_preserves_net_strata ... ok
+test rr_black_albedo_exact_zero_energy ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/qa_edge_attack_gpu.rs (target/debug/deps/qa_edge_attack_gpu-7a37e29812a6f790)
+
+running 17 tests
+test one_bounce_wavefront_matches_integrator ... ok
+test wavefront_empty_scene_frame_length ... ok
+test wavefront_distinct_pixels_differ ... ok
+test wavefront_empty_scene_matches_integrator ... ok
+test wavefront_different_seeds_differ ... ok
+test wavefront_equals_integrator_medium_bitwise ... ok
+test wavefront_one_pixel_zero_bounce ... ok
+test wavefront_render_frame_matches_per_pixel ... ok
+test wavefront_stage_enum_contract ... ok
+test wavefront_stats_self_consistent ... ok
+test wavefront_two_pass_bitwise_identical ... ok
+test wavefront_zero_spp_matches_integrator ... ok
+test zero_bounces_wavefront_matches_integrator_all_scenes ... ok
+test zero_bounces_wavefront_stats_show_no_events ... ok
+test wavefront_equals_integrator_switch_paths_bitwise ... ok
+test wavefront_equals_integrator_cornell_bitwise ... ok
+test wavefront_equals_integrator_pbr_sss_bitwise ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
+     Running tests/qa_edge_attack_rt.rs (target/debug/deps/qa_edge_attack_rt-5775db6bc202c672)
+
+running 13 tests
+test bsdf_ctor_rejects_out_of_domain ... ok
+test det_exp_is_finite_over_range ... ok
+test ggx_d_grazing_and_monotonic ... ok
+test light_degenerate_sampling_no_panic ... ok
+test mnee_mirror_degenerate_and_bounded ... ok
+test nee_mis_weight_contract ... ok
+test refract_dir_tir_and_snells_law ... ok
+test schlick_energy_bounds ... ok
+test smith_g1_bounds ... ok
+test sphere_nee_pdf_matches_numeric_solid_angle ... ok
+test mnee_refraction_jacobian_pdf_finite ... ok
+test bsdf_eval_no_nan_under_degenerate_input ... ok
+test bsdf_sample_deterministic_all_lobes ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/qa_edge_attack_rt_scene.rs (target/debug/deps/qa_edge_attack_rt_scene-bc19c01ad7795441)
+
+running 7 tests
+test rt_depth_empty_scene_all_miss ... ok
+test rt_depth_far_plane_clips ... ok
+test rt_depth_aov_in_unit_interval ... ok
+test rt_depth_map_contract ... ok
+test rt_depth_one_pixel ... ok
+test rt_depth_bitwise_deterministic ... ok
+test rt_depth_same_seed_stable ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/qa_probe_c4_marschner_parity_vectors.rs (target/debug/deps/qa_probe_c4_marschner_parity_vectors-59fb0682e12c9779)
+
+running 1 test
+test emit_cpu_golden_vectors_for_gpu_parity ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/qa_probe_wavefront_parity.rs (target/debug/deps/qa_probe_wavefront_parity-eb3706f28c4b121e)
+
+running 7 tests
+test probe5d_nan_inf_params_do_not_panic_or_emit_nan ... ok
+test probe5b_zero_bounces_returns_background_no_events_no_nan ... ok
+test probe5c_zero_bounce_is_lowest_energy ... ok
+test probe5g_parity_check_is_not_vacuous ... ok
+test probe5f_wavefront_bitwise_deterministic ... ok
+test probe5e_no_perf_regression_from_bounce_guard ... ok
+test probe5a_wavefront_matches_integrator_all_channels_all_bounces ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+   Doc-tests prism_aesthetic
+
+running 1 test
+test crates/prism-aesthetic/src/cmd.rs - cmd::CriticCommand (line 72) ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+   Doc-tests prism_ai
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests prism_core
+
+running 1 test
+test crates/prism-core/src/registry.rs - registry::registry (line 230) ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+   Doc-tests prism_gpu
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests prism_particles
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests prism_rt
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

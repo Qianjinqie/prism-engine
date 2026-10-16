@@ -16,7 +16,7 @@ use prism_ai::journal::{Journal, Stage, StageState};
 use prism_ai::mock::MockProvider;
 use prism_ai::nodes::CueColorNode;
 use prism_ai::pipeline::{DraftConfig, DraftPipeline};
-use prism_ai::provider::{Provider, ProviderRequest, ProviderResponse};
+use prism_ai::provider::{Provider, ProviderRequest};
 use prism_ai::timings::{cue_split, CueConfig, WordTiming};
 
 // ---------------------------------------------------------------------------

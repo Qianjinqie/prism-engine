@@ -736,10 +736,10 @@ function runItem(id) {
 // --- wgsl.structural / shader.params ---
 {
   const a = runItem("wgsl.structural");
-  check("wgsl.structural PASS（12 个 WGSL 结构自检）", a.code === STAT.PASS, a.code === STAT.FAIL ? a.detail : "");
-  // 新增 `gi_compute.wgsl` 一个 D2 内核（GI GPU 路径），
-  // 结构性自检数由 11 增至 12。改断言数值即可，不改语义。
-  check("wgsl.structural 覆盖 10 个 D2/D3/D4 + 2 个 D0 内核", (a.detail.match(/PASS/g) || []).length === 12);
+  check("wgsl.structural PASS（13 个 WGSL 结构自检）", a.code === STAT.PASS, a.code === STAT.FAIL ? a.detail : "");
+  // 新增 `gi_compute.wgsl`（D2）+ `background.wgsl`（背景 GPU 兜底）两个内核，
+  // 结构性自检数由 12 增至 13（11 个 D2/D3/D4 + 2 个 D0）。改断言数值即可，不改语义。
+  check("wgsl.structural 覆盖 11 个 D2/D3/D4 + 2 个 D0 内核", (a.detail.match(/PASS/g) || []).length === 13);
   const b = runItem("shader.params");
   check("shader.params PASS", b.code === STAT.PASS, b.code === STAT.FAIL ? b.detail : "");
 }
@@ -747,8 +747,8 @@ function runItem(id) {
 section("4. WGSL 源导出（宿主可直接复用 Rust 侧同一份源码）");
 {
   const n = x.prism_shader_count();
-  // 新增 `gi_compute.wgsl`，shader 数由 9 增至 10。
-  check("shader 数 = 10", n === 10, `${n} 个`);
+  // 新增 `gi_compute.wgsl` 与 `background.wgsl`，shader 数由 10 增至 11。
+  check("shader 数 = 11", n === 11, `${n} 个`);
   let total = 0;
   for (let i = 0; i < n; i += 1) {
     const nm = readStr(x.prism_shader_name(i), x.prism_shader_name_len(i));
@@ -763,7 +763,7 @@ section("4. WGSL 源导出（宿主可直接复用 Rust 侧同一份源码）");
     }
     if (/[^"]\b(sin|cos|tan|exp|pow|log|atan)\(/.test(src)) check(`${nm} 无 libm 超越函数（D-29）`, false);
   }
-  check("10 个 WGSL 源码可读且结构合法", true, `合计 ${total} 字节`);
+  check("11 个 WGSL 源码可读且结构合法", true, `合计 ${total} 字节`);
   const k0 = readStr(x.prism_kernel_wgsl(0), x.prism_kernel_wgsl_len(0));
   const k1 = readStr(x.prism_kernel_wgsl(1), x.prism_kernel_wgsl_len(1));
   check("D0 内核 scan_block 可读", k0.includes("fn scan_block"), `${k0.length} 字节`);

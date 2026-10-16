@@ -517,8 +517,8 @@ mod tests {
         let c = [0.8, 0.1, 0.1, 1.0];
         let s = Suggestion { dim: Dim::Color, direction: Direction::High, strength: 1.0 };
         let out = apply_suggestion(c, &s);
-        let sat_before = (c[0] - c[2]);
-        let sat_after = (out[0] - out[2]);
+        let sat_before = c[0] - c[2];
+        let sat_after = out[0] - out[2];
         assert!(sat_after < sat_before, "降饱和：{sat_after} < {sat_before}");
         assert!(out[0] >= 0.0 && out[2] >= 0.0);
     }

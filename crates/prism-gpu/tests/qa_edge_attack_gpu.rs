@@ -371,8 +371,9 @@ fn sync_empty_sequence() {
 fn shaders_all_pass_structural_check() {
     let checks = check_all();
     assert_eq!(checks.len(), SHADERS.len());
-    // 新增 `gi_compute.wgsl`（GI 的 GPU 路径），嵌入 shader 数 9 → 10。
-    assert_eq!(checks.len(), 10, "应嵌入 10 个 WGSL shader");
+    // 嵌入 shader 数随 SHADERS 表增长（gi_compute + background 等）——用动态计数，
+    // 避免"加一份 shader 就红一次"。
+    assert_eq!(checks.len(), SHADERS.len(), "应嵌入与 SHADERS 表等量的 WGSL shader");
     for c in &checks {
         assert!(c.has_entry, "{} 无入口", c.name);
         assert!(c.brackets_balanced, "{} 括号不配平（疑似截断）", c.name);

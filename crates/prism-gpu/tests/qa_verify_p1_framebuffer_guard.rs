@@ -235,7 +235,7 @@ fn g7_trait_defaults_present_and_non_panicking() {
             Framebuffer::empty()
         }
     }
-    let mut m = Minimal;
+    let m = Minimal;
     // 默认实现：可用（后端未声明不可用即为可用），名字为稳定占位符。
     assert!(m.is_available(), "默认 is_available() 应为 true（后端须显式声明不可用）");
     assert_eq!(m.backend_name(), "unknown", "默认 backend_name() 应返回稳定占位符");

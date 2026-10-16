@@ -19,13 +19,18 @@
 //! - [`light`]：四灯光族（方向 / 球 / 矩形 / 环境）+ NEE 采样 + MIS 权重。
 //! - [`sss`]：random walk 次表面散射（σ̄ 自由程 + Fresnel 逃逸）。
 //! - [`caustics`]：焦散 MNEE（k=1 镜面链 + k=2 球面折射链）+ PSR 兜底。
-//! - [`integrator`]：backwards PT + NEE + MIS + RR + firefly 钳制。
+//! - [`integrator`]：backwards PT + NEE + MIS + RR + firefly 钳制；解析图元
+//!   [`integrator::Paraboloid`]（z=k(x²+y²)，径向有界）与
+//!   [`integrator::Plane`]（可有限切片）闭式求交（微积分短片 v2 E5：
+//!   切平面叙事无法用轴对齐 `Aabb` 表达，故新增二次面/平面原语；与
+//!   [`wavefront`] 双路径同源对拍 parity）。
 //! - [`accum`]：算术累积缓冲 + prism-core 固定树形 spp 均值（禁跨 tile 归约）。
 //!
 //! # 范围（已接入）
-//! Disney 全族 / 四灯光族 / random walk SSS / 焦散 MNEE+PSR 均已挂接
-//! [`integrator`]；BSDF 最小集（Lambert 漫反 + 完美镜面）作为等价 Disney
-//! 参数路径保留（既有测试与 examples 逐位兼容）。
+//! Disney 全族 / 四灯光族 / random walk SSS / 焦散 MNEE+PSR / 解析图元
+//! （抛物面 + 平面，含 wavefront parity）均已挂接 [`integrator`]；BSDF
+//! 最小集（Lambert 漫反 + 完美镜面）作为等价 Disney 参数路径保留（既有
+//! 测试与 examples 逐位兼容）。
 
 pub mod accum;
 pub mod bsdf;

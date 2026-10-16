@@ -2305,7 +2305,7 @@ mod tests {
         let ps = w.particles();
         let va = ps[idx[0]].velocity;
         let vb = ps[idx[2]].velocity;
-        let vn = (vb.z - va.z); // n ≈ +Z
+        let vn = vb.z - va.z; // n ≈ +Z
         assert!(vn.abs() < 1e-4, "接近法向速度应被消除为 ~0：vn={vn}");
         // 切向（+X）分量应保留（无摩擦，切向不动）。
         assert!(

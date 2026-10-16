@@ -36,10 +36,15 @@ pub mod hwenc;
 pub mod jpeg;
 pub mod loudnorm;
 pub mod mp4;
+pub mod video;
 
-pub use avi::{write_avi, write_avi_jpeg, AviConfig};
-pub use mp4::{write_mp4, write_mp4_jpeg, TrackSpec};
+pub use avi::{
+    write_avi, write_avi_jpeg, write_avi_mjpeg, write_avi_mjpeg_audio, write_avi_mjpeg_audio_frames,
+    AviConfig,
+};
+pub use mp4::{write_mp4, write_mp4_jpeg, write_mp4_jpeg_color, TrackSpec};
 pub use jpeg::{encode_jpeg_gray, JpegConfig};
+pub use video::{decode_mp4_video, write_mp4_video, VideoConfig};
 
 use std::fmt;
 

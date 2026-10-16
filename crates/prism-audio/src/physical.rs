@@ -129,7 +129,7 @@ impl ModalStrike {
 /// 此处用等价比便于音高断言；外部可自定义 ratios）。
 pub fn bar_modes(count: usize) -> ModalStrike {
     let amplitudes: Vec<f32> = (0..count).map(|k| 1.0 / (k as f32 + 1.0)).collect();
-    let ratios: Vec<f32> = (0..count).map(|k| (k as f32 + 1.0)).collect();
+    let ratios: Vec<f32> = (0..count).map(|k| k as f32 + 1.0).collect();
     let decays: Vec<f32> = (0..count).map(|k| 1.0 / (k as f32 + 1.0)).collect();
     ModalStrike { freq: 440.0, amplitudes, ratios, decays }
 }

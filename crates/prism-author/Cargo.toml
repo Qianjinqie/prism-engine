@@ -1,0 +1,33 @@
+[package]
+name = "prism-author"
+version = "0.1.0"
+edition = "2021"
+
+# 高层"视频即代码"作者 API：一份声明式 `ClipSpec` + 一次 `render_short`
+# 即可产出 MP4。仅复用既有引擎能力，不引入任何新第三方 crate。
+# 注意：本 crate 自研 `easing`，**不**直接依赖 `prism-anim`，避免与其他
+# 工程师对该 crate 的改动耦合。
+
+[dependencies]
+prism-io = { path = "../prism-io" }
+prism-mux = { path = "../prism-mux" }
+prism-noise = { path = "../prism-noise" }
+prism-raster = { path = "../prism-raster" }
+prism-text = { path = "../prism-text" }
+
+# example（calculus_film）的 BGM 实时合成复用 prism-audio（振荡器 + ADSR +
+# 鼓机 + 混音）。仅 dev 依赖：不影响本 crate 的公开 API 与库构建。
+# v2 新增：prism-rt / prism-render / prism-postfx 路径 dev 依赖——供 v2
+# example（S7 3D 光追预渲染 + 降噪后处理链）使用，同样仅 dev 依赖，
+# 不影响库公开 API 与下游构建。
+[dev-dependencies]
+prism-audio = { path = "../prism-audio" }
+# S7 3D 预渲染（examples/calculus_film_v2/scene3d.rs）需直名 `EvalCtx`
+# （采样流上下文）与 `Vec3`（场景几何）——prism-rt 未转导这两个类型
+# （integrator.rs 仅私有 use），example 必须依赖其所在 crate。同为
+# 路径依赖：零第三方、不影响库公开 API 与下游构建。
+prism-core = { path = "../prism-core" }
+prism-math = { path = "../prism-math" }
+prism-postfx = { path = "../prism-postfx" }
+prism-render = { path = "../prism-render" }
+prism-rt = { path = "../prism-rt" }

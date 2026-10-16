@@ -680,6 +680,8 @@ mod tests {
             )],
             lights: Vec::new(),
             medium: None,
+            paraboloids: vec![],
+            planes: vec![],
         };
         let field = SceneSdf::from_scene(&scene);
         assert!(!field.is_empty());

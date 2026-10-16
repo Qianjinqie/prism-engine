@@ -834,7 +834,8 @@ impl<'a> LayoutTable<'a> {
         };
 
         // 收集命中的 SubstLookupRecord 序列（(seqIndex, lookupIndex)）。
-        let mut records: Vec<(u16, u16)> = Vec::new();
+        // 延迟初始化：以下各 format 分支必然赋值或提前返回，无需空初值。
+        let records: Vec<(u16, u16)>;
         match format {
             1 => {
                 let set_count = r.u16().map_err(map_err)? as usize;

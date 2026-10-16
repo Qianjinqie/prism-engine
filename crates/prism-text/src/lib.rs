@@ -7,6 +7,8 @@
 //! - [`raster`]：字形光栅化（经 `prism-raster` 扫描线覆盖率）；
 //! - [`layout`]：度量/贪心断行/行首行末禁则/对齐（GB/T 15834）；
 //! - [`vertical`]：竖排 CJK（右起列、标点转向、列首禁则）；
+//! - [`math_symbols`]：希腊/数学符号程序化回退表（cmap 缺失字符的
+//!   合成字形；v3-A 修复「ε/δ 渲染成豆腐块」缺陷）；
 //! - [`cache`]：确定性字形位图缓存（纯加速，不改输出）；
 //! - [`presets`]：Caption 字幕条与 Kinetic 逐字动画（接 `prism-anim`）；
 //! - [`node`]：`GlyphAdvance` 特解注册（D-27 静态汇入制）。
@@ -24,6 +26,7 @@ pub mod cache;
 pub mod gsub;
 pub mod layout;
 pub mod layout_grid;
+pub mod math_symbols;
 pub mod multiscript_font;
 pub mod node;
 pub mod opentype;

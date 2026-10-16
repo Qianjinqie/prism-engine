@@ -18,6 +18,7 @@ use prism_raster::scanline::{rasterize, FillRule};
 
 use crate::cache::GlyphCache;
 use crate::layout::{layout_text, GlyphPos, TextParams};
+use crate::math_symbols::outline_for_gid;
 use crate::ttf::{Font, Outline, OutlinePoint};
 
 /// 字形位图（设备像素空间；`alpha` 行主序 ∈ [0,255]）。
@@ -202,9 +203,14 @@ pub fn render_glyph(font: &Font, gid: u16, px_size: f32) -> GlyphBitmap {
     if !(px_size > 0.0) || !px_size.is_finite() {
         return GlyphBitmap::empty();
     }
+    // 字体轮廓优先（真实字形逐位不变）；空/越界 gid 时回退到
+    // `math_symbols` 程序化符号表（v3-A：cmap 缺失的希腊/数学符号）。
     let outline = match font.outline(gid) {
-        Ok(o) => o,
-        Err(_) => return GlyphBitmap::empty(),
+        Ok(o) if !o.contours.is_empty() => o,
+        _ => match outline_for_gid(gid) {
+            Some(o) => o,
+            None => return GlyphBitmap::empty(),
+        },
     };
     if outline.contours.is_empty() {
         return GlyphBitmap::empty();

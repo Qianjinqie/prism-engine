@@ -15,6 +15,7 @@
 //! 注：GPOS kern 表不解析（子集未保留；字距用 letter_spacing 追踪），
 //! 为已知实现边界，见 crate 根 README 的遗留问题清单。
 
+use crate::math_symbols::{advance_for_gid, fallback_gid, MATH_GID_BASE};
 use crate::ttf::Font;
 
 /// 水平对齐方式。
@@ -141,11 +142,25 @@ pub fn layout_text(font: &Font, text: &str, params: &TextParams) -> Layout {
     let chars: Vec<char> = text.chars().collect();
     let n = chars.len();
     let scale = params.font_size / font.units_per_em() as f32;
-    let gids: Vec<u16> =
-        chars.iter().map(|&c| font.glyph_index(c).unwrap_or(0)).collect();
+    // gid 解析：字体 cmap 优先；查不到（希腊/数学符号区段缺失）时回退到
+    // `math_symbols` 程序化符号表（v3-A：修复「ε/δ 渲染成 .notdef 豆腐块」）。
+    // 已覆盖字符行为逐位不变（真实字形永不走合成 gid）。
+    let gids: Vec<u16> = chars
+        .iter()
+        .map(|&c| font.glyph_index(c).or_else(|| fallback_gid(c)).unwrap_or(0))
+        .collect();
+    // advance：合成 gid 走回退表步进宽（hmtx 对越界 id 只会钳到末项，
+    // 给出错值）；真实字形走 hmtx（逐位不变）。
     let advances: Vec<f32> = gids
         .iter()
-        .map(|&g| font.advance(g) as f32 * scale + params.letter_spacing)
+        .map(|&g| {
+            let adv_units = if g >= MATH_GID_BASE {
+                advance_for_gid(g).unwrap_or(0)
+            } else {
+                font.advance(g)
+            };
+            adv_units as f32 * scale + params.letter_spacing
+        })
         .collect();
     // 前缀和：prefix[i] = Σ advances[0..i]（行宽与笔位均由差值给出，确定性）。
     let mut prefix = Vec::with_capacity(n + 1);

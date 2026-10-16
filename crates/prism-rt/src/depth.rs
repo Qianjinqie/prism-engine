@@ -80,6 +80,8 @@ mod tests {
             boxes: Vec::<(Aabb, MaterialKind)>::new(),
             lights: Vec::new(),
             medium: None,
+            paraboloids: vec![],
+            planes: vec![],
         }
     }
 

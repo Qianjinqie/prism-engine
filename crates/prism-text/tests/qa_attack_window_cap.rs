@@ -68,36 +68,6 @@ fn gid_of(f: &prism_text::ttf::Font, ch: char) -> u16 {
     }
 }
 
-/// 二分查找"最大仍被接受的字号"（接受前沿），返回 `(px, 该处最大边长)`。
-///
-/// 为什么用二分而非细扫：每个被接受的位图最多分配 64 MiB 覆盖缓冲，
-/// 逐 0.5px 细扫需上千次渲染（分钟级）。二分只需 ~14 次即可把前沿
-/// 定位到 ±1px，足够判定"边长守卫是否紧贴生效"。
-///
-/// `None` 表示该区间内无任何被接受的字号。
-fn accepted_frontier(f: &prism_text::ttf::Font, gid: u16, lo: f32, hi: f32) -> Option<(f32, i64)> {
-    if render_glyph(f, gid, lo).is_empty() {
-        return None;
-    }
-    let (mut lo, mut hi) = (lo, hi);
-    let b0 = render_glyph(f, gid, lo);
-    let mut best = (lo, b0.width.max(b0.height) as i64);
-    for _ in 0..14 {
-        let mid = 0.5 * (lo + hi);
-        let b = render_glyph(f, gid, mid);
-        if b.is_empty() {
-            hi = mid;
-        } else {
-            lo = mid;
-            best = (mid, b.width.max(b.height) as i64);
-        }
-        if hi - lo < 0.5 {
-            break;
-        }
-    }
-    Some(best)
-}
-
 /// 复刻 `render_glyph` 的窗口算术与双守卫（照抄 `raster.rs:236-256`），
 /// 返回"若不设边长守卫时的本应边长"与"坐标是否已越界"。
 ///

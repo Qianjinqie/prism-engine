@@ -39,6 +39,7 @@ fn probe_p0_1_gamma_accuracy() {
     let want = ref_pow(0.3, 1.8);
     let ec = (coarse.apply_scalar(0.3) - want).abs();
     let ef = (fine.apply_scalar(0.3) - want).abs();
+    assert!(ef < ec, "fine steps 误差应小于 coarse：ec={ec} ef={ef}");
     assert!(ef < 0.02, "fine steps 误差过大 {ef}");
 
     // 边界 x=0 -> 0；x=1 -> 1（任意 gamma）。

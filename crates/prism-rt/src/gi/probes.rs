@@ -43,8 +43,8 @@
 use prism_math::Vec3;
 
 use crate::gi::sdf_gi::{
-    ambient_occlusion, multi_bounce_energy_upper_bound, one_bounce_indirect, solve_multi_bounce,
-    MultiBounceBudget, MultiBounceResult, OcclusionBudget, SdfField, SceneSdf,
+    ambient_occlusion, one_bounce_indirect, solve_multi_bounce, MultiBounceBudget,
+    MultiBounceResult, OcclusionBudget, SdfField, SceneSdf,
 };
 use crate::gi::sh::{sh_reconstruct_rgb, ShIrradiance, ShOrder};
 
@@ -1187,6 +1187,7 @@ fn cmp_point(a: &Vec3, b: &Vec3) -> std::cmp::Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gi::sdf_gi::multi_bounce_energy_upper_bound;
 
     fn empty_scene() -> SceneSdf {
         SceneSdf::from_scene(&crate::integrator::Scene::default())
@@ -1322,6 +1323,8 @@ mod tests {
             ],
             lights: Vec::new(),
             medium: None,
+            paraboloids: vec![],
+            planes: vec![],
         };
         let field = SceneSdf::from_scene(&scene);
         let p = Vec3::new(0.0, 0.5, 0.0); // 腔中
@@ -1407,6 +1410,8 @@ mod tests {
             ],
             lights: Vec::new(),
             medium: None,
+            paraboloids: vec![],
+            planes: vec![],
         };
         SceneSdf::from_scene(&scene)
     }

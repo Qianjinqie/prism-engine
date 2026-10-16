@@ -868,7 +868,7 @@ static TESTS: &[TestItem] = &[
     },
     TestItem {
         id: "wgsl.structural",
-        name: "WGSL 结构自检：9 个内嵌 shader + 库件 + 2 个 D0 内核（D-29 禁 libm）",
+        name: "WGSL 结构自检：11 个内嵌 shader + 库件 + 2 个 D0 内核（D-29 禁 libm）",
         needs_gpu: false,
         run: t_wgsl_structural,
         collect: None,
@@ -889,7 +889,7 @@ static TESTS: &[TestItem] = &[
     },
     TestItem {
         id: "wgsl.compile",
-        name: "真 WebGPU：9 个 D2/D3/D4 shader 批量 createShaderModule 编译（include 已展开）",
+        name: "真 WebGPU：11 个内嵌 shader 批量 createShaderModule 编译（include 已展开）",
         needs_gpu: true,
         run: t_wgsl_compile,
         collect: Some(c_wgsl_compile),
@@ -2470,6 +2470,16 @@ static COVERAGE: &[(&str, &[(&str, &str, &str)])] = &[
                  查询点出射辐亮度逐字段判对",
             ),
         ],
+    ),
+    (
+        "background.wgsl",
+        &[(
+            "bg_main",
+            ST_SKIP,
+            "GPU compute 背景渲染内核（demo `paint_background` 热点兜底）。bind group / \
+             dispatch 链路待接入；当前由 `prism_gpu::render_background` 的 CPU 参考真实兜底。\
+             shader 已嵌入 SHADERS 并过 D-29 结构自检，等待 WebGPU 运行时真 dispatch",
+        )],
     ),
 ];
 

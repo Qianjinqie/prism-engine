@@ -126,6 +126,45 @@ impl Aabb {
     }
 }
 
+/// 抛物面（z = k·(x²+y²)，径向有界 r² = x²+y² <= r_max²，闭边界）。
+///
+/// 求交为闭式解（射线代入隐式方程得二次方程）；`k <= 0` / `r_max <= 0` /
+/// 任一非有限 ⇒ 该图元永不命中（`intersect` 入口跳过，不 panic）。
+#[derive(Debug, Clone, Copy)]
+pub struct Paraboloid {
+    /// 曲率（>0 开口向上）。
+    pub k: f32,
+    /// 径向截断（>0；命中要求 r²(t) <= r_max²，闭边界）。
+    pub r_max: f32,
+}
+
+/// 平面（可有限切片）：`point` 上一点，`normal` 法线（单位化后使用），
+/// `half_extent = None` 为无限平面；`Some(h)` 为以 `point` 为中心、边长
+/// `2h` 的正方形切片（沿确定性正交基 `tu`/`tv` 裁剪，闭边界）。
+///
+/// `normal` 零长 / 非有限 / `half_extent <= 0` ⇒ 该图元永不命中
+/// （`intersect` 入口跳过，不 panic）。
+#[derive(Debug, Clone, Copy)]
+pub struct Plane {
+    /// 平面上一点。
+    pub point: Vec3,
+    /// 法线（构造后须单位化，如 [`Plane::new`]）。
+    pub normal: Vec3,
+    /// 半宽（None = 无限平面；Some(h) 时 |u| <= h 且 |v| <= h 才命中）。
+    pub half_extent: Option<f32>,
+}
+
+impl Plane {
+    /// 构造并单位化法线（零长 / 非有限法线归一为零向量 ⇒ 永不命中）。
+    pub fn new(point: Vec3, normal: Vec3, half_extent: Option<f32>) -> Self {
+        Plane {
+            point,
+            normal: normal.normalize(),
+            half_extent,
+        }
+    }
+}
+
 /// 材质（基线三型 + Disney PBR 全族）。
 #[derive(Debug, Clone, Copy)]
 pub enum MaterialKind {
@@ -207,6 +246,10 @@ pub struct Scene {
     pub spheres: Vec<(Sphere, MaterialKind)>,
     /// 盒体几何（墙体等）。
     pub boxes: Vec<(Aabb, MaterialKind)>,
+    /// 抛物面几何（z = k(x²+y²)，径向有界；S7 焦散碗）。
+    pub paraboloids: Vec<(Paraboloid, MaterialKind)>,
+    /// 平面几何（无限地面 / 可倾斜有限切片；S7 玻璃切平面）。
+    pub planes: Vec<(Plane, MaterialKind)>,
     /// 光源列表（NEE 采样对象）。
     pub lights: Vec<Light>,
     /// 可选单一介质区域。
@@ -222,6 +265,8 @@ pub struct Scene {
 pub(crate) enum ShapeRef {
     Sphere(usize),
     Box(usize),
+    Paraboloid(usize),
+    Plane(usize),
 }
 
 /// 最近命中。
@@ -233,6 +278,14 @@ pub(crate) struct Hit {
 
 /// 自交防护下界。
 pub(crate) const T_MIN: f32 = 1e-4;
+
+/// 新解析图元（抛物面 / 平面）求交入口的有限性检查：o/d 任一分量
+/// NaN/Inf ⇒ 不命中。**仅在新图元臂内使用**——不动 `Scene::intersect`
+/// 入口的统一检查，避免改变 v1 球 / 盒对 NaN 射线的既有行为。
+#[inline]
+fn finite_vec3(v: Vec3) -> bool {
+    v.x.is_finite() && v.y.is_finite() && v.z.is_finite()
+}
 /// 自交防护下界的编译期镜像（wavefront 判对基准一致性核对；同值）。
 pub const T_MIN_SENTINEL: f32 = 1e-4;
 /// `FRAC_1_PI` 的编译期镜像（wavefront 与 integrator 同口径核对）。
@@ -247,6 +300,8 @@ impl Scene {
         match s {
             ShapeRef::Sphere(i) => &self.spheres[i].1,
             ShapeRef::Box(i) => &self.boxes[i].1,
+            ShapeRef::Paraboloid(i) => &self.paraboloids[i].1,
+            ShapeRef::Plane(i) => &self.planes[i].1,
         }
     }
 
@@ -274,6 +329,17 @@ impl Scene {
                 } else {
                     Vec3::new(0.0, 0.0, rel.z.signum())
                 }
+            }
+            ShapeRef::Paraboloid(i) => {
+                // 抛物面解析法线：n = normalize(-2k·x, -2k·y, 1)
+                // （恒有 n.z > 0，朝上外法线；k > 0 由命中前提保证）。
+                let g = &self.paraboloids[i].0;
+                Vec3::new(-2.0 * g.k * p.x, -2.0 * g.k * p.y, 1.0).normalize()
+            }
+            ShapeRef::Plane(i) => {
+                // 平面外法线即构造时的单位化法线（切片两面同法线约定；
+                // 玻璃透射材质下由积分器 from_inside 翻转）。
+                self.planes[i].0.normal
             }
         }
     }
@@ -306,6 +372,123 @@ impl Scene {
             .map(|(enter, _)| enter)
     }
 
+    /// 抛物面求交（闭式解）：隐式 F(x,y,z) = z − k(x²+y²) = 0，射线
+    /// p(t) = o + t·d 代入得二次方程
+    /// `a = −k(d.x²+d.y²)`、`b = d.z − 2k(o.x·d.x + o.y·d.y)`、
+    /// `c = o.z − k(o.x²+o.y²)`。
+    ///
+    /// - `a == 0`（轴向射线 d.x == d.y == 0，IEEE 平方和恰为零）：退化线性
+    ///   单根 `t = −c/b`；`b == 0`（平行且不在轴上）⇒ None；
+    /// - 否则二次双根**都验证**（a < 0 时勿假设顺序），`disc < 0` ⇒ None；
+    /// - 候选有效条件与 `sphere_t`/`box_t` 同口径：`t >= T_MIN` 且
+    ///   `t < t_max`，且径向闭边界 `r²(t) <= r_max²`（`==` 算命中）；
+    ///   取最小有效 t；
+    /// - 数值稳健：o/d 任一分量 NaN/Inf、`k <= 0` / `r_max <= 0` /
+    ///   任一非有限 ⇒ None（该图元永不命中），不 panic。
+    fn paraboloid_t(&self, i: usize, ro: Vec3, rd: Vec3, t_max: f32) -> Option<f32> {
+        if !finite_vec3(ro) || !finite_vec3(rd) {
+            return None;
+        }
+        let g = &self.paraboloids[i].0;
+        if !g.k.is_finite() || !g.r_max.is_finite() || g.k <= 0.0 || g.r_max <= 0.0 {
+            return None; // 图元自身非法 ⇒ 永不命中
+        }
+        let a = -g.k * (rd.x * rd.x + rd.y * rd.y);
+        let b = rd.z - 2.0 * g.k * (ro.x * rd.x + ro.y * rd.y);
+        let c = ro.z - g.k * (ro.x * ro.x + ro.y * ro.y);
+
+        // 候选根（a == 0 轴向退化线性根；否则二次双根都验证）。
+        let mut candidates = [0.0f32; 2];
+        let n_cand = if a == 0.0 {
+            if b == 0.0 {
+                return None; // 轴向平行且不在轴上：不相交（轴为测度零）
+            }
+            candidates[0] = -c / b;
+            1
+        } else {
+            let disc = b * b - 4.0 * a * c;
+            if disc < 0.0 {
+                return None;
+            }
+            let sq = disc.sqrt();
+            candidates[0] = (-b - sq) / (2.0 * a);
+            candidates[1] = (-b + sq) / (2.0 * a);
+            2
+        };
+
+        let r_max2 = g.r_max * g.r_max;
+        let mut best: Option<f32> = None;
+        for &t in &candidates[..n_cand] {
+            // NaN 防御：NaN >= T_MIN 为 false，自然排除。
+            if !(t >= T_MIN && t < t_max) {
+                continue;
+            }
+            let x = ro.x + t * rd.x;
+            let y = ro.y + t * rd.y;
+            if x * x + y * y > r_max2 {
+                continue; // 径向界外（闭边界：== 算命中）
+            }
+            best = Some(match best {
+                Some(bt) if bt <= t => bt,
+                _ => t,
+            });
+        }
+        best
+    }
+
+    /// 平面求交：`denom = d·n`（n 为单位法线）；`denom == 0`（平行）⇒
+    /// None；`t = (point − o)·n / denom`，`t < T_MIN` 或 `t >= t_max` ⇒
+    /// None。
+    ///
+    /// `half_extent = Some(h)` 时按确定性正交基裁剪：`a` 轴按
+    /// `|n.x| > 0.9` 固定选择（无分支歧义），`tu = normalize(n×a)`、
+    /// `tv = n×tu`，`|u| > h` 或 `|v| > h` ⇒ None（闭边界）。
+    ///
+    /// 数值稳健：o/d 任一分量 NaN/Inf、法线零长 / 非有限、
+    /// `half_extent <= 0` ⇒ None（该图元永不命中），不 panic。
+    fn plane_t(&self, i: usize, ro: Vec3, rd: Vec3, t_max: f32) -> Option<f32> {
+        if !finite_vec3(ro) || !finite_vec3(rd) {
+            return None;
+        }
+        let pl = &self.planes[i].0;
+        let n = pl.normal;
+        if !n.x.is_finite() || !n.y.is_finite() || !n.z.is_finite() {
+            return None; // 法线非有限 ⇒ 永不命中
+        }
+        let nlen2 = n.x * n.x + n.y * n.y + n.z * n.z;
+        if !(nlen2 >= 1e-16) {
+            return None; // 零长 / 极短法线（NaN 亦落此分支）⇒ 永不命中
+        }
+        if let Some(h) = pl.half_extent {
+            if !h.is_finite() || h <= 0.0 {
+                return None; // half_extent <= 0 ⇒ 永不命中
+            }
+        }
+        let denom = rd.dot(&n);
+        if denom == 0.0 {
+            return None; // 射线平行平面（grazing 由 t < t_max 自然排除）
+        }
+        let t = (pl.point - ro).dot(&n) / denom;
+        if !(t >= T_MIN && t < t_max) {
+            return None;
+        }
+        if let Some(h) = pl.half_extent {
+            // 切片裁剪（确定性正交基：a 轴按 |n.x| > 0.9 固定选择）。
+            let a = if n.x.abs() > 0.9 {
+                Vec3::new(0.0, 1.0, 0.0)
+            } else {
+                Vec3::new(1.0, 0.0, 0.0)
+            };
+            let tu = n.cross(&a).normalize();
+            let tv = n.cross(&tu);
+            let d = (ro + rd * t) - pl.point;
+            if d.dot(&tu).abs() > h || d.dot(&tv).abs() > h {
+                return None; // 界外（闭边界）
+            }
+        }
+        Some(t)
+    }
+
     /// 最近命中（可跳过指定形状——阴影射线对被采样光源豁免）。
     pub(crate) fn intersect(
         &self,
@@ -332,6 +515,26 @@ impl Scene {
                 continue;
             }
             if let Some(t) = self.box_t(i, ro, rd, limit) {
+                best = Some(Hit { t, shape: r });
+                limit = t;
+            }
+        }
+        for i in 0..self.paraboloids.len() {
+            let r = ShapeRef::Paraboloid(i);
+            if skip == Some(r) {
+                continue;
+            }
+            if let Some(t) = self.paraboloid_t(i, ro, rd, limit) {
+                best = Some(Hit { t, shape: r });
+                limit = t;
+            }
+        }
+        for i in 0..self.planes.len() {
+            let r = ShapeRef::Plane(i);
+            if skip == Some(r) {
+                continue;
+            }
+            if let Some(t) = self.plane_t(i, ro, rd, limit) {
                 best = Some(Hit { t, shape: r });
                 limit = t;
             }
@@ -366,7 +569,8 @@ impl Scene {
     pub(crate) fn light_pdf_sa(&self, from: Vec3, s: ShapeRef) -> Option<f32> {
         let i = match s {
             ShapeRef::Sphere(i) => i,
-            ShapeRef::Box(_) => return None,
+            // 盒 / 抛物面 / 平面均非球光源几何：无立体角 pdf（与 Box 臂同语义）。
+            ShapeRef::Box(_) | ShapeRef::Paraboloid(_) | ShapeRef::Plane(_) => return None,
         };
         let li = self.sphere_light_index(i)?;
         match self.lights[li] {
@@ -935,6 +1139,8 @@ mod tests {
                 radiance: Vec3::new(16.0, 13.0, 10.0),
             }],
             medium: None,
+            paraboloids: vec![],
+            planes: vec![],
         }
     }
 
@@ -1018,6 +1224,8 @@ mod tests {
                 cos_theta_max: cos_max,
             }],
             medium: None,
+            paraboloids: vec![],
+            planes: vec![],
         };
         let cam = Camera::new(
             Vec3::new(0.0, 4.0, 0.0),
@@ -1206,6 +1414,8 @@ mod tests {
                 bounds: Aabb::new(Vec3::new(-5.0, 0.0, -5.0), Vec3::new(5.0, height, 5.0)),
                 medium: HomogeneousMedium::new(sigma_t, 0.0, 0.0),
             }),
+            paraboloids: vec![],
+            planes: vec![],
         };
         let cam = Camera::new(
             Vec3::new(0.0, 40.0, 0.0),
@@ -1263,6 +1473,8 @@ mod tests {
                 cos_theta_max: (6.0f32 * PI / 180.0).cos(),
             }],
             medium: None,
+            paraboloids: vec![],
+            planes: vec![],
         };
         let cam = Camera::new(
             Vec3::new(0.0, 0.8, 3.0),
@@ -1334,6 +1546,8 @@ mod tests {
                 cos_theta_max: (4.0f32 * PI / 180.0).cos(),
             }],
             medium: None,
+            paraboloids: vec![],
+            planes: vec![],
         };
         // 俯视地面，含球与球影区域。
         let cam = Camera::new(
@@ -1435,5 +1649,354 @@ mod tests {
             }
         }
         out
+    }
+
+    // ==================== E5 解析图元（抛物面 / 平面）单测组 ====================
+    // 期望值均由闭式解独立推导（Python 双精度核准）；除注明"精确"外，
+    // t 的比较均为 1e-4 近似（f32 求交与解析解的舍入差量级）。
+
+    /// 中性灰 Lambert（解析单测用材质）。
+    fn lambert_grey() -> MaterialKind {
+        MaterialKind::Lambert { albedo: Vec3::splat(0.8) }
+    }
+
+    /// 仅含一个抛物面的场景（k, r_max 参数化）。
+    fn paraboloid_scene(k: f32, r_max: f32) -> Scene {
+        Scene {
+            spheres: vec![],
+            boxes: vec![],
+            lights: vec![],
+            medium: None,
+            paraboloids: vec![(Paraboloid { k, r_max }, lambert_grey())],
+            planes: vec![],
+        }
+    }
+
+    /// 仅含一个平面的场景。
+    fn plane_scene(plane: Plane) -> Scene {
+        Scene {
+            spheres: vec![],
+            boxes: vec![],
+            lights: vec![],
+            medium: None,
+            paraboloids: vec![],
+            planes: vec![(plane, lambert_grey())],
+        }
+    }
+
+    /// E5-1 轴向射线 `a == 0` 退化线性单根：o=(0,0,-1), d=(0,0,1), k=1 ⇒ t=1.0
+    /// （精确：a=−1·0=−0.0，IEEE `−0.0 == 0.0` 为真走线性分支，t=−c/b=1）。
+    #[test]
+    fn paraboloid_axial_linear_root() {
+        let sc = paraboloid_scene(1.0, 1.5);
+        let t = sc.paraboloid_t(0, Vec3::new(0.0, 0.0, -1.0), Vec3::new(0.0, 0.0, 1.0), 1.0e30);
+        assert_eq!(t, Some(1.0));
+        // 经 intersect 同值（ShapeRef 索引正确）。
+        let h = sc
+            .intersect(Vec3::new(0.0, 0.0, -1.0), Vec3::new(0.0, 0.0, 1.0), 1.0e30, None)
+            .unwrap();
+        assert_eq!(h.t, 1.0);
+        assert_eq!(h.shape, ShapeRef::Paraboloid(0));
+    }
+
+    /// E5-2 轴向平行且不在轴上（`a == 0 && b == 0`）：None 不 panic
+    /// （零方向射线 d=(0,0,0)：`-c/b` 除零前被 `b == 0` 分支拦截）。
+    #[test]
+    fn paraboloid_axial_parallel_off_axis_none() {
+        let sc = paraboloid_scene(1.0, 1.5);
+        assert_eq!(
+            sc.paraboloid_t(0, Vec3::new(1.0, 1.0, 0.0), Vec3::new(0.0, 0.0, 0.0), 1.0e30),
+            None
+        );
+    }
+
+    /// E5-3 离轴双根都有效 ⇒ 取最小有效 t（a < 0 时勿假设根序）：
+    /// o=(-2,0,0.5), d=(1,0,0) ⇒ t = 1.29289 / 2.70711（r² 均 0.5 ≤ 1.5²）。
+    #[test]
+    fn paraboloid_offaxis_two_valid_roots_takes_min() {
+        let sc = paraboloid_scene(1.0, 1.5);
+        let t = sc
+            .paraboloid_t(0, Vec3::new(-2.0, 0.0, 0.5), Vec3::new(1.0, 0.0, 0.0), 1.0e30)
+            .unwrap();
+        assert!((t - 1.2928932).abs() < 1e-4, "t={t}");
+        // 命中点在抛物面上（F = z − x² − y² ≈ 0）。
+        let x = -2.0 + t;
+        assert!((0.5 - x * x).abs() < 1e-4, "F={}", 0.5 - x * x);
+    }
+
+    /// E5-4 r_max 边界：界外 miss / 界内 hit / 闭边界 `r² == r_max²` 算命中。
+    /// 射线 o=(1,0,-1), d=(0,0,1) 恒命中 (1,0,0)（r²=1, t=2）。
+    #[test]
+    fn paraboloid_r_max_boundary_inside_outside() {
+        let ro = Vec3::new(1.0, 0.0, -1.0);
+        let rd = Vec3::new(0.0, 0.0, 1.0);
+        // 界外：r_max=0.5 ⇒ r²=1 > 0.25。
+        assert_eq!(
+            paraboloid_scene(1.0, 0.5).paraboloid_t(0, ro, rd, 1.0e30),
+            None
+        );
+        // 界内：r_max=1.5 ⇒ r²=1 ≤ 2.25。
+        assert_eq!(
+            paraboloid_scene(1.0, 1.5).paraboloid_t(0, ro, rd, 1.0e30),
+            Some(2.0)
+        );
+        // 闭边界：r_max=1.0 ⇒ r²=1 == r_max²，`>` 判否 ⇒ 命中（全整数精确）。
+        assert_eq!(
+            paraboloid_scene(1.0, 1.0).paraboloid_t(0, ro, rd, 1.0e30),
+            Some(2.0)
+        );
+    }
+
+    /// E5-5 `disc == 0` 精确相切（单重根正常命中）：o=(1,-2,1), d=(0,1,0)
+    /// ⇒ a=-1, b=4, c=-4，disc=16-16=0，t=2.0（全整数运算，逐位精确）。
+    #[test]
+    fn paraboloid_disc_zero_tangent_exact() {
+        let sc = paraboloid_scene(1.0, 1.5);
+        let t = sc.paraboloid_t(0, Vec3::new(1.0, -2.0, 1.0), Vec3::new(0.0, 1.0, 0.0), 1.0e30);
+        assert_eq!(t, Some(2.0));
+    }
+
+    /// E5-6 PRD §6 切平面配置钉死：P=(0.8,0.8,1.28) 在 z=x²+y² 上
+    /// （0.64+0.64=1.28 ✓），n=(-1.6,-1.6,1) 即 P 点 ∇F；自 P+s·n̂ 沿 −n̂
+    /// 入射必命中 t=s±1e-4（s 取 0.5 / 1.0 / 2.0 三档）。
+    /// 注：法向入射 disc≠0——唯一正根 t=s，第二根在起点反方向（负）被
+    /// T_MIN 排除；真相切（disc==0）用例见 E5-5。
+    #[test]
+    fn paraboloid_prd_tangent_plane_normal_incidence() {
+        let sc = paraboloid_scene(1.0, 2.0); // r_max=2：r²(P)=1.28 界内
+        let n = Vec3::new(-1.6, -1.6, 1.0).normalize();
+        let p = Vec3::new(0.8, 0.8, 1.28);
+        for &s in &[0.5f32, 1.0, 2.0] {
+            let o = p + n * s;
+            let d = -n;
+            let t = sc.paraboloid_t(0, o, d, 1.0e30).expect("必命中");
+            assert!((t - s).abs() < 1e-4, "s={s} t={t}");
+            // 命中点即 P。
+            let hp = o + d * t;
+            assert!((hp - p).length() < 1e-4, "s={s} hp={hp:?}");
+        }
+    }
+
+    /// E5-7 图元自身参数非法 ⇒ 永不命中（不 panic）：k<=0 / r_max<=0 / 非有限。
+    #[test]
+    fn paraboloid_degenerate_params_never_hit() {
+        let ro = Vec3::new(0.0, 0.0, -1.0);
+        let rd = Vec3::new(0.0, 0.0, 1.0);
+        let cases: &[(f32, f32)] = &[
+            (0.0, 1.5),
+            (-1.0, 1.5),
+            (1.0, 0.0),
+            (1.0, -0.5),
+            (f32::NAN, 1.5),
+            (1.0, f32::INFINITY),
+            (f32::NAN, f32::NAN),
+        ];
+        for &(k, r_max) in cases {
+            let sc = paraboloid_scene(k, r_max);
+            assert_eq!(
+                sc.paraboloid_t(0, ro, rd, 1.0e30),
+                None,
+                "k={k} r_max={r_max} 应永不命中"
+            );
+        }
+    }
+
+    /// E5-8 射线非有限 ⇒ None（NaN 比较天然排除；Inf 由入口 finite 检查拦截）。
+    #[test]
+    fn paraboloid_nonfinite_ray_none() {
+        let sc = paraboloid_scene(1.0, 1.5);
+        assert_eq!(
+            sc.paraboloid_t(0, Vec3::new(f32::NAN, 0.0, -1.0), Vec3::new(0.0, 0.0, 1.0), 1.0e30),
+            None
+        );
+        assert_eq!(
+            sc.paraboloid_t(0, Vec3::new(0.0, 0.0, -1.0), Vec3::new(f32::INFINITY, 0.0, 1.0), 1.0e30),
+            None
+        );
+        assert_eq!(
+            sc.paraboloid_t(0, Vec3::new(0.0, 0.0, f32::INFINITY), Vec3::new(0.0, 0.0, 1.0), 1.0e30),
+            None
+        );
+    }
+
+    /// E5-9 `normal_at` 解析对照：命中点法线 ≡ normalize(-2k·x, -2k·y, 1)，
+    /// 且恒朝上（n.z > 0）。
+    #[test]
+    fn paraboloid_normal_at_matches_analytic() {
+        let sc = paraboloid_scene(1.0, 2.0);
+        let o = Vec3::new(-2.0, 0.0, 0.5);
+        let d = Vec3::new(1.0, 0.0, 0.0);
+        let h = sc.intersect(o, d, 1.0e30, None).unwrap();
+        let p = o + d * h.t;
+        let n = sc.normal_at(h.shape, p);
+        let expect = Vec3::new(-2.0 * p.x, -2.0 * p.y, 1.0).normalize();
+        assert!((n - expect).length() < 1e-6, "n={n:?} expect={expect:?}");
+        assert!(n.z > 0.0, "抛物面外法线恒朝上");
+    }
+
+    /// E5-10 `t_max` 语义与 sphere_t/box_t 同口径：`t >= t_max` 即排除
+    /// （边界等于即排除；Infinity 远平面正常命中）。
+    #[test]
+    fn paraboloid_t_max_semantics() {
+        let sc = paraboloid_scene(1.0, 1.5);
+        let ro = Vec3::new(0.0, 0.0, -1.0);
+        let rd = Vec3::new(0.0, 0.0, 1.0);
+        assert_eq!(sc.paraboloid_t(0, ro, rd, 1.0), None); // t == t_max 排除
+        assert_eq!(sc.paraboloid_t(0, ro, rd, 1.0 + 1e-3), Some(1.0));
+        assert_eq!(sc.paraboloid_t(0, ro, rd, 0.5), None); // t > t_max 排除
+        assert_eq!(sc.paraboloid_t(0, ro, rd, f32::INFINITY), Some(1.0));
+    }
+
+    /// E5-11 平面：轴向命中（t 精确）+ 平行（denom==0）⇒ None；
+    /// 双面约定（背面入射同样命中，法线朝向由积分器 from_inside 处理）。
+    #[test]
+    fn plane_axial_hit_and_parallel_none() {
+        let sc = plane_scene(Plane::new(
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            None,
+        ));
+        assert_eq!(
+            sc.plane_t(0, Vec3::new(0.0, 0.0, 5.0), Vec3::new(0.0, 0.0, -1.0), 1.0e30),
+            Some(5.0)
+        );
+        assert_eq!(
+            sc.plane_t(0, Vec3::new(0.0, 0.0, 5.0), Vec3::new(1.0, 0.0, 0.0), 1.0e30),
+            None
+        );
+        assert_eq!(
+            sc.plane_t(0, Vec3::new(0.0, 0.0, -5.0), Vec3::new(0.0, 0.0, 1.0), 1.0e30),
+            Some(5.0)
+        );
+    }
+
+    /// E5-12 有限切片裁剪：`|u|>h` 或 `|v|>h` ⇒ None；闭边界 `|u|==h` 算命中；
+    /// 无限平面（half_extent=None）任意位置命中。
+    #[test]
+    fn plane_half_extent_clip_and_infinite() {
+        let sc = plane_scene(Plane::new(
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            Some(1.0),
+        ));
+        let down = Vec3::new(0.0, 0.0, -1.0);
+        // 界内。
+        assert_eq!(sc.plane_t(0, Vec3::new(0.5, 0.3, 5.0), down, 1.0e30), Some(5.0));
+        // 界外（x=1.5 > h=1）。
+        assert_eq!(sc.plane_t(0, Vec3::new(1.5, 0.0, 5.0), down, 1.0e30), None);
+        // 闭边界（x=±1.0 精确表示，|u|==h 命中）。
+        assert_eq!(sc.plane_t(0, Vec3::new(1.0, 0.0, 5.0), down, 1.0e30), Some(5.0));
+        assert_eq!(sc.plane_t(0, Vec3::new(0.0, -1.0, 5.0), down, 1.0e30), Some(5.0));
+        // 界外（y=-1.0001，超出 1e-4）。
+        assert_eq!(sc.plane_t(0, Vec3::new(0.0, -1.0001, 5.0), down, 1.0e30), None);
+        // 无限平面：远处命中。
+        let inf = plane_scene(Plane::new(
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            None,
+        ));
+        assert_eq!(inf.plane_t(0, Vec3::new(50.0, 30.0, 5.0), down, 1.0e30), Some(5.0));
+    }
+
+    /// E5-13 `Plane::new` 单位化法线；零长/非有限法线永不命中（不 panic）；
+    /// t 对方向缩放不变。
+    #[test]
+    fn plane_normal_normalized_zero_and_scale_invariance() {
+        // 非单位法线 (0,3,0) 单位化后：点 (0,2,0) 命中 t=2（精确）。
+        let sc = plane_scene(Plane::new(
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 3.0, 0.0),
+            None,
+        ));
+        assert_eq!(
+            sc.plane_t(0, Vec3::new(0.0, -2.0, 0.0), Vec3::new(0.0, 1.0, 0.0), 1.0e30),
+            Some(2.0)
+        );
+        // 零长法线 ⇒ 永不命中。
+        let zero = plane_scene(Plane::new(
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 0.0),
+            None,
+        ));
+        assert_eq!(
+            zero.plane_t(0, Vec3::new(0.0, -2.0, 0.0), Vec3::new(0.0, 1.0, 0.0), 1.0e30),
+            None
+        );
+        // 非有限法线（NaN）⇒ 永不命中。
+        let nan = plane_scene(Plane::new(
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(f32::NAN, 0.0, 1.0),
+            None,
+        ));
+        assert_eq!(
+            nan.plane_t(0, Vec3::new(0.0, 0.0, 5.0), Vec3::new(0.0, 0.0, -1.0), 1.0e30),
+            None
+        );
+        // 方向缩放 7 倍 ⇒ t/7（参数等价；用法线 (0,0,1) 平面独立验证）。
+        let flat = plane_scene(Plane::new(
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            None,
+        ));
+        let t1 = flat
+            .plane_t(0, Vec3::new(0.0, 0.0, 5.0), Vec3::new(0.0, 0.0, -1.0), 1.0e30)
+            .unwrap();
+        let t7 = flat
+            .plane_t(0, Vec3::new(0.0, 0.0, 5.0), Vec3::new(0.0, 0.0, -7.0), 1.0e30)
+            .unwrap();
+        assert!((t7 - t1 / 7.0).abs() < 1e-6, "t7={t7}");
+    }
+
+    /// E5-14 `light_pdf_sa`：抛物面/平面均非球光源几何 ⇒ None（与 Box 臂同语义）。
+    #[test]
+    fn new_shapes_light_pdf_sa_none() {
+        let sc = Scene {
+            spheres: vec![],
+            boxes: vec![],
+            lights: vec![Light::Sphere {
+                center: Vec3::new(0.0, 1.92, 0.0),
+                radius: 0.28,
+                radiance: Vec3::splat(8.0),
+            }],
+            medium: None,
+            paraboloids: vec![(Paraboloid { k: 1.0, r_max: 1.5 }, lambert_grey())],
+            planes: vec![(
+                Plane::new(Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), None),
+                lambert_grey(),
+            )],
+        };
+        let from = Vec3::new(0.3, 0.2, 0.4);
+        assert_eq!(sc.light_pdf_sa(from, ShapeRef::Paraboloid(0)), None);
+        assert_eq!(sc.light_pdf_sa(from, ShapeRef::Plane(0)), None);
+    }
+
+    /// E5-15 `Scene::intersect` 跨图元取最近 + skip 豁免（阴影射线语义）：
+    /// 球(miss)/盒(后墙)/抛物面/平面混合，抛物面 t≈4.91 最近；skip 抛物面
+    /// ⇒ 平面 t=5.0 接上；skip 平面 ⇒ 抛物面仍胜盒（t=6.5）。
+    #[test]
+    fn scene_intersect_nearest_across_kinds_and_skip() {
+        let mat = lambert_grey();
+        let sc = Scene {
+            spheres: vec![(Sphere { center: Vec3::new(1.5, 0.0, 2.0), radius: 0.5 }, mat)],
+            boxes: vec![(Aabb::new(Vec3::new(-2.0, -1.0, -2.0), Vec3::new(2.0, 1.0, -1.5)), mat)],
+            lights: vec![],
+            medium: None,
+            paraboloids: vec![(Paraboloid { k: 1.0, r_max: 1.5 }, mat)],
+            planes: vec![(Plane::new(Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), None), mat)],
+        };
+        let ro = Vec3::new(0.3, 0.0, 5.0);
+        let rd = Vec3::new(0.0, 0.0, -1.0);
+        // 抛物面 t=4.91（命中 (0.3,0,0.09)，r²=0.09 界内）最近。
+        let h = sc.intersect(ro, rd, 1.0e30, None).unwrap();
+        assert_eq!(h.shape, ShapeRef::Paraboloid(0));
+        assert!((h.t - 4.91).abs() < 1e-4, "t={}", h.t);
+        // skip 抛物面 ⇒ 平面 t=5.0。
+        let h2 = sc.intersect(ro, rd, 1.0e30, Some(ShapeRef::Paraboloid(0))).unwrap();
+        assert_eq!(h2.shape, ShapeRef::Plane(0));
+        assert_eq!(h2.t, 5.0);
+        // skip 平面 ⇒ 抛物面仍胜盒（墙 t=6.5）。
+        let h3 = sc.intersect(ro, rd, 1.0e30, Some(ShapeRef::Plane(0))).unwrap();
+        assert_eq!(h3.shape, ShapeRef::Paraboloid(0));
+        assert!((h3.t - 4.91).abs() < 1e-4, "t={}", h3.t);
     }
 }

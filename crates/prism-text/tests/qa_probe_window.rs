@@ -100,7 +100,7 @@ fn n2_p2_non_positive_and_nonfinite_return_unallocated_empty() {
 fn n2_p3_window_edge_boundary_is_continuous_and_self_consistent() {
     let f = font_regular();
     let gid = f.glyph_index('中').expect("中在子集内");
-    let mut prev_empty: Option<bool> = None;
+    let prev_empty: Option<bool> = None;
     // 边界附近密集采样：验证"空/非空"随字号单调（一旦为空即持续为空）。
     // 边界点稀疏采样：4096px 字形的光栅化缓冲达 67 MiB/次，故不做密集扫描。
     // 契约验的是"自洽 + 上限不被突破"，而非逐整数枚举。
@@ -157,9 +157,6 @@ fn n2_p4_rendered_window_never_exceeds_cap() {
     // 临界点上下的位图必须自洽（这是"连续无跳变"的正确表述）。
     assert_self_consistent("临界前一档", &render_glyph(&f, gid, last_ok));
     assert_self_consistent("临界后一档", &render_glyph(&f, gid, first_reject));
-    // 理论临界：窗口宽 = (xmax-xmin)*px/upem 达到 EDGE 之前。
-    let glyph_w_em = (xmax - xmin) / upem;
-    let theory_reject = EDGE as f32 / glyph_w_em * upem;
     assert!(
         last_ok > 0.0 && first_reject.is_finite(),
         "应存在渲染区与拒绝区的分界（last_ok={last_ok} first_reject={first_reject}）"

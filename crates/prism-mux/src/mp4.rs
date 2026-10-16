@@ -54,6 +54,25 @@ pub fn write_mp4_jpeg(
     write_mp4_impl(&gray, video, audio_pcm16, audio_sample_rate, audio_channels, jpeg_cfg)
 }
 
+/// 便捷函数：从 RGBA8 帧写**彩色** MP4（MJPEG 4:4:4，不转灰度）。
+///
+/// 与 [`write_mp4_jpeg`] 同源，但走 [`jpeg::encode_jpeg_color`]，保留全部色彩；
+/// 不依赖任何外部编码库。其余参数语义与 [`write_mp4`] 一致。
+pub fn write_mp4_jpeg_color(
+    rgba_frames: &[Vec<u8>],
+    video: TrackSpec,
+    audio_pcm16: Option<&[u8]>,
+    audio_sample_rate: u32,
+    audio_channels: u16,
+    jpeg_cfg: JpegConfig,
+) -> MuxResult<Vec<u8>> {
+    let mut samples: Vec<Vec<u8>> = Vec::with_capacity(rgba_frames.len());
+    for f in rgba_frames {
+        samples.push(jpeg::encode_jpeg_color(f, video.width, video.height, jpeg_cfg)?);
+    }
+    mux_mjpeg(&samples, video, audio_pcm16, audio_sample_rate, audio_channels)
+}
+
 fn write_mp4_impl(
     gray_frames: &[Vec<u8>],
     video: TrackSpec,
@@ -100,7 +119,7 @@ fn write_mp4_impl(
         }
     }
 
-    // 编码全部视频帧。
+    // 编码全部视频帧为灰度 JPEG（内部校验每帧样本数 == width×height）。
     let n = (video.width as usize) * (video.height as usize);
     let mut jpegs: Vec<Vec<u8>> = Vec::with_capacity(gray_frames.len());
     for (i, f) in gray_frames.iter().enumerate() {
@@ -114,6 +133,38 @@ fn write_mp4_impl(
         }
         jpegs.push(jpeg::encode_jpeg_gray(f, video.width, video.height, jpeg_cfg)?);
     }
+    mux_mjpeg(&jpegs, video, audio_pcm16, audio_sample_rate, audio_channels)
+}
+
+/// 把**已编码**的 MJPEG 样本（灰度或彩色）封装为 MP4（moov 后置布局）。
+///
+/// 调用方负责把原始帧编码为 JPEG（`encode_jpeg_gray` / `encode_jpeg_color`），
+/// 本函数只做容器封装，不再触碰像素——灰度与彩色共用同一条封装路径。
+fn mux_mjpeg(
+    jpegs: &[Vec<u8>],
+    video: TrackSpec,
+    audio_pcm16: Option<&[u8]>,
+    audio_sample_rate: u32,
+    audio_channels: u16,
+) -> MuxResult<Vec<u8>> {
+    if jpegs.is_empty() {
+        return Err(MuxError::new(
+            "MUX2001",
+            "mp4::mux_mjpeg",
+            "样本为空",
+            "至少提供 1 帧",
+        ));
+    }
+    for (i, j) in jpegs.iter().enumerate() {
+        if j.is_empty() {
+            return Err(MuxError::new(
+                "MUX2001",
+                "mp4::mux_mjpeg",
+                format!("第 {i} 帧 JPEG 为空"),
+                "编码失败",
+            ));
+        }
+    }
 
     // 时间基：视频 timescale = fps，每样本 delta = 1 → duration = 帧数。
     let video_timescale: u32 = video.fps;
@@ -122,7 +173,7 @@ fn write_mp4_impl(
     // 组装 mdat 数据（视频样本 + 音频样本）。
     let mut mdat_data: Vec<u8> = Vec::new();
     let mut video_sizes: Vec<u32> = Vec::with_capacity(jpegs.len());
-    for j in &jpegs {
+    for j in jpegs {
         video_sizes.push(j.len() as u32);
         mdat_data.extend_from_slice(j);
     }

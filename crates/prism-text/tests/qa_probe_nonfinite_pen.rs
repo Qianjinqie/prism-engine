@@ -28,7 +28,7 @@ use prism_io::Fbuf16F;
 use prism_text::cache::GlyphCache;
 use prism_text::font_regular;
 use prism_text::layout::GlyphPos;
-use prism_text::raster::{blit_glyph, draw_glyphs, render_glyph, GlyphBitmap};
+use prism_text::raster::{blit_glyph, draw_glyphs, render_glyph};
 
 /// 非有限笔位全集（NaN / ±Inf 是本缺陷的核心触发源）。
 const NON_FINITE: &[f32] = &[f32::NAN, f32::INFINITY, f32::NEG_INFINITY];

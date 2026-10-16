@@ -38,11 +38,13 @@ fn rich_scene() -> Scene {
             cos_theta_max: 0.9,
         }],
         medium: None,
+        paraboloids: vec![],
+        planes: vec![],
     }
 }
 
 fn empty_scene() -> Scene {
-    Scene { spheres: Vec::new(), boxes: Vec::new(), lights: Vec::new(), medium: None }
+    Scene { spheres: Vec::new(), boxes: Vec::new(), lights: Vec::new(), medium: None, paraboloids: vec![], planes: vec![] }
 }
 
 fn cam() -> Camera {

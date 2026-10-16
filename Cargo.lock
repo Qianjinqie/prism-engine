@@ -33,6 +33,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "prism-anim-demo"
+version = "0.1.0"
+dependencies = [
+ "prism-anim",
+ "prism-gpu",
+ "prism-io",
+ "prism-mux",
+ "prism-noise",
+ "prism-raster",
+ "prism-text",
+]
+
+[[package]]
 name = "prism-app"
 version = "0.1.0"
 dependencies = [
@@ -53,6 +66,23 @@ version = "0.1.0"
 dependencies = [
  "prism-core",
  "prism-noise",
+]
+
+[[package]]
+name = "prism-author"
+version = "0.1.0"
+dependencies = [
+ "prism-audio",
+ "prism-core",
+ "prism-io",
+ "prism-math",
+ "prism-mux",
+ "prism-noise",
+ "prism-postfx",
+ "prism-raster",
+ "prism-render",
+ "prism-rt",
+ "prism-text",
 ]
 
 [[package]]

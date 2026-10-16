@@ -292,7 +292,7 @@ fn seek_equals_sequential_advance() {
     // 先推进到第 10 帧（产生"脏"中间态），再 seek 到第 40 帧（同规格力场重放）。
     let mut seeked_src = ParticleSim::new(test_emitter(), test_forces(), dt, 512);
     seeked_src.advance_to(10);
-    let mut seeked = seeked_src.seek_with(40, test_forces());
+    let seeked = seeked_src.seek_with(40, test_forces());
 
     assert_eq!(seq.frame(), seeked.frame());
     assert_eq!(seq.spawned(), seeked.spawned(), "发射数应一致");

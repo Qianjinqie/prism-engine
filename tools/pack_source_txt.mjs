@@ -86,6 +86,7 @@ const EXCLUDE_DIRS = new Set([
   '.codebuddy', // 内部工作区
   '.git',
   'backups', // tools/backups 下的 .bak 备份
+  'prism-anim-demo', // 临时演示 crate（Aurora Drift 动画生成器），仅仓库内保留作可复现示例，不进分发包
 ]);
 
 /** 硬排除：文件名/扩展名模式 */

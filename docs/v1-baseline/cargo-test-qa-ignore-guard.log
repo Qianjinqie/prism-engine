@@ -1,0 +1,11 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s
+     Running tests/qa_ignore_guard.rs (target/debug/deps/qa_ignore_guard-ceb4b4421d03e29e)
+
+running 4 tests
+test detector_ignores_prose_mentions ... ok
+test detector_rejects_a_real_ignore ... ok
+test scan_covers_the_workspace ... ok
+test no_ignore_anywhere_in_workspace ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.86s
+

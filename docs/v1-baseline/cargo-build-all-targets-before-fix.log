@@ -1,0 +1,121 @@
+warning: unused variable: `n`
+   --> crates/prism-core/src/graph.rs:876:13
+    |
+876 |         let n = 5usize;
+    |             ^ help: if this is intentional, prefix it with an underscore: `_n`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `prism-core` (lib test) generated 1 warning (run `cargo fix --lib -p prism-core --tests` to apply 1 suggestion)
+warning: unused import: `multi_bounce_energy_upper_bound`
+  --> crates/prism-rt/src/gi/probes.rs:46:24
+   |
+46 |     ambient_occlusion, multi_bounce_energy_upper_bound, one_bounce_indirect, solve_multi_bounce,
+   |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated function `cos_abs` is never used
+   --> crates/prism-rt/src/hair_scatter.rs:483:8
+    |
+190 | impl HairScatter {
+    | ---------------- associated function in this implementation
+...
+483 |     fn cos_abs(theta: f32) -> f32 {
+    |        ^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `prism-rt` (lib) generated 2 warnings (run `cargo fix --lib -p prism-rt` to apply 1 suggestion)
+warning: variable does not need to be mutable
+   --> crates/prism-particles/tests/particles_integration.rs:295:9
+    |
+295 |     let mut seeked = seeked_src.seek_with(40, test_forces());
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: `prism-particles` (test "particles_integration") generated 1 warning (run `cargo fix --test "particles_integration" -p prism-particles` to apply 1 suggestion)
+warning: unused variable: `ec`
+  --> crates/prism-aesthetic/tests/qa_probe_secondary.rs:40:9
+   |
+40 |     let ec = (coarse.apply_scalar(0.3) - want).abs();
+   |         ^^ help: if this is intentional, prefix it with an underscore: `_ec`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `prism-aesthetic` (test "qa_probe_secondary") generated 1 warning (run `cargo fix --test "qa_probe_secondary" -p prism-aesthetic` to apply 1 suggestion)
+warning: unused import: `ProviderResponse`
+  --> crates/prism-ai/tests/qa_edge_attack.rs:19:53
+   |
+19 | use prism_ai::provider::{Provider, ProviderRequest, ProviderResponse};
+   |                                                     ^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unnecessary parentheses around assigned value
+   --> crates/prism-aesthetic/src/critic_loop.rs:520:26
+    |
+520 |         let sat_before = (c[0] - c[2]);
+    |                          ^           ^
+    |
+    = note: `#[warn(unused_parens)]` (part of `#[warn(unused)]`) on by default
+help: remove these parentheses
+    |
+520 -         let sat_before = (c[0] - c[2]);
+520 +         let sat_before = c[0] - c[2];
+    |
+
+warning: unnecessary parentheses around assigned value
+   --> crates/prism-aesthetic/src/critic_loop.rs:521:25
+    |
+521 |         let sat_after = (out[0] - out[2]);
+    |                         ^               ^
+    |
+help: remove these parentheses
+    |
+521 -         let sat_after = (out[0] - out[2]);
+521 +         let sat_after = out[0] - out[2];
+    |
+
+warning: `prism-ai` (test "qa_edge_attack") generated 1 warning (run `cargo fix --test "qa_edge_attack" -p prism-ai` to apply 1 suggestion)
+warning: `prism-aesthetic` (lib test) generated 2 warnings (run `cargo fix --lib -p prism-aesthetic --tests` to apply 2 suggestions)
+warning: unused import: `WindowShape`
+ --> crates/prism-aesthetic/tests/qa_edge_attack_secondary.rs:4:76
+  |
+4 | use prism_aesthetic::secondary::{HslQualifier, LiftGammaGain, PowerWindow, WindowShape};
+  |                                                                            ^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `prism-aesthetic` (test "qa_edge_attack_secondary") generated 1 warning (run `cargo fix --test "qa_edge_attack_secondary" -p prism-aesthetic` to apply 1 suggestion)
+   Compiling prism-anim-demo v0.1.0 (/workspace/media-engine/crates/prism-anim-demo)
+warning: `prism-rt` (lib test) generated 1 warning (1 duplicate)
+warning: unnecessary parentheses around assigned value
+    --> crates/prism-physics/src/hair.rs:2308:18
+     |
+2308 |         let vn = (vb.z - va.z); // n ≈ +Z
+     |                  ^           ^
+     |
+     = note: `#[warn(unused_parens)]` (part of `#[warn(unused)]`) on by default
+help: remove these parentheses
+     |
+2308 -         let vn = (vb.z - va.z); // n ≈ +Z
+2308 +         let vn = vb.z - va.z; // n ≈ +Z
+     |
+
+warning: `prism-physics` (lib test) generated 1 warning (run `cargo fix --lib -p prism-physics --tests` to apply 1 suggestion)
+warning: variable does not need to be mutable
+   --> crates/prism-gpu/tests/qa_verify_p1_framebuffer_guard.rs:238:9
+    |
+238 |     let mut m = Minimal;
+    |         ----^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: `prism-gpu` (test "qa_verify_p1_framebuffer_guard") generated 1 warning (run `cargo fix --test "qa_verify_p1_framebuffer_guard" -p prism-gpu` to apply 1 suggestion)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.23s

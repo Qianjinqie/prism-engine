@@ -878,6 +878,7 @@ mod tests {
         // 块内预归约（前 2 块 + 后 3 块）在 4e7 处吞掉末位小数 → 9.0000000e7，
         // 逐位相差 2 个 ulp（差值 10，远超舍入噪声）。
         let vals: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0e7, 5.0e7];
+        assert_eq!(vals.len(), n, "反例场景须恰为 n=5 个明文");
 
         // 正确路径：全局一次 reduce(n=5)。
         let correct = reduce(vals.clone(), |a, b| a + b, 0.0_f32);
