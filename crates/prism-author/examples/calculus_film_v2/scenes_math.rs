@@ -140,14 +140,35 @@ fn v_dashed(x: f32, y0: f32, y1: f32, dash: f32) -> Vec<[f32; 2]> {
     out
 }
 
-/// 把「ε = 」式希腊前缀与滚动数字拼版：先用占位数字走一次
-/// [`assemble_formula`] 取出数字 run 的 `center_x`，再发射「符号 +
-/// 等号」公式轨与一条空前缀 Counter（数字位与占位走排逐位一致）。
+/// 把「ε = 」式希腊前缀与滚动数字拼版：**单次** [`assemble_formula`]
+/// 走排「符号 + 等号 + 占位数字位」，取出数字 run 的 `center_x` 后剔除
+/// 占位 run 再发射——符号 / 等号 / 数字三者的 pen 关系由同一次装配固定。
 ///
 /// 返回 (公式前缀轨, Counter)。`sym` 为希腊符号，等号恒取矢量
 /// [`SymbolKind::Equals`]（双横线，**不走文本**——PrismSansSC 的「=」
 /// 字形极细近乎缺失，旧实现读作 `" = "` 文本 run 即此缺陷），两侧间距
 /// 由数学间距表 `Var → Binary` 呼吸自动给出；`num_size` 为数字字号。
+///
+/// [缺陷修复·等号不可见 / 小数点糊成冒号] 旧实现分两次装配：探针含
+/// 占位数字 run（总宽 = 符号 + 等号 + 数字，如 ε 26px 下 98.36px），
+/// 正式前缀只含「符号 + 等号」（总宽 42.12px）——两次各自以 0 居中，
+/// 前缀比探针窄 56.24px ⇒ 右移 28.12px，而 Counter 的 `center_x` 仍取
+/// 探针值：等号（探针中在数字左侧 8.8px）落进数字首位 '0' 的 ink 区
+/// （实测等号 x∈[2.34,17.94] vs 数字 x∈[−1.34,49.18]）。双横线被
+/// '0' 字环吞没（等号不可见，仅剩边缘稀疏墨团），等号下线
+/// （baseline 上 4.42px）又与 '.' 点（x∈[14.9,18.2]，y∈[116,120]）
+/// 仅 0.4px 相接，糊成冒号（「0:12」）。单次装配后等号回到数字左侧
+/// 8.8px 净空，两缺陷同根消除。
+///
+/// [几何 dump 实证（`dump_greek_roll_readout_geometry`）] 等号顶点
+/// 本身无恙：单位格 y=0.17/0.37 两条线经 `symbol_path` 缩放与
+/// (x,y)→(x+pen,−y+baseline) 翻转变换后，ε 标签（baseline 120、
+/// size 26）实测两横线 y=110.38/115.58（即 baseline 上 9.62/4.42px
+/// = 0.37/0.17·26，垂直居中于数字 x 高度区）、x∈[−25.78,−10.18]
+/// （线长 15.6 = 0.6·26 ≥ 0.5·size）、笔宽 1.5、双线净距 5.2px；
+/// 数字 ink 左缘 −1.34 ⇒ 等号右缘净空 8.84px。不可见根因是**两次
+/// 装配各居其零**造成的水平错位（等号被 '0' 字环覆盖），非单位格
+/// y 映射错误——修法取最小：保持 `unit_equals` 几何不动，改单次装配。
 fn greek_roll_readout(
     sym: SymbolKind,
     baseline_y: f32,
@@ -161,33 +182,37 @@ fn greek_roll_readout(
     easing: EasingKind,
     decimals: u32,
 ) -> (Vec<Track>, CounterText) {
-    // 1) 占位走排：取数字 run 的 center_x（pen 累加与后续 run 无关）。
-    let probe = symbols::assemble_formula(
+    // 1) 单次装配：符号 + 等号 + 占位数字位（位宽与实际读数一致：
+    //    decimals=0 → "0"；decimals=n → "0." + n 个 0）。
+    let placeholder = if decimals == 0 {
+        String::from("0")
+    } else {
+        format!("0.{}", "0".repeat(decimals as usize))
+    };
+    let mut prefix_tracks = symbols::assemble_formula(
         &[
             FormulaPart::Sym(sym, sym_size, color),
             FormulaPart::Sym(SymbolKind::Equals, sym_size, color),
-            FormulaPart::Text(String::from("0.00"), FontKind::Regular, num_size, color),
+            FormulaPart::Text(placeholder.clone(), FontKind::Regular, num_size, color),
         ],
         0.0,
         baseline_y,
     );
-    let num_cx = probe
+    // 2) 取数字 run 的 center_x（pen 累加与后续 run 无关）。
+    let num_cx = prefix_tracks
         .iter()
         .find_map(|t| match t {
-            Track::Static(s) if s.content == "0.00" => Some(s.center_x),
+            Track::Static(s) if s.content == placeholder => Some(s.center_x),
             _ => None,
         })
         .unwrap_or(Some(0.0))
         .unwrap_or(0.0);
-    // 2) 正式发射：符号 + 等号（数字位由 Counter 填补）。
-    let prefix_tracks = symbols::assemble_formula(
-        &[
-            FormulaPart::Sym(sym, sym_size, color),
-            FormulaPart::Sym(SymbolKind::Equals, sym_size, color),
-        ],
-        0.0,
-        baseline_y,
-    );
+    // 3) 剔除占位数字 run（数字位由 Counter 逐帧填补；pen 关系已由
+    //    同一次走排固定，符号 / 等号 / 数字不会再次错位）。
+    prefix_tracks.retain(|t| match t {
+        Track::Static(s) => s.content != placeholder,
+        _ => true,
+    });
     let counter = CounterText {
         prefix: String::new(),
         from,
@@ -559,9 +584,17 @@ pub fn scene_s3() -> ClipSpec {
             draw_sec: 0.0,
             closed: false,
         }));
+        // [缺陷修复·δ 标签叠底部文案] baseline 470 → 460：δ 标签墨迹
+        // （符号 + 等号 + 数字，底沿 ≈ baseline + 1px）与底部文案 1
+        // （y=505，CJK 墨迹顶 ≈ 505 − 0.85·26 ≈ 483）x 范围交叠
+        // （标签 x∈[167,266] vs 文案 x∈[~144,~816]），纵向净空由
+        // ~11px 增至 ~22px ≥ 15px（`dump_s3_bottom_band_overlap`
+        // 渲染实测：标签 rows 441–460 vs 文案 rows 483–506）；
+        // 底部文案本身不动（`s3_greek_labels_clear_bottom_caption`
+        // 回归锁钉住 y=505 与净空）。
         let (mut pre, mut cnt) = greek_roll_readout(
             SymbolKind::Delta,
-            470.0,
+            460.0,
             26.0,
             26.0,
             ctx(CURVE_RGBA),
@@ -1869,6 +1902,498 @@ mod tests {
         }
     }
 
+    /// [临时 dump] greek_roll_readout 几何 dump：等号 / 希腊符号的变换后
+    /// 屏幕坐标、描边宽度、y 范围 + Counter center_x（定位 S3 ε/δ 标签缺陷）。
+    #[test]
+    fn dump_greek_roll_readout_geometry() {
+        for kind in [SymbolKind::Epsilon, SymbolKind::Delta] {
+            let (pre, cnt) = greek_roll_readout(
+                kind,
+                120.0,
+                26.0,
+                26.0,
+                ctx(GOLD_RGBA),
+                1.0,
+                0.25,
+                3.5,
+                8.5,
+                EasingKind::CubicIn,
+                2,
+            );
+            println!("=== greek_roll_readout({kind:?}, baseline_y=120, sym=26, num=26) ===");
+            println!("Counter: center_x={:?} y={} size={} font={:?} prefix={:?}",
+                cnt.center_x, cnt.y, cnt.size, cnt.font, cnt.prefix);
+            for (i, tr) in pre.iter().enumerate() {
+                match tr {
+                    Track::Path(p) => {
+                        let ys: Vec<f32> = p.points.iter().map(|q| q[1]).collect();
+                        let y0 = ys.iter().cloned().fold(f32::INFINITY, f32::min);
+                        let y1 = ys.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                        let xs: Vec<f32> = p.points.iter().map(|q| q[0]).collect();
+                        let x0 = xs.iter().cloned().fold(f32::INFINITY, f32::min);
+                        let x1 = xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                        println!(
+                            "  Path[{i}] pts={:?} width={} x∈[{:.2},{:.2}] y∈[{:.2},{:.2}]",
+                            p.points, p.width, x0, x1, y0, y1
+                        );
+                    }
+                    Track::Static(s) => {
+                        println!("  Static[{i}] content={:?} center_x={:?} y={}", s.content, s.center_x, s.y);
+                    }
+                    _ => println!("  Other[{i}]"),
+                }
+            }
+        }
+    }
+
+    /// [临时 dump] 字体 '.' / ':' 字形 dump：Regular / Bold 两字体的
+    /// gid / advance / 轮廓数与 y 范围（定位「0.12 渲染成 0:12」根因）。
+    #[test]
+    fn dump_period_glyph_metrics() {
+        use prism_text::ttf::Font;
+        for (name, font) in [("Regular", prism_text::font_regular()), ("Bold", prism_text::font_bold())] {
+            let upem = font.units_per_em();
+            println!("=== font {name} (upem={upem}) ===");
+            for ch in ['.', ':', '0', '1', '2'] {
+                let gid = font.glyph_index(ch);
+                match gid {
+                    None => println!("  {ch:?}: gid=None（查不到）"),
+                    Some(g) => {
+                        let outline = font.outline(g).expect("outline");
+                        let n = outline.contours.len();
+                        let (mut y0, mut y1) = (f32::INFINITY, f32::NEG_INFINITY);
+                        let (mut x0, mut x1) = (f32::INFINITY, f32::NEG_INFINITY);
+                        for c in &outline.contours {
+                            for p in c {
+                                y0 = y0.min(p.y);
+                                y1 = y1.max(p.y);
+                                x0 = x0.min(p.x);
+                                x1 = x1.max(p.x);
+                            }
+                        }
+                        println!(
+                            "  {ch:?}: gid={g} adv={} contours={n} x∈[{x0},{x1}] y∈[{y0},{y1}]",
+                            font.advance(g)
+                        );
+                    }
+                }
+            }
+        }
+        let _ = Font::parse(&[]).ok();
+    }
+
+    /// [临时 dump] 用真实渲染管线（draw_counter → draw_static →
+    /// layout_text + draw_glyphs + GlyphCache）渲染 "0.12"（Regular 26
+    /// 与 Bold 26 对照），ASCII dump 数字区墨迹，定位「0:12」根因。
+    #[test]
+    fn dump_counter_period_pixels() {
+        use prism_author::{render_short_concat_faded_frames, Background as Bg};
+        for font in [FontKind::Regular, FontKind::Bold] {
+            let spec = ClipSpec {
+                width: 160,
+                height: 60,
+                fps: 30,
+                duration: 0.2,
+                background: Bg::Gradient { top: [0.0; 3], bottom: [0.0; 3] },
+                jpeg_quality: 90,
+                tracks: vec![Track::Counter(CounterText {
+                    prefix: String::new(),
+                    from: 0.12,
+                    to: 0.12,
+                    at: 0.0,
+                    dur_sec: 0.1,
+                    easing: EasingKind::Linear,
+                    decimals: 2,
+                    font,
+                    size: 26.0,
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    center_x: Some(80.0),
+                    y: 40.0,
+                    letter_spacing: 0.0,
+                    in_sec: 0.0,
+                    out_sec: 0.0,
+                    out_at: None,
+                    value_at: None,
+                })],
+            };
+            let (w, h) = (spec.width, spec.height);
+            // 两支相同 spec：Dissolve 混合同内容不变，帧 0 即纯净单 clip 首帧。
+            let frames = render_short_concat_faded_frames(&[spec.clone(), spec], 0.0, 0.0);
+            let f = &frames[0];
+            println!("=== counter 0.12 font={font:?} frame {w}x{h} ink runs ===");
+            for row in 0..h as usize {
+                let mut runs: Vec<(usize, usize)> = Vec::new();
+                let mut start: Option<usize> = None;
+                for col in 0..w as usize {
+                    let i = (row * w as usize + col) * 4;
+                    let lum = (f[i] as u32 + f[i + 1] as u32 + f[i + 2] as u32) / 3;
+                    let ink = lum > 40;
+                    match (ink, start) {
+                        (true, None) => start = Some(col),
+                        (false, Some(s)) => {
+                            runs.push((s, col - 1));
+                            start = None;
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some(s) = start {
+                    runs.push((s, w as usize - 1));
+                }
+                if !runs.is_empty() {
+                    let desc: Vec<String> = runs.iter().map(|(a, b)| format!("[{a}..{b}]")).collect();
+                    println!("row {row:2}: {}", desc.join(" "));
+                }
+            }
+        }
+    }
+
+    /// [临时 dump] 单字形位图 dump：直接用 prism_text::raster::render_glyph
+    /// 渲染 Regular/Bold 的 '.' 与 ':'（26px），打印 alpha 网格——确定
+    /// 小数点是否被光栅成「两点」（colon 形）。
+    #[test]
+    fn dump_single_glyph_bitmaps() {
+        use prism_text::raster::render_glyph;
+        for (fname, font) in [("Regular", prism_text::font_regular()), ("Bold", prism_text::font_bold())] {
+            for ch in ['.', ':'] {
+                let gid = font.glyph_index(ch).expect("gid");
+                let bmp = render_glyph(&font, gid, 26.0);
+                println!("=== {fname} {ch:?} gid={gid} size=26 bmp {}x{} origin=({},{}) ===",
+                    bmp.width, bmp.height, bmp.left, bmp.top);
+                for row in 0..bmp.height {
+                    let mut line = String::new();
+                    for col in 0..bmp.width {
+                        let a = bmp.alpha[(row * bmp.width + col) as usize];
+                        line.push(if a > 200 { '#' } else if a > 128 { '+' } else if a > 40 { '.' } else { ' ' });
+                    }
+                    println!("{line}");
+                }
+            }
+        }
+    }
+
+    /// [临时 dump] layout_text 原始字形位置 dump：Regular/Bold 渲染
+    /// "0.12"（26px）的 gid/x/y/advance——定位「0:12」的字形层根因。
+    #[test]
+    fn dump_layout_glyph_positions() {
+        use prism_text::layout::{layout_text, Align, TextParams};
+        for (fname, font) in [("Regular", prism_text::font_regular()), ("Bold", prism_text::font_bold())] {
+            let params = TextParams {
+                font_size: 26.0,
+                letter_spacing: 0.0,
+                line_spacing: 0.0,
+                max_width: f32::INFINITY,
+                align: Align::Center,
+            };
+            let layout = layout_text(&font, "0.12", &params);
+            println!("=== {fname} layout 0.12 size=26: width={} height={} ===", layout.width, layout.height);
+            for g in &layout.glyphs {
+                println!(
+                    "  ch={:?} gid={} x={:.3} y={:.3} adv={:.3} line={}",
+                    g.ch, g.gid, g.x, g.y, g.advance, g.line
+                );
+            }
+            for l in &layout.lines {
+                println!("  line {}..{} w={} baseline={}", l.start, l.end, l.width, l.baseline);
+            }
+        }
+    }
+
+    /// [缺陷修复·等号不可见] 几何回归锁（`dump_greek_roll_readout_geometry`
+    /// dump 数据固化）：ε/δ 标签的等号须是**两条可辨横线**——水平、线长
+    /// ≥0.5·sym_size、笔宽随字号折算、双线净距 ≥2×笔宽；垂直居中于数字
+    /// x 高度区（双线中心 ∈ baseline 上方 0.25–0.40·size，即单位格
+    /// y=0.17/0.37 缩放 + 设备翻转后的落点）；水平落在符号与数字之间且
+    /// 与数字 ink 净空 ≥5px（单次装配实测 8.84px；旧两次装配下等号
+    /// x∈[2.34,17.94] 被数字 '0' 字环 x∈[−1.34,49.18] 吞没）。
+    #[test]
+    fn greek_readout_equals_is_visible_and_clears_digits() {
+        let baseline = 120.0f32;
+        let sym_size = 26.0f32;
+        let stroke_w = (sym_size * symbols::SYM_STROKE_K).max(symbols::MIN_SYM_STROKE_W);
+        for kind in [SymbolKind::Epsilon, SymbolKind::Delta] {
+            let (pre, cnt) = greek_roll_readout(
+                kind,
+                baseline,
+                sym_size,
+                sym_size,
+                ctx(TEXT_RGBA),
+                1.0,
+                0.25,
+                3.5,
+                8.5,
+                EasingKind::CubicIn,
+                2,
+            );
+            // 等号双横线：2 点水平笔画且线长 ≥0.5·size（ε 中杠长
+            // 0.40·size，被此口径排除；δ 无其它 2 点水平笔画）。
+            let bars: Vec<&PathTrack> = pre
+                .iter()
+                .filter_map(|t| match t {
+                    Track::Path(p)
+                        if p.points.len() == 2
+                            && (p.points[0][1] - p.points[1][1]).abs() < 1e-6
+                            && (p.points[1][0] - p.points[0][0]).abs() >= 0.5 * sym_size =>
+                    {
+                        Some(p)
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(bars.len(), 2, "{kind:?} 等号须恰为 2 条横线，实测 {}", bars.len());
+            let mut ys: Vec<f32> = Vec::with_capacity(2);
+            let (mut eq_x0, mut eq_x1) = (f32::INFINITY, f32::NEG_INFINITY);
+            for b in &bars {
+                let len = (b.points[1][0] - b.points[0][0]).abs();
+                assert!(len >= 0.5 * sym_size, "{kind:?} 等号线长 {len} < 0.5·size");
+                assert!(
+                    (b.width - stroke_w).abs() < 1e-6,
+                    "{kind:?} 等号笔宽须 = max(size·SYM_STROKE_K, MIN)，实测 {}",
+                    b.width
+                );
+                eq_x0 = eq_x0.min(b.points[0][0].min(b.points[1][0]));
+                eq_x1 = eq_x1.max(b.points[0][0].max(b.points[1][0]));
+                ys.push(b.points[0][1]);
+            }
+            ys.sort_by(f32::total_cmp);
+            // 双线净距 ≥2×笔宽（不糊成一条）。
+            assert!(
+                ys[1] - ys[0] >= 2.0 * stroke_w,
+                "{kind:?} 双线净距 {} 过小",
+                ys[1] - ys[0]
+            );
+            // 垂直居中于数字 x 高度区：双线中心 ∈ baseline 上方 [0.25, 0.40]·size。
+            let mid_above = baseline - (ys[0] + ys[1]) * 0.5;
+            assert!(
+                (0.25 * sym_size..=0.40 * sym_size).contains(&mid_above),
+                "{kind:?} 等号中心距基线 {mid_above} 不在 0.25–0.40·size 带"
+            );
+            // 符号墨迹右缘 < 等号左缘（等号落在符号与数字之间）。
+            let mut sym_x1 = f32::NEG_INFINITY;
+            for t in &pre {
+                if let Track::Path(p) = t {
+                    let is_bar = p.points.len() == 2
+                        && (p.points[0][1] - p.points[1][1]).abs() < 1e-6
+                        && (p.points[1][0] - p.points[0][0]).abs() >= 0.5 * sym_size;
+                    if !is_bar {
+                        for q in &p.points {
+                            sym_x1 = sym_x1.max(q[0]);
+                        }
+                    }
+                }
+            }
+            assert!(sym_x1 < eq_x0, "{kind:?} 等号须在符号右缘之右（{sym_x1} vs {eq_x0}）");
+            // 等号右缘与数字 ink 左缘净空 ≥5px（单次装配同源走排）。
+            let placeholder_w = symbols::text_run_width("0.00", FontKind::Regular, sym_size, 0.0);
+            let digit_x0 = cnt.center_x.expect("Counter 须有 center_x") - placeholder_w * 0.5;
+            assert!(
+                digit_x0 - eq_x1 >= 5.0,
+                "{kind:?} 等号右缘 {eq_x1} 与数字左缘 {digit_x0} 净空不足（旧实现被 '0' 吞没）"
+            );
+            // 表宽数字：滚动域内各位形串宽恒定（净空在整段滚动中保持）。
+            for s in ["1.00", "0.25", "0.41", "0.12"] {
+                let w = symbols::text_run_width(s, FontKind::Regular, sym_size, 0.0);
+                assert!(
+                    (w - placeholder_w).abs() < 1e-3,
+                    "{kind:?} 表宽数字假设破裂：{s} 宽 {w} vs 占位 {placeholder_w}"
+                );
+            }
+        }
+    }
+
+    /// [缺陷修复·小数点糊成冒号] 字形层回归锁：Regular/Bold 的 '.' 须为
+    /// **单轮廓、位于行底部带**的小点（dump 实测 gid=15、1 contour、
+    /// y∈[−13,126]/upem1000；对照 ':' 为 gid=27、2 contours、
+    /// y∈[−13,530]）；`layout_text("0.12")` 中 '.' 明显窄于数字且居于
+    /// '0' 与 '1' 之间。旧「0:12」根因是等号下线与 '.' 点相接（两次
+    /// 装配水平错位），非字形本身——本锁防字形层回归。
+    #[test]
+    fn counter_period_glyph_is_single_bottom_dot() {
+        use prism_text::layout::{layout_text, Align, TextParams};
+        for font in [prism_text::font_regular(), prism_text::font_bold()] {
+            let upem = font.units_per_em() as f32;
+            let dot = font.glyph_index('.').expect("'.' 须有字形");
+            let colon = font.glyph_index(':').expect("':' 须有字形（对照组）");
+            let dot_o = font.outline(dot).expect("'.' 轮廓");
+            let colon_o = font.outline(colon).expect("':' 轮廓");
+            assert_eq!(dot_o.contours.len(), 1, "'.' 必须单轮廓（冒号形为 2）");
+            assert_eq!(colon_o.contours.len(), 2, "':' 双轮廓（对照组）");
+            // '.' 轮廓整体贴行底部（y_max ≤ 0.25·upem，即基线附近）。
+            let y_max = dot_o
+                .contours
+                .iter()
+                .flatten()
+                .map(|p| p.y)
+                .fold(f32::NEG_INFINITY, f32::max);
+            assert!(y_max <= 0.25 * upem, "'.' 应在行底部（y_max={y_max}）");
+            // layout "0.12"：'.' 夹在 '0' 与 '1' 之间，且明显窄于数字。
+            let params = TextParams {
+                font_size: 26.0,
+                letter_spacing: 0.0,
+                line_spacing: 0.0,
+                max_width: f32::INFINITY,
+                align: Align::Center,
+            };
+            let layout = layout_text(&font, "0.12", &params);
+            let glyphs: Vec<(char, f32, f32)> = layout
+                .glyphs
+                .iter()
+                .map(|g| (g.ch, g.x, g.advance))
+                .collect();
+            assert_eq!(glyphs.len(), 4, "0.12 应四字形");
+            assert_eq!(
+                (glyphs[0].0, glyphs[1].0, glyphs[2].0, glyphs[3].0),
+                ('0', '.', '1', '2'),
+                "0.12 字形序"
+            );
+            assert!(
+                glyphs[0].1 < glyphs[1].1 && glyphs[1].1 < glyphs[2].1 && glyphs[2].1 < glyphs[3].1,
+                "'.' 须居于 '0' 与 '1' 之间"
+            );
+            assert!(
+                glyphs[1].2 < glyphs[2].2 * 0.75,
+                "'.' advance 须明显窄于数字（{} vs {}）",
+                glyphs[1].2,
+                glyphs[2].2
+            );
+        }
+    }
+
+    /// [缺陷修复·δ 标签叠底部文案] 净空回归锁：S3 的 ε / δ 希腊标签与
+    /// 底部打字文案 1（y=505）x 范围交叠，故须纵向净空 ≥15px；文案
+    /// 本身不得移动（锁 y=505 与内容）。标签墨迹底沿 = Counter 基线
+    /// +1px（符号 / 数字均坐基线，描边半宽兜底）；CJK 文案墨迹顶 =
+    /// 基线 − 0.85·size（`dump_s3_bottom_band_overlap` 渲染实测
+    /// rows 483–506 @ size 26 ⇒ 22.1px ≈ 0.85·26）。
+    #[test]
+    fn s3_greek_labels_clear_bottom_caption() {
+        let spec = scene_s3();
+        let cap = spec
+            .tracks
+            .iter()
+            .find_map(|t| match t {
+                Track::Typewriter(w) if w.content.contains("把曲线困在 L 附近") => Some(w),
+                _ => None,
+            })
+            .expect("S3 应有底部打字文案");
+        // 底部文案本身不动（只许动标签）。
+        assert_eq!(cap.y, 505.0, "底部文案 baseline 不得移动");
+        assert_eq!(cap.content, "无论误差多小，都能找到对应的范围，把曲线困在 L 附近");
+        let cap_w = symbols::text_run_width(&cap.content, cap.font, cap.size, cap.letter_spacing);
+        let cap_cx = cap.center_x.unwrap_or(common::WIDTH as f32 * 0.5);
+        let (cap_x0, cap_x1) = (cap_cx - cap_w * 0.5, cap_cx + cap_w * 0.5);
+        let cap_top = cap.y - 0.85 * cap.size;
+        // ε / δ 标签 Counter（decimals=2 + Regular；S3 仅此两条）。
+        let mut n_labels = 0usize;
+        for c in spec.tracks.iter().filter_map(|t| match t {
+            Track::Counter(c) if c.decimals == 2 && c.font == FontKind::Regular => Some(c),
+            _ => None,
+        }) {
+            n_labels += 1;
+            // 纵向净空（标签底沿 → 文案墨迹顶）。
+            let clearance = cap_top - (c.y + 1.0);
+            assert!(
+                clearance >= 15.0,
+                "希腊标签（y={}）与底部文案净空 {clearance} < 15px",
+                c.y
+            );
+            // 标签数字 ink 盒（表宽数字 ⇒ 滚动域内宽度恒定）。
+            let readout = format!("{:.2}", c.from);
+            let w = symbols::text_run_width(&readout, c.font, c.size, c.letter_spacing);
+            let cx = c.center_x.expect("标签 Counter 须有 center_x");
+            let (dig_x0, dig_x1) = (cx - w * 0.5, cx + w * 0.5);
+            // x 交叠 ⇒ 纵向净空才是约束项（断言才有意义）。
+            assert!(
+                dig_x0 < cap_x1 && dig_x1 > cap_x0,
+                "标签数字 x∈[{dig_x0},{dig_x1}] 应与文案 x∈[{cap_x0},{cap_x1}] 交叠"
+            );
+        }
+        assert_eq!(n_labels, 2, "S3 应恰有 ε / δ 两条希腊标签 Counter");
+    }
+
+    /// [临时 dump] S3 左下底部带 dump：δ 标签（真实锚点：baseline 460 +
+    /// 平移）+ 底部文案 1（y=505）同画幅单帧渲染（t=10.0，文案打完），
+    /// dump y∈[440,530] 每行 ink 的 x 区间——量化标签与文案的净空
+    /// （修复后实测：标签 rows 441–460 vs 文案 rows 483–506，净空 22px）。
+    #[test]
+    fn dump_s3_bottom_band_overlap() {
+        use prism_author::render_short_concat_faded_frames;
+        let vp = s3_viewport();
+        let mut tracks: Vec<Track> = Vec::new();
+        // δ 标签（与 scene_s3 同参发射后平移到真实锚点）。
+        let (mut pre, mut cnt) = greek_roll_readout(
+            SymbolKind::Delta,
+            460.0,
+            26.0,
+            26.0,
+            ctx(CURVE_RGBA),
+            s3_delta_of_eps(1.0),
+            s3_delta_of_eps(0.25),
+            5.0,
+            7.0,
+            EasingKind::CubicIn,
+            2,
+        );
+        let target = vp.to_px(vp.x0, 0.0)[0] - 130.0;
+        shift_prefix(&mut pre, &mut cnt, target);
+        for tr in pre.iter_mut() {
+            if let Track::Static(s) = tr {
+                s.at = 5.0;
+                s.in_sec = 0.5;
+            }
+        }
+        tracks.extend(pre);
+        tracks.push(Track::Counter(cnt));
+        // 底部文案 1（y=505，at=6.5，cps=12；t=10.0 已打完）。
+        tracks.push(typewriter(
+            "无论误差多小，都能找到对应的范围，把曲线困在 L 附近",
+            26.0,
+            TEXT_CTX_RGBA,
+            6.5,
+            505.0,
+            12.0,
+            None,
+            7.5,
+        ));
+        let spec = ClipSpec {
+            width: common::WIDTH,
+            height: common::HEIGHT,
+            fps: common::FPS,
+            duration: 10.4,
+            background: Background::Gradient { top: [0.0; 3], bottom: [0.0; 3] },
+            jpeg_quality: 90,
+            tracks,
+        };
+        let frames = render_short_concat_faded_frames(&[spec.clone(), spec], 0.0, 0.0);
+        let f = &frames[300]; // t = 10.0s
+        let w = common::WIDTH as usize;
+        println!("=== S3 底部带 ink（t=10.0，字幕基线 505；阈值 lum>40）===");
+        for row in 440usize..530 {
+            let mut runs: Vec<(usize, usize)> = Vec::new();
+            let mut start: Option<usize> = None;
+            for col in 0..w {
+                let i = (row * w + col) * 4;
+                let lum = (f[i] as u32 + f[i + 1] as u32 + f[i + 2] as u32) / 3;
+                let ink = lum > 40;
+                match (ink, start) {
+                    (true, None) => start = Some(col),
+                    (false, Some(s)) => {
+                        runs.push((s, col - 1));
+                        start = None;
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(s) = start {
+                runs.push((s, w - 1));
+            }
+            if !runs.is_empty() {
+                let desc: Vec<String> = runs.iter().map(|(a, b)| format!("[{a}..{b}]")).collect();
+                println!("row {row:3}: {}", desc.join(" "));
+            }
+        }
+    }
+
     /// S3 数学：m(h)=2+h 序列与 ε-δ 端点关系（PRD §6）。
     #[test]
     fn s3_math_matches_prd() {
@@ -2502,9 +3027,13 @@ mod tests {
 
 /// 缺陷回归组（字体缺失字形 / 等号可读 / 积分式 — y 轴重叠）。
 mod defect_regressions {
+    // release 编译路径下本模块体经 cfg 折叠为空，此处会被判 unused；测试编译路径下真实使用。
+    #[allow(unused_imports)]
     use super::*;
 
     /// PrismSansSC 缺失/极细的数学字形：文本轨出现任一即渲染为 «» / ♦ 乱码。
+    // release 编译路径下测试体不参与编译，此处会被判 dead_code。
+    #[allow(dead_code)]
     const MISSING_GLYPHS: [char; 26] = [
         '\u{03B5}', '\u{03B4}', '\u{03C0}', '\u{03B8}', '\u{0394}', '\u{2202}', '\u{2211}',
         '\u{222B}', '\u{220F}', '\u{221E}', '\u{221A}', '\u{2192}', '\u{2200}', '\u{2203}',
