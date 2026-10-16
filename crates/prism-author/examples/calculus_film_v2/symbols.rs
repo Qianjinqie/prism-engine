@@ -128,6 +128,8 @@ pub enum SymbolKind {
     PlusMinus,
     /// ÷（除号）。
     Divide,
+    /// =（等号：两条等长横线，双线可辨）。
+    Equals,
     /// 上标数字（如 `Sup(2)` = x² 的 2）。
     Sup(usize),
     /// 下标数字（如 `Sub(0)` = x₀ 的 0）。
@@ -194,6 +196,7 @@ pub fn all_symbol_kinds() -> Vec<SymbolKind> {
         SymbolKind::Intersect,
         SymbolKind::PlusMinus,
         SymbolKind::Divide,
+        SymbolKind::Equals,
         SymbolKind::Sup(2),
         SymbolKind::Sub(3),
     ]
@@ -236,6 +239,7 @@ pub fn symbol_path(kind: SymbolKind, size: f32) -> PathBuilder {
         SymbolKind::Intersect => unit_intersect(&mut unit),
         SymbolKind::PlusMinus => unit_plus_minus(&mut unit),
         SymbolKind::Divide => unit_divide(&mut unit),
+        SymbolKind::Equals => unit_equals(&mut unit),
         SymbolKind::Sup(n) => {
             for (i, ch) in n.to_string().chars().enumerate() {
                 let d = ch.to_digit(10).unwrap_or(0);
@@ -343,6 +347,7 @@ fn sym_gap_kind(kind: SymbolKind) -> GapKind {
         | SymbolKind::Ne
         | SymbolKind::PlusMinus
         | SymbolKind::Divide
+        | SymbolKind::Equals
         | SymbolKind::Implies
         | SymbolKind::Arrow
         | SymbolKind::Union
@@ -1221,6 +1226,19 @@ fn unit_minus(b: &mut PathBuilder) {
     b.line_to(Point::new(0.65, 0.26));
 }
 
+/// =：等号双横线（宽 0.60em，居中于数学轴 0.27em）。
+///
+/// 双线净间距 0.20em（26px 字号下 ≈ 5.2px，远大于笔宽
+/// [`SYM_STROKE_K`]·size ⇒ 双线可辨、不会糊成一条）。旧实现把「=」当
+/// 文本 run 过 PrismSansSC，该字形极细近乎缺失；此处改矢量笔画，笔宽
+/// 由 [`assemble_formula`] 统一按字号折算（与数字字高同体系）。
+fn unit_equals(b: &mut PathBuilder) {
+    b.move_to(Point::new(0.04, 0.17));
+    b.line_to(Point::new(0.64, 0.17));
+    b.move_to(Point::new(0.04, 0.37));
+    b.line_to(Point::new(0.64, 0.37));
+}
+
 /// ×：乘号双交叉斜笔（居中于 0.25）。
 fn unit_times(b: &mut PathBuilder) {
     b.move_to(Point::new(0.08, 0.44));
@@ -1737,8 +1755,41 @@ mod tests {
             assert!(symbol_advance(&path, 40.0) > 0.0, "{k:?} advance 必须为正");
         }
         // 引用 all 防止借用生命周期告警的同时确认全集规模。
-        assert_eq!(all.len(), 31, "全集 31 项（29 单位符号 + Sup/Sub 代表值 2）");
+        assert_eq!(all.len(), 32, "全集 32 项（30 单位符号 + Sup/Sub 代表值 2；含缺陷修复新增 =）");
         all.clear();
+    }
+
+    /// [缺陷修复 2] 等号必须是**可见双横线**：矢量两笔画，横向够长、
+    /// 双线净间距远大于笔宽（不与 σ/− 单横线混淆）。
+    #[test]
+    fn equals_is_visible_double_bar() {
+        // S3 ε/δ 标签字号（与之一致地验证实际用例尺度）。
+        let size = 26.0f32;
+        let tracks = assemble_formula(&[FormulaPart::Sym(SymbolKind::Equals, size, TEXT_RGBA)], 480.0, 140.0);
+        let paths: Vec<&PathTrack> = tracks
+            .iter()
+            .filter_map(|t| if let Track::Path(p) = t { Some(p) } else { None })
+            .collect();
+        assert_eq!(paths.len(), 2, "等号必须是 2 条独立笔画，实际 {}", paths.len());
+
+        let mut ys: Vec<f32> = Vec::with_capacity(2);
+        for p in &paths {
+            assert_eq!(p.points.len(), 2, "每条横线必须是端点直连的 2 点");
+            let (a, b) = (p.points[0], p.points[1]);
+            assert!((a[1] - b[1]).abs() < 1e-6, "横线必须水平（y 同值）：{a:?} {b:?}");
+            let len = (b[0] - a[0]).abs();
+            assert!(len >= 0.5 * size, "横线长度须 ≥ 0.5·size（实测 {len}）");
+            // 笔宽 = size·SYM_STROKE_K（MIN_SYM_STROKE_W 兜底）：同 ε/δ 体系。
+            assert!(p.width >= MIN_SYM_STROKE_W, "笔宽须 ≥ {MIN_SYM_STROKE_W}，实际 {}", p.width);
+            ys.push(a[1]);
+        }
+        ys.sort_by(f32::total_cmp);
+        let gap = ys[1] - ys[0];
+        assert!(gap >= 2.0 * MIN_SYM_STROKE_W, "双线净间距须 > 2×笔宽才不糊成一条：{gap}");
+        // 整体垂直于数学轴 0.27em（+ device 翻转）：基线上方、不探出基线带。
+        let mid = (ys[0] + ys[1]) * 0.5;
+        let expect = 140.0 - 0.27 * size;
+        assert!((mid - expect).abs() < 1e-3, "双线中心应居中于数学轴 {expect}，实测 {mid}");
     }
 
     /// 超宽文本边界（任务书截断用例）：`assemble_formula` 对超长 run 不

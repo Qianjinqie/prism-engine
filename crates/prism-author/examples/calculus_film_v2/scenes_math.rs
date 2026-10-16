@@ -144,11 +144,12 @@ fn v_dashed(x: f32, y0: f32, y1: f32, dash: f32) -> Vec<[f32; 2]> {
 /// [`assemble_formula`] 取出数字 run 的 `center_x`，再发射「符号 +
 /// 等号」公式轨与一条空前缀 Counter（数字位与占位走排逐位一致）。
 ///
-/// 返回 (公式前缀轨, Counter)。`sym` 为希腊符号，`eq` 为等号后的
-/// 间距文本（如 `" = "`），`num_size` 为数字字号。
+/// 返回 (公式前缀轨, Counter)。`sym` 为希腊符号，等号恒取矢量
+/// [`SymbolKind::Equals`]（双横线，**不走文本**——PrismSansSC 的「=」
+/// 字形极细近乎缺失，旧实现读作 `" = "` 文本 run 即此缺陷），两侧间距
+/// 由数学间距表 `Var → Binary` 呼吸自动给出；`num_size` 为数字字号。
 fn greek_roll_readout(
     sym: SymbolKind,
-    eq: &str,
     baseline_y: f32,
     sym_size: f32,
     num_size: f32,
@@ -164,7 +165,7 @@ fn greek_roll_readout(
     let probe = symbols::assemble_formula(
         &[
             FormulaPart::Sym(sym, sym_size, color),
-            FormulaPart::Text(String::from(eq), FontKind::Regular, sym_size, color),
+            FormulaPart::Sym(SymbolKind::Equals, sym_size, color),
             FormulaPart::Text(String::from("0.00"), FontKind::Regular, num_size, color),
         ],
         0.0,
@@ -182,7 +183,7 @@ fn greek_roll_readout(
     let prefix_tracks = symbols::assemble_formula(
         &[
             FormulaPart::Sym(sym, sym_size, color),
-            FormulaPart::Text(String::from(eq), FontKind::Regular, sym_size, color),
+            FormulaPart::Sym(SymbolKind::Equals, sym_size, color),
         ],
         0.0,
         baseline_y,
@@ -512,7 +513,6 @@ pub fn scene_s3() -> ClipSpec {
         // 收至 8.5s = 12.0 终点，顿悟定格内静止；上下文层 alpha）。
         let (mut pre, mut cnt) = greek_roll_readout(
             SymbolKind::Epsilon,
-            " = ",
             120.0,
             26.0,
             26.0,
@@ -561,7 +561,6 @@ pub fn scene_s3() -> ClipSpec {
         }));
         let (mut pre, mut cnt) = greek_roll_readout(
             SymbolKind::Delta,
-            " = ",
             470.0,
             26.0,
             26.0,
@@ -600,7 +599,7 @@ pub fn scene_s3() -> ClipSpec {
     // ---- 底部文案 1（6.5 打字机；out_sec 反推淡出始于打字完成后；
     // [节奏重剪] 文案压到上下文层 alpha 0.50）----
     tracks.push(typewriter(
-        "无论 ε 多小，都能找到 δ，把曲线困在 L 附近",
+        "无论误差多小，都能找到对应的范围，把曲线困在 L 附近",
         26.0,
         TEXT_CTX_RGBA,
         6.5,
@@ -1349,7 +1348,11 @@ pub fn scene_s5() -> ClipSpec {
                 FormulaPart::Sym(SymbolKind::Sup(2), 30.0, TEXT_RGBA),
                 FormulaPart::Text(String::from(" dx = 8/3"), FontKind::Regular, 30.0, TEXT_RGBA),
             ],
-            480.0,
+            // [缺陷修复 3] 旧中心 480.0 令 ∫ 与其上限「2」压在 y 轴
+            // （x≈382.2）与 y 轴标签（ink 右缘 ≈409.7）上——左插净空仅
+            // 13.2px、「2」与「y」墨迹直接重叠。右移 40px ⇒ 左插净空
+            // ≈53px（轴）/ ≈26px（标签），右插距右边框仍余 ≈350px。
+            520.0,
             140.0,
         );
         for tr in formula.iter_mut() {
@@ -2494,5 +2497,159 @@ mod tests {
             // 端点即设计（轴网尺度稳定）。
             assert_eq!(min_ppu.to_bits(), base.px_per_unit.to_bits(), "端点须回归设计缩放");
         }
+    }
+}
+
+/// 缺陷回归组（字体缺失字形 / 等号可读 / 积分式 — y 轴重叠）。
+mod defect_regressions {
+    use super::*;
+
+    /// PrismSansSC 缺失/极细的数学字形：文本轨出现任一即渲染为 «» / ♦ 乱码。
+    const MISSING_GLYPHS: [char; 26] = [
+        '\u{03B5}', '\u{03B4}', '\u{03C0}', '\u{03B8}', '\u{0394}', '\u{2202}', '\u{2211}',
+        '\u{222B}', '\u{220F}', '\u{221E}', '\u{221A}', '\u{2192}', '\u{2200}', '\u{2203}',
+        '\u{21D2}', '\u{2264}', '\u{2265}', '\u{2260}', '\u{2248}', '\u{00D7}', '\u{00F7}',
+        '\u{2208}', '\u{222A}', '\u{2229}', '\u{00B1}', '\u{2032}',
+    ];
+
+    /// [缺陷修复 1] 全部文本/读数轨不得含字体缺失字形（矢量 FormulaPart
+    /// 不受影响——只查文本轨真身：Static / Typewriter / Counter.prefix）。
+    #[test]
+    fn text_tracks_contain_no_missing_glyphs() {
+        let mut n_checked = 0usize;
+        for spec in [scene_s3(), scene_s4(), scene_s5(), scene_s6()] {
+            for tr in &spec.tracks {
+                let content: Option<&str> = match tr {
+                    Track::Static(s) => Some(&s.content),
+                    Track::Typewriter(w) => Some(&w.content),
+                    Track::Counter(c) => Some(&c.prefix),
+                    _ => None,
+                };
+                if let Some(text) = content {
+                    n_checked += 1;
+                    for bad in MISSING_GLYPHS {
+                        assert!(!text.contains(bad), "文本轨含缺字形 {bad:?}：{text:?}");
+                    }
+                }
+            }
+        }
+        assert!(n_checked > 0, "必须实际检到文本轨（空集断言无意义）");
+    }
+
+    /// [缺陷修复 1] S3 底部字幕措辞落地：无缺字形且语义等价（含 L）。
+    #[test]
+    fn s3_bottom_caption_is_safe_copy() {
+        let spec = scene_s3();
+        let cap = spec
+            .tracks
+            .iter()
+            .find_map(|tr| match tr {
+                Track::Typewriter(w) if w.content.contains("把曲线困在 L 附近") => Some(w.content.as_str()),
+                _ => None,
+            })
+            .expect("S3 应有底部收尾字幕");
+        assert_eq!(cap, "无论误差多小，都能找到对应的范围，把曲线困在 L 附近");
+    }
+
+    /// [缺陷修复 2] ε/δ 标签：等号必须是矢量 Equals 符号的前缀轨，不再走
+    /// 文本 run（PrismSansSC 的「=」极细近乎缺失）。
+    #[test]
+    fn greek_readout_equals_is_vector_not_text() {
+        for kind in [SymbolKind::Epsilon, SymbolKind::Delta] {
+            let (pre, _cnt) = greek_roll_readout(
+                kind,
+                200.0,
+                26.0,
+                26.0,
+                ctx(TEXT_RGBA),
+                1.0,
+                0.25,
+                3.5,
+                8.5,
+                EasingKind::CubicIn,
+                2,
+            );
+            for tr in &pre {
+                if let Track::Static(s) = tr {
+                    assert!(
+                        !s.content.contains('='),
+                        "{kind:?} 标签不得再以文本渲染等号：{:?}",
+                        s.content
+                    );
+                }
+            }
+            // 前缀 = 希腊符号 + 等号；等号须实实在在发出来（双横线 ≥2 条笔画，
+            // 且存在水平 2 点笔画）。
+            let horiz_bars = pre
+                .iter()
+                .filter(|tr| match tr {
+                    Track::Path(p) => {
+                        p.points.len() == 2 && (p.points[0][1] - p.points[1][1]).abs() < 1e-6
+                    }
+                    _ => false,
+                })
+                .count();
+            assert!(horiz_bars >= 2, "{kind:?} 标签应有 ≥2 条水平笔画（等号双横线），实测 {horiz_bars}");
+        }
+    }
+
+    /// [缺陷修复 3] S5 积分式整体须与 y 轴 / y 轴标签保持 ≥20px 净空，
+    /// 且不贴右边框（≥40px）。
+    #[test]
+    fn s5_formula_clears_y_axis_and_label() {
+        let spec = scene_s5();
+        let vp = s5_viewport();
+        let y_axis_x = vp.to_px(0.0, 0.0)[0];
+        // y 轴标签锚点 = 轴顶端 + (LABEL_DX, LABEL_DY)，字号 26 Bold。
+        let y_top = vp.to_px(0.0, vp.y1);
+        let lw = symbols::text_run_width("y", FontKind::Bold, 26.0, 0.0);
+        let label_x1 = y_top[0] + 20.0 + lw * 0.5; // 标签 ink 右缘
+        let label_y1 = y_top[1] + 12.0 + 6.0; // 标签 ink 下缘（基线略下）
+
+        // 积分式 = 13.0 起的那组轨（∫ 矢量 + 限位 0/2 + 30px 文本 run 各一）。
+        // 全场景仅此组以 at=13.0 入场 ⇒ 按此取组即公式墨迹全集（Exact）。
+        let mut left_ink = f32::INFINITY;
+        let mut right_ink = f32::NEG_INFINITY;
+        let mut n_group = 0usize;
+        for tr in &spec.tracks {
+            match tr {
+                Track::Path(p) if (p.at - 13.0).abs() < 1e-6 => {
+                    n_group += 1;
+                    for q in &p.points {
+                        left_ink = left_ink.min(q[0]);
+                        right_ink = right_ink.max(q[0]);
+                    }
+                }
+                Track::Static(s) if (s.at - 13.0).abs() < 1e-6 => {
+                    n_group += 1;
+                    let w = symbols::text_run_width(&s.content, s.font, s.size, s.letter_spacing);
+                    let c = s.center_x.expect("须有 center_x 锚点");
+                    left_ink = left_ink.min(c - w * 0.5);
+                    right_ink = right_ink.max(c + w * 0.5);
+                }
+                _ => {}
+            }
+        }
+        assert!(n_group >= 4, "积分式应含 ∫ / 限位 / 文本 run：实测 {n_group} 轨");
+        assert!(left_ink.is_finite() && right_ink.is_finite(), "须取到公式墨迹");
+
+        assert!(
+            left_ink - y_axis_x >= 20.0,
+            "公式须让开 y 轴 ≥20px：左插 {left_ink} vs 轴 {y_axis_x}"
+        );
+        // 与 y 标签：水平净空 ≥20px（标签墨迹盒含 Baseline 上方突出）。
+        assert!(
+            left_ink - label_x1 >= 20.0,
+            "公式须让开 y 轴标签 ≥20px：左插 {left_ink} vs 标签右缘 {label_x1}"
+        );
+        // 纵向兜底：即便 x 方向有交叠，也要与标签所占 y 带错开。
+        assert!(
+            (140.0 - 26.0) > label_y1 || left_ink - label_x1 >= 20.0,
+            "公式与 y 标签须在 x 或 y 上分明"
+        );
+        assert!(
+            common::WIDTH as f32 - right_ink >= 40.0,
+            "公式不得贴右边框：右插 {right_ink}"
+        );
     }
 }
