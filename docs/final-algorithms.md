@@ -1,0 +1,970 @@
+# 算法定稿（final-algorithms）
+
+> 角色：算法设计工程师。定位：本文是后续工程师按路线图写代码时的**唯一算法规程**——
+> 实现时算法核心直接引用本定稿的常量表、公式与签名草案，**不再重新推导**；如发现
+> 定稿错误，走「定稿修订」（本文 §1.5 纪律），不得 silently 偏离。
+>
+> 输入依据（全部已通读，结论以此为准）：
+> - `docs/super-algorithms.md`（七提案 P1–P7 三审三校定稿本，1978 行）
+> - `docs/super-algorithms-qa-review.md`（QA 终审：有条件 Go + C-1~C-7 + 67 条测试 + P8）
+> - `docs/super-algorithms-architect-review.md`（架构师交叉审：B/M/m/n/U 全清单）
+> - `docs/mathematical-kernel-v2.md`（DSS 统一内核，以此为准；第一轮 `mathematical-kernel.md` 的 §5 分离定理已撤回）
+> - `docs/v1.5-v2.0-roadmap.md`、`docs/v1.5-v2.0-architecture-roadmap.md`（消费关系）
+> - 数值留痕：exp1–exp22（两轮审查复跑）+ **exp23（本定稿复查，全部通过，见 §1.4）**
+>
+> 纪律遵守：本文只新建 `docs/final-algorithms.md`，未修改任何既有文档、未写 .rs 实现、
+> 未执行 cargo、未做 git 写操作。所有数值陈述可追溯（证号/定理号/exp 编号/源码行号）。
+
+---
+
+## 1. 定稿总则
+
+### 1.1 与 DSS 统一内核的关系
+
+七提案的全部算法结构都落在 DSS 选择问题四元组 Q = (X, B, p, Φ) 上（kernel-v2 §2.1），
+公理 D1（纤维唯一极小）/D2（精确可复现）/D3（一阶可证性，可选）与定理 T1–T7 是共享
+推理底座。承载分级（kernel-v2 §3.0 总表，本定稿采纳）：
+
+| 提案 | DSS 角色 | 承载方式 | 关键内核件 |
+|------|---------|---------|-----------|
+| P3 | 规范形是完全不变量的截面 | **直接承载（核心）** | T1 + 内容键归纳法（证 3） |
+| P2 | 遍历 argmin 是完全不变量的截面 | **直接承载（核心）** | T1/T2b + T7(i)（ε 预算） |
+| P4 | 水位分配是一阶条件的截面 | **直接承载（核心）** | T3（等边际=等畸变证书）+ T4/T5 |
+| P6 | 分配律 + Kalman 是截面复合 | **直接承载（核心）** | T3 + T6(ii)(iv) |
+| P5 | 缓存键是完全不变量的提升 | **部分承载（解释性）** | T1(iii) + NC-D2 构造定理 |
+| P1 | 舍入点是整数格上的近似截面 | 组合式承载 | T7（近似截面）+ D2 |
+| P7 | 半群律外置，舍入/精确性由格承载 | 组合式承载 | T7 + D2 |
+
+**使用规则**：实现注释中引用内核件时写「DSS T3」或「NC-D4」并指向本文 §4 的落点，
+不要求工程师读内核全文；本文每提案的「中心定理」已把内核结论转写为可实现陈述。
+
+### 1.2 三审三校结论吸收状态
+
+| 轮次 | 清单 | 状态 |
+|------|------|------|
+| 自审（第一轮） | 推翻 2 项（P1 伪界、P7 折叠等式）、降级 3 项统计口径、替换 1 项设计（P7 u8 域）、加强 4 项、新发现修复 2 个源码缺陷 | 全部吸收（super-algorithms.md 各提案 ⑧ 节） |
+| 架构师交叉审（第二轮） | B1/B2、M1–M8、m1–m7、n1–n5、U1–U7 | **全部闭环**：2B 全修、8M 全修、12 项 m/n 修 11 申诉 1（m2 降调）、U1/U2/U3/U4/U5/U6 采纳、U7 部分采纳（exp12 重评保留快路径+三件套） |
+| QA 终审（第三轮） | 八维无 ❌；C-1~C-7 有条件 Go；67 条测试逐条判定（56 直接/7 需基建/4 判据问题）；新提案 P8 | C-1~C-7 闭环方案见本文 §3；P8 并入 §2.8 |
+
+QA 独立复核确认：两轮 B 级修复（B1 阈值、B2 内容键）真实有效且未引入新错误；
+20+ 处源码主张属实（2 处引用精度问题记 m-5/m-7，已在 §2 按真实行号书写）。
+
+### 1.3 路线图消费关系总表
+
+| 提案 | 路线图落点 | 消费形态 |
+|------|-----------|---------|
+| P1 | **V1.5-A**（统一图像解码门面）+ V1.5-P0-2（JPEG 基线解码，绿地）+ P0-8 黄金门禁 + ADR-19 | 新建 prism-io 基线 JPEG 解码器即用定点 IDCT；顺手消灭 prism-mux PRMV 路径的 D-29 活违规 |
+| P7 | **V1.5-C**（动画/转场类型下沉，ADR-18） | 转场类型下沉 prism-core 时换 u8 整数混合器；权重向量入 P5 缓存键 |
+| P4 | **V1.5-E**（视频编码生产化：档位率控/B 帧） | water-filling 率控替换 video.rs 启发式残差质量；det_log2 接线先行 |
+| P5+P8 | **V1.5-P1-4**（内容哈希缓存）+ V2.0-I（cache_manifest 生产化） | 缓存键补全闭包 + 宏机械枚举；schema bump 静默失效 |
+| P3 | **V2.0-H**（Mesh+BVH 进 rt/wavefront） | Morton 规范化 + 内容键预排序进 Bvh::build；关闭风险 R6 |
+| P2 | **V2.0-G**（GPU compute-first 生产管线，D-3 双门禁） | tie-break 规范槽位化 + ε 相对化 + 归约解析预算；依赖 P3 先落地（U1） |
+| P6 | **V2.0-RQ-2**（自适应采样+降噪，P0） | σ 律分配 + Kalman 时域；RQ-2 的 50% 线在 σ² 权重下不可达（证 2 代数恒等：σ² 分配 MSE = m·Σσ²/N ≡ 等分配 MSE，期望削减 0%；exp24 20 抽中位 3.9%、IQR [1.5%, 7.2%]、0/20 抽达线；同场景 σ 律中位 51.5%） |
+
+### 1.4 定稿复查新发现（exp23 独立复算，全部留痕）
+
+定稿阶段对全部历史出错派生值按 B1 同标准重新复算（脚本
+`exp23_finalization_recompute.py`，纯 Python 标准库，复跑 exp8/exp12/exp15/exp16/exp17
+确认文档数字可复现）。**主结论全部确认**（B1 阈值 2^29−1、C-4 三处、P4/P6/P7 关键值），
+另发现 7 处派生值/标注卫生问题——均为量级/口径错误、不影响任何结论方向，本定稿按修正值书写
+（N-1~N-5 为历史文档值复算修正；N-6 为定稿撰写自审修正；N-7 为主理人终验发现的统计口径
+缺陷修正，附 exp24 统计审计）：
+
+| # | 位置 | 文档原值 | 复算修正值 | 影响 |
+|---|------|---------|-----------|------|
+| N-1 | P1 证 1 Stage1 i64 余量（8-bit） | 2059× | **2057×**（精确 2057.04×：9.223372036854776e18 / 4.483817e15） | 无（Stage1 i64 安全的方向不变，余量仍 >2000×） |
+| N-2 | P1 证 2 gloss | (2^-16+2^-19) ≈ **1.0000153·2^-16** | **1.125·2^-16** = 1.7166e-5（2^-19 = 2^-16/8，精确） | 无（界本身正确； gloss 数值错，修正） |
+| N-3 | P1 证 2 界利用率 | 0.19 | 0.169（修正界口径）；0.1906 是旧 2^-16 界口径（exp8-T4） | 无（界成立且不松） |
+| N-4 | P4 det_log2 误差 | ≤ 2.4e-11 | **2.429e-11**（exp15-T1 复跑值） | 无（<1e-10 精度目标保持） |
+| N-5 | P4 A1 容差余量 | 2^11 | vs 设计目标 2^-40 为 **2^10.1**（1099.5×）；vs 实测水位差 3.73e-14 为 2^14.7；vs 实测 \|ΣR−B\| 1.137e-13 为 2^13.1 | 无（余量充足的方向不变；「2^11」无一处恰合，改按口径分列） |
+| N-6 | 定稿撰写自审：§2.1 阈值严密性行 | 64·(2^29−1)·2^28 = 2^63 − **2^28**（余量 2^28） | **2^63 − 2^34**（余量 **2^34 − 1 = 17179869183**）——64·2^28 = 2^34，展开项应为 2^34 | 无（不等式方向与阈值 floor 2^29−1 均不变；仅余量标注修正，exp23-A 复算确认） |
+| N-7 | 主理人终验：§1.3/§2.6/§3.5 三处引用 exp4-T3 单场景值 −19.6% | −19.6%（单场景实测；同期 exp4-T2 同场景 +2.8%，方向都不稳定，无统计意义） | **证 2 代数恒等 + exp24 三元组**：σ² 权重期望削减恒 0%（MSE_σ² = m·Σσ²/N ≡ 等分配 MSE），−19.6% 纯属 largest-remainder 取整伪影；exp24（CV=1、m=32、N=2048、20 抽，seed=20261024）中位 3.9%、IQR [1.5%, 7.2%]、0/20 抽达 50% 线 | 无（结论方向不变：RQ-2 线在 σ² 权重下不可达；论据从单场景实测升级为代数恒等 + 20 抽统计，更硬。连带修正 §3.5 把 m=64 实测中位 55.5% 误标为「理论中位」的口径混同——理论锚点恰 50%，两套 m 口径各自标注） |
+
+另记录 1 处路径勘误：任务书与 QA 报告中「prism-author 的 eval.rs」不存在——`EvalCtx`
+实际定义在 `crates/prism-core/src/node.rs:274`（prism-author/src/ 下仅
+easing.rs/lib.rs/render.rs/spec.rs），`global_seed` 使用点在
+`crates/prism-rt/src/sampler.rs:208,216`。与 M5 同类路径错误，本文 §2.5 按真实位置书写。
+
+### 1.5 定稿口径纪律
+
+1. **常量引用规则**：实现代码中的魔法常量必须能在本文常量表找到同源行；找不到 =
+   定稿漏项，走修订流程补充，不得自行发明。
+2. **禁项随常量绑定**：P1 的 THRESHOLD 必须与编译期断言
+   `const _: () = assert!(THRESHOLD <= (1 << 29) - 1);` 一起提交（B1 三件套）；
+   P4 禁 std `f64::log2`（走 `prism_math::det_log2`）；P7 禁 f32 rand。
+3. **诚实口径继承**：P2 的「bit-exact 不可能」、P6 的「通道 B 仅经验值」、
+   P4 的「模型内已证」、P7 的「收益结构性非大幅精度」四份诚实声明是定稿的组成部分，
+   实现与测试不得按更强口径宣称。
+4. **统计口径**：所有「削减率/改善率」类数字必须是「中位 + IQR + 抽样数」三元组，
+   禁止单点值验收（P4 证 5、P6 证 3 已按此修订）。
+
+---
+
+## 2. P1–P8 逐提案实现就绪规格
+
+### 2.1 P1 — JPEG 定点 IDCT（V1.5-A / V1.5-P0-2 / P0-8 / ADR-19）
+
+**中心定理**：把 DCT 正交性与 ¼·c(u)c(v) 权重折叠为两张整数表后，JPEG 基线 IDCT
+可写为两阶段纯整数累加（Stage1 i64 + Stage2 i128/阈值分流 i64），对精确 IDCT 的误差
+≤ (2^-16 + 2^-19)·Σ|D| + 0.5 LSB，且无浮点、无超越函数、无 libm ⇒ 跨平台逐位确定
+（证 1–证 4，super-algorithms.md §1④；内核件：T7 近似截面 + D2 精确可复现，组合式承载）。
+
+**① 精确常量表**（全部经 exp23 独立复算 + exp8/exp12 复跑确认）
+
+| 常量 | 值 | 来源/复算 |
+|------|----|-----------|
+| C 表 | `C[a][b] = round(2^14·K(a,b))`，K(a,b)=cos((2b+1)aπ/16) | 与编码器 `jpeg.rs:86` DCT_COS 同表（0/64 不符经验证为正确舍入，exp1） |
+| W 表 | `W[u][v] = round(2^16·c(u)c(v)) ∈ {65536, 46341, 32768}`（c(u)c(v) = 1, 1/√2, ½） | super-algorithms.md:147；46341 vs 2^16/√2 差 ≤0.5 |
+| 末位标度 | `(S2 + 2^45) >> 46`（round-half-up），clamp [0,255] | :168；标度核对 ¼·2^-28·2^-16 = 2^-46 ✓ |
+| Stage1 界 | \|S1\| ≤ 8·max\|D·W\|·2^14；8-bit ≤ **4.483817e15**（i64 余量 **2057×**）；16-bit ≤ 1.152341e18（余量 8.004×） | exp23-B；修正文档 2059×（N-1） |
+| Stage2 界 | \|S2\| ≤ 64·max\|D·W\|·2^28；8-bit ≤ **5.877029e20**（超 i64 **63.7×**）；16-bit ≤ **1.510396e23**（超 i64 **1.6376e4×**） | exp23-B；C-4 修正 1639×→1.64e4× |
+| i128 余量 | vs 8-bit 定理界 **2.895e17×**；vs 16-bit 定理界 **1.1265e15×**；vs 16-bit 对抗块 3.352e22 **5.0758e15×** | exp23-B；C-4 第②处：5.08e15× 的基准是 16-bit 对抗块 3.352e22，非定理界 |
+| 对抗块 | 逐点优化构造 1.3041e20（超 i64 **14.14×**，exp8-T2b）；全正块 8.2875e18（i64 的 **89.9%**，未溢出） | exp8-T2/T2b；m4 改述 |
+| **快路径阈值** | `THRESHOLD = 2^29 − 1 = 536870911` | B1 复算（exp12-T1 + exp23-A）：安全条件 64·T·2^28 ≤ i64::MAX ⇒ T ≤ 5.36870912e8 = 2^29 − 2^-34；floor = 2^29−1 |
+| 阈值严密性 | 64·(2^29−1)·2^28 = 2^63 − 2^34 ≤ i64::MAX（余量 2^34 − 1 = 17179869183）；**64·2^29·2^28 = 2^63 = i64::MAX+1 恰超一个单位** | exp23-A |
+| i128 判据（旧错值） | 64·5.4e9·2^28 = **9.277129e19 > i64::MAX（10.06×）**；5.4e9 = 正确值 10.06× | B1：按旧常量实现等于放回 i64 溢出类 |
+| 派生 max\|D\| | ≤ **8191**（8191·2^16 = 536805376 ≤ 2^29−1；**8192·2^16 = 2^29 即超界**） | C-4 第③处：删「上取整表述 8192」；旧派生 8250 超界 0.71% |
+| 覆盖面 | Q∈[50,80] 自然块 **2000/2000 落入**（观测 max\|D·W\| ≈ 2.359e7 = 阈值 0.04×）；Q=50 最坏块 max\|D·W\| = 6.708e9 = 阈值 **12.49×**（不落入） | exp12-T3；U7：保留快路径+三件套 |
+| 误差界 | 舍入前 \|Δ\| ≤ (2^-16+2^-19)·Σ\|D\| = **1.125·2^-16·Σ\|D\|** = 1.7166e-5·Σ\|D\|；干净上取整界 2^-15·Σ\|D\|（余量 1.778×）；界利用率 **0.169**（修正界口径） | m3 + exp23-C；修正 gloss 1.0000153（N-2）与口径 0.19（N-3） |
+| 末位舍入 | \|Δ_round\| ≤ 0.5 LSB；合计（舍入后）\|Δ\| ≤ (2^-16+2^-19)·Σ\|D\| + 0.5 LSB | 证 2 双分量 |
+| 实证精度 | 3000 块定点 vs f64 参考 **max 1 LSB / PSNR 74.3 dB**；T.81 A.3.3 规范 ±1 单位（34 dB 余量） | exp1；黄金门禁 P0-8（40 dB）开箱达标 |
+| D-29 违规实证 | `f64::cos` 64 参数中 **10 个与正确舍入差 1–2 ulp** | exp1-C ⇒ 现行 PRMV 解码路径跨平台非位精确 |
+
+**② 公式与算法**（伪码级）
+
+```
+输入：量化系数 F[u][v]（ZigZag 已解），量化表 Q[u][v]（8-bit ≤255 / 16-bit ≤65535）
+ 1. 反量化：D[u][v] = F[u][v] · Q[u][v]                       （i64）
+ 2. 逐块阈值扫描：max_dw = max_{u,v} |D[u][v] · W[u][v]|
+      max_dw ≤ 2^29−1  ⇒ Stage2 走 i64 快路径；否则走 i128 路径   （逐块判定，非质量档判定）
+ 3. Stage1（列）：S1[u][y] = Σ_{v=0..7} D[u][v] · W[u][v] · C[v][y]     （8×8×8 乘加）
+ 4. Stage2（行）：S2[y][x] = Σ_{u=0..7} S1[u][y] · C[u][x]
+ 5. 输出：s = (S2 + 2^45) >> 46 ；8-bit 路径 clamp 到 [0,255]，高位深路径保持 i32
+ 6. 无浮点、无超越函数、无 libm、无 fma 收缩语义依赖
+```
+
+**③ Rust 函数签名草案**
+
+```rust
+// 落点 A：crates/prism-io/src/jpeg_baseline.rs（新建，V1.5-P0-2 绿地）
+// 落点 B：crates/prism-mux/src/video.rs（替换 :821 f64 idct_8x8，PRMV 路径）
+pub const IDCT_C_TABLE: [i32; 64] = /* round(2^14·K)，与 jpeg.rs DCT_COS 同值 */;
+pub const IDCT_W_TABLE: [i32; 64] = /* {65536, 46341, 32768} */;
+/// B1 快路径阈值：Stage2 走 i64 的安全上界（严格整数，2^29 本身恰超一个单位）
+pub const IDCT_STAGE2_I64_THRESHOLD: i64 = (1 << 29) - 1; // 536870911
+const _: () = assert!(IDCT_STAGE2_I64_THRESHOLD <= (1 << 29) - 1); // 三件套之一
+
+/// 定点 IDCT：out[i] = clamp((S2 + 2^45) >> 46)（8-bit）。coef 为 ZigZag 解后的
+/// 量化系数（i32），q 为量化表（i32，值域 1..=65535）。
+pub fn idct_8x8_fixed(out: &mut [i32; 64], coef: &[i32; 64], q: &[i32; 64]);
+```
+
+**④ 文件落点与当前代码差异清单**
+
+| 落点 | 现状（只读核验） | 差异动作 |
+|------|-----------------|---------|
+| `prism-io/src/jpeg_baseline.rs`（新建） | 基线 JPEG 解码器不存在（`prism-io/src/` 仅有 DNG 无损路径 `raw_lossless_jpeg.rs`） | 绿地新建，直接按本规格实装 |
+| `prism-mux/src/video.rs:821` | `fn idct_8x8(out: &mut [i32; 64], coef: &[i32; 64], cos: &[f64; 64])` f64 域 | 换 `idct_8x8_fixed`；删除 `cos: &[f64; 64]` 参数（改 const 表） |
+| `prism-mux/src/video.rs:629-642` | `cos_table()` OnceLock + `std::f64::consts::PI` + `f64::cos()` | **删除**（D-29 活违规实证） |
+| `prism-mux/src/video.rs:645-651` | `c_factor(k) -> f64`（`1.0/2.0_f64.sqrt()`） | **删除**（W 表编译期常量替代） |
+| `prism-mux/src/jpeg.rs:86` | 编码器 `DCT_COS` 整数表 + `fdct_8x8` 全程 i64 | **不动**；解码器 C 表与其同源（编解码共用一份资产） |
+
+**⑤ 测试承接**（QA §3.2：P1 9/9 可直接转）
+
+- A1 大规模对拍（100k+ 块，混 1% 对抗块）：i64 快路径与 i128 路径逐位一致；与
+  **python 精确 IDCT 固件**差 ≤1 LSB（金参考独立性：禁引擎自身浮点路径作参考）。
+- A2 极端参数：Q=255 全表最大 + 全正块（8.287e18）；16-bit 表 Q=65535（界 1.510e23）；
+  断言不 panic、无回绕。
+- A3 边界：全零块（输出恒 128）；单系数块；Q=1 表；**max|D·W| 恰为阈值两侧**
+  （8191·2^16 = 536805376 与 8192·2^16 = 2^29 各一块，超界一个单位即走 i128 的断言）。
+- A4 长时间稳定性：10^7 块连续解码（标 nightly/release）。
+- B-M1 Stage2 回退 i64 ⇒ 对抗块与 i128 参照 diff ≠ 0（debug panic / release 回绕双 profile）。
+- B-M2 W 表 46341→46340 ⇒ 3000 块 PSNR 74.3 → <60 dB。
+- B-M3 末位标度 2^-46→2^-45 ⇒ 系统性 2× 过曝，PSNR <20 dB。
+- B-M4 舍入去 +2^45（改截断）⇒ mean bias ≈ −0.5 LSB（断言 mean < −0.4 即红）。
+- B-M5 阈值 2^29−1→2^39−1 ⇒ 阈值内 i64 溢出块对拍失败（B1 阳性示范）。
+- **T-1（QA 补）**：12-bit 高位深 A5——12-bit 量化表 + 2^-46 标度按位深线性重核
+  + i128 余量断言（⑦ 声明「要有测试」，未补不得宣称高位深支持，登记 U-2）。
+
+**⑥ 可量化验收判据**：3000 块 vs 独立固件 PSNR ≥ 70 dB 且 max ≤ 1 LSB；100k 块两路径
+逐位一致率 100%；阈值两侧分流正确；`const assert` 编译通过；源码禁项扫描（cos/PI/
+c_factor）零命中；同输入两跑 bitwise 相同；P0-8 黄金门禁 PSNR ≥ 40 dB 开箱达标。
+
+---
+
+### 2.2 P2 — GPU↔CPU 遍历同构 + tie-break 规范槽位 + ε 相对化 + 归约预算（V2.0-G / D-3）
+
+**中心定理**：采用全序 ≺ = (t, 规范槽位) 后，最终命中是已访问集合上 argmin 的纯函数
+（加载序 + 遍历序双重无关）；剪枝判据加统一松弛 ε = 6u·t_max 保证「不漏真实命中」；
+两者合取 ⇒ CPU/GPU 语义级 parity；数值级 bit-exact 不可能（WGSL fma）由 D-3 统计
+门禁兜底，其判据有解析预算（证 1/1b/2/3 + 诚实声明；内核件：T1/T2b + T7(i)，NC-D3）。
+
+**① 精确常量表**
+
+| 常量 | 值 | 来源 |
+|------|----|------|
+| ε（剪枝松弛） | **ε = 6u·t_max**，u = 2^-24，t_max = 根 AABB 对射线的出射参数（或场景远平面），每射线一次 | M2 修正；NC-D3：6u = 2δ，δ = 3u·t_max 为 slab 单侧舍入界 |
+| slab 单侧误差界 | \|δ\| ≤ **3u·|t|**（实测 1.7u） | exp2b/exp14 |
+| 绝对 padding 失效刻度 | 1e-7 仅 \|t\| ≤ 1e-7/(6u) ≈ **0.2796** 时充分 | exp23-G 复算 |
+| MT 后向误差界 | \|δt\| ≤ **c·u·|t|，c = 79**（exp14-T3 标定，与 slab 3u 相互独立） | M2 |
+| 并列触发率 | 条件率 **480/1181 = 40.64%**；无条件率 **480/4000 = 12.0%** | M3 口径改述；exp23-G 复算 |
+| 归约预算（差） | 两归约序之差：均值 ≈ 0、方差 ≤ **2u²·(log₂n+1)²·(Σ\|x\|)²/n²**；\|Δ\| ≤ 2u(log₂n+1)Σ\|x\|/n | 证 3 |
+| 归约预算（单序） | 树形 \|Δ\| ≤ u(⌈log₂n⌉+1)Σ\|x\|；顺序 (n−1)u ⇒ n=1024 时顺序界松 **93.0×** | exp23-G 复算：(n−1)/(log₂n+1) = 1023/11 |
+| 实测 | 两序输出 MSE = 3.03e-14 ⇒ PSNR = **135.19 dB**；D-3 门禁② 40 dB 余量 **95.2 dB**；差方差低信号方差 **10^8.56**（n5 修正，非 10） | exp3 + exp23-G |
+| 端到端阳性实例 | 共享边 + 逐位同 t：修正前 diff = **255 LSB**，规范槽位后 diff = **0** | exp14-T4 |
+| 门禁② | PSNR ≥ 40 dB ⟺ MSE ≤ 1e-4 | exp23-G 复算 |
+
+**② 公式与算法**
+
+```
+每射线一次：
+  t_max = root_aabb.exit_param(ray)（或场景远平面距离）
+  eps   = 6.0 · f32::EPSILON · t_max            // ε = 6u·t_max（替换绝对 1e-7）
+遍历剪枝（bvh.rs:452-456，原判据 t_lo > best_t）：
+  if t_lo > best_t + eps { skip subtree }        // 不漏：ε 覆盖 enter 侧保守舍入 3u
+                                                  //（exit 侧另 3u；NC-D3：单侧最小 3u，双侧 6u）
+叶更新（bvh.rs:466，原 tie-break 读 orig）：
+  if ht >= 0.0 && (ht < best_t || (ht == best_t && slot < best_slot))
+      { best = (ht, slot, hit) }
+  // slot = 图元在 P3 规范化后数组中的下标（规范槽位）；不是加载序 orig
+GPU（rt_bvh.wgsl:89-92 同形态，寄存器级两级比较，零原子）：
+  // WGSL 原子仅 32 位，packed-u64 atomicMin 不可编译（M4）；hit 记录线程私有，无跨线程归约
+```
+
+**③ Rust 函数签名草案**
+
+```rust
+// crates/prism-geometry/src/bvh.rs
+/// 规范槽位 tie-break：键 = (t, slot)，slot 为 P3 规范化后的数组下标。
+pub fn ray_closer(ht: f32, slot: u32, best_t: f32, best_slot: u32) -> bool;
+/// 每射线剪枝松弛：ε = 6u·t_max。
+pub fn prune_epsilon(t_max: f32) -> f32;
+// WGSL 侧（prism-gpu shaders）：同形两级比较，无原子。
+```
+
+**④ 文件落点与当前代码差异清单**
+
+| 落点 | 现状 | 差异动作 |
+|------|------|---------|
+| `prism-geometry/src/bvh.rs:466` | `Some(b) => t < b.t \|\| (t == b.t && orig < b.tri)`（tie-break 读加载序 orig） | 键改规范槽位 slot（U1） |
+| `prism-geometry/src/bvh.rs:103` | `if enter <= exit + 1e-7`（绝对 padding） | 改 `eps = 6u·t_max` 每射线一次 |
+| `prism-geometry/src/bvh.rs:452-456` | 剪枝 `t_lo > best_t` | 改 `t_lo > best_t + eps` |
+| `prism-gpu/src/shaders.rs`（rt_bvh.wgsl:89-92） | 每线程私有 best_t/best_tri 寄存器比较 | tie-break 键同步规范槽位（M5：BVH 在 prism-geometry，不在 prism-rt） |
+| parity 测试网 | `prism-rt/src/wavefront.rs:825-943` 内联（E5 parity 系列）+ `tests/qa_probe_wavefront_parity.rs` | 复用不新建（m-7：`integrator.rs:22-26` 是文档注释不是测试） |
+
+**⑤ 测试承接**（QA：P2 9/10 可直接转；A1 需 GPU 基建 ⇒ C-6）
+
+- A1 大规模 parity（100k+ 射线共享边构型族）：**C-1 修订后断言 = 「语义级分歧
+  （两端选出不同图元）= 0」+ D-3 统计门禁兜底**（M-4：字节级断言必然假红）；
+  阳性对照保留 exp14-T4 端到端实例（255 LSB → 0）。GPU 侧就绪前以 CPU 递归序 vs
+  CPU 模拟 GPU 数组序双跑 + `#[ignore]` 占位（C-6 降级路径）。
+- A2 极端参数：远距射线 |t| ∈ [1e3, 1e7]（绝对 1e-7 下漏命中的阳性构型）；
+  t=0 起点射线（inv_d = inf 的 NaN slab 行为两端一致）。
+- A3 边界：擦边命中（enter−exit < 6u·t_max）断言保守侧不漏；**T-2（QA 补）**：
+  enter−exit 恰 = 6u·t_max 两侧各一构型。
+- A4 归约压力：n=1024 顺序 vs 树形 10^6 像素，MSE ≤ 解析预算；门禁②余量报告。
+- B-M1 GPU 去 tie-break ⇒ 共享边构型分歧率回到 ~40%（CPU 模拟 GPU 规则可杀）。
+- B-M2 padding 回退绝对 1e-7 ⇒ 远距场景漏命中。
+- B-M3 ε 取单侧 3u ⇒ 对抗构型漏命中（NC-D3(a)：单侧 3u 只是最小全配置保障的
+  一半，enter 侧恰 3u 舍入即漏）。
+- B-M4 测试写成 bit-exact 断言 ⇒ 必然假红（测试设计缺陷阳性示范）。
+- B-M6 tie-break 键用回 orig ⇒ 置换输入后同码族构型 diff > 0（U1 必要性）。
+- T-3（QA 补）：GPU 侧语义 parity，GPU-in-CI 就绪后补。
+
+**⑥ 可量化验收判据**：语义级分歧 = 0（100k+ 射线）；D-3 门禁② PSNR ≥ 40 dB 且
+MSE ≤ 解析预算；远距场景命中零遗漏；阳性对照 diff 255 LSB → 0；ε 保守代价
+≤ 0.4%（exp14-T1：79 射线逐点比 ≤ 0.996；exp23-G 合成验证结构界 ≤ 1）。
+
+---
+
+### 2.3 P3 — BVH 确定性结构 + Morton 规范化 + 内容键（V2.0-H / R6）
+
+**中心定理**：按内容键 (morton_code, 质心位型, 内容摘要) 预排序后，构建输入成为
+图元**多重集**的规范函数（归纳法证明），于是整棵 BVH（结构 + 叶内排列 + winding
+聚合）是多重集的纯函数——「同资产多重集 ⇒ 同 MD5」（证 1–证 4；内核件：T1 核心承载，
+NC-D5 设计规则）。
+
+**① 精确常量表**
+
+| 常量 | 值 | 来源 |
+|------|----|------|
+| Morton 码宽 | **21-bit/轴**（3 轴共 63 bit ≤ 64，u64 键可行） | m1：原 30-bit/轴 = 90 bit 在 u64 下不可能；f32 尾数 24 bit ≥ 21 |
+| 共码阈值 | 场景 extent > **2^21 = 2097152** 单位时远距图元共码（比 2^30 早 2^9 = 512×） | m1；真实限制，须测试覆盖 |
+| 内容键 | `(morton_code: u64, centroid_bits: (u32,u32,u32), digest: [u8; 32])` | B2：原 `(code, orig_index)` 的 index 即加载序 |
+| 摘要算法 | **SHA-256**（C-2 决议，见 §3.2）：FIPS 180-4 纯整数，全 256 bit 不截断 | M-2/m-8 |
+| 摘要碰撞概率 | 10^6 图元 ≈ n²/2^65 ≈ **2.711e-8**（自然资产） | exp23-H 复算 |
+| 切分 tie-break | 桶代价并列取**桶索引最小**（best_sah_split 严格 `<` 已保证，序无关） | ③-3 |
+| SAH 代价 | 预排序不改变任何候选切分代价，总代价比 **1.0000** | 证 4 / exp2-D4 |
+
+**② 公式与算法**
+
+```
+Bvh::build 入口前置（prism-geometry/src/bvh.rs:262）：
+ 1. 场景 AABB（min/max，IEEE 精确比较，序无关）
+ 2. 对每个图元 p：
+      q_i   = clamp((c_i − min_i)/(max_i − min_i), 0, 1)      // f32 基本运算，跨平台确定
+      k_i   = min((q_i · 2^21) as u32, 2^21 − 1)
+      code  = interleave3(k_x, k_y, k_z)                      // 整数交错，63 bit
+      bits  = (p.centroid.x.to_bits(), .y.to_bits(), .z.to_bits())
+      digest = det_sha256(canonical_primitive_bytes(p))        // C-2 规格，见 §3.2
+      key(p) = (code, bits, digest)
+ 3. 按 key 稳定排序（全序；前两项整数比较、第三项 hash 比较，无 FP 语义依赖）
+ 4. 既有 12 桶 SAH 构建（桶直方图/边界/切分选择本已序无关；累加按规范数组下标序
+    ⇒ f32 加法逐位相同 ⇒ 切分选择/winding 聚合/叶内排列全部逐位复现）
+ 5. 退化防御（A2 钉死规定行为）：max_i == min_i（单轴零 extent）⇒ 该轴 k_i = 0；
+    全图元同点 ⇒ 全同码 ⇒ 纯内容键（位型+摘要）平局
+```
+
+**③ Rust 函数签名草案**
+
+```rust
+// crates/prism-geometry/src/bvh.rs（或新建 det_canon 子模块）
+/// 21-bit/轴 Morton 码（场景归一化 + 整数交错）。
+pub fn morton_code_21(centroid: [f32; 3], scene_min: [f32; 3], scene_max: [f32; 3]) -> u64;
+/// 内容键全序三组分（B2：替换原 (code, orig_index)）。
+pub fn primitive_content_key(p: &Primitive, min: [f32; 3], max: [f32; 3])
+    -> (u64, (u32, u32, u32), [u8; 32]);
+/// 结构签名（m7：必须含 winding 字段哈希）。
+pub fn structure_signature(bvh: &Bvh) -> Hash256; // hash(节点数, 叶位序列, 切分面序列, winding 字段)
+```
+
+**④ 文件落点与当前代码差异清单**
+
+| 落点 | 现状 | 差异动作 |
+|------|------|---------|
+| `prism-geometry/src/bvh.rs:262` | `Bvh::build` 已实装 12 桶 SAH（`:618` best_sah_split），输入图元序未规范化 | 入口加内容键预排序 |
+| `prism-geometry/src/bvh.rs:313-324` | winding 聚合 `area_sum/n_sum/ac_sum` 按输入下标序累加（m7：真正的序敏点） | 不改代码——规范化后累加序即规范序（证 2 无条件版） |
+| `prism-geometry/src/bvh.rs:701` | `median_partition` 用 `total_cmp(&cb).then(a.cmp(&b))`（index tie-break 即输入序） | 预排序后天然规范；不改切分规则 |
+| `prism-geometry/src/bvh.rs:466` | tie-break 读 orig | 由 P2 改规范槽位（U1 联合闭合） |
+| 摘要件 | 既有 PCG（`prism-noise/src/pcg.rs:31-48`，非双射非抗碰撞）；FNV-1a（exp13 脚本） | **不用**：C-2 决议 SHA-256（M-2/m-8），落点见 §3.2 |
+
+**⑤ 测试承接**（QA：P3 7/10 直接转，1 条定位改写，2 条判据问题——C-1 已修订）
+
+- A1 大规模置换不变（100k+ 图元含 10% 同码族，10 置换）：结构签名（节点数 + 叶位 +
+  切分面 + **winding 哈希**）恒等；SAH 总代价比 ≤ 1.0000·(1+1e-6)。
+- A2 极端参数：全图元同点；extent > 2^21 共码退化；退化 AABB（除零后映射到 0 的
+  **规定行为**钉死）；坐标混合 1e30/1e-30。
+- A3 边界：空场景（0 图元不 panic）、单图元、叶容量整数倍。
+- A4 长时间稳定性：同输入 build 10^4 次 MD5 全同。
+- B-M1 tie-break 键用回 (code, orig_index) ⇒ 同码族 10 置换签名 ≠ 1（B2 缺陷本体隔离）。
+- **B-M2（C-1 改铸）**：原「切分取末最小桶」是**无效变异体**（SAH 切分是集合函数，
+  杀不死任何东西，M-1）⇒ 改铸为**黄金结构 fixture 测试动机项**（实体 = T-4）。
+- B-M3（C-1 定位改写）：原「桶累加改 f64」定位失准（桶累加是 min/max + 整数计数，
+  无 f32 求和可改）⇒ 改写为「**winding 聚合或 half_area 链改 f64**」（m-4：f32/f64
+  两遍 winding 不同 ⇒ 签名不同，杀得死）。
+- B-M4 叶内排序去掉 ⇒ 置换签名不同。
+- B-M5（C-1 判据改造）：原「Morton 用 libm exp 近似 ⇒ 跨平台 MD5」单平台不可执行
+  ⇒ 改「**黄金 morton 码固件 + 源码禁项扫描**」（M-5；突变语义写清：近似 exp/ln）。
+- B-M6 签名去掉 winding 哈希 ⇒ 序敏感输出逃过签名（m7 覆盖缺口阳性）。
+- T-4（QA 补）：固定种子场景的参考结构签名（含 winding）固化入库——B-M2 改铸的
+  实体，也是 SAH 调优回归基线。
+
+**⑥ 可量化验收判据**：10 置换 → 1 签名（旧键阳性对照 10 签名）；SAH 代价比
+≤ 1.0000·(1+1e-6)；build 10^4 次 MD5 全同；摘要通过 FIPS 180-4 向量 + 10^6 图元
+自然资产 0 碰撞；extent > 2^21 路径不 panic 且行为符合规定。
+
+---
+
+### 2.4 P4 — 率控 water-filling + B 帧闭式 + 依赖加权（V1.5-E）
+
+**中心定理**：高率模型 D_i(R_i) = θ_i·2^(−2R_i) 严格凸 ⇒ KKT 充分；一阶条件给出
+reverse water-filling 闭式 R_i = max(0, ½log₂(θ_i/θ))，最优解处活跃帧畸变全等
+（等畸变证书，可 CI 断言）；依赖加权只是换一组 θ，算法与证书不变（证 1–证 5；
+内核件：T3 等边际 + T4 影子价格 + T5 Fenchel，NC-D1 重标号等变）。
+
+**① 精确常量表**
+
+| 常量 | 值 | 来源 |
+|------|----|------|
+| RD 模型 | D_i(R_i) = θ_i·2^(−2R_i)；D'' = 4(ln2)²θ2^(−2R) > 0（严格凸） | ② |
+| 解 | R_i = max(0, ½·log₂(θ_i/θ))，θ 为水位（对偶变量） | 证 1 |
+| 等畸变证书 | 活跃帧 θ_i·2^(−2R_i) = λ/2ln2 = 常数（断言 max/min − 1 ≤ 1e-9） | 证 3 |
+| 文档算例（exp23-D 复算） | θ=[1.0,0.5,0.3,0.2,0.1]，B=6.0 ⇒ 水位 w = **0.059286**，ΣD = **0.296430**，各帧 D = w（max/min = 1.000000），λ = 2ln2·w = **0.082188**；vs 20 万次搜索最优 0.296713（WF/搜索 = **0.999046** ≤ 1） | exp23-D |
+| B 帧闭式 | R_B − R_P = ½·log₂(θ_B/θ_P)；ρ=¼ ⇒ R_B = R_P − 1 bit/符号（数值差 ≤ 1.1e-16，exp23-D 四种 ρ 全复算） | 证 4 |
+| 依赖加权 | θ_i ← θ_i·d_i，d_i = 后续以 i 为参考的帧数 + 1（GOP=12 时 d=[12,11,…,1]） | exp10-T2 |
+| 加权口径（诚实边界） | 端到端口径 J 改善中位 **17.4%**（IQR 16.2–18.1%）；帧独立口径 J₀ 恒劣（畸变中位 +21.7%）⇒ **口径换修**，推荐加权 | exp10 |
+| 收益统计（200 试验） | 等比特总畸变降幅中位 **68.9%**，IQR [63.8%, 74.4%]，min 53.8%，max 81.4% | exp10-T1（替换原 3 试验点估计） |
+| det_log2 接线 | prism-mux/Cargo.toml 加 prism-math 依赖；调用 `prism_math::det_log2`（`prism-math/src/det_pow.rs:24` 既有件）；禁 std `f64::log2`（libm 后向函数，D-29） | M6/U3；prism-mux 现仅依赖 prism-io/prism-audio |
+| det_log2 精度 | vs libm max **2.429e-11**（N-4 修正）；水位差 3.73e-14、\|ΣR−B\| 1.137e-13；对 A1 容差 1e-9 的余量：vs 设计目标 2^-40 为 2^10.1、vs 实测为 2^13.1~2^14.7（N-5 修正「2^11」口径） | exp15 + exp23-B7 |
+| 水位求解 | 200 步双精度二分（已实证）；**m-6 可选更优形态**：log 域分段闭式 l = (Σ_{j≤k}L_(j) − 2B)/k，扫描首个自洽 k，无迭代无容差（exp23-D：与二分差 3.47e-17） | m-6 |
+| log₂θ_i 预算 | 每帧头一次（二分内查表），调用量降 ~200× | exp15-T4 |
+
+**② 公式与算法**
+
+```
+输入：帧复杂度 θ_i > 0（两遍：头遍实测拟合 θ_i = D·2^(2R)；一遍：前 GOP 同位置先验），
+      预算 B ≥ 0（bit/符号）
+ 1. L_i = det_log2(θ_i)（每帧一次；禁 f64::log2）
+ 2. 水位（二选一，定稿默认二分，m-6 闭式为登记的可选优化 U-3）：
+    二分版：L 上二分 Σ max(0, ½(L_i − L)) = B（≤200 步）
+    闭式版：L_(1)≥…≥L_(m) 降序，k=1..m 试 l_k = (Σ_{j≤k}L_(j) − 2B)/k，
+            首个自洽 k（L_(k) > l_k 且 (k=m 或 L_(k+1) ≤ l_k)）⇒ L = l_k
+ 3. R_i = max(0, ½·(L_i − L))；D_i = θ_i·2^(−2R_i)（活跃帧 D_i = 2^L 全等）
+ 4. 依赖加权（默认开）：θ_i ← θ_i·d_i 后重跑 1–3（证书对加权稳健：max/min=1.000000）
+ 5. B 帧：R_B = R_P + ½·det_log2(θ_B/θ_P)（P/B 均活跃时精确成立）
+ 6. R_i → 量化档：查该帧 RD 下凸包最近档（凸性保证内点被支配，搜索 O(阶梯²)→O(hull)）
+ 7. 编码后断言等畸变证书；不满足 ⇒ θ 估计失真，回退凸包贪心 + 记录诊断
+```
+
+**③ Rust 函数签名草案**
+
+```rust
+// crates/prism-mux/src/video.rs（率控）+ Cargo.toml 加 prism-math 依赖
+/// reverse water-filling：R_i = max(0, ½·det_log2(θ_i/w))，w 由 ΣR=B 确定。
+pub fn water_filling(theta: &[f64], budget: f64) -> Vec<f64>;
+/// 等畸变证书：活跃帧（R_i>0）畸变 max/min − 1；> 容差即红。
+pub fn equal_distortion_ratio(theta: &[f64], r: &[f64]) -> f64;
+/// B 帧闭式权重（P/B 均活跃时精确）。
+pub fn b_frame_closed_form(theta_p: f64, theta_b: f64) -> f64;
+```
+
+**④ 文件落点与当前代码差异清单**
+
+| 落点 | 现状 | 差异动作 |
+|------|------|---------|
+| `prism-mux/src/video.rs:37,98` | `VideoConfig.quality` 单一参数；I 帧直接用 | GOP 头保持固定较高质量（模型外特判） |
+| `prism-mux/src/video.rs:108` | 残差质量 = `quality−17` clamp [50,80]（启发式，无率畸最优性） | 换 water-filling 分配 |
+| `prism-mux/Cargo.toml:7-8` | 仅 prism-io/prism-audio | 加 `prism-math = { path = "../prism-math" }`（M6 修正形态：接线而非自建） |
+| `prism-math/src/det_pow.rs:24` | `pub fn det_log2(x: f64)` 已有（位分解 + atanh 级数，纯 ±×÷，自带 <1e-10 与 bitwise 测试） | **不动**，直接调用 |
+
+**⑤ 测试承接**（QA：P4 9/10 直接转；B-M6 判据 C-1 已改造）
+
+- A1 大规模：GOP=1000、θ 跨 6 个数量级；收敛断言 |ΣR−B| ≤ 1e-9 + 证书 max/min = 1。
+- A2 极端参数：G=1；θ 全等（退化为等分配）；预算=0；预算远超需求（全活跃）；
+  θ 含 0（R=0）；θ 跨 2^30。
+- A3 边界：负预算/NaN 输入防御（**规定行为钉死**：明确拒绝或钳位，返回 Err 或钳位
+  到 0，不 panic 于生产路径）；d_i 全 1 ≡ 未加权（逐位同式断言）。
+- A4 最优性对照：100 组随机 θ 剖面 vs 20 万次搜索：ΣD_WF ≤ 1.001·ΣD_search
+  （Rust 侧固化输入输出对，不必每次跑 20 万次）。
+- B-M1 二分方向写反 ⇒ 预算残差 > 1e-6 或畸变爆炸（exp9 踩坑固件）。
+- B-M2 投影量化档用 floor ⇒ 等比特总畸变高 >5%。
+- B-M3 B 帧去权重 ⇒ ρ=¼ 时总畸变 +10% 以上。
+- B-M4 活跃帧判据用 R_i > 0.5 ⇒ 钳位帧被误列活跃，max/min > 1.01。
+- B-M5 依赖加权乘错方向（θ_i/d_i）⇒ 端到端口径劣于未加权（方向可证伪阳性）。
+- B-M6（C-1 判据改造）：原「用 f64::log2 ⇒ 跨平台 MD5 分歧」单平台不可执行 ⇒ 改
+  「**黄金水位值紧容差（≤1e-13，exp15 水位差 3.7e-14 支撑可杀性）+ 禁项扫描**」。
+- T-5（QA 补）：det_log2 接线的黄金水位固件（exp15 的（θ 向量, 预算, 期望水位/
+  分配）对固化为 Rust 常量）。
+
+**⑥ 可量化验收判据**：|ΣR−B| ≤ 1e-9（GOP=1000）；证书 max/min − 1 ≤ 1e-9；
+100 组对照 ΣD_WF ≤ 1.001·ΣD_search；B 帧闭式差 ≤ 1.1e-16；禁 `f64::log2` 扫描
+零命中；黄金水位固件容差 ≤1e-13；同输入两跑 bitwise 相同。
+
+---
+
+### 2.5 P5 — 缓存键完备性 + P8 宏机械枚举（V1.5-P1-4 / V2.0-I）
+
+**中心定理**：缓存健全 ⟺ 键映射 π 是输出 F 的依赖闭包 Dep(F) 的充分统计量
+（π(P₁)=π(P₂) ⇒ F(P₁)=F(P₂)）；逆否命题给反例构造法；入键方向「宁过勿欠」
+（过度只损命中、不足产生 silent wrongness）（证 1–证 3；内核件：T1(iii) + NC-D2
+最紧缓存键构造定理——κ 必须是复用关系的完全不变量且可按自由精度细化）。
+P8 把 π 对 RenderParams 的覆盖从「人工枚举 + 测试守护」升级为「类型系统机械枚举」
+（编译期完备性；其「证明」是类型论保证 + 金丝雀测试，如实标注为工程提案）。
+
+**① 精确常量表**
+
+| 常量 | 值 | 来源 |
+|------|----|------|
+| 键结构 | `cache_key = H(tag ++ schema_version ++ engine_version ++ subgraph_sig ++ dims ++ RenderParams_bytes ++ sampler_state ++ scene_sig ++ frame)` | ③-1 |
+| 域分隔 tag | 既有 `CACHE_KEY_TAG = b"PRISM-CACHE-KEY"`（`signature.rs:146`） | 源码核验 |
+| schema 版本 | `SIGNATURE_SCHEMA_VERSION: u32 = 1`（`signature.rs:138`）；键结构变更必须 bump（C13/D-28：旧缓存静默失效重建） | 源码核验 |
+| 字节序约定 | 整数 `to_be_bytes`；f32/f64 `to_bits().to_be_bytes()`；字符串 u16 长度前缀；既有 canonical 风格（`signature.rs:319/398/437/476`） | 源码核验 |
+| 闭包清单（自审补全） | **RenderParams 全字段 + sampler 种子（global_seed）+ scene 内容签名 + 子图签名 + frame** | ⑧-1：原漏 global_seed（`sampler.rs:208,216`）与 scene 内容 |
+| RenderParams 字段 | `{spp: u32, max_bounces: u32, clamp_indirect: Option<f32>, nee_only: bool}`（`integrator.rs:768-777`，4 字段普通 struct，无哈希 derive） | 源码核验 |
+| 反例 | 同子图同 dims 同帧、仅 max_bounces 不同（3 vs 6）⇒ 图像不同而现行键相同 ⇒ 陈旧命中 | 证 2 |
+| 键体积 | RenderParams_bytes ~32B + scene_sig 32B ⇒ 每 tile 一次 SHA-256 输入准备（相对 tile 渲染可忽略） | ⑦ |
+| 现状窗口 | CacheDims **未接生产路径**（spp_tier 仅测试消费：`incremental.rs:945`、`signature.rs:948/959`）⇒ 零成本修复窗口 | ⑧-2 更正 |
+
+**② 公式与算法**
+
+```
+cache_key(subgraph, dims, params, seed, scene_sig, frame):
+  buf  = CACHE_KEY_TAG
+  buf += SIGNATURE_SCHEMA_VERSION.to_be_bytes()        // u32 大端
+  buf += dims.engine_version.to_be_bytes()             // u64 大端
+  buf += subgraph                                      // 32B
+  buf += dims.width/height/spp_tier/tile.0/tile.1/frame.to_be_bytes()
+  buf += params.to_hash_bytes()                        // P8 宏机械枚举（禁 derive 黑盒）
+  buf += seed.to_be_bytes()                            // u64：EvalCtx.global_seed
+  buf += scene_sig                                     // 32B：det_sha256(canonical_scene_bytes(scene))
+  return sha256(buf)
+
+P8 宏（define_hashable_params）展开三件：
+  ① struct 定义（普通语法，可 inspect）
+  ② impl ToHashBytes：按字段声明序逐个写入（整数 to_be_bytes / f32·f64 to_bits().to_be_bytes() / bool 单字节）
+  ③ const FIELD_COUNT + 哨兵构造器
+  显式排除清单（#[hash_skip]）仅当字段被证明不影响输出（fail-safe 方向不变：宁过勿欠）
+```
+
+**③ Rust 函数签名草案**
+
+```rust
+// crates/prism-core/src/signature.rs（改 cache_key 签名；CacheDims 六字段不变）
+pub trait ToHashBytes { fn to_hash_bytes(&self, out: &mut Vec<u8>); }
+pub fn cache_key(
+    subgraph: &Hash256,
+    dims: &CacheDims,
+    params: &impl ToHashBytes,   // RenderParams 经 P8 宏生成
+    sampler_seed: u64,           // EvalCtx.global_seed（crates/prism-core/src/node.rs:274）
+    scene_sig: &Hash256,
+) -> Hash256;
+// P8 宏（prism-core/src/hash_params.rs 新建或 signature.rs 内）：
+macro_rules! define_hashable_params { /* struct + ToHashBytes + FIELD_COUNT */ }
+```
+
+**④ 文件落点与当前代码差异清单**
+
+| 落点 | 现状 | 差异动作 |
+|------|------|---------|
+| `prism-core/src/signature.rs:452-468` | `CacheDims { width, height, spp_tier, tile, engine_version, frame }` 六字段 | 字段不动（键的闭包不全在 dims 侧） |
+| `prism-core/src/signature.rs:473-486` | `cache_key(subgraph, dims)` 仅哈希 dims + 子图 | 签名加 params/seed/scene_sig 三参 |
+| `prism-core/src/signature.rs:108` | `fn sha256` 私有实现（FIPS 向量测试 `:543`） | 保持；P3 摘要的共享件落点见 §3.2（C-2） |
+| `prism-rt/src/integrator.rs:768-777` | `RenderParams` 4 字段普通 struct | 套 P8 宏生成 ToHashBytes |
+| `prism-core/src/node.rs:274` | `EvalCtx { global_seed, node_id, frame, lattice, snapshots }` | 键消费 `global_seed`（路径勘误：不在 prism-author/eval.rs） |
+| `prism-rt/src/sampler.rs:208,216` | `pcg::hash4(ctx.global_seed, ...)` | 确认 global_seed 进输出 ⇒ 进键 |
+| `prism-render/src/incremental.rs:522` | 「键相等 ⇒ 逐字节一致」公理式断言 | 断言保持（本提案把它从假设升级为定理） |
+
+**⑤ 测试承接**（QA：P5 6/8 直接转，2 条需设计决策——C-3 已决议）
+
+- A1 大规模字段扫描（10k 随机 (RenderParams, scene, seed) 对）：逐字段「仅该字段
+  不同 ⇒ 键不同」全字段断言；**mock 新增字段 ⇒ lint 测试必须红**——机械机制由
+  P8 宏 + 金丝雀测试提供（M-3 的修法，C-3 决议采纳 P8）。
+- A2 极端参数：clamp_indirect = NaN/Inf（to_bits 序列化天然确定；「明确拒绝」形态
+  需钉）；空场景 scene_sig 定义；frame = u64::MAX。
+- A3 边界：schema_version bump ⇒ 旧键全部失效；注入常数 mock 哈希 ⇒ 端到端对拍
+  仍能发现错字节（需 DI 设计：cache_key 的哈希可替换，实现留注入口，成本一行）。
+- A4 系统级（全计划最重要一条）：1000 次渲染序列（参数随机切换含种子/场景切换）
+  与无缓存直渲逐字节一致。
+- B-M1 漏 max_bounces ⇒ 端到端对拍 diff > 0。B-M2 漏 global_seed ⇒ diff > 0。
+- B-M3 漏 scene_sig ⇒ diff > 0。B-M4 spp 只进档位 ⇒ diff > 0。
+- P8 金丝雀：演示 struct 带 skip 字段，断言 skip 生效、非 skip 字段全敏感
+  （测试的测试）。
+
+**⑥ 可量化验收判据**：10k 对逐字段敏感性 100% 通过；金丝雀测试红/绿行为符合设计；
+1000 次渲染序列逐字节一致；schema bump 后旧键命中率 = 0；每 tile 键计算开销基准
+（防呆：不超过 tile 渲染成本的 1%）。
+
+---
+
+### 2.6 P6 — 降噪分配律（σ 非 σ²）+ Kalman 时域 + GOP 重置（V2.0-RQ-2 / D-2）
+
+**中心定理**：min Σσ_i²/n_i s.t. Σn_i = N, n_i ≥ 1 的 KKT 解为 Neyman 分配
+n_i = max(1, σ_i/√λ)——标准差而非方差；C-S 不等式给分布无关下界 MSE ≥ (Σσ)²/N，
+σ 律达到它（σ² 律严格次优，比值 = 1+CV² ≥ 1）；逆方差加权递推 = Kalman，
+等方差剖面零回退（证 1–证 5；内核件：T3 + T6(ii)(iv)，NC-D4 复合截面条件数、
+NC-D6 数据规范性⟹重放稳定性）。
+
+**① 精确常量表**
+
+| 常量 | 值 | 来源 |
+|------|----|------|
+| 分配闭式 | `n_i = max(1, σ_i/√λ)`，√λ 由 Σn_i = N 确定（单调，二分可解） | ⑧-1：原无约束式可给出 n_i=0 非法解 |
+| C-S 下界 | MSE ≥ **(Σσ)²/N**，等号 ⟺ n_i ∝ σ_i | 证 1 |
+| σ² 分配 MSE | **m·Σσ²/N**（M7 修正式；原 (Σσ²)²/N 漏外括多平方一次） | 证 2 / exp16-T1（2000 组） |
+| 次优比值 | m·Σσ²/(Σσ)² = E[σ²]/E[σ]² = **1+CV²** ≥ 1（等号仅全等 σ） | 证 2 / exp16-T3 |
+| 工作算例（exp23-E 复算） | σ=[3,5,8,4,6]，N=20：√λ = 26/20 = 1.3；n = **[2.3077, 3.8462, 6.1538, 3.0769, 4.6154]**；MSE 下界 = 33.8 且 σ 律达到；σ² 律 n=[1.2,3.333,8.533,2.133,4.8]、MSE = 37.5；比值 = 1.109467 = 1+CV²（CV=0.3309） | exp23-E |
+| 削减率 | 1 − 1/(1+CV²)：CV=1 恰 **50%**（RQ-2 理论锚点）；CV=1.31 理论 **63.2%**；实测（lognormal cv=1，**m=64 口径**，20 抽）中位 **55.5%**、IQR [48.6%, 65.1%] | 证 3 / m-2 口径修正 / exp4-T2 |
+| σ² 律对照 | **期望削减 0%**（证 2 代数恒等：σ² 分配 MSE = m·Σσ²/N ≡ 等分配 MSE）；exp24 实测中位 **3.9%**、IQR [1.5%, 7.2%]（CV=1、**m=32 口径**、N=2048、20 抽）——largest-remainder 取整涨落伪影，0/20 抽达 50% 线 ⇒ **RQ-2 验收线在 σ² 权重下不可达**；结构性差距 = σ² 律期望削减 0% 与 σ 律中位 51.5%（对照 50% 达标线）；单场景取整伪影（0~11% 量级）不改变达标判断 | 证 2 代数 + exp24 |
+| Kalman 递推 | K_n = V_{n−1}/(V_{n−1}+σ_n²)；x̂_n = x̂_{n−1}+K_n(x_n−x̂_{n−1})；V_n = (1−K_n)V_{n−1} = 1/Σ_{k≤n}(1/σ_k²) | 证 4（递推=批量，实测差 3.3e-16） |
+| 双通道审计 | 通道 A（σ_k² 由 spp 闭式给出，权重独立于观测）⇒ MMSE 最优**有定理**（改善 69.2%）；通道 B（当帧插件估计）⇒ **仅经验值**（69.4%，无保证）；默认通道 A | exp9-T4 |
+| 审计量（NC-D4） | 复合泛函稳定性审计**偏离 δᵢ − δ̄_σ**（σ-加权共模一阶精确抵消），非绝对量级；δ ≲ 10% 时一阶误差 < 1% | NC-D4 / exp22 E3 |
+| σ 探针协议 | 低 spp 探针（预算 1/8）+ **GOP 内递推 + GOP 边界重置**（U4/M8）；seek 重放成本 = 1 GOP（12 帧）有界 | exp17-T1/T2 |
+| V 缓冲 | **f32**（spp ≤ 2^24 ⇒ 1/σ² ≤ 2^24 > f16::MAX 65504，f16 不够） | ⑦ |
+| Kalman 实证 | 300 剖面 × 400 实现：300/300 严格优于现行均匀均值；变剖面改善 55.0–80.5% | 证 5 |
+
+**② 公式与算法**
+
+```
+分配（denoise.rs:171，largest-remainder 分配器不动——确定性已证）：
+ 输入 weights 语义 = 区域噪声【标准差】σ（调用方传 sqrt(方差)，或函数内对输入开方；
+     二选一，但必须写进文档与测试，防再次误用）
+ 1. √λ 二分：Σ_i max(1, σ_i/√λ) = N（单调）
+ 2. n_i = max(1, σ_i/√λ)（实数解）→ 取整 + largest-remainder 修正保 Σn = N
+ 3. N < m ⇒ 【显式声明】（诊断日志/Result 警告/返回码，形态钉死并断言；不得静默超支）
+    σ=0 区域 ⇒ n_i = 1 钳位
+
+Kalman 时域（denoise.rs:130）：
+ 状态 (acc, samples) → (acc, V, samples)；σ_k² 由当帧 spp 与像素方差先验闭式给出（通道 A）
+   K = V/(V + σ_k²);  acc += K·(cur − acc);  V = (1−K)·V
+ GOP 边界重置：V 在 GOP 首帧重置为先验值（σ 状态只在 GOP 内递推）
+```
+
+**③ Rust 函数签名草案**
+
+```rust
+// crates/prism-postfx/src/denoise.rs
+/// Neyman 分配：权重语义 = 标准差 σ；n_i = max(1, σ_i/√λ)，Σn = N。
+pub fn allocate_spp(sigma: &[f32], total: u32) -> Vec<u32>;
+/// 时域累积器（通道 A 方差）；GOP 边界重置由调用方 `reset()` 触发。
+pub struct TemporalAccumulator { acc: Fbuf16F, v: Fbuf32F, samples: u32 }
+impl TemporalAccumulator {
+    pub fn accumulate(&mut self, cur: &Fbuf16F, sigma2: &Fbuf32F);
+    pub fn reset(&mut self);   // GOP 边界（M8/U4）
+}
+```
+
+**④ 文件落点与当前代码差异清单**
+
+| 落点 | 现状 | 差异动作 |
+|------|------|---------|
+| `prism-postfx/src/denoise.rs:171` | `allocate_spp(weights: &[f32], total: u32) -> Vec<u32>` 按权重 largest-remainder（实现正确、确定性已测） | 权重语义改为 σ；文档+测试钉死开方纪律（B-M1 守护） |
+| `prism-postfx/src/denoise.rs:130` | `accumulate(&self, acc, cur)` 均匀递推 `acc + (cur−acc)/(n+1)` | 改 Kalman（状态 +V 缓冲 f32） |
+| `prism-postfx/src/denoise.rs` | 无 σ 探针 | 加低 spp 探针 + GOP 内递推 + 边界重置 |
+
+**⑤ 测试承接**（QA：P6 8/10 直接转，2 条需重放基建）
+
+- A1 大规模三方对拍（10^6 像素 × 100 区域，σ 跨 4 个数量级；标 nightly）：
+  σ 律 MSE ≤ (Σσ)²/N × 1.001；削减率统计报告（**C-5：≥5 场景中位 ≥50% + 逐场景
+  IQR 报告**——写入门禁，替换点值口径）。
+- A2 极端参数：m=1；σ 全等（≡ 现行逐位同式断言）；σ 跨 2^20；N<m（显式声明
+  行为断言）；σ=0 区域（n_i=1 钳位）。
+- A3 边界：CV=0（削减率 0）；CV→∞；N 恰等于 m（全钳位）。
+- A4 Kalman 长时间：10^4 帧递推 vs 批量对拍（≤1e-3）；V 缓冲 f32 断言（f16 必须
+  被拒）；seek 重放部分需渲染状态重放 harness（工程级接 RenderParams+场景+σ 状态
+  序列化/恢复面）。
+- B-M1 传 σ² 忘开方 ⇒ 削减率 <50% + MSE +22~172% 双判据。
+- B-M2 去 min-1 钳位 ⇒ 小 σ 区域 n_i = 0 ⇒ 除零/空采样。
+- B-M3 Kalman 退化为 K_n = 1/n ⇒ 变剖面 MSE 劣化 >10%。
+- B-M4 V_n 漏乘 (1−K) ⇒ 批量对拍差 >1e-3。
+- B-M5 插件方差按通道 A 写证书 ⇒ 证书型测试在权重依赖数据的构型上失败（保证等级
+  不可混标阳性）。
+- B-M6 σ 状态跨 GOP 不重置 ⇒ seek 到 GOP 中段重放与顺序播放 diff > 0（M8 必要性）。
+- T-6（QA 补）：N<m「显式声明」的行为钉死并断言；通道 B「不劣于现行」统计界测试。
+
+**⑥ 可量化验收判据**：σ 律 MSE ≤ 理论下界 ×1.001；削减率 ≥5 场景中位 ≥50% +
+IQR 报告（C-5 门禁口径）；Kalman 递推-批量 ≤1e-3；等方差剖面与现行逐位同式；
+seek 到 GOP 中段重放逐位相同；跨 GOP 不重置对照实现漂移（阳性证据在案）。
+
+---
+
+### 2.7 P7 — 转场凸权重半群 + u8 整数混合（V1.5-C / ADR-18）
+
+**中心定理**：保留分数 k(t) = 1−t 的乘法半群（t ↦ ln(1−t) 同构于 (−∞,0] 加法半群）
+给出同目标链的复合闭式 u = s+t−st；u8 域整数混合 `(W·b+(256−W)·a+128)>>8` 把混合
+钉在整数格上——单次误差 ≤1.0 LSB、无系统偏置、无 fma 收缩 ⇒ 跨端逐位一致；
+四转场统一为凸权重向量的不同参数化（证 1–证 5；内核件：T7 + D2，组合式承载；
+半群律本身外置于 DSS）。
+
+**① 精确常量表**
+
+| 常量 | 值 | 来源 |
+|------|----|------|
+| 混合式 | `out = (W·b + (256−W)·a + 128) >> 8`，W = round(256·t) ∈ {0,…,256} | ③-1（u8 域 256 分母网格） |
+| 单次误差界 | 权重量化 ≤0.5/256·|b−a| ≤ 0.5 LSB + 输出舍入 ≤0.5 LSB ⇒ **≤1.0 LSB**，round-to-nearest 无系统偏置 | 证 2 |
+| 偏置实证 | 整数 round：mean +0.0078（网格 t）/ +0.0068（连续 t）、max 0.9521；现行截断：mean **−0.4883**、min −0.9961、负偏置占比 97.7% | exp11-T1/T1b（16.8M 次全网格） |
+| 同构 | t ↦ ln(1−t)（2000 组 max **1.34e-12**，种子 20261017 钉死）；**logit 不是**（s=t=½：0 ≠ ln3） | 证 1 + m5 修正 |
+| DSL 折叠等式（修正） | 同目标链 `fade(fade(x,a,t₁),a,t₂) = fade(x,a,t₁+t₂−t₁t₂)` 成立；**不同目标链不可折叠**：正确结构 = 三源凸权重向量 `[(1−t₁)(1−t₂), t₁(1−t₂), t₂]`（残差 max 0.7598 ≈ 194 LSB） | ⑧-3 + m5 |
+| 链长边界 | u32 保 **≤3** 段（256³ = 2^24 = 16777216）；**256⁴ = 2^32 = u32::MAX+1 溢出一个单位 ⇒ ≤4 须 u64**（256⁴ = 4294967296 ≤ u64::MAX） | n3 / exp17-T3 + exp23-F |
+| u16 中间累加 | max = 256·255+128 = **65408 ≤ 65535**（不溢出 ⇒ 否决理由是「无必要」非「防溢出」） | n4 / exp23-F |
+| Wipe 端点修复 | `edge(k) = (1−k)·(w + 2·band) − band`（分界行程扩展，两端混合带完全出画；修复后污染列 = 0，死区 <1px） | 证 4 / exp11-T2 |
+| 端点精确性 | Fade/Dissolve/Push 端点**逐位精确**；Wipe 修复前不精确（k=0 右缘 1 列、k=1 左缘 2 列，污染权重 0.156/0.5/0.84） | 证 4 |
+| 跨端差 | WGSL fma vs 分离乘加 ≤ 1 ulp（max 5.96e-8）⇒ 现行 f32 转场 CPU/GPU 逐位不同；整数混合后逐位一致 | 证 3 |
+| 收益边界（诚实） | 精度非主要卖点（f32 链式漂移停留 u 量级）；卖点 = worst-case 界 O(1) + 跨端 bit-exact + 可哈希可缓存可重放 + 消 −0.5 LSB 系统暗偏（0.2% 亮度级，画质修正） | 证 5 |
+
+**② 公式与算法**
+
+```
+u8 域整数混合器（core::sceneseq 内置）：
+  mix_u8(a, b, w) = (w·b + (256−w)·a + 128) >> 8        // w = round(256·t)，t∈[0,1]
+trait Transition { fn weight(&self, k: u16, pixel: &PixelCtx) -> u16 }   // U5 采纳
+  Fade:     w = k（全局）
+  Wipe:     edge(k) = (1−k)·(W_img + 2·band) − band；w = round(256·smoothstep((x−edge)/(2·band)))
+  Dissolve: w = if integer_hash(pixel, seed) < k { 256 } else { 0 }      // prism-noise 整数 hash
+  Push:     w = if x < c(k) { 256 } else { 0 }（整数采样 round + 边界 repeat）
+链状态 = 凸权重向量（每源帧 u16 权重 + 公共分母 256^k）：
+  ≤3 段乘积 u32 精确；≤4 段 u64 精确；更长每步重归一化（误差 ≤1/256 LSB/次，有界）
+权重向量入缓存键（P5 联动）⇒ 转场链中间态可缓存、seek 重放无损
+```
+
+**③ Rust 函数签名草案**
+
+```rust
+// crates/prism-core/src/sceneseq.rs（新建，V1.5-C 下沉；或并入 compose.rs）
+/// u8 域整数混合（round-to-nearest，无系统偏置）。
+pub fn mix_u8(a: u8, b: u8, w: u16) -> u8;
+/// 转场统一框架：半群代数/端点审计/缓存键集成/跨端一致性做 blanket 实现。
+pub trait Transition { fn weight(&self, k: u16, pixel: &PixelCtx) -> u16; }
+/// 链式精确态：凸权重向量（链长 ≤4 用 u64 保持精确）。
+pub struct TransitionChain { weights: Vec<u16>, segments: usize }
+```
+
+**④ 文件落点与当前代码差异清单**
+
+| 落点 | 现状 | 差异动作 |
+|------|------|---------|
+| `prism-author/src/render.rs:1335` | `mix_frame(fa: &[u8], fb: &[u8], width, height, transition, k: f32) -> Vec<u8>`：f32 lerp + `.clamp(0.0,255.0) as u8` **toward-zero 截断** | 下沉时换 `mix_u8` 整数混合器（V1.5-C 绿地，成本最低） |
+| `prism-author/src/render.rs:41` | `fn lerp(a: f32, b: f32, t: f32) -> f32` | 转场路径停用（整数格替代） |
+| `prism-author/src/render.rs:1302` | `const WIPE_BAND: f32 = 2.0` | Wipe 分界行程扩展公式随 trait 下沉 |
+| `prism-author/src/render.rs:1465` | `concat_with_transition` 链式拼接 | 链状态改凸权重向量 |
+| 类型正名 | Transition 枚举是 Fade/Wipe/Dissolve/Push（**无 Slide**——原文档笔误已正名） | 以源码为准 |
+
+**⑤ 测试承接**（QA：P7 8/10 直接转，2 条判据/实证问题）
+
+- A1 大规模全帧对拍（1920×1080 × 四转场 × 256 k 档 vs f64 精确参考；标 nightly）：
+  max |diff| ≤ 1 LSB 且 |mean bias| ≤ 0.1 LSB（现行实现阳性对照 mean ≈ −0.488）。
+- A2 极端参数：k=0/k=1 端点**逐位**断言（四转场全精确，含修复后 Wipe）；
+  a=b（任意 k 输出恒 = a）；a=0,b=255（最大动态）；1×1 帧；w=1,2,3。
+- A3 边界：连续 k 扫描无漂移；负 k/>1 k 的 clamp 行为两端一致。
+- A4 链式与稳定性（**m-3 修订**）：同目标 4 段链 vs 折叠闭式断言 **≤3 LSB**
+  （3 次中间舍入各 ≤1 LSB 的 worst-case；exp11 只实测 2 段 max 1 LSB，4 段全网格
+  实验列为可选收紧项；折叠闭式 W_u = W1+W2−W1·W2/256 自身舍入计入界）；
+  100k 像素长时间混合无累积漂移。
+- B-M1 回退截断 ⇒ mean bias ≈ −0.488（断言 mean < −0.4 即红）。
+- B-M2 Wipe 不扩展行程 ⇒ k=0/k=1 端点逐位断言红。
+- B-M3 同构按 logit 实现 ⇒ s=t=½ 残差 >1e-6 数值反例固件。
+- B-M4 折叠按不同目标等式实现 ⇒ 三段链折叠残差 >0.1（~194 LSB）。
+- B-M5（C-1 判据改造）：Dissolve 换 f32 rand ⇒ 原「跨端 MD5」单平台不可执行 ⇒ 改
+  「**黄金 dissolve 图案固件（固定种子整数 hash 输出）+ 禁项扫描**」。
+- B-M6 u32 存 4 段链 ⇒ 全 1 边界断言红（256⁴ = 2^32 溢出一个单位）。
+- T-7（QA 补）：证 3 卖点（CPU/GPU 逐位一致）以 `#[ignore]` GPU parity 占位承载，
+  或将 ⑥ 该条效果改口径「设计性质，待 GPU 合成路径落地时验收」（m-9）。
+
+**⑥ 可量化验收判据**：max |diff| ≤ 1 LSB 且 |mean bias| ≤ 0.1 LSB（vs f64 参考）；
+四转场端点逐位精确；4 段链 vs 折叠 ≤3 LSB；u32/u64 链长边界断言；禁 f32 rand
+扫描零命中；黄金 dissolve 图案固件逐位一致；同输入两跑 bitwise 相同。
+
+---
+
+### 2.8 P8 — 缓存键的编译器强制字段枚举（工程提案，随 P5 落地）
+
+**中心定理（类型论保证，非数值证明——如实标注）**：`macro_rules!` 在 use site 看到
+的结构体定义即全部字段，展开对每个字段生成入哈希代码 ⇒ 「漏字段」从每字段的人为
+疏失变成宏本身的一次性 bug（可测、可审查、写完不再复发）；与 P5 证 1 合成 ⇒
+π 对 RenderParams 的覆盖由编译器保证。诚实边界：skip 清单本身是新的手工面——
+由金丝雀测试 + review 纪律看守，其大小比全字段枚举小一个量级。
+
+**① 常量与规则**
+
+| 项 | 值 | 来源 |
+|----|----|------|
+| 宏形态 | `macro_rules!` 声明式宏（无需 proc-macro crate，不破 D-15 运行期零第三方——宏是构建期第一方件） | P8 ③ |
+| 展开三件 | struct + `impl ToHashBytes`（声明序逐字段：整数 to_be_bytes / f32·f64 to_bits().to_be_bytes() / bool 单字节）+ `FIELD_COUNT` 常量与哨兵构造器 | P8 ③ |
+| 序列化风格 | 与 `signature.rs` 既有 canonical 风格一致（大端 + to_bits，`:319/398/437/476`） | 源码核验 |
+| 排除规则 | `#[hash_skip]` 仅当字段被**证明**不影响输出（fail-safe 方向不变：宁过勿欠） | P8 ③ |
+| f32 位型入键 | -0.0/NaN 的 to_bits 确定 ⇒ 确定性保持，多失效不少错 | P8 ⑦ |
+| 字段重排 | 改变键 ⇒ schema_version bump 既有语义消化（C13/D-28） | P8 ⑦ |
+
+**② Rust 签名草案**
+
+```rust
+// crates/prism-core/src/hash_params.rs（新建）或 signature.rs 内
+macro_rules! define_hashable_params {
+    ($(#[$meta:meta])* $vis:vis struct $name:ident {
+        $($fvis:vis $field:ident : $fty:ty),* $(,)?
+    }) => { /* 展开 struct + impl ToHashBytes + const FIELD_COUNT + sentinel() */ };
+}
+// 使用点（integrator.rs:768 RenderParams）：
+define_hashable_params! {
+    pub struct RenderParams { pub spp: u32, pub max_bounces: u32,
+                              pub clamp_indirect: Option<f32>, pub nee_only: bool }
+}
+```
+
+**③ 测试与验收**：金丝雀测试（演示 struct 带 skip 字段：skip 生效 + 非 skip 字段
+全敏感）；每字段哨兵敏感性断言（宏生成）；宏生成 ToHashBytes 与手写对拍逐字节一致；
+mock 新增字段（不写入哈希）⇒ lint 测试红（C-3 闭环的机械机制本体）。
+验收判据：金丝雀红/绿行为符合设计；哨兵扫描 10k 对 100% 通过；编译期完备性
+（新增字段无需改测试即自动入哈希）。
+
+---
+
+## 3. 条件闭环（QA C-1~C-7）
+
+QA 终裁「有条件 Go」，七项条件逐条闭环如下（责任面与 QA 清单一致）。
+
+### 3.1 C-1 — 测试计划修订（算法设计 + QA）✅ 已闭环于本文 §2 各提案 ⑤
+
+| QA 判据 | 定稿决议 | 落点 |
+|---------|---------|------|
+| 删除/改铸 P3 B-M2（M-1：无效变异体，负资产） | **改铸**为黄金结构 fixture 测试动机项（实体 = T-4：固定种子场景参考结构签名含 winding 固化入库） | §2.3 ⑤ B-M2 / T-4 |
+| P2 A1 断言改「语义级分歧=0」+ 统计兜底（M-4） | A1 主断言 = 语义级分歧（两端选出不同图元）= 0；字节级差异由 D-3 统计门禁（MSE ≤ 解析预算）兜底；测试注释钉死三层口径（触发条件 40.64% 条件率 / 规则分歧 / 端到端分歧） | §2.2 ⑤ A1 |
+| 三条跨平台判据改「禁项扫描+黄金固件+bitwise 确定性」（M-5） | P4 B-M6、P3 B-M5、P7 B-M5 统一改造：① CI 源码扫描（禁 `f64::log2`/`f64::cos`/`f64::exp` 及确定性路径 f32 rand）；② 黄金值对拍（exp15 水位对 / exp13 morton 码 / exp11 dissolve 图案固化为 Rust 常量，容差 ≤1e-13）；③ 同输入两跑 bitwise 相同 | §2.4 B-M6、§2.3 B-M5、§2.7 B-M5 |
+| P3 B-M3 定位改写（m-4） | 改写为「winding 聚合或 half_area 链改 f64」（桶累加是 min/max+整数计数，无 f32 求和可改） | §2.3 ⑤ B-M3 |
+
+修订后测试账：原 67 条（28 压力 + 1 端到端阳性 + 38 变异体）中 4 条判据问题全部
+处置（1 改铸 + 3 改造），另补 T-1~T-8 八条 ⇒ 67+8 = 75 条；P8 金丝雀 2 条
+单列 ⇒ 合计 **77 条**（金丝雀为 compile-fail/sentinel 类，不计入 75 条功能账）。
+重量级测试分级：P1 A4（10^7 块）、P6 A1（10^6 像素×100 区域）、P7 A1（2e9 混合）、
+P3 A1（100k 图元×10 置换）标 nightly/release，不拖慢常规 cargo test。
+
+### 3.2 C-2 — P3 摘要碰撞显式决策（算法设计）✅ 决议：SHA-256 完整规格
+
+**决策**：采纳推荐路线——det-canon 内容摘要改 **SHA-256**（全 256 bit，不截断），
+不采纳「声明非对抗假设 + PCG/FNV」路线。理由：① P1 已把对抗输入（恶意 JPEG）纳入
+设计范围，USD/mesh 资产同样可被构造，标准应一致；② 既有 PCG RXS-M-XS
+（`prism-noise/src/pcg.rs:31-48`，permute 含非常量右移，非双射非抗碰撞设计）与
+FNV-1a 都不满足归纳法第③步「key 相等 ⇒ 位相同」的强度要求；③ 引擎已有两处
+FIPS 180-4 纯整数 SHA-256 实现可作规格基准（`prism-io/src/sha256.rs:15` 公开件
+236 行零依赖零 unsafe；`prism-core/src/signature.rs:108` 私有件，FIPS 向量测试
+`:543`），代价仅每图元数百 ns，相对 SAH 建树可忽略。
+
+**落点（U6 det-canon 共享实现面）**：新建 `prism-math/src/det_hash.rs`——
+prism-math 是 prism-geometry（P3 消费方）与 prism-core（P5 消费方）的既有依赖，
+且 P4 修正形态（M6）本就要求 prism-mux 新增 prism-math 依赖 ⇒ 一处新依赖边
+（prism-mux→prism-math）、三处消费、零新增循环边。既有两处 SHA-256 不在本定稿
+范围改动，登记未定项 U-1（workspace 三处并存的收拢需依赖方向评审）。
+
+**完整规格**：
+
+```
+算法：SHA-256（FIPS 180-4）。纯 u32 整数（移位/旋转/加法），零 libm、零 unsafe、
+      零第三方；输出 256 bit。测试向量：FIPS 180-4 官方（空串 / "abc" / 56 字节
+      双块边界 / 'a'×1 000 000 长输入）——与 prism-io/src/sha256.rs 既有测试同套。
+序列化（canonical，沿用 signature.rs 既有约定）：
+      域分隔标签：CONTENT_DIGEST_TAG = b"PRISM-PRIM-DIGEST"（新 tag，防跨域拼接歧义，
+                 风格同 signature.rs:144-147 的 NODE/GRAPH/CACHE_KEY/SNAPSHOT tag）
+      输入 = CONTENT_DIGEST_TAG ++ SIGNATURE_SCHEMA_VERSION.to_be_bytes()
+             ++ canonical_primitive_bytes(p)
+      canonical_primitive_bytes(p)：图元记录按字段声明序，每个 f32 取
+             to_bits().to_be_bytes()（大端位模式，-0.0/NaN 确定），整数 to_be_bytes
+字节序：全部大端（与 signature.rs:319/398/437/476 的 to_be_bytes 约定一致）
+碰撞概率：按 SHA-256 计，业务上忽略（10^6 图元生日界 ≈ 2.7e-8 的自然资产观测值
+          仅为参考；抗碰撞由算法本身保证，不再依赖概率假设）
+schema：SIGNATURE_SCHEMA_VERSION bump ⇒ 全部摘要失效重建（C13）
+```
+
+### 3.3 C-3 — P5 采纳 P8（算法设计 + 工程）✅ 已闭环
+
+定稿采纳 P8 宏机械枚举（§2.8 完整规格），不采纳「lint 测试降级 + PR 检查清单
+人工项」备选。理由：第一轮自审实证闭包漏 2 字段（global_seed、scene 签名）正是
+「人工枚举会忘」的同类风险，而失败模式是 silent wrongness；宏把该风险类压到
+「一次性可测的宏 bug」。P5 的键结构、schema bump、fail-safe 方向不动（P8 定位：
+换掉 π 的构造方式，不换 π 的数学）。
+
+### 3.4 C-4 — P1 派生值三处卫生（算法设计）✅ 已闭环于 §2.1 常量表
+
+| QA 判据 | 修正值 | 复算 |
+|---------|--------|------|
+| 16-bit 超 i64 1639× → 1.64e4× | **1.6376e4×**（1.510396e23 / 9.223372036854776e18） | exp23-B |
+| 5.08e15× 基准注明 | 基准 = **16-bit 对抗块 3.352e22**（exp8-T3）；对 8-bit 定理界 2.895e17×、对 16-bit 定理界 1.1265e15×，三者分列不混摆 | exp23-B |
+| 删「上取整表述 8192」 | max\|D\| ≤ **8191**；8192·2^16 = 2^29 恰超阈一个单位 ⇒ 「8192 即超界」 | exp23-A |
+
+连带吸收定稿复查 6 项修正（N-1~N-6，§1.4）：2059×→2057×、gloss→1.125·2^-16、
+利用率 0.19→0.169（修正界口径）、2.4e-11→2.429e-11、「2^11 余量」→按口径分列
+（2^10.1 / 2^13.1 / 2^14.7）、阈值严密性行余量 2^28→2^34 − 1 = 17179869183。
+
+### 3.5 C-5 — P6 统计验收协议写入 V2.0-RQ-2（产品 + 算法设计）✅ 决议如下，待路线图文档更新时落入
+
+V2.0-RQ-2 验收标准（现行点值口径「同等画质采样数下降 ≥50%」，
+`v1.5-v2.0-roadmap.md:115`）修订为：
+
+```
+RQ-2 验收（修订）：≥5 个测试场景的采样削减率中位数 ≥50%，且逐场景报告 IQR
+  与抽样数；削减率口径 = 等分配 MSE / σ 律 MSE 的采样数折算（1 − 1/(1+CV²) 同族）；
+  单场景 IQR 下沿 <50% 不判红（理论锚点 CV=1 恰 50%；实测中位：m=64 口径 55.5%、
+  IQR [48.6%, 65.1%]，m=32 口径 exp24 中位 51.5%、IQR [43.0%, 56.0%]——贴边是
+  模型内的诚实事实），判据在场景集合的中位数上。
+配套：P6 A1 测试输出格式固化为「多场景中位 + IQR」报告（T-8 harness 统一格式）；
+  σ² 权重对照实现保留为阳性（期望削减 0%：证 2 代数恒等；exp24 20 抽中位 3.9% 且 0/20 抽达 50% 线——证明该线在错误权重下不可达）。
+```
+
+（统计口径修订留痕：§1.4 N-7——三处单场景实测值已按上述代数恒等 + exp24 三元组
+口径替换；m=32 与 m=64 两套实测口径不混摆、各自标注。）
+
+（本文不改路线图文档——按纪律只新建本文件；上述文本供路线图修订时逐字落入，
+登记任务分解 T-14。）
+
+### 3.6 C-6 — P2 A1 的 GPU-in-CI 可行性提前核验（工程）✅ 降级路径已定，核验动作登记
+
+lavapipe 可用性路线图标「待 CI 环境核验」（ADR-16 理由④）。定稿决议：
+**GPU-in-CI 就绪前**，P2 A1 大规模 parity 以「CPU 递归序 vs CPU 模拟 GPU 数组序
+双跑」执行（exp14-T1 形态，A1-E 端到端阳性实例 CPU 侧即可构造），GPU 侧以
+`#[ignore]` 占位 + T-3 跟踪；**就绪后**补 GPU 侧语义 parity（判据同样是语义级
+分歧 = 0 + 统计兜底，不是 bit-exact）。核验动作本身（CI 环境 lavapipe 探测）
+是工程波次任务，登记任务分解 T-15，未核验不得宣称 GPU parity 已验收。
+
+### 3.7 C-7 — 实施次序（主理人排期）✅ 依赖图定稿如下（§5 任务分解同）
+
+```
+P5（最先：缓存未上线的零成本窗口，C-3 决议形态）
+  └→ P3（R6 关闭；P2 的前置依赖：U1 规范槽位 tie-break 要求 P3 内容键规范化先落地）
+       └→ P2（M1–M4 修复包 + U1 联合改造；D-3 门禁预算化）
+P1（与 P2 同波次可行：V1.5-A 绿地，先行消除 D-29 活违规；与 P3/P2 无数据依赖）
+P4 / P6 / P7（三者互不依赖，可同波并行；P4 的 det_log2 接线先行，
+   P6 的 RQ-2 验收等 C-5 文本落入路线图，P7 随 V1.5-C 下沉顺手做）
+C-2 det_hash 基建先于 P3/P5 的摘要/scene_sig 落点（§3.2）
+```
+
+与 QA「P5 最先、P3→P2、P1 同波次」一致；与架构师落地顺序 W1~W4 波次
+（P5 → P3 → P2 → P4 → P7）一致；P6 按 RQ-2 是 P0 且改动最小（~15 行）可提前插入
+任意空波，但与 P4 无耦合、不构成依赖。
+
+---
+
+## 4. NC-D1~D6 逐条落提案
+
+kernel-v2 §5 六条新推论在七提案中的落点（本定稿的引用入口）：
+
+| 推论 | 一句话 | 落点 | 定稿形态 |
+|------|--------|------|---------|
+| **NC-D1**（重标号等变是截面的结构性质） | 通道重排不改变分配解与影子价格 | **P4/P6** | P4 水位 λ、P6 Neyman √λ、P6 Kalman WLS 批量/递推在观测置换下等变（exp19：max 偏差 1.8e-15~5.7e-14；Kalman 递推-批量差精确 0.0）⇒ 实现可用任意通道存储序，断言写「置换后解等变」 |
+| **NC-D2**（截面=完全不变量 ⟹ 最紧缓存键） | κ 必须粗不过复用关系、细可自由加 | **P5** | P5 的键设计（KCT-2 + 宁过勿欠）从三条经验法则归约为一条构造定理；「宁过勿欠」是推论不是独立原则 ⇒ 实现新增入键分量时不需要重新论证方向 |
+| **NC-D3**（近似截面间隙形式） | 最小安全 ε = 单侧 δ = 3u·t_max；6u 是双侧 2δ 的稳健选择 | **P2** | ε = 6u·t_max 的地位精确化：不是「最小安全值」（最小是单侧 3u，NC-D3(a)），而是覆盖 enter+exit 双侧的 2δ；若某平台 slab 界改进到 2u·t_max，最小 ε 同比例下降（登记 U-10）；B-M3 单侧 3u 变异体的理论依据即 NC-D3(a) |
+| **NC-D4**（复合截面条件数） | 剖面共模一阶抵消；进入复合方差的是偏离 δᵢ−δ̄_σ | **P6** | 双通道审计的审计量从「绝对量级」修订为「**偏离 δᵢ − δ̄_σ**」+ 两个加权共模之和 δ̄_σ + δ̄_{1/σ}；δ ≲ 10% 时一阶误差 < 1%（exp22 E3 标定，残差/δ² ≤ 0.89 跨 δ ∈ [1e-3, 0.2]） |
+| **NC-D5**（无免费午餐：Φ 的选择就是架构） | 规范形不蕴含最优性，反之亦然 | **P3** | Morton 规范序管确定性（由 p 保证）、SAH 代价比 1.0000 是「保持」不是「最优」；设计规则：若遍历性能是目标，Φ 必须包含 SAH 项（P3 只改输入序不改切分目标函数，正是该规则的执行） |
+| **NC-D6**（数据规范性 ⟹ 重放稳定性） | p 协变才有截面重放稳定 | **P6** | M8 之前 σ 探针递推使分配依赖 GOP 历史（数据表示进了解的定义域）⇒ seek 重放漂移；GOP 边界重置协议（U4）正是把 p 制成协变的修复——从「外加工程补丁」升级为「NC-D6 的实例」；B-M6 阳性变异体守护 |
+
+---
+
+## 5. 有序任务分解
+
+编号规则：T-x 为算法定稿向实施波次交付的任务单元；「依赖」列空 = 无跨提案依赖；
+出口判据未达即重评（路线图波次纪律）。波次容量与路线图一致（一波 3–4 项并行）。
+
+| # | 任务 | 依赖 | 出口判据 | 文件落点 | 波次 |
+|---|------|------|---------|---------|------|
+| T-1 | C-1 测试计划修订落文：67→77 条清单（75 功能 + 金丝雀 2 单列）+ 三层口径注释 + 重量级分级 | 无 | QA 签收的修订后测试计划文档 | 测试计划（QA 主场） | W0 |
+| T-2 | C-2 det_hash 基建：prism-math/src/det_hash.rs（SHA-256 + canonical 序列化 + FIPS 向量 + 域 tag） | 无 | FIPS 180-4 官方向量全过；跨平台 bitwise 确定（两跑）；签名规格与 §3.2 逐条一致 | prism-math/src/det_hash.rs（新建） | W0 |
+| T-3 | P5+P8：cache_key 签名加三参 + P8 宏 + RenderParams 套宏 + 闭包 lint/金丝雀 | T-2（scene_sig 用 det_hash） | §2.5 ⑥ 全过；金丝雀红/绿符合设计 | prism-core/src/signature.rs、hash_params.rs（新建）、prism-rt/src/integrator.rs | W1 |
+| T-4 | P3：内容键预排序 + Morton 21-bit + 摘要接 det_hash + 结构签名（含 winding） | T-2 | §2.3 ⑥ 全过；10 置换→1 签名；黄金 fixture 固化（T-4 测试侧） | prism-geometry/src/bvh.rs（+det_canon 子模块） | W2 |
+| T-5 | P1：定点 IDCT 实装（prism-io 绿地 + video.rs 替换 + 删 cos_table/c_factor） | 无 | §2.1 ⑥ 全过；P0-8 黄金门禁开箱 ≥40 dB；D-29 禁项扫描零命中 | prism-io/src/jpeg_baseline.rs（新建）、prism-mux/src/video.rs | W2（与 T-4 同波，无数据依赖） |
+| T-6 | P2：tie-break 规范槽位 + ε=6u·t_max + 剪枝判据 + WGSL 同形态 + 归约预算门禁 | T-4（U1） | §2.2 ⑥ 全过；语义级分歧=0；D-3 门禁② ≥40 dB 且 ≤解析预算 | prism-geometry/src/bvh.rs、prism-gpu shaders（rt_bvh.wgsl） | W3 |
+| T-7 | P2 GPU-in-CI 核验（C-6）：lavapipe 探测；就绪则补 GPU 语义 parity，否则 #[ignore] 占位 | T-6 | 核验报告 + 占位/实跑二形态其一落地 | CI 配置 + wavefront parity 测试 | W3 |
+| T-8 | P4：prism-mux 加 prism-math 依赖 + water-filling 率控替换启发式 + B 帧闭式 + 证书断言 + 黄金水位固件 | 无（det_log2 既有件） | §2.4 ⑥ 全过；禁 f64::log2 零命中 | prism-mux/Cargo.toml、prism-mux/src/video.rs | W4 |
+| T-9 | P6：σ 律分配 + Kalman 时域 + GOP 重置 + 探针 | 无 | §2.6 ⑥ 全过；削减率统计报告格式合 T-8 harness | prism-postfx/src/denoise.rs | W4 |
+| T-10 | P7：Transition trait + mix_u8 下沉 + Wipe 行程扩展 + 链状态 u64 | T-3（权重向量入键） | §2.7 ⑥ 全过；四转场端点逐位 | prism-core/src/sceneseq.rs（新建）、prism-author/src/render.rs | W4 |
+| T-11 | T-8 harness（QA 补）：det-canon 测试 harness——统计门禁输出格式统一（均值/方差/IQR），P2/P4/P6 三处统计断言共用 | 无 | P2 A4、P4 A1、P6 A1 三处统计输出统一格式 | 测试基建（QA/工程） | W1（先于依赖它的验收） |
+| T-12 | P1 T-1 补测：12-bit 高位深 A5（标度重核 + i128 余量） | T-5 | 12-bit 路径断言过；未过则文档如实标注高位深未支持 | prism-io/src/jpeg_baseline.rs 测试 | W2 随 T-5 |
+| T-13 | P3 A2 规定行为钉死：退化 AABB 除零映射、extent>2^21 共码路径 | T-4 | 规定行为有断言（不只不 panic） | prism-geometry/src/bvh.rs 测试 | W2 随 T-4 |
+| T-14 | C-5 文本落入：V2.0-RQ-2 验收标准按 §3.5 修订 | T-9（口径对齐） | 路线图文档含修订后验收标准 | docs/v1.5-v2.0-roadmap.md（路线图维护方） | W4 末 |
+| T-15 | C-6 核验归口 + T-3/T-7 GPU 占位转正 | T-7 | GPU parity 实跑或占位+说明在案 | CI + 测试 | W3/W4 |
+| T-16 | P6 通道 B 上线前验证（d_i/σ 系数标定的端到端 PSNR 对拍） | T-9 | 对拍报告；系数标定为 V1.5-E 调参项（1 个标量） | prism-postfx + 验收 | V1.5-E 波 |
+| T-17 | U-1 收拢评审：workspace 三处 SHA-256（prism-io/sha256.rs、prism-core/signature.rs:108、prism-math/det_hash.rs）依赖方向评审 | T-2 | 评审结论（收拢方案或明确不收拢的理由） | 跨 crate 依赖评审 | 后续 |
+
+并行波次总览：**W0**（T-1, T-2）→ **W1**（T-3, T-11）→ **W2**（T-4, T-5, T-12, T-13）
+→ **W3**（T-6, T-7, T-15）→ **W4**（T-8, T-9, T-10, T-14）→ 后续（T-16, T-17）。
+T-8/T-9/T-10 三项互不依赖，波次内可并行；T-3 是 T-10 的唯一跨提案依赖（权重向量入键）。
+
+---
+
+## 6. 未定项登记册（不许沉默通过）
+
+| # | 未定项 | 现状定稿形态 | 为什么现在不定 | 解锁条件 |
+|---|--------|------------|---------------|---------|
+| U-1 | workspace 三处 SHA-256 并存（prism-io/src/sha256.rs:15 公开件、prism-core/src/signature.rs:108 私有件、本定稿新建 prism-math/det_hash.rs） | 新建 prism-math 件（消费方共同依赖枢纽），既有两处不动 | 收拢涉及跨 crate 依赖方向评审（prism-io→prism-math 无环可行但未评审） | T-17 依赖方向评审 |
+| U-2 | P1 12-bit 高位深路径：2^-46 标度需按位深线性重核，i128 仍足够但未推 | 声明「要有测试」，规格未给 | 当前用例全 8-bit；12-bit 量化表罕见（T.81 允许） | T-12 补测；未过则文档标注高位深未支持（不得沉默宣称） |
+| U-3 | P4 水位求解：m-6 对数域分段闭式（无迭代无容差）vs 200 步二分 | 定稿默认二分（已实证），闭式为可选优化 | 闭式版未在 Rust 侧实装验证；二分版容差 1e-9 已够（余量 2^10.1+） | 实现波次评估；采纳则 A1 容差可收紧至一次舍入量级 |
+| U-4 | P6 通道 B（插件方差）σ 估计精度 + d_i 传播系数标定 | 默认通道 A（有定理）；通道 B 标注经验值 + 「不劣于现行」统计界；d_i 线性加权是一阶近似 | 标定需要端到端 PSNR 对拍数据（两遍路径成本可接受但未排） | T-16 上线前验证 |
+| U-5 | P6 Q>0 完整 Kalman（动态场景随机游走） | 不落（Q 标定是新参数，静态场景 Q=0 退化） | 先落 Q=0 零回退版是正确的次序 | 动态场景需求出现 + Q 标定方案 |
+| U-6 | P4 传播系数矩阵（替代标量 d_i） | 不落（GOP 内参考图已知可精确构造，但增益上限受运动补偿精度限制） | 一阶近似先用；调 1 个标量不是调一套启发式 | V1.5-E 后续增强 |
+| U-7 | P7 HDR 路径（>1 值域/f16 帧缓冲）的混合网格 | 不落（当前用例全 u8 LDR，256 分母无精度问题） | HDR 帧缓冲路径未排期 | HDR 管线落地时按曝光缩放或加指数位重设网格 |
+| U-8 | C-6 GPU-in-CI（lavapipe）可用性 | 降级路径已定（CPU 双规则模拟 + #[ignore] 占位） | CI 环境核验未做（ADR-16 理由④ 待办） | T-7/T-15 核验 |
+| U-9 | P3 场景 extent > 2^21 共码退化的性能影响（局部性损失未量化） | 行为已定（质心位型/摘要序兜底 + 测试覆盖），性能未量化 | 大场景数据未入手 | V2.0-H 场景数据就绪后基准 |
+| U-10 | P2 ε 的平台相关性（NC-D3：slab 界改进则最小 ε 同比例下降） | 6u·t_max 与实测单侧 3u 界匹配的稳健值 | 跨平台 slab 误差重标定未排期；当前值是安全侧 | 新平台 slab 界标定数据 |
+| U-11 | P5 scene_sig 大 mesh 哈希成本（Merkle 分级键为实现选项） | 单次全量 det_sha256；静态场景预算一次 | 大资产数据未入手 | V2.0-I 资产规模数据 |
+| U-12 | P5 落地后 cache_manifest schema 同步 bump（V2.0-I 生产化依赖） | 登记（C13/D-28 既有语义自动消化旧缓存） | manifest 生产化在 V2.0-I，未排 | T-3 落地时同步 manifest schema |
+| U-13 | 路径勘误：任务书/QA 的「prism-author/src/eval.rs」不存在（EvalCtx 在 prism-core/src/node.rs:274，global_seed 使用点在 prism-rt/src/sampler.rs:208,216） | 本文按真实位置书写（§2.5 ④） | 与 M5 同类路径错误，无代码影响 | 无需解锁（留痕防再错） |
+| U-14 | P7 证 3 卖点（CPU/GPU 转场逐位一致）无测试承载 | `#[ignore]` GPU parity 占位（T-7）或效果改口径（m-9） | GPU 合成路径未排期 | GPU 合成路径落地 |
+
+---
+
+## 附：本定稿的数值留痕索引
+
+| 脚本 | 内容 | 结论 |
+|------|------|------|
+| exp1–exp22 | 两轮审查既有实验（17 个脚本） | 复跑确认文档数字可复现（exp8/exp12/exp15/exp16/exp17 本轮复跑） |
+| **exp23_finalization_recompute.py** | 定稿复查：B1 阈值纯整数复算、C-4 三处卫生、N-1~N-6 修正、P1 gloss、P4 水位算例+m-6 闭式+B 帧闭式、P6 Neyman 算例+1+CV²、P7 链长边界、P2 派生数+NC-D3 ε 逻辑、P3 位宽算术 | **全部 PASS**；6 项修正按 §1.4 落入定稿 |
+| **exp24_sigma2_audit.py** | σ² 律削减率统计口径审计：CV=1、m=32、N=2048、20 抽（seed=20261024），σ² 律中位 3.9%/IQR [1.5%, 7.2%]/0/20 抽达线，σ 律同场景对照中位 51.5%/IQR [43.0%, 56.0%] | 全部 PASS；坐实「期望削减 0% + 取整伪影」模型，替换三处 −19.6% 单点值（N-7） |
+
+（脚本目录：`/root/.codebuddy/artifact/2f8a7d30-9c21-4f0b-1d32-f3ae493ae000/`；
+全部只读数值实验，未动仓库、未执行 cargo、未做 git 写操作。）
