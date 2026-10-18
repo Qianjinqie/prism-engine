@@ -375,6 +375,23 @@ pub struct MorphSpec {
     pub dur: f32,
 }
 
+/// Morph **几何核心**：`prism_core::sceneseq::MorphSpec` 的类型别名。
+///
+/// v1.5-C（ADR-18）下沉取舍（以「改动最小」为准）：本文件上方 [`MorphSpec`]
+/// 还带 `color` / `width` / `fill` / `at` / `in_sec` / `out_sec` / `out_at` /
+/// `draw_sec` / `closed` / `ease`（`EasingKind` 属本 crate）等**呈现字段**，
+/// 整体下沉会把 author 的缓动 / 淡变类型拖进 core（反向依赖）。故只把它
+/// 与呈现无关的**几何部分**（`from` / `to` 折线 + DSL 路径引用）下沉到
+/// `prism-core`，author 侧通过本别名 + [`MorphSpec::geometry`] 委托引用。
+pub type MorphGeometry = prism_core::sceneseq::MorphSpec;
+
+impl MorphSpec {
+    /// 取出几何核心（`from` / `to` 折线副本；路径引用为本类型未涉及的 `None`）。
+    pub fn geometry(&self) -> MorphGeometry {
+        MorphGeometry::new(self.from.clone(), self.to.clone())
+    }
+}
+
 /// 动态几何闭包类型：场景绝对时间 `t`（秒）→ 设备像素折线。
 ///
 /// - 必须是纯函数（禁止内部可变状态、时钟、随机源）；

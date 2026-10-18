@@ -59,8 +59,8 @@ pub use render::{
 };
 pub use spec::{
     AccentLine, Background, Caption, ClipSpec, CounterText, DynPathTrack, FontKind, GeomFn,
-    ImageSource, ImageTrack, KineticText, PathTrack, SequenceTrack, ShapeKind, ShapeTrack,
-    StaticText, Track, Transition, TypewriterText, WipeDir,
+    ImageSource, ImageTrack, KineticText, MorphGeometry, PathTrack, SequenceTrack, ShapeKind,
+    ShapeTrack, StaticText, Track, Transition, TypewriterText, WipeDir,
 };
 
 #[cfg(test)]

@@ -27,6 +27,12 @@ use crate::spec::{
     SequenceTrack, ShapeKind, Track, Transition, WipeDir,
 };
 
+// v1.5-C（ADR-18）：转场混合下沉 core 走**整数路径**——u8 域混合器 `mix_u8`、
+// 整数 Wipe 权重（分界行程扩展）、整数 Dissolve hash、整数 Push 推进量。
+// 全部零浮点 ⇒ 同输入两跑 bitwise 相同，且跨端（CPU / GPU / 架构）逐位一致；
+// 同时消掉原 f32 截断路径的系统暗偏（mean bias ≈ −0.488 LSB）。
+use prism_core::sceneseq::{dissolve_hash, mix_u8, push_c, wipe_weight, W_ONE};
+
 // ---- 通用数学辅助（全部 t 的纯函数）----
 
 /// 三次平滑插值（smoothstep），用于淡入 / 暗角等缓动。
@@ -1298,17 +1304,12 @@ pub(crate) fn apply_clip_fade(
 
 // ---- 多场景拼接：转场（纯后处理）----
 
-/// 擦除过渡带半宽（px）：硬阈值 ±2px 内用 smoothstep 平滑，避免硬边。
-const WIPE_BAND: f32 = 2.0;
+/// 擦除过渡带半宽（px）：值已下沉 `prism_core::sceneseq::WIPE_BAND`（单点
+/// 定义），本常量是 author 侧既有引用的 **re-export**，防止破坏旧调用点。
+const WIPE_BAND: u16 = prism_core::sceneseq::WIPE_BAND;
 
-/// 位置阈值混合权重（擦除用）：
-/// `pos <= edge - band` → 0（纯 a），`pos >= edge + band` → 1（纯 b），
-/// 带内 smoothstep 平滑过渡。
-#[inline]
-fn wipe_weight(pos: f32, edge: f32, band: f32) -> f32 {
-    let u = ((pos - (edge - band)) / (2.0 * band)).clamp(0.0, 1.0);
-    smooth(u)
-}
+/// 位置阈值混合权重（擦除用）已下沉 core：[`prism_core::sceneseq::wipe_weight`]
+/// （整数定点实现，无浮点 ⇒ 跨端逐位一致）。此处不再保留 f32 版本。
 
 /// 混合单帧：按 `transition` 把 `fa`（旧片段末帧）与 `fb`（新片段首帧）
 /// 按进度 `k`（0..1，0 = 纯 a、1 = 纯 b）混合为一帧 RGBA8。
@@ -1345,103 +1346,112 @@ fn mix_frame(
         return fa.to_vec();
     }
     let k = k.clamp(0.0, 1.0);
+    // f32 进度 → 256 分母整数网格（round-to-nearest）：`kw ∈ 0..=256`。
+    // 之后所有路径只用 `kw`（整数），不再碰 `k`（零浮点确定性）。
+    let kw: u16 = (k * 256.0).round() as u16;
     let mut out = vec![0u8; expected];
     match transition {
         Transition::Fade => {
+            // 全局线性权重 ⇒ 单权重 `mix_u8`（round-to-nearest、无系统偏置）。
             for (o, (pa, pb)) in out
                 .chunks_exact_mut(4)
                 .zip(fa.chunks_exact(4).zip(fb.chunks_exact(4)))
             {
-                o[0] = (lerp(pa[0] as f32, pb[0] as f32, k)).clamp(0.0, 255.0) as u8;
-                o[1] = (lerp(pa[1] as f32, pb[1] as f32, k)).clamp(0.0, 255.0) as u8;
-                o[2] = (lerp(pa[2] as f32, pb[2] as f32, k)).clamp(0.0, 255.0) as u8;
+                o[0] = mix_u8(pa[0], pb[0], kw);
+                o[1] = mix_u8(pa[1], pb[1], kw);
+                o[2] = mix_u8(pa[2], pb[2], kw);
                 o[3] = 255;
             }
         }
         Transition::Wipe { dir } => {
-            let w = width as f32;
-            let h = height as f32;
+            // 分界行程扩展（ADR-18 证 4）：边界自 `extent+band` 走到 `−band`，
+            // 两端混合带完全出画 ⇒ k=0 / k=1 端点逐位精确（污染列 = 0）。
+            // 镜像方向对权重取补（`256 − w`），与 `WipeDir` 的入场侧语义对齐。
+            let band: u16 = WIPE_BAND;
             let mut idx = 0usize;
             for y in 0..height {
                 for x in 0..width {
-                    // 逐像素混合权重：0 = 取 a、1 = 取 b（带内 smoothstep）。
-                    let t = match dir {
-                        WipeDir::Right => wipe_weight(x as f32, (1.0 - k) * w, WIPE_BAND),
-                        WipeDir::Left => 1.0 - wipe_weight(x as f32, k * w, WIPE_BAND),
-                        WipeDir::Up => wipe_weight(y as f32, (1.0 - k) * h, WIPE_BAND),
-                        WipeDir::Down => 1.0 - wipe_weight(y as f32, k * h, WIPE_BAND),
+                    // 逐像素混合权重：0 = 取 a、256 = 取 b（带内 smoothstep）。
+                    let t: u16 = match dir {
+                        // core 规范形态：边界自 `extent+band` 左移 ⇒ b 自右侧
+                        // 入场、分界线向左推进（= `WipeDir::Right`）。
+                        WipeDir::Right => wipe_weight(x, kw, width, band),
+                        WipeDir::Left => W_ONE - wipe_weight(x, kw, width, band),
+                        WipeDir::Up => wipe_weight(y, kw, height, band),
+                        WipeDir::Down => W_ONE - wipe_weight(y, kw, height, band),
                     };
-                    let pa = &fa[idx..idx + 4];
-                    let pb = &fb[idx..idx + 4];
-                    out[idx] = (lerp(pa[0] as f32, pb[0] as f32, t)).clamp(0.0, 255.0) as u8;
-                    out[idx + 1] = (lerp(pa[1] as f32, pb[1] as f32, t)).clamp(0.0, 255.0) as u8;
-                    out[idx + 2] = (lerp(pa[2] as f32, pb[2] as f32, t)).clamp(0.0, 255.0) as u8;
+                    out[idx] = mix_u8(fa[idx], fb[idx], t);
+                    out[idx + 1] = mix_u8(fa[idx + 1], fb[idx + 1], t);
+                    out[idx + 2] = mix_u8(fa[idx + 2], fb[idx + 2], t);
                     out[idx + 3] = 255;
                     idx += 4;
                 }
             }
         }
         Transition::Dissolve { seed } => {
-            // 逐像素阈值显影：hash ∈ [0,1) < k ⇒ 取 b，否则取 a。
-            // 端点精确性：k=0 时 hash < 0 恒假 ⇒ 全 a；k=1 时 hash < 1
-            // 恒真（值域不含 1）⇒ 全 b。显影 / 保留均为原字节直拷
-            // （无重算 ⇒ 显影侧逐位保真）。
+            // 逐像素整数阈值显影：hash ∈ 0..=255 < kw ⇒ 取 b，否则取 a。
+            // 端点精确：kw=0 恒假（全 a）、kw=256 恒真（全 b）。hash 为
+            // splitmix64 类纯整数（宪章：转场路径禁 f32 rand），同 seed 同图案。
             let mut idx = 0usize;
             for y in 0..height {
                 for x in 0..width {
-                    let h = prism_noise::pcg::hash2_f32(seed, x as u64, y as u64);
-                    let src = if h < k { fb } else { fa };
-                    out[idx..idx + 4].copy_from_slice(&src[idx..idx + 4]);
+                    let h: u16 = dissolve_hash(x, y, seed);
+                    let t: u16 = if h < kw { W_ONE } else { 0 };
+                    out[idx] = mix_u8(fa[idx], fb[idx], t);
+                    out[idx + 1] = mix_u8(fa[idx + 1], fb[idx + 1], t);
+                    out[idx + 2] = mix_u8(fa[idx + 2], fb[idx + 2], t);
                     out[idx + 3] = 255;
                     idx += 4;
                 }
             }
         }
         Transition::Push { dir } => {
-            // 整体平移：dir=Left 时 b 自左侧入场（c = k·W 覆盖宽度），
-            // x < c 取 b(x + W − c)（b 的左移采样，右缘先现），
-            // x ≥ c 取 a(x − c)（a 的右移采样）。其余方向镜像。
+            // 整体平移：b 自 `dir` 侧入场、a 从对侧退出。推进量整数化
+            // （`push_c` = round(k·extent)，256 分母网格），越界采样钳到边缘
+            // 像素（repeat，不引入新颜色）；权重恒为 0 / 256 ⇒ `mix_u8`
+            // 逐位等价于整像素拷贝（端点精确由构造保证）。
             let w = width as i64;
             let h = height as i64;
-            let c = k * width as f32;
-            let shift_b = (width as f32 - c).round() as i64; // b 的采样左移量
-            let shift_a = c.round() as i64; // a 的采样右移量
+            let cw: i64 = push_c(kw, width) as i64; // 水平推进量
+            let ch: i64 = push_c(kw, height) as i64; // 垂直推进量
             let mut idx = 0usize;
             for y in 0..height {
                 let (ya, yb) = match dir {
                     WipeDir::Up => (
-                        (y as i64 - shift_a).clamp(0, h - 1),
-                        (y as i64 + (h - shift_b)).clamp(0, h - 1),
+                        (y as i64 - ch).clamp(0, h - 1),
+                        (y as i64 + (h - ch)).clamp(0, h - 1),
                     ),
                     WipeDir::Down => (
-                        (y as i64 + shift_a).clamp(0, h - 1),
-                        (y as i64 - (h - shift_b)).clamp(0, h - 1),
+                        (y as i64 + ch).clamp(0, h - 1),
+                        (y as i64 - (h - ch)).clamp(0, h - 1),
                     ),
                     _ => (y as i64, y as i64),
                 };
                 for x in 0..width {
                     let (xa, xb) = match dir {
                         WipeDir::Left => (
-                            (x as i64 - shift_a).clamp(0, w - 1),
-                            (x as i64 + (w - shift_b)).clamp(0, w - 1),
+                            (x as i64 - cw).clamp(0, w - 1),
+                            (x as i64 + (w - cw)).clamp(0, w - 1),
                         ),
                         WipeDir::Right => (
-                            (x as i64 + shift_a).clamp(0, w - 1),
-                            (x as i64 - (w - shift_b)).clamp(0, w - 1),
+                            (x as i64 + cw).clamp(0, w - 1),
+                            (x as i64 - (w - cw)).clamp(0, w - 1),
                         ),
                         _ => (x as i64, x as i64),
                     };
-                    // 覆盖判据（沿推进轴）：dir=Left 时 x < c ⇒ b 侧。
-                    let from_b = match dir {
-                        WipeDir::Left => (x as f32) < c,
-                        WipeDir::Right => (x as f32) >= width as f32 - c,
-                        WipeDir::Up => (y as f32) < c,
-                        WipeDir::Down => (y as f32) >= height as f32 - c,
+                    // 覆盖判据（沿推进轴）：b 占入场侧、a 占对侧。
+                    let from_b: bool = match dir {
+                        WipeDir::Left => (x as i64) < cw,
+                        WipeDir::Right => (x as i64) >= w - cw,
+                        WipeDir::Up => (y as i64) < ch,
+                        WipeDir::Down => (y as i64) >= h - ch,
                     };
+                    let t: u16 = if from_b { W_ONE } else { 0 };
                     let ia = ((ya as u32) * width + xa as u32) as usize * 4;
                     let ib = ((yb as u32) * width + xb as u32) as usize * 4;
-                    let src = if from_b { &fb[ib..ib + 4] } else { &fa[ia..ia + 4] };
-                    out[idx..idx + 4].copy_from_slice(src);
+                    out[idx] = mix_u8(fa[ia], fb[ib], t);
+                    out[idx + 1] = mix_u8(fa[ia + 1], fb[ib + 1], t);
+                    out[idx + 2] = mix_u8(fa[ia + 2], fb[ib + 2], t);
                     out[idx + 3] = 255;
                     idx += 4;
                 }

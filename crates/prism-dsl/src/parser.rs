@@ -12,7 +12,8 @@
 use crate::ast::{
     AnimAst, AudioAst, CameraV2Ast, ComposeAst, ComposeOpAst, ComposeRef, DocumentAst, DocumentV2Ast,
     ExprDefAst, FieldValue, FontDecl, ImportPacksAst, KeyAst, LayerAst, LightV2Ast, MaterialV2Ast,
-    MovieAst, NamedField, NoteAst, OutputAst, PostAst, SceneItem, SceneV2Ast, SdfAst, SimAst,
+    MorphRefAst, MovieAst, NamedField, NoteAst, OutputAst, PostAst, SceneItem, SceneV2Ast, SdfAst,
+    SimAst,
     Stage3dAst, TimeVal, TimeUnit, TransitionAst, AestheticAst, AngleVal, AngleUnit,
     OutputFormatAst, SceneAst, SphereAst, MaterialAst, CameraAst, LightAst, TimelineAst,
 };
@@ -1235,8 +1236,68 @@ impl Parser {
         }
         let name: String = if name.is_empty() { kind.clone() } else { name };
         self.expect_punct(Tok::LBrace, "{")?;
+        // v1.5-C：可选前置 `morph from "路径A" to "路径B"` 子句（图层几何变形）。
+        // 只允许出现在字段列表开头，其后仍是 `名 值` 字段流（不动通用字段解析）。
+        let morph: Option<MorphRefAst> = self.parse_layer_morph_prefix()?;
         let fields = self.parse_named_fields("layer")?;
-        Ok(LayerAst { kind, name, fields, line: kw_line })
+        Ok(LayerAst { kind, name, fields, morph, line: kw_line })
+    }
+
+    /// layer 块里的可选 morph 声明前缀：`morph from <路径> to <路径>`。
+    ///
+    /// `morph` 是保留字段名（v1.5-C），故普通字段不可再叫 `morph`；路径既可
+    /// 写成字符串（`"hero_a"`）也可写成标识符（`hero_a`）。
+    fn parse_layer_morph_prefix(&mut self) -> Result<Option<MorphRefAst>, DslError> {
+        let is_morph: bool = matches!(self.peek().map(|t| &t.tok), Some(Tok::Ident(k)) if k == "morph");
+        if !is_morph {
+            return Ok(None);
+        }
+        let line: usize = self.peek().map(|t| t.line).unwrap_or(0);
+        self.bump(); // 消费 `morph`
+        let (kw, kw_line) = self.expect_ident("morph 的 from")?;
+        if kw != "from" {
+            return Err(err_at(
+                kw_line,
+                format!(
+                    "[P1001] layer morph 声明期望 'from'，却遇到 '{}'\n  建议：写法为 morph from \"路径A\" to \"路径B\"",
+                    kw
+                ),
+            ));
+        }
+        let from: String = self.expect_path_ref("morph.from 的路径引用")?;
+        let (kw2, kw2_line) = self.expect_ident("morph 的 to")?;
+        if kw2 != "to" {
+            return Err(err_at(
+                kw2_line,
+                format!(
+                    "[P1001] layer morph 声明期望 'to'，却遇到 '{}'\n  建议：写法为 morph from \"路径A\" to \"路径B\"",
+                    kw2
+                ),
+            ));
+        }
+        let to: String = self.expect_path_ref("morph.to 的路径引用")?;
+        Ok(Some(MorphRefAst { from, to, line }))
+    }
+
+    /// 路径引用：字符串或裸标识符（morph from/to 用）。
+    fn expect_path_ref(&mut self, what: &str) -> Result<String, DslError> {
+        let line: usize = self.peek().map(|t| t.line).unwrap_or_else(|| self.eof_line());
+        match self.peek().map(|t| t.tok.clone()) {
+            Some(Tok::Str(_)) => Ok(self.expect_str(what)?.0),
+            Some(Tok::Ident(_)) => Ok(self.expect_ident(what)?.0),
+            Some(other) => Err(err_at(
+                line,
+                format!(
+                    "[P1003] 期望{}（字符串或标识符），却遇到 {}\n  建议：morph from \"路径A\" to \"路径B\"",
+                    what,
+                    describe_tok(&other)
+                ),
+            )),
+            None => Err(err_at(
+                line,
+                format!("[P1003] 期望{}（字符串或标识符），却遇到文件结束", what),
+            )),
+        }
     }
 
     /// 可选块名：标识符 / 字符串 / 缺省（空串）。供 layer / sim / compose / stage3d。
@@ -1352,6 +1413,10 @@ impl Parser {
         let mut duration: Option<TimeVal> = None;
         let mut kind: String = "crossfade".to_string();
         let mut kind_seen: bool = false;
+        // v1.5-C：引擎级转场参数（fade / wipe / dissolve / push）。
+        let mut band: Option<u16> = None;
+        let mut seed: Option<u64> = None;
+        let mut dir: Option<String> = None;
         loop {
             let t: Token = match self.bump() {
                 Some(t) => t,
@@ -1411,11 +1476,21 @@ impl Parser {
                             ));
                         }
                         let (k, _) = self.expect_ident("transition 种类")?;
-                        if !matches!(k.as_str(), "crossfade" | "cut" | "black" | "white") {
+                        if !matches!(
+                            k.as_str(),
+                            "crossfade"
+                                | "cut"
+                                | "black"
+                                | "white"
+                                | "fade"
+                                | "wipe"
+                                | "dissolve"
+                                | "push"
+                        ) {
                             return Err(err_at(
                                 t.line,
                                 format!(
-                                    "[P2106] 未知的 transition 种类 '{}'\n  建议：当前支持 crossfade（叠化）/ cut（硬切）/ black（黑场）/ white（白场）",
+                                    "[P2106] 未知的 transition 种类 '{}'\n  建议：当前支持 crossfade（叠化）/ cut（硬切）/ black（黑场）/ white（白场）/ fade（交叉溶解）/ wipe（擦除）/ dissolve（像素溶解）/ push（推移）",
                                     k
                                 ),
                             ));
@@ -1423,11 +1498,67 @@ impl Parser {
                         kind = k;
                         kind_seen = true;
                     }
+                    // v1.5-C：引擎级转场参数（ADR-18 四转场统一为凸权重）。
+                    "band" => {
+                        if band.is_some() {
+                            return Err(err_at(
+                                t.line,
+                                "[P1001] transition 块中字段 'band' 重复出现\n  建议：删除多余 band 字段",
+                            ));
+                        }
+                        let (v, _): (f32, usize) = self.expect_num("transition.band")?;
+                        if !v.is_finite() || v < 0.0 || v.fract() != 0.0 || v > 65535.0 {
+                            return Err(err_at(
+                                t.line,
+                                format!(
+                                    "[P1011] transition.band 应为 0..65535 的整数像素（擦除过渡带半宽），却得到 {v}\n  建议：band 2（缺省 2px）或 band 0（硬边）"
+                                ),
+                            ));
+                        }
+                        band = Some(v as u16);
+                    }
+                    "seed" => {
+                        if seed.is_some() {
+                            return Err(err_at(
+                                t.line,
+                                "[P1001] transition 块中字段 'seed' 重复出现\n  建议：删除多余 seed 字段",
+                            ));
+                        }
+                        let (v, _): (f32, usize) = self.expect_num("transition.seed")?;
+                        if !v.is_finite() || v < 0.0 || v.fract() != 0.0 || v > 9.007_199e15 {
+                            return Err(err_at(
+                                t.line,
+                                format!(
+                                    "[P1011] transition.seed 应为非负整数（溶解显影种子），却得到 {v}\n  建议：seed 7（同 seed 同显影图案）"
+                                ),
+                            ));
+                        }
+                        seed = Some(v as u64);
+                    }
+                    "dir" => {
+                        if dir.is_some() {
+                            return Err(err_at(
+                                t.line,
+                                "[P1001] transition 块中字段 'dir' 重复出现\n  建议：删除多余 dir 字段",
+                            ));
+                        }
+                        let (d, _) = self.expect_ident("transition 方向")?;
+                        if !matches!(d.as_str(), "left" | "right" | "up" | "down") {
+                            return Err(err_at(
+                                t.line,
+                                format!(
+                                    "[P2106] 未知的 transition 方向 '{}'\n  建议：dir 取 left / right / up / down（描述新场景的入场侧）",
+                                    d
+                                ),
+                            ));
+                        }
+                        dir = Some(d);
+                    }
                     other => {
                         return Err(err_at(
                             t.line,
                             format!(
-                                "[P1002] transition 块中未知字段 '{}'（允许：from / to / duration / kind）\n  建议：检查字段名拼写",
+                                "[P1002] transition 块中未知字段 '{}'（允许：from / to / duration / kind / band / seed / dir）\n  建议：检查字段名拼写",
                                 other
                             ),
                         ));
@@ -1455,7 +1586,7 @@ impl Parser {
                 ),
             ));
         }
-        Ok(TransitionAst { name, from, to, duration, kind, line: kw_line })
+        Ok(TransitionAst { name, from, to, duration, kind, band, seed, dir, line: kw_line })
     }
 
     /// anim 块：`anim "目标路径" { key 时间 值 [easing] ... loop 模式? }`。

@@ -57,6 +57,11 @@ const DEFAULT_HEIGHT: u32 = 270;
 // v2 新增缺省。
 /// 单场景无时长信息时的缺省时长。
 const DEFAULT_SCENE_DURATION: f32 = 2.0;
+/// transition.band 缺省值（px；与 `prism_core::sceneseq::WIPE_BAND` 同值）。
+///
+/// 不从 core 引入常量以保持本 crate 的「产物层零额外耦合」，两处注释互指。
+pub const DEFAULT_WIPE_BAND: u16 = 2;
+
 /// transition 无 duration 时的缺省时长。
 const DEFAULT_TRANSITION_DURATION: f32 = 0.5;
 /// layer text 缺省字号（px）。
@@ -187,6 +192,8 @@ pub struct LayerInfo {
     pub kind: String,
     /// 对应节点 id。
     pub node_id: NodeId,
+    /// v1.5-C：`morph from "路径A" to "路径B"` 声明（None = 无变形）。
+    pub morph: Option<(String, String)>,
 }
 
 /// 模拟摘要（v2）。
@@ -302,8 +309,15 @@ pub struct TransitionV2 {
     pub start: f32,
     /// 重叠时长（秒）。
     pub duration: f32,
-    /// 过渡种类（crossfade / cut / black / white）。
+    /// 过渡种类（crossfade / cut / black / white，v1.5-C 追加引擎级
+    /// fade / wipe / dissolve / push）。
     pub kind: String,
+    /// v1.5-C：擦除过渡带半宽（px；`kind wipe` 生效，缺省 2）。
+    pub band: u16,
+    /// v1.5-C：溶解显影种子（`kind dissolve` 生效，缺省 0）。
+    pub seed: u64,
+    /// v1.5-C：方向（`kind wipe` / `push` 生效；缺省 None = 渲染侧缺省方向）。
+    pub dir: Option<String>,
 }
 
 /// 命名通道（anim / expr 块与字段级关键帧的登记产物）。
@@ -938,6 +952,9 @@ pub(crate) fn codegen_v2(doc: &DocumentV2Ast) -> Result<CompileV2Output, DslErro
                     start: starts[i] + durations[i] - d,
                     duration: d,
                     kind: t.kind.clone(),
+                    band: t.band.unwrap_or(DEFAULT_WIPE_BAND),
+                    seed: t.seed.unwrap_or(0),
+                    dir: t.dir.clone(),
                 });
                 d
             }
@@ -983,7 +1000,16 @@ pub(crate) fn codegen_v2(doc: &DocumentV2Ast) -> Result<CompileV2Output, DslErro
                 }
                 SceneItem::Layer(l) => {
                     let node_id: NodeId = build_layer(&mut b, l, si)?;
-                    layers.push(LayerInfo { name: l.name.clone(), kind: l.kind.clone(), node_id });
+                    let morph: Option<(String, String)> = l
+                        .morph
+                        .as_ref()
+                        .map(|m| (m.from.clone(), m.to.clone()));
+                    layers.push(LayerInfo {
+                        name: l.name.clone(),
+                        kind: l.kind.clone(),
+                        node_id,
+                        morph,
+                    });
                 }
                 SceneItem::Sim(s) => {
                     let node_id: NodeId = build_sim(&mut b, s, si)?;
