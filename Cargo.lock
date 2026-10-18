@@ -178,6 +178,7 @@ dependencies = [
  "prism-audio",
  "prism-gpu",
  "prism-io",
+ "prism-math",
 ]
 
 [[package]]

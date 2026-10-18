@@ -183,6 +183,122 @@ pub fn delivery_chain(requested: Codec) -> Vec<Codec> {
     }
 }
 
+// ===========================================================================
+// ffmpeg 运行时协作（D-17：外部可执行文件可选协作、永不静默失败）
+// ===========================================================================
+
+/// 构造 `ffmpeg` 管道编码参数（**纯函数**，便于离线断言布局）。
+///
+/// 语义：从 stdin 读 RGBA8 裸流（`-f rawvideo -pix_fmt rgba -s WxH -r FPS`），
+/// 出 libx264 + yuv420p 的容器文件，`-y` 覆盖输出。
+///
+/// 注意：本函数**不**决定是否真正调用 ffmpeg；可用性由 [`FfmpegProbe::detect`] 判定，
+/// 实际调用见 [`pipe_frames_to_ffmpeg`]。
+pub fn ffmpeg_pipe_args(w: u32, h: u32, fps: u32, out: &str) -> Vec<String> {
+    vec![
+        "-f".to_string(),
+        "rawvideo".to_string(),
+        "-pix_fmt".to_string(),
+        "rgba".to_string(),
+        "-s".to_string(),
+        format!("{w}x{h}"),
+        "-r".to_string(),
+        fps.to_string(),
+        "-i".to_string(),
+        "-".to_string(),
+        "-c:v".to_string(),
+        "libx264".to_string(),
+        "-pix_fmt".to_string(),
+        "yuv420p".to_string(),
+        out.to_string(),
+        "-y".to_string(),
+    ]
+}
+
+/// 把逐帧 RGBA8 经 stdin 喂给外部 `ffmpeg` 编码为 H.264（`libx264`/`yuv420p`）。
+///
+/// # 三段式失败（C18/C19：在哪 / 什么事 / 怎么改）
+/// 探测不可用时**不启动任何进程**，直接返回含
+/// "未检测到 ffmpeg / 已降级 MJPEG / 安装 ffmpeg 可获 H.264" 的说明——调用方据此
+/// 走内置 MJPEG 出口，链路永不停摆。
+///
+/// # 可用时
+/// `spawn` 子进程 → 逐帧 `write_all`（BrokenPipe 视为子进程提前退出，报错而非静默）
+/// → 关闭 stdin → `wait` 并检查退出码。
+pub fn pipe_frames_to_ffmpeg(
+    frames: &[Vec<u8>],
+    w: u32,
+    h: u32,
+    fps: u32,
+    out: &str,
+) -> Result<(), String> {
+    let probe = FfmpegProbe::detect();
+    let ffmpeg = match probe.path.clone() {
+        Some(p) if probe.available => p,
+        _ => {
+            return Err(format!(
+                "未检测到 ffmpeg（在哪：extprobe::pipe_frames_to_ffmpeg；PATH 中无 ffmpeg 可执行文件，未启动任何进程）\n  什么事：无法调用外部 H.264 编码器\n  建议：已降级 MJPEG；安装 ffmpeg 可获 H.264（如 `apt install ffmpeg` / `brew install ffmpeg`）"
+            ))
+        }
+    };
+    let expect = (w as usize) * (h as usize) * 4;
+    for (i, f) in frames.iter().enumerate() {
+        if f.len() != expect {
+            return Err(format!(
+                "帧 {i} 长度 {} ≠ {w}×{h}×4={expect}（在哪：extprobe::pipe_frames_to_ffmpeg；什么事：裸流尺寸不符；建议：按 RGBA8 补齐或改宽高）",
+                f.len()
+            ));
+        }
+    }
+    let mut cmd = std::process::Command::new(&ffmpeg);
+    cmd.args(ffmpeg_pipe_args(w, h, fps, out));
+    cmd.stdin(std::process::Stdio::piped());
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| {
+        format!(
+            "ffmpeg 启动失败（在哪：extprobe::pipe_frames_to_ffmpeg；什么事：{e}；建议：检查 {ffmpeg} 是否可执行，或降级 MJPEG）"
+        )
+    })?;
+    let mut write_err: Option<String> = None;
+    {
+        use std::io::Write;
+        let stdin = child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| "ffmpeg stdin 不可用（管道创建失败）".to_string())?;
+        for (i, f) in frames.iter().enumerate() {
+            if let Err(e) = stdin.write_all(f) {
+                // BrokenPipe 等：子进程已提前退出（常见原因：该 ffmpeg 构建缺 libx264）。
+                // 不静默——记录后继续收尾，把子进程 stderr 一并带回。
+                write_err = Some(format!("写入第 {i} 帧失败：{e}"));
+                break;
+            }
+        }
+        // 作用域结束即关闭 stdin（EOF），让 ffmpeg 正常冲刷尾部。
+    }
+    child.stdin.take();
+    let output = child.wait_with_output().map_err(|e| {
+        format!(
+            "等待 ffmpeg 结束失败（在哪：extprobe::pipe_frames_to_ffmpeg；什么事：{e}；建议：检查进程是否被系统终止）"
+        )
+    })?;
+    let stderr_tail: String = String::from_utf8_lossy(&output.stderr).chars().take(400).collect();
+    if let Some(we) = write_err {
+        return Err(format!(
+            "{we}（在哪：extprobe::pipe_frames_to_ffmpeg；什么事：ffmpeg 提前退出，退出码 {:?}；建议：确认该 ffmpeg 构建含 libx264（`ffmpeg -encoders | grep libx264`），或降级 MJPEG。stderr 摘要：{stderr_tail}）",
+            output.status.code()
+        ));
+    }
+    if !output.status.success() {
+        return Err(format!(
+            "ffmpeg 退出码非 0（在哪：extprobe::pipe_frames_to_ffmpeg；什么事：{:?}；建议：检查参数与 libx264 是否可用；stderr 摘要：{stderr_tail}）",
+            output.status.code()
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,6 +357,44 @@ mod tests {
             let chain = delivery_chain(req);
             assert_eq!(*chain.last().unwrap(), Codec::Mjpeg, "降级链必须以内置 MJPEG 收尾");
         }
+    }
+
+    #[test]
+    fn ffmpeg_pipe_args_layout() {
+        // 纯函数布局断言（不启动任何进程）。
+        let a = ffmpeg_pipe_args(96, 54, 10, "/tmp/x.mp4");
+        let expect = vec![
+            "-f", "rawvideo", "-pix_fmt", "rgba", "-s", "96x54", "-r", "10", "-i", "-", "-c:v",
+            "libx264", "-pix_fmt", "yuv420p", "/tmp/x.mp4", "-y",
+        ];
+        assert_eq!(a, expect.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        // 关键位点逐项核对（防布局漂移）。
+        assert_eq!(a[5], "96x54");
+        assert_eq!(a[7], "10");
+        assert_eq!(a[9], "-");
+        assert_eq!(a[11], "libx264");
+        assert_eq!(a[13], "yuv420p");
+        assert_eq!(a[15], "-y");
+    }
+
+    #[test]
+    fn pipe_without_ffmpeg_reports_three_part_error() {
+        // 构造"无 ffmpeg"环境：PATH 置空后再探测并走管道编码路径。
+        // 注意：`pipe_frames_to_ffmpeg` 内部调用 `FfmpegProbe::detect()`（读真实 PATH），
+        // 故本测试只在**确定探测不到**时断言三段式；探测到 ffmpeg 时跳过（不 spawn）。
+        let probe = FfmpegProbe::detect();
+        if probe.is_available() {
+            eprintln!("本机有 ffmpeg：跳过'不可用三段式'断言（可用路径由 example 覆盖）");
+            return;
+        }
+        let frame = vec![0u8; 4 * 4 * 4];
+        let err = pipe_frames_to_ffmpeg(&[frame], 4, 4, 1, "/tmp/prism_never_written.mp4")
+            .unwrap_err();
+        for seg in ["未检测到 ffmpeg", "已降级 MJPEG", "安装 ffmpeg 可获 H.264"] {
+            assert!(err.contains(seg), "三段式缺少「{seg}」：{err}");
+        }
+        // 未 spawn：输出文件不应存在。
+        assert!(!Path::new("/tmp/prism_never_written.mp4").exists());
     }
 
     #[test]
