@@ -265,6 +265,22 @@ pub(crate) struct LayerAst {
     pub(crate) kind: String,
     pub(crate) name: String,
     pub(crate) fields: Vec<NamedField>,
+    /// v1.5-C：`morph from "路径A" to "路径B"` 声明（图层几何变形）。
+    pub(crate) morph: Option<MorphRefAst>,
+    pub(crate) line: usize,
+}
+
+/// 图层 morph 声明（v1.5-C）：`morph from "路径A" to "路径B"`。
+///
+/// 「路径引用」在 v2 中是**形状引用名**（文档内已登记的折线 / 路径标识）；
+/// 此处只保存引用字符串，解析与光栅化交由渲染侧（与 `Transition` 一致：
+/// DSL 只承诺声明与校验，不承诺几何求值）。
+pub(crate) struct MorphRefAst {
+    /// 起点路径引用。
+    pub(crate) from: String,
+    /// 终点路径引用。
+    pub(crate) to: String,
+    /// 声明所在行（诊断定位）。
     pub(crate) line: usize,
 }
 
@@ -339,8 +355,15 @@ pub(crate) struct TransitionAst {
     /// 结束场景名 + 定义行号。
     pub(crate) to: Option<(String, usize)>,
     pub(crate) duration: Option<TimeVal>,
-    /// 过渡种类（crossfade / cut / …；缺省 crossfade）。
+    /// 过渡种类（crossfade / cut / black / white，v1.5-C 追加引擎级
+    /// fade / wipe / dissolve / push；缺省 crossfade）。
     pub(crate) kind: String,
+    /// v1.5-C：擦除过渡带半宽（px；`kind wipe` 生效，缺省 2）。
+    pub(crate) band: Option<u16>,
+    /// v1.5-C：溶解显影种子（`kind dissolve` 生效，缺省 0）。
+    pub(crate) seed: Option<u64>,
+    /// v1.5-C：方向（`kind wipe` / `push` 生效；left / right / up / down）。
+    pub(crate) dir: Option<String>,
     pub(crate) line: usize,
 }
 

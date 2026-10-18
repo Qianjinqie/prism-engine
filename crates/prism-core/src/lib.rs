@@ -49,11 +49,19 @@ pub mod signature;
 pub mod depth;
 pub mod compose;
 pub mod nodes;
+// v1.5-C（ADR-18）：转场类型下沉 + 场景序列（u8 整数混合 / 凸权重半群 /
+// Morph 几何核心）。零浮点、零第三方、同输入两跑 bitwise 相同。
+pub mod sceneseq;
 
 pub use node::{EvalCtx, Node, NodeId, Params, Payload, SampleIndex, StructureId};
 pub use registry::{NodeRegistry, RegistryError};
 pub use depth::{DepthComposite, DepthLayer, DepthMap};
 pub use compose::{apply_fog, blend_pixel, ComposeNode, LayerBuf};
+// v1.5-C：转场 / 场景序列 / Morph 几何（ADR-18 下沉件）。
+pub use sceneseq::{
+    dissolve_hash, fold_closed, mix_u8, push_c, wipe_edge_q8, wipe_weight, FrameBuf, MorphSpec,
+    PixelCtx, PushDir, SceneSeq, Transition, TransitionChain, TransitionKind, WIPE_BAND, W_ONE,
+};
 pub use nodes::{collect as collect_c1_nodes, default_registry as c1_node_registry};
 pub use graph::{
     ceil_log2, error_bound_coeff, reduce, reduce_sorted_by_key, reduce_unordered, reduction_shape,
