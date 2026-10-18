@@ -19,6 +19,12 @@ prism-text = { path = "../prism-text" }
 # （`mix_u8`）与整数 Wipe / Dissolve / Push 权重。清单外新增依赖（工作区内
 # 路径依赖、零第三方），已上报。
 prism-core = { path = "../prism-core" }
+# V1.5-D：组合子库（`combinators` 模块）经 prism-dsl 的组合子注册面
+# （`COMBINATOR_TABLE`）展开节点图。依赖方向合法：prism-dsl 仅依赖
+# {prism-math, prism-core, prism-anim}，无环回 prism-author。展开函数本体
+# 落 prism-dsl 侧（fn 指针注册面与 codegen 同 crate），本 crate 只做
+# 类型化建造者薄封装。
+prism-dsl = { path = "../prism-dsl" }
 
 # example（calculus_film）的 BGM 实时合成复用 prism-audio（振荡器 + ADSR +
 # 鼓机 + 混音）。仅 dev 依赖：不影响本 crate 的公开 API 与库构建。
@@ -27,6 +33,9 @@ prism-core = { path = "../prism-core" }
 # 不影响库公开 API 与下游构建。
 [dev-dependencies]
 prism-audio = { path = "../prism-audio" }
+# V1.5-D：组合子测试用 CpuRefBackend 纯软件后端 + Framebuffer 断言逐像素
+# 结构（split_screen 半幅来源 / ken_burns 帧间位移）。仅 dev 依赖。
+prism-gpu = { path = "../prism-gpu" }
 # S7 3D 预渲染（examples/calculus_film_v2/scene3d.rs）需直名 `EvalCtx`
 # （采样流上下文）与 `Vec3`（场景几何）——prism-rt 未转导这两个类型
 # （integrator.rs 仅私有 use），example 必须依赖其所在 crate。同为

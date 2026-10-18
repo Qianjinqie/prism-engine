@@ -2163,3 +2163,29 @@ fn build_post(post: &PostAst) -> Result<PostInfo, DslError> {
     }
     Ok(info)
 }
+
+// ---------------------------------------------------------------------------
+// 组合子注册面（V1.5-D）：name → 展开 fn
+// ---------------------------------------------------------------------------
+
+pub use crate::combinators::{
+    expand_ken_burns, expand_lower_third, expand_morph_between, expand_split_screen,
+    expand_title_card, CombinatorArgs, CombinatorError, NodeGraph,
+};
+
+/// 组合子表：组合子名 → 等价 v2 节点图展开函数（V1.5-D）。
+///
+/// # 用途与边界
+/// - **本轮**：DSL v2 语法不加新指令（parser 刚稳定不碰），本表供 Rust 侧
+///   （`prism-author::combinators`）与文档按名查表展开；
+/// - **后续波次**：DSL 糖化指令（如 `use title_card { ... }`）经本表把语法糖
+///   展开为节点图，codegen 主流程零分支改动；
+/// - 展开产物 [`NodeGraph`] 与 [`CompileV2Output`] 的节点图部分同构
+///   （`NodeGraph::into_compile_output` 补齐空缺字段）。
+pub static COMBINATOR_TABLE: &[(&str, fn(&CombinatorArgs) -> Result<NodeGraph, CombinatorError>)] = &[
+    ("title_card", expand_title_card),
+    ("lower_third", expand_lower_third),
+    ("split_screen", expand_split_screen),
+    ("ken_burns", expand_ken_burns),
+    ("morph_between", expand_morph_between),
+];

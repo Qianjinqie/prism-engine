@@ -46,10 +46,14 @@
 //! - [`Track::Sequence`]（E4）：RGBA8 帧序列 + 源帧率，按场景时间取帧，
 //!   与 [`ImageTrack`] 的 Buffer 分支共用 blit 核心（`render::blit_rgba8`）。
 
+pub mod combinators;
 pub mod easing;
 pub mod render;
 pub mod spec;
 
+pub use combinators::{
+    expand_by_name, KenBurns, LowerThird, MorphBetween, MorphKind, SplitScreen, TitleCard,
+};
 pub use easing::EasingKind;
 pub use prism_text::presets::CaptionStyle;
 pub use render::{
