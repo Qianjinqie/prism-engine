@@ -379,10 +379,26 @@ pub(crate) struct ImportPacksAst {
     pub(crate) line: usize,
 }
 
+/// font 指令：`font "首选.ttf" fallback "次级.ttf", "末级.ttf"`。
+///
+/// 顶层**资产声明**（与 import packs 同层）：一条指令声明一个字体的回退链，
+/// 多条指令按**出现顺序**串成完整回退链（V1.5-B）。`fallbacks` 可空
+/// （= 一条只有一个槽位的链）；链末端恒由 `prism-text` 的程序化符号表兜底。
+pub(crate) struct FontDecl {
+    /// 首选字体文件路径（DSL 中声明的原文，相对路径按渲染进程工作目录解析）。
+    pub(crate) path: String,
+    /// 回退字体路径列表（按声明顺序逐级尝试）。
+    pub(crate) fallbacks: Vec<String>,
+    /// font 关键字所在行（装载失败诊断定位用）。
+    pub(crate) line: usize,
+}
+
 /// v2 顶层文档：全块语法。
 #[derive(Default)]
 pub(crate) struct DocumentV2Ast {
     pub(crate) movie: Option<MovieAst>,
+    /// 字体回退链声明（按出现顺序 = 链路顺序）。
+    pub(crate) fonts: Vec<FontDecl>,
     /// v1 timeline 块复用（v2 中 timeline.fps 优先于 movie.fps）。
     pub(crate) timeline: Option<TimelineAst>,
     /// v2 theme 块 = v1 aesthetic 字段集（teal-orange / contrast / filmic）。

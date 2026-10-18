@@ -338,6 +338,26 @@ pub struct CompileV2Output {
     pub packs: Vec<PackManifest>,
     /// theme 块美学参数（None = 文档未声明 theme）。
     pub theme: Option<ThemeInfo>,
+    /// 字体回退链构造序列（V1.5-B）：push 顺序 = DSL 声明顺序 = 回退顺序。
+    /// 空 = 文档未声明 font 指令（消费方按需自行补内嵌字体兜底）。
+    pub fonts: Vec<FontSlotSpec>,
+}
+
+/// `FontSet` 构造序列的一项（V1.5-B）。
+///
+/// codegen 不直接持有 `prism-text::FontSet`（DSL 层不依赖文本管线，保持
+/// 编译期产物纯数据）：只产出**有序构造序列**，消费方按 `index` 升序逐项
+/// `FontSet::push_file(spec.path)` 即得与 DSL 声明完全一致的回退链。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FontSlotSpec {
+    /// 槽位标签（DSL 声明的路径原文；对接 `prism_text::FontSlot::label`）。
+    pub label: String,
+    /// 装载入口实参（`FontSet::push_file` 的路径字符串）。
+    pub path: String,
+    /// 回退链槽位号（0 = 首选；n>0 即第 n 个回退项，等于 `push_file` 返回值）。
+    pub index: usize,
+    /// 该槽位的声明行号（装载失败诊断定位用）。
+    pub line: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -1034,6 +1054,9 @@ pub(crate) fn codegen_v2(doc: &DocumentV2Ast) -> Result<CompileV2Output, DslErro
         .or_else(|| doc.movie.as_ref().and_then(|m| m.duration).map(|md| time_to_secs(md, fps)))
         .unwrap_or(content_end);
 
+    // ---- 8. 字体回退链构造序列（V1.5-B：声明顺序 = push 顺序） ----
+    let fonts: Vec<FontSlotSpec> = codegen_fonts(doc);
+
     Ok(CompileV2Output {
         title,
         width,
@@ -1047,7 +1070,34 @@ pub(crate) fn codegen_v2(doc: &DocumentV2Ast) -> Result<CompileV2Output, DslErro
         channels: b.channels,
         packs,
         theme,
+        fonts,
     })
+}
+
+/// font 指令序列 → `FontSet` 构造序列（V1.5-B）。
+///
+/// 顺序纪律：多条 font 指令按出现顺序、每条内首选后 fallback，展平为
+/// **单条**回退链；`index` = 展平后下标 = `FontSet::push_file` 返回的槽位号。
+/// 纯函数、无隐式兜底：文档未声明 font 就产出空序列，绝不暗中塞内嵌字体。
+fn codegen_fonts(doc: &DocumentV2Ast) -> Vec<FontSlotSpec> {
+    let mut out: Vec<FontSlotSpec> = Vec::new();
+    for decl in &doc.fonts {
+        out.push(FontSlotSpec {
+            label: decl.path.clone(),
+            path: decl.path.clone(),
+            index: out.len(),
+            line: decl.line,
+        });
+        for fb in &decl.fallbacks {
+            out.push(FontSlotSpec {
+                label: fb.clone(),
+                path: fb.clone(),
+                index: out.len(),
+                line: decl.line,
+            });
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
