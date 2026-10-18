@@ -1,0 +1,148 @@
+{
+  "embedded_block_indices": [
+    0,
+    1,
+    500,
+    1000,
+    1500,
+    1999
+  ],
+  "format": "jpeg-golden-fixtures",
+  "generator": "jpeg_golden_gen.py",
+  "idct": {
+    "a3_blocks": [
+      {
+        "dc_coef": 8191,
+        "max_dw": 268402688,
+        "name": "a3_below"
+      },
+      {
+        "dc_coef": 8192,
+        "max_dw": 268435456,
+        "name": "a3_above"
+      }
+    ],
+    "a3_stream": "jpeg_idct_a3.bin",
+    "c_table_rule": "C[a][b] = round(2^14*cos((2b+1)*a*pi/16)), flat index a*8+b",
+    "extreme_blocks": 1000,
+    "extreme_sha256": "3346b164837fbc7a79796cf993f1e7fa7701ddc95dbd6eed17ffe5fcdc39836e",
+    "extreme_stream": "jpeg_idct_extreme.bin",
+    "extreme_stream_len": 192000,
+    "golden": "jpeg_idct_golden.bin",
+    "golden_len": 128000,
+    "golden_sha256": "66433d4b5d83552e697c8d56ead6bdf23a3b93f6702a76e47b9a2a1f4c4f0be8",
+    "input_sha256": "26a61c7ea2a528118ef1b021f2927f918677343db009af2f5200f05fdaf6707f",
+    "natural_blocks": 3000,
+    "natural_stream": "jpeg_idct_input.bin",
+    "natural_stream_len": 384000,
+    "stage2_i64_threshold": 536870911,
+    "stats": {
+      "adversarial": {
+        "blocks": 500,
+        "i64_fast_path_blocks": 0,
+        "stage2_bound_over_i64_factor": 63.7189,
+        "stage2_theoretical_bound_max": 587702862873247088640
+      },
+      "extreme": {
+        "blocks": 500,
+        "i64_fast_path_blocks": 0,
+        "stage2_bound_over_i64_factor": 63.7189,
+        "stage2_theoretical_bound_max": 587702862873247088640
+      },
+      "harsh": {
+        "blocks": 500,
+        "i64_fast_path_blocks": 500,
+        "max_abs_diff_vs_exact": 1,
+        "max_sum_abs_d": 43035,
+        "worst_psnr_db_vs_exact": 63.182
+      },
+      "small": {
+        "blocks": 500,
+        "i64_fast_path_blocks": 500,
+        "max_abs_diff_vs_exact": 1,
+        "max_sum_abs_d": 44323,
+        "worst_psnr_db_vs_exact": 63.182
+      },
+      "smooth": {
+        "blocks": 500,
+        "i64_fast_path_blocks": 500,
+        "max_abs_diff_vs_exact": 1,
+        "max_sum_abs_d": 28195,
+        "worst_psnr_db_vs_exact": 63.182
+      },
+      "sparse": {
+        "blocks": 500,
+        "i64_fast_path_blocks": 0,
+        "max_abs_diff_vs_exact": 2,
+        "max_sum_abs_d": 773985,
+        "worst_psnr_db_vs_exact": 60.172
+      }
+    },
+    "w_table_values": [
+      32768,
+      46341,
+      65536
+    ]
+  },
+  "interop": [
+    {
+      "expect_file": "interop_444.rgb.bin",
+      "expect_rgb_sha256": "93fdd9f689c780dea6e946fc4b9156922aeb442a09d858f99570c966bb0e05bf",
+      "file": "interop_444.jpg",
+      "height": 72,
+      "jpg_sha256": "a759dd78e365c72811896aa415d5d66b0ce561afbb233ccf6894805a90585dea",
+      "mode": "RGB",
+      "name": "interop_444",
+      "save_options": {
+        "quality": 90,
+        "subsampling": 0
+      },
+      "width": 96
+    },
+    {
+      "expect_file": "interop_422.rgb.bin",
+      "expect_rgb_sha256": "6e9d68ea9f56c964e843d813184bf2979954d43044f77c8fd37a1d9f55bf9419",
+      "file": "interop_422.jpg",
+      "height": 72,
+      "jpg_sha256": "1d80ecdc92d217212cd829e968725186a30d3d422fe185acecfae7b1be866de1",
+      "mode": "RGB",
+      "name": "interop_422",
+      "save_options": {
+        "quality": 90,
+        "subsampling": 1
+      },
+      "width": 96
+    },
+    {
+      "expect_file": "interop_420.rgb.bin",
+      "expect_rgb_sha256": "2474553508c8d8c97fd130e007e4227faa54d995d991cf8f29d9f184aac9f1aa",
+      "file": "interop_420.jpg",
+      "height": 72,
+      "jpg_sha256": "f3ac3810520e2c43f685d3f8625124f733764535a41f02bf1fbe7480c4b82bc2",
+      "mode": "RGB",
+      "name": "interop_420",
+      "save_options": {
+        "quality": 90,
+        "subsampling": 2
+      },
+      "width": 96
+    },
+    {
+      "expect_file": "interop_gray.rgb.bin",
+      "expect_rgb_sha256": "ac13ccf0ccdb33f9a42b8393d60265b93b4fea2a6fc07c7e64050c56d4b90ad8",
+      "file": "interop_gray.jpg",
+      "height": 72,
+      "jpg_sha256": "6f2cc3fbfc972765a80cd27b30c823109b40695948775abe5826d99138c91b45",
+      "mode": "L",
+      "name": "interop_gray",
+      "save_options": {
+        "quality": 90
+      },
+      "width": 96
+    }
+  ],
+  "master_seed": 81708653412353,
+  "random_source": "splitmix64 (constants mirrored in Rust tests); 128 u64 draws per block",
+  "reference": "exact f64 IDCT via math.cos (engine float path forbidden as reference)",
+  "version": 1
+}

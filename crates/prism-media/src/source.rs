@@ -124,8 +124,10 @@ pub fn classify_read_kind(path: &str, kind: SourceKind) -> ReadKind {
     let ext = extension_of(path);
     match kind {
         SourceKind::Image | SourceKind::Video => match ext.as_str() {
-            "gif" | "apng" | "png" => ReadKind::Native,
-            "jpg" | "jpeg" | "webp" | "bmp" => ReadKind::ExternalFfmpeg,
+            // V1.5-W1-A：JPEG 基线解码已内置（`prism_io::decode_image` 的 L0 路径），
+            // 分类从「ffmpeg 协作」修正为「原生可解」。
+            "gif" | "apng" | "png" | "jpg" | "jpeg" => ReadKind::Native,
+            "webp" | "bmp" => ReadKind::ExternalFfmpeg,
             "mp4" | "mov" | "webm" | "mkv" | "avi" | "m4v" => ReadKind::ExternalFfmpeg,
             _ => ReadKind::Unreadable,
         },
