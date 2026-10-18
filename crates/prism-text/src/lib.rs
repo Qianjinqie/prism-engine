@@ -197,8 +197,12 @@ impl FontSet {
 
     /// 追加一个字体文件到链尾，返回槽位索引。
     ///
-    /// 读取失败（不存在 / 不可读）→ T008 三段式错误（路径 + 系统原因
-    /// + 建议），不做静默跳过。
+    /// 两条失败路径都归 **T008**（语义错误，消息必含路径）：
+    /// 1. 读取失败（不存在 / 不可读）→ 路径 + 系统原因；
+    /// 2. 解析失败（字节损坏 / 非 glyf 轮廓）→ 路径 + 内层错误码与事实。
+    ///
+    /// 包装而非透传：`ttf.rs` 的 T001–T007 描述的是「某个字节流坏了」，
+    /// 缺了「哪个文件」这一半信息，对使用者不可行动（D-17）。
     pub fn push_file(&mut self, path: impl AsRef<str>) -> Result<usize, FontError> {
         let path = path.as_ref();
         let bytes = std::fs::read(path).map_err(|e| FontError {
@@ -206,7 +210,19 @@ impl FontSet {
             problem: format!("字体文件读取失败：{}（{}）", path, e),
             fix: "确认路径存在且可读；file 字段应指向 .ttf（或 glyf 轮廓的 OTF）文件，CFF 轮廓 OTF 本解析器不支持（构建期转换）".to_string(),
         })?;
-        self.push_bytes(path, bytes)
+        let slot = FontSlot::new(path, bytes);
+        if let Err(inner) = slot.font() {
+            return Err(FontError {
+                code: FONT_IO_CODE,
+                problem: format!(
+                    "字体文件解析失败：{}（内层 {}：{}）",
+                    path, inner.code, inner.problem
+                ),
+                fix: format!("{}；同时确认该路径指向未截断的字体文件", inner.fix),
+            });
+        }
+        self.chain.push(slot);
+        Ok(self.chain.len() - 1)
     }
 
     /// 以字节直装（内嵌资产 / 测试数据入链用），返回槽位索引。
@@ -510,5 +526,134 @@ mod tests {
         assert_eq!(a.bytes_of(0).unwrap(), FONT_REGULAR);
         assert!(a.sha256_of(1).is_none(), "越界索引返回 None 不 panic");
         assert_eq!(a.len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // V1.5-B：外部装载 / 回退链 / 装载错误路径 / 确定性
+    // -----------------------------------------------------------------------
+
+    /// 把字体字节写到临时目录下的确定性文件名（同进程内同 `tag` 恒定路径）。
+    ///
+    /// 文件名含 pid 以免并行测试进程互相覆盖；内容恒为传入字节，
+    /// 因此「同字节 → 同文件 → 同解析结果」的链路可复现。
+    fn write_temp_font(tag: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let mut p: std::path::PathBuf = std::env::temp_dir();
+        p.push(format!("prism-text-w1b-{}-{}.ttf", std::process::id(), tag));
+        std::fs::write(&p, bytes).expect("临时字体文件应可写入");
+        p
+    }
+
+    /// 外部装载：内嵌字节落盘 → `load_font_file` 读回 → 解析成功，且
+    /// 渲染结果与内嵌路径**逐位一致**（同字节同管线，装载方式不影响输出）。
+    #[test]
+    fn external_font_file_loads_and_renders_identically() {
+        let path = write_temp_font("regular-roundtrip", FONT_REGULAR);
+        let set = FontSet::load_font_file(path.to_str().expect("路径应有效 UTF-8"))
+            .expect("外部字体应可装载");
+        assert_eq!(set.len(), 1, "单文件装载 = 单元素链");
+        // 标签即路径原文（诊断可回溯到文件）。
+        assert_eq!(set.label(0), Some(path.to_str().unwrap()));
+        // 摘要与内嵌字节一致（同字节 → 同 SHA-256）。
+        assert_eq!(set.sha256_of(0).unwrap(), sha256(FONT_REGULAR));
+        assert_eq!(set.bytes_of(0).unwrap(), FONT_REGULAR, "读回字节应逐位等于源字节");
+        // 解析成功 + 度量一致。
+        let font = set.font(0).expect("外部字体应可解析");
+        assert_eq!(font.units_per_em(), font_regular().units_per_em());
+        assert_eq!(font.num_glyphs(), font_regular().num_glyphs());
+        // 渲染逐位一致：同 gid 同 px 的覆盖率位图必须完全相同。
+        let rg = set.resolve_glyph('中').expect("'中' 应解析");
+        assert_eq!(rg.origin, GlyphOrigin::Chain(0));
+        let external: GlyphBitmap = set.render(&rg, 32.0).expect("外部字体渲染");
+        let embedded: GlyphBitmap = render_glyph(&font_regular(), rg.gid, 32.0);
+        assert_eq!(external.width, embedded.width);
+        assert_eq!(external.height, embedded.height);
+        assert_eq!(external.alpha, embedded.alpha, "外部装载与内嵌路径须逐位一致");
+        // 清理（失败不影响断言结论）。
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 装载错误路径：文件不存在 / 字节损坏 → **T008**（语义错误）且消息含路径。
+    #[test]
+    fn load_font_file_errors_are_t008_with_path() {
+        // 1) 文件不存在。
+        let mut missing = std::env::temp_dir();
+        missing.push(format!("prism-text-w1b-{}-no-such-font.ttf", std::process::id()));
+        let path = missing.to_str().expect("路径应有效 UTF-8").to_string();
+        let err = FontSet::load_font_file(&path).expect_err("不存在的文件应报错");
+        assert_eq!(err.code, "T008", "读取失败归 T008：{}", err);
+        assert!(err.problem.contains(&path), "错误须含路径：{}", err.problem);
+        assert!(err.problem.contains("读取失败"), "{}", err.problem);
+        assert!(!err.fix.is_empty(), "三段式必含建议段");
+
+        // 2) 文件存在但字节损坏（非 sfnt）。
+        let bad = write_temp_font("corrupt", b"not-a-font-at-all");
+        let bad_path = bad.to_str().expect("路径应有效 UTF-8").to_string();
+        let err = FontSet::load_font_file(&bad_path).expect_err("坏字节应报错");
+        assert_eq!(err.code, "T008", "解析失败同样归 T008：{}", err);
+        assert!(err.problem.contains(&bad_path), "错误须含路径：{}", err.problem);
+        assert!(err.problem.contains("解析失败"), "{}", err.problem);
+        assert!(err.problem.contains("内层 T"), "应保留内层错误码：{}", err.problem);
+        // 装载失败不污染链（原子性：不留下半装槽位）。
+        let mut set = FontSet::new();
+        assert!(set.push_file(&bad_path).is_err());
+        assert!(set.is_empty(), "失败装载不得留下槽位");
+        let _ = std::fs::remove_file(&bad);
+    }
+
+    /// 回退链：首选缺码位 → 命中后面的字体（深度可观测）；全链缺失 → Err 含码位。
+    #[test]
+    fn font_set_fallback_hits_later_font_and_reports_missing() {
+        let mut set = FontSet::new();
+        // A：多语种子集（拉丁/阿拉伯/天城文，无汉字）；B：内嵌 Regular（GB2312 全集）。
+        let a = set.push_bytes("a-multiscript.ttf", FONT_MULTISCRIPT.to_vec()).expect("A 应可装载");
+        let b = set.push_embedded();
+        // A 不含 '中'、B 含 → 解析命中 B（回退深度 1）。
+        assert_eq!(set.covering_slot('中'), Some(b));
+        let zh = set.resolve_glyph('中').expect("'中' 应回退到 B");
+        assert_eq!(zh.origin, GlyphOrigin::Chain(b));
+        assert_eq!(zh.gid, font_regular().glyph_index('中').unwrap());
+        assert_eq!(a, 0);
+        // U+03B5 ε：A、B 均不含（内嵌子集只收 ASCII + GB2312 汉字区），
+        // 故落到链末端程序化符号表（v3-A 合成字形），不走 tofu。
+        assert_eq!(set.covering_slot('ε'), None);
+        assert_eq!(set.resolve_glyph('ε').unwrap().origin, GlyphOrigin::Synthetic);
+        // 全链 + 符号表均缺失 → Err 含缺失码位清单（诚实边界，不静默 tofu）。
+        let err = set.resolve_glyph('☃').expect_err("☃ 应报缺失");
+        assert_eq!(err.code, "T009");
+        assert!(err.problem.contains("缺失码位"), "{}", err.problem);
+        assert!(err.problem.contains("U+2603"), "{}", err.problem);
+        // 文本级：缺失码位一并列出并去重（顺序 = 首现顺序）。
+        let err = set.resolve_text("中☃中😀☃").expect_err("整行应报缺失");
+        assert!(err.problem.contains("U+2603") && err.problem.contains("U+1F600"), "{}", err.problem);
+        assert_eq!(err.problem.matches("U+2603").count(), 1, "缺失码位应去重");
+        // 缺失码位清单格式（希腊字母两枚，按传入序逗号/顿号分隔）。
+        let fmt = math_symbols::missing_codepoint_error(&['ε', 'δ'], &["a.ttf", "b.ttf"]);
+        assert!(fmt.problem.contains("U+03B5"), "{}", fmt.problem);
+        assert!(fmt.problem.contains("U+03B4"), "{}", fmt.problem);
+    }
+
+    /// 确定性：同字节流两次装载 → 摘要 / 解析 / 渲染逐位一致（解析是纯函数）。
+    #[test]
+    fn font_set_loading_is_deterministic() {
+        let p1 = write_temp_font("det-a", FONT_REGULAR);
+        let p2 = write_temp_font("det-b", FONT_REGULAR);
+        let s1 = FontSet::load_font_file(p1.to_str().unwrap()).expect("第一次装载");
+        let s2 = FontSet::load_font_file(p2.to_str().unwrap()).expect("第二次装载");
+        // 路径不同（标签不同）但字节相同 → 摘要相同。
+        assert_eq!(s1.sha256_of(0), s2.sha256_of(0));
+        for ch in ['A', '中', '，', '0'] {
+            let r1 = s1.resolve_glyph(ch).expect("解析");
+            let r2 = s2.resolve_glyph(ch).expect("解析");
+            assert_eq!(r1, r2, "同字节须得同解析结果：{ch}");
+            assert_eq!(s1.advance(&r1).unwrap(), s2.advance(&r2).unwrap());
+            assert_eq!(s1.units_per_em(&r1).unwrap(), s2.units_per_em(&r2).unwrap());
+            let b1 = s1.render(&r1, 24.0).expect("渲染");
+            let b2 = s2.render(&r2, 24.0).expect("渲染");
+            assert_eq!(b1.width, b2.width);
+            assert_eq!(b1.height, b2.height);
+            assert_eq!(b1.alpha, b2.alpha, "同字节渲染须逐位一致：{ch}");
+        }
+        let _ = std::fs::remove_file(&p1);
+        let _ = std::fs::remove_file(&p2);
     }
 }

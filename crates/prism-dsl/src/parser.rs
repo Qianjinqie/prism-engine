@@ -11,7 +11,7 @@
 
 use crate::ast::{
     AnimAst, AudioAst, CameraV2Ast, ComposeAst, ComposeOpAst, ComposeRef, DocumentAst, DocumentV2Ast,
-    ExprDefAst, FieldValue, ImportPacksAst, KeyAst, LayerAst, LightV2Ast, MaterialV2Ast,
+    ExprDefAst, FieldValue, FontDecl, ImportPacksAst, KeyAst, LayerAst, LightV2Ast, MaterialV2Ast,
     MovieAst, NamedField, NoteAst, OutputAst, PostAst, SceneItem, SceneV2Ast, SdfAst, SimAst,
     Stage3dAst, TimeVal, TimeUnit, TransitionAst, AestheticAst, AngleVal, AngleUnit,
     OutputFormatAst, SceneAst, SphereAst, MaterialAst, CameraAst, LightAst, TimelineAst,
@@ -863,7 +863,7 @@ impl Parser {
                     return Err(err_at(
                         t.line,
                         format!(
-                            "[P1001] 顶层期望块定义（movie / scene / transition 等），却遇到 {}\n  建议：顶层只能出现 movie / timeline / theme / import packs / scene / transition / anim / expr / output 之一",
+                            "[P1001] 顶层期望块定义（movie / font / scene / transition 等），却遇到 {}\n  建议：顶层只能出现 movie / timeline / theme / import packs / font / scene / transition / anim / expr / output 之一",
                             describe_tok(&other)
                         ),
                     ));
@@ -898,6 +898,7 @@ impl Parser {
                     doc.theme = Some(self.parse_aesthetic_fields("theme")?);
                 }
                 "import" => doc.imports.push(self.parse_import(line)?),
+                "font" => doc.fonts.push(self.parse_font(line)?),
                 "scene" => doc.scenes.push(self.parse_scene_v2(line)?),
                 "transition" => doc.transitions.push(self.parse_transition(line)?),
                 "anim" => doc.anims.push(self.parse_anim(line)?),
@@ -924,7 +925,7 @@ impl Parser {
                     return Err(err_at(
                         line,
                         format!(
-                            "[P1002] 未知顶层块 '{}'（允许：movie / timeline / theme / import packs / scene / transition / anim / expr / output）\n  建议：检查块名拼写；audio 与 post 应写在 scene 块内",
+                            "[P1002] 未知顶层块 '{}'（允许：movie / timeline / theme / import packs / font / scene / transition / anim / expr / output）\n  建议：检查块名拼写；audio 与 post 应写在 scene 块内",
                             other
                         ),
                     ));
@@ -1561,6 +1562,66 @@ impl Parser {
             _ => Vec::new(),
         };
         Ok(ImportPacksAst { name, fields, line: kw_line })
+    }
+
+    /// font 指令：`font "首选.ttf" fallback "次级.ttf", "末级.ttf"`（V1.5-B）。
+    ///
+    /// 语法要点：
+    /// - 首选路径必填（双引号字符串），`fallback` 子句可省略；
+    /// - `fallback` 后至少一个路径，多个路径用**逗号**分隔（尾逗号显式报错）；
+    /// - 声明顺序即回退顺序（首选在前），多条 font 指令串联成一条完整链。
+    ///
+    /// 装载（读文件 / 解析 / 缺失码位诊断）不在 parser 做——本层只负责
+    /// 语法与路径非空，文件系统错误由 `prism-text` 的 `FontSet` 报 T008。
+    fn parse_font(&mut self, kw_line: usize) -> Result<FontDecl, DslError> {
+        let (path, path_line) = self.expect_str("font 首选字体文件路径")?;
+        if path.trim().is_empty() {
+            return Err(err_at(
+                path_line,
+                "[P4004] font 指令的首选字体路径不能为空字符串\n  建议：写成 font \"assets/MyFont.ttf\" fallback \"assets/Fallback.ttf\"；路径为运行时工作目录相对路径或绝对路径",
+            ));
+        }
+        let mut fallbacks: Vec<String> = Vec::new();
+        // 可选 fallback 子句：紧跟字符串之后、且不是 'fallback' 关键字则此链只有一项。
+        let has_fallback: bool = matches!(
+            self.peek(),
+            Some(Token { tok: Tok::Ident(k), .. }) if k == "fallback"
+        );
+        if has_fallback {
+            self.bump();
+            loop {
+                let (fb, fb_line) = self.expect_str("fallback 字体文件路径")?;
+                if fb.trim().is_empty() {
+                    return Err(err_at(
+                        fb_line,
+                        "[P4004] fallback 字体路径不能为空字符串\n  建议：删除空字符串，只保留实际存在的字体文件路径",
+                    ));
+                }
+                fallbacks.push(fb);
+                // 逗号 = 列表继续；无逗号 = 列表结束。
+                let next: Option<Tok> = self.peek().map(|t| t.tok.clone());
+                if matches!(next, Some(Tok::Comma)) {
+                    self.bump();
+                    if !matches!(self.peek(), Some(Token { tok: Tok::Str(_), .. })) {
+                        let line = self.peek().map_or(self.eof_line(), |t| t.line);
+                        return Err(err_at(
+                            line,
+                            "[P1002] fallback 列表的逗号之后缺少字体路径\n  建议：写成 fallback \"assets/B.ttf\", \"assets/C.ttf\"（逗号后必须紧跟双引号字符串，尾逗号不允许）",
+                        ));
+                    }
+                    continue;
+                }
+                if matches!(next, Some(Tok::Str(_))) {
+                    let line = self.peek().map_or(self.eof_line(), |t| t.line);
+                    return Err(err_at(
+                        line,
+                        "[P1002] fallback 列表中相邻字体路径之间缺少逗号\n  建议：写成 fallback \"assets/B.ttf\", \"assets/C.ttf\"（多个回退字体以逗号分隔）",
+                    ));
+                }
+                break;
+            }
+        }
+        Ok(FontDecl { path, fallbacks, line: kw_line })
     }
 
     /// 通用字段循环（开放参数集块）：`(名 值)*`，遇 '}' 结束。

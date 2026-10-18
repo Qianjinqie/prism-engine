@@ -230,8 +230,8 @@ pub fn compile_v2_with_diagnostics(
 // ---------------------------------------------------------------------------
 
 pub use crate::codegen::{
-    AudioInfo, CameraOrbit, CompileV2Output, LayerInfo, NamedChannel, NoteInfo, PostInfo, SceneV2,
-    SimInfo, ThemeInfo, TransitionV2,
+    AudioInfo, CameraOrbit, CompileV2Output, FontSlotSpec, LayerInfo, NamedChannel, NoteInfo,
+    PostInfo, SceneV2, SimInfo, ThemeInfo, TransitionV2,
 };
 pub use crate::packs::{PackManifest, SemVer};
 
@@ -1787,6 +1787,85 @@ mod tests {
                     "v1 消息必须逐字不变"
                 );
             }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // V1.5-B：font 指令（外部字体回退链声明）
+    // -----------------------------------------------------------------------
+
+    /// font 指令往返：parse → codegen 产出 FontSet 构造序列，顺序 = 声明顺序。
+    #[test]
+    fn v2_font_directive_builds_declared_fallback_chain() {
+        let src = "// prism-dsl 1\n\
+                   font \"assets/MyFont.ttf\" fallback \"assets/B.ttf\", \"assets/C.ttf\"\n\
+                   font \"assets/D.ttf\"\n\
+                   scene \"s\" {}\n";
+        let out: CompileV2Output = compile_v2(src).expect("font 指令应可编译");
+        // 展平为单条回退链：首选在前，fallback 依次在后，多条指令按出现顺序。
+        let paths: Vec<&str> = out.fonts.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec!["assets/MyFont.ttf", "assets/B.ttf", "assets/C.ttf", "assets/D.ttf"],
+            "push 顺序必须等于声明顺序"
+        );
+        // index = 展平下标 = FontSet::push_file 返回的槽位号。
+        assert_eq!(out.fonts.iter().map(|f| f.index).collect::<Vec<_>>(), vec![0, 1, 2, 3]);
+        // 行号定位可回溯到声明行（装载失败诊断用）。
+        assert_eq!(out.fonts[0].line, 2);
+        assert_eq!(out.fonts[1].line, 2);
+        assert_eq!(out.fonts[3].line, 3);
+        // 标签保留路径原文（对接 FontSlot::label）。
+        assert_eq!(out.fonts[2].label, "assets/C.ttf");
+        // 无 font 指令 → 空序列（不隐式塞内嵌字体：诚实边界）。
+        let plain: CompileV2Output =
+            compile_v2("// prism-dsl 1\nscene \"s\" {}\n").expect("应可编译");
+        assert!(plain.fonts.is_empty(), "未声明 font 时构造序列必须为空");
+    }
+
+    /// font 指令语法错误：空路径 / 缺逗号 / 尾逗号 → 带行号 + 三段式建议。
+    #[test]
+    fn v2_font_directive_syntax_errors_are_located() {
+        // 空首选路径。
+        expect_err_v2(
+            "// prism-dsl 1\nfont \"\" fallback \"b.ttf\"\nscene \"s\" {}\n",
+            2,
+            "首选字体路径不能为空",
+        );
+        // 空 fallback 路径。
+        expect_err_v2(
+            "// prism-dsl 1\nfont \"a.ttf\" fallback \"\"\nscene \"s\" {}\n",
+            2,
+            "fallback 字体路径不能为空",
+        );
+        // 相邻路径缺逗号。
+        expect_err_v2(
+            "// prism-dsl 1\nfont \"a.ttf\" fallback \"b.ttf\" \"c.ttf\"\nscene \"s\" {}\n",
+            2,
+            "缺少逗号",
+        );
+        // 尾逗号后直接换到下一个顶层块（逗号后缺路径）。
+        expect_err_v2(
+            "// prism-dsl 1\nfont \"a.ttf\" fallback \"b.ttf\",\nscene \"s\" {}\n",
+            3,
+            "逗号之后缺少字体路径",
+        );
+        // fallback 后不是字符串（v1 风格无错误码的断言：只校验行号与措辞）。
+        match compile_v2("// prism-dsl 1\nfont \"a.ttf\" fallback b\nscene \"s\" {}\n") {
+            Ok(_) => panic!("fallback 后跟裸标识符应失败"),
+            Err(e) => {
+                assert_eq!(e.line, 2, "行号应指向 font 指令行：{}", e.message);
+                assert!(
+                    e.message.contains("双引号字符串"),
+                    "应提示需要字符串：{}",
+                    e.message
+                );
+            }
+        }
+        // 顶层未知块提示里已列出 font 关键字（可发现性）。
+        match compile_v2("// prism-dsl 1\nfonts \"a.ttf\"\nscene \"s\" {}\n") {
+            Ok(_) => panic!("'fonts' 应视为未知块"),
+            Err(e) => assert!(e.message.contains("font"), "允许列表应含 font：{}", e.message),
         }
     }
 }
