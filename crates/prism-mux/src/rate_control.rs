@@ -20,9 +20,12 @@
 
 use prism_math::det_pow::{det_exp2, det_log2};
 
-/// 质量→bit/符号 常数：`Δq = ΔR · QUALITY_PER_BIT`。
+/// 质量/(bit/符号) 常数：`Δq = ΔR · QUALITY_PER_BIT`（Δq 为 JPEG 质量步长，
+/// ΔR 为 bit/符号 步长；两者相除即 质量/(bit/符号)，与 bit/符号 口径的 ΔR 相乘
+/// 才能回到质量步长）。
 ///
-/// 标定（主理人实测，合成残差样平面 q68→76）：64×64 slope=0.005524→181.0；
+/// 标定（主理人实测，合成残差样平面 q68→76）：slope 口径为 bit/符号/q
+/// （编码字节数差 ÷ 符号数 ÷ 8）；64×64 slope=0.005524→181.0；
 /// 96×54 slope=0.005908→169.3；160×90 slope=0.005885→169.9。大尺寸收敛 ~0.0059，
 /// 取 170。一阶控制器近似：`q_new = q_base + (R_target − R_base)·170`。
 pub const QUALITY_PER_BIT: f64 = 170.0;
