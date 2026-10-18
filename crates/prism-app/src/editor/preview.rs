@@ -1,11 +1,17 @@
-//! 编辑器预览渲染器：**草稿档位 + 子图签名增量**的落地。
+//! 编辑器预览渲染器：**草稿档几何图案 + 成片档真实渲染 + 子图签名增量**。
 //!
 //! # 核心洞察
 //! "预览 = 草稿档位 + 子图签名增量"。本模块是该命题的执行端：
 //!
-//! 1. **草稿档位**（[`PreviewQuality`]）：`Draft` 用 1/4 内部分辨率 + 1 spp，
-//!    `Final` 用全分辨率 + 16 spp。两者不仅采样数不同，**内部分辨率也不同**，
-//!    因此 Draft 既快又可见地糙（放大后呈块状），Final 平滑。
+//! 1. **草稿档位**（[`PreviewQuality`]）：两档分工——
+//!    - `Draft`（保交互）：1/4 内部分辨率 + 1 spp **几何图案**（整数散列 +
+//!      多项式插值，无 libm），快得可以每帧重算；
+//!    - `Final`（Real 档，V1.5-F 起）：**低 spp 真实渲染**——整图经既有渲染
+//!      管线（[`prism_render::render_frame`] → `CpuRefBackend` 软光追）出帧，
+//!      每像素 [`FINAL_REAL_SPP`] 个确定性亚像素 tap 整数平均。低采样数保
+//!      速度（记录在案：V1.5 定为 2 = 基准 tap + 一次半像素抖动 tap）。
+//!    注意 Draft 仍是几何图案（不穿渲染管线），这是**有意的分工**而非遗留：
+//!    交互期要的是延迟，Real 档要的是"所见接近所得"。
 //! 2. **子图签名增量**：逐节点求值时以
 //!  `cache_key(节点子树签名, 渲染维度)`（[`cache_key`]， 五元组 +
 //!    tile + 帧，C13 版本入键）为键做**中间缓冲记忆化**。签名未变的节点直接
@@ -14,23 +20,36 @@
 //! 记忆化集合与 [`crate::editor::DirtySet`]（签名比对得出的受影响子图）**恰好
 //! 相同**：两者都由"子树签名是否变化"决定，故 `recomputed` 与 `dirty` 集合相等
 //! 是本设计的**不变式**（见集成测试 `incremental_recompute_set_equals_dirty_set`）。
+//! Real 档保留同一套缓存簿记（键空间按 `spp_tier` 与 Draft 隔离），故增量
+//! 统计语义逐字段一致——只是锥内节点不再做几何求值，改由整图穿管线。
 //!
 //! # 确定性（铁律：同输入逐字节可复现）
-//! 预览图案**只用整数散列 + 多项式插值 + 四则运算**生成，**不调用任何超越
+//! Draft 图案**只用整数散列 + 多项式插值 + 四则运算**生成，**不调用任何超越
 //! 函数**（`sin`/`cos`/`exp`/`pow` 等 libm）。理由：libm 的超越函数在不同
 //! 平台/版本上末位可能不同，会击穿"同输入同 md5"。工程权威指纹
 //! （[`crate::editor::canonical_bytes`] / 签名树）本身已是纯整数 SHA-256；
 //! 预览若引入 libm 不确定性，会让"同图同预览"这条辅助不变量失效。
-//! 代价是图案偏"几何"而非"自然"，对编辑器预览完全够用。
 //!
-//! # 零第三方依赖
-//! 仅 `std` + workspace 内 `prism-core`（图 / 签名 / 缓存键 / 节点模型）。
+//! Real 档走渲染管线，其确定性口径与 `render_movie` **完全相同**：纯数据
+//! 驱动（场景由图 canonical 字节散列派生 + tap 抖动为固定表，无随机数状态；
+//! 管线内部 `tan` 走自研 `det_trig`），同图同尺寸在同平台同构建下两跑逐字节
+//! 一致（既有 `render_movie` 确定性测试即此口径）。工程权威指纹仍由纯整数
+//! 签名树承担，不受管线浮点路径影响。
+//!
+//! # 依赖
+//! Draft 路径仅 `std` + workspace 内 `prism-core`（图 / 签名 / 缓存键 /
+//! 节点模型）；Real 路径 additionally 复用 `prism-render` / `prism-gpu` /
+//! `prism-math`（与 CLI `render` 子命令同一条管线，不另写渲染器）。
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use prism_core::node::{MergeOp, NodeId, Params, StructureId};
 use prism_core::signature::{cache_key, graph_signatures, CacheDims, ChannelDefs};
-use prism_core::Graph;
+use prism_core::{graph_canonical_bytes, Aesthetic, Camera, Graph, Light, Material, Scene};
+use prism_gpu::CpuRefBackend;
+use prism_math::det_trig::tan as det_tan;
+use prism_math::Vec3;
+use prism_render::render_frame;
 
 use super::state::PreviewQuality;
 
@@ -87,6 +106,14 @@ pub const MAX_DIM: u32 = 512;
 
 /// Draft 档位的内部分辨率缩约因子（宽高各缩 1/DRAFT_DOWNSCALE 后求值再最近邻放大）。
 pub const DRAFT_DOWNSCALE: u32 = 4;
+
+/// Real（Final）档的每像素**管线采样数**（低采样保速度，V1.5-F 定为 2：
+/// 基准 tap + 一次确定性亚像素抖动 tap，整数域平均）。
+///
+/// 记录在案：这是"低 spp 真实渲染"的务实取值——管线（`CpuRefBackend`）本身
+/// 是单样本光线投射，多 tap 即超采样；2 tap 在预览尺寸下单帧耗时处于
+/// 几十毫秒量级（见汇报实测），保编辑器交互可接受。
+pub const FINAL_REAL_SPP: u32 = 2;
 
 /// 预览缓冲键：(节点 id, 缓存键)。
 ///
@@ -203,7 +230,10 @@ impl PreviewRenderer {
         // 根的祖先锥：只有锥内节点参与求值（锥外节点与输出无关，不重算也不计数）。
         let cone: BTreeSet<NodeId> = ancestor_cone(graph, &order, root);
 
-        // 草稿档位：内部分辨率缩约 + 低采样；成片：全分辨率 + 高采样。
+        // 档位分派：Draft = 几何图案（保交互）；Final = Real 档真实渲染（走管线）。
+        let real: bool = matches!(quality, PreviewQuality::Final);
+
+        // 草稿档位：内部分辨率缩约 + 低采样；成片：全分辨率 + 管线低采样。
         let (iw, ih) = match quality {
             PreviewQuality::Draft => (
                 div_ceil(width, DRAFT_DOWNSCALE).max(1),
@@ -238,6 +268,14 @@ impl PreviewRenderer {
                 reused.push(id);
                 continue;
             }
+            if real {
+                // Real 档不走逐节点几何求值（中间缓冲无意义）：仅登记增量事实
+                // （哪些节点本帧需要重算），插入空占位使同参再渲染命中缓存，
+                // 统计语义与 Draft 档逐字段一致（recomputed/reused 判据不变）。
+                self.insert(key, Vec::new());
+                recomputed.push(id);
+                continue;
+            }
             let node = match graph.node(id) {
                 Some(n) => n,
                 None => continue, // 拓扑序覆盖全部节点，理论不可达；防御性跳过
@@ -248,13 +286,28 @@ impl PreviewRenderer {
             recomputed.push(id);
         }
 
-        // 合成输出：根缓冲 → （Draft 时最近邻放大）→ RGBA8。
-        let root_key: BufKey = (root, cache_key(&sigs[&root], &dims));
-        let root_buf: Vec<f32> = self.cache.get(&root_key).cloned().unwrap_or_else(|| {
-            // 理论不可达（root ∈ cone 且刚被算出或命中）；兜底为黑图，不 panic。
-            vec![0.0; (iw as usize) * (ih as usize) * 3]
-        });
-        let rgba = to_rgba(&root_buf, iw, ih, width, height);
+        // 合成输出：Draft = 根缓冲最近邻放大 → RGBA8；
+        // Real（Final）= 整图经既有渲染管线出帧（低 spp，见 render_real_frame）。
+        let rgba: Vec<u8> = if real {
+            render_real_frame(graph, &cone, width, height, FINAL_REAL_SPP).ok_or_else(|| {
+                PreviewError::BadSize { location: location.clone(), width, height }
+            })?
+        } else {
+            let root_key: BufKey = (root, cache_key(&sigs[&root], &dims));
+            let root_buf: Vec<f32> = self.cache.get(&root_key).cloned().unwrap_or_else(|| {
+                // 理论不可达（root ∈ cone 且刚被算出或命中）；兜底为黑图，不 panic。
+                vec![0.0; (iw as usize) * (ih as usize) * 3]
+            });
+            to_rgba(&root_buf, iw, ih, width, height)
+        };
+
+        // 统计口径如实反映"实际用什么"：Real 档报管线采样数与全输出分辨率；
+        // Draft 档报几何图案采样数与内部分辨率。
+        let (stats_spp, stats_iw, stats_ih): (u32, u32, u32) = if real {
+            (FINAL_REAL_SPP, width, height)
+        } else {
+            (spp, iw, ih)
+        };
 
         Ok(Rendered {
             width,
@@ -263,9 +316,9 @@ impl PreviewRenderer {
             stats: RenderStats {
                 recomputed,
                 reused,
-                spp,
-                internal_width: iw,
-                internal_height: ih,
+                spp: stats_spp,
+                internal_width: stats_iw,
+                internal_height: stats_ih,
                 cone_size: cone.len(),
             },
         })
@@ -673,6 +726,252 @@ fn to_rgba(buf: &[f32], iw: u32, ih: u32, width: u32, height: u32) -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
+// Real（Final）档：图 → 场景 → 既有渲染管线出帧（V1.5-F）
+// ---------------------------------------------------------------------------
+
+/// 图 canonical 字节 → 32 位种子（FNV 式折叠；同图同种子，逐字节敏感）。
+///
+/// 结构 / 组合方式 / 参数 / 连线任一变化都改变种子——Real 档场景由种子派生，
+/// 故"不同图 → 不同场景 → 不同像素"（测试 `different_structures_look_different`
+/// 与 `merge_operations_change_output` 即依赖此敏感性）。
+fn graph_seed(graph: &Graph) -> u32 {
+    let digest: Vec<u8> = graph_canonical_bytes(graph);
+    let mut seed: u32 = 0x811c_9dc5;
+    for &b in &digest {
+        seed = hash_u32(seed ^ u32::from(b));
+    }
+    seed
+}
+
+/// Real 档的场景参数覆盖表（图参数 → 场景字段；首个定义生效，id 升序确定性）。
+///
+/// 定位：让编辑器里**真实命名的参数**（radius / albedo_r / fov …）直接驱动
+/// 预览场景，而不是只当散列种子——否则"改半径滑条预览不变"会很违和。
+/// 未覆盖的字段回落到种子派生缺省（见 [`scene_from_graph`]）。
+#[derive(Debug, Clone, Default)]
+struct SceneOverrides {
+    radius: Option<f32>,
+    orbit_radius: Option<f32>,
+    orbit_x: Option<f32>,
+    orbit_y: Option<f32>,
+    orbit_z: Option<f32>,
+    albedo_r: Option<f32>,
+    albedo_g: Option<f32>,
+    albedo_b: Option<f32>,
+    roughness: Option<f32>,
+    metalness: Option<f32>,
+    intensity: Option<f32>,
+    fov_deg: Option<f32>,
+    fov_rad: Option<f32>,
+    contrast: Option<f32>,
+    teal_orange: Option<bool>,
+    filmic: Option<bool>,
+}
+
+/// 取首个定义的 f32 参数（非有限值视为未定义，绝不把 NaN 写进场景）。
+fn take_f32(slot: &mut Option<f32>, params: &Params, key: &str) {
+    if slot.is_some() {
+        return;
+    }
+    if let Some(prism_core::node::ParamValue::F32(v)) = params.get(key) {
+        if v.is_finite() {
+            *slot = Some(*v);
+        }
+    }
+}
+
+/// 取首个定义的 bool 参数。
+fn take_bool(slot: &mut Option<bool>, params: &Params, key: &str) {
+    if slot.is_some() {
+        return;
+    }
+    if let Some(prism_core::node::ParamValue::Bool(v)) = params.get(key) {
+        *slot = Some(*v);
+    }
+}
+
+/// 按 id 升序收集锥内节点的场景参数覆盖（首个定义生效）。
+fn collect_overrides(graph: &Graph, cone: &BTreeSet<NodeId>) -> SceneOverrides {
+    let mut o = SceneOverrides::default();
+    for &id in cone {
+        let Some(node) = graph.node(id) else { continue };
+        let p: &Params = &node.params;
+        take_f32(&mut o.radius, p, "radius");
+        take_f32(&mut o.orbit_radius, p, "orbit_radius");
+        take_f32(&mut o.orbit_x, p, "orbit_x");
+        take_f32(&mut o.orbit_y, p, "orbit_y");
+        take_f32(&mut o.orbit_z, p, "orbit_z");
+        take_f32(&mut o.albedo_r, p, "albedo_r");
+        take_f32(&mut o.albedo_g, p, "albedo_g");
+        take_f32(&mut o.albedo_b, p, "albedo_b");
+        take_f32(&mut o.roughness, p, "roughness");
+        take_f32(&mut o.metalness, p, "metalness");
+        take_f32(&mut o.intensity, p, "intensity");
+        take_f32(&mut o.fov_deg, p, "fov");
+        take_f32(&mut o.fov_rad, p, "fov_rad");
+        take_f32(&mut o.contrast, p, "contrast");
+        take_bool(&mut o.teal_orange, p, "teal_orange");
+        take_bool(&mut o.filmic, p, "filmic");
+    }
+    if o.fov_deg.is_none() {
+        if let Some(rad) = o.fov_rad {
+            o.fov_deg = Some(rad.to_degrees());
+        }
+    }
+    o
+}
+
+/// 把覆盖表应用到场景（全部钳制在合理区间，绝不把病态值写进管线）。
+fn apply_overrides(scene: &mut Scene, o: &SceneOverrides) {
+    if let Some(r) = o.radius {
+        scene.radius = r.clamp(0.05, 4.0);
+    }
+    if let Some(r) = o.orbit_radius {
+        scene.orbit_radius = r.clamp(1.5, 16.0);
+    }
+    if o.orbit_x.is_some() || o.orbit_y.is_some() || o.orbit_z.is_some() {
+        scene.orbit_center = Vec3::new(
+            o.orbit_x.unwrap_or(scene.orbit_center.x).clamp(-8.0, 8.0),
+            o.orbit_y.unwrap_or(scene.orbit_center.y).clamp(-8.0, 8.0),
+            o.orbit_z.unwrap_or(scene.orbit_center.z).clamp(-8.0, 8.0),
+        );
+    }
+    let albedo = Vec3::new(
+        o.albedo_r.unwrap_or(scene.material.albedo.x).clamp(0.0, 1.0),
+        o.albedo_g.unwrap_or(scene.material.albedo.y).clamp(0.0, 1.0),
+        o.albedo_b.unwrap_or(scene.material.albedo.z).clamp(0.0, 1.0),
+    );
+    scene.material = Material::new(
+        albedo,
+        o.roughness.unwrap_or(scene.material.roughness).clamp(0.0, 1.0),
+        o.metalness.unwrap_or(scene.material.metalness).clamp(0.0, 1.0),
+    );
+    if let Some(light) = scene.lights.first().copied() {
+        if let Some(i) = o.intensity {
+            scene.lights[0] =
+                Light::new(light.direction, light.color, i.clamp(0.0, 8.0));
+        }
+    }
+    if let Some(f) = o.fov_deg {
+        scene.camera.fov = f.clamp(10.0, 120.0).to_radians();
+    }
+    let aesthetic = &scene.aesthetic;
+    scene.aesthetic = Aesthetic::new(
+        o.teal_orange.unwrap_or(aesthetic.teal_orange),
+        o.contrast.unwrap_or(aesthetic.contrast).clamp(0.2, 3.0),
+        o.filmic.unwrap_or(aesthetic.filmic),
+    );
+}
+
+/// 图 → 预览场景（Real 档专用映射，纯函数确定性）。
+///
+/// **风格化映射**（与 Draft 的 `pattern_family` 同性质，已在"诚实边界"登记）：
+/// 场景参数由图 canonical 字节的散列种子派生；随后锥内节点的**真实命名
+/// 参数**（radius / orbit_* / albedo_* / roughness / metalness / intensity /
+/// fov / contrast / teal_orange / filmic）按 id 升序首个定义覆盖。
+fn scene_from_graph(graph: &Graph, cone: &BTreeSet<NodeId>) -> Scene {
+    let seed: u32 = graph_seed(graph);
+    let h = |i: u32| -> f32 { (hash_u32(seed ^ i.wrapping_mul(0x9e37_79b1)) >> 8) as f32 / 16_777_216.0 };
+
+    let orbit_radius: f32 = 3.5 + 4.0 * h(4);
+    let center: Vec3 = Vec3::new((h(1) - 0.5) * 0.8, (h(2) - 0.5) * 0.8, (h(3) - 0.5) * 0.8);
+    // 灯光方向：种子派生 + 零向量下限保护（normalize 不出 NaN）。
+    let dir_raw: Vec3 = Vec3::new(h(10) - 0.5, -(0.4 + 0.6 * h(11)), h(12) - 0.5);
+    let dir: Vec3 = if dir_raw.length() > 1e-4 {
+        dir_raw.normalize()
+    } else {
+        Vec3::new(0.3, -1.0, 0.6)
+    };
+    let scene: Scene = Scene {
+        radius: 0.35 + 0.9 * h(0),
+        orbit_center: center,
+        orbit_radius,
+        material: Material::new(
+            Vec3::new(0.25 + 0.75 * h(5), 0.25 + 0.75 * h(6), 0.25 + 0.75 * h(7)),
+            (0.15 + 0.7 * h(8)).clamp(0.0, 1.0),
+            h(9).clamp(0.0, 1.0),
+        ),
+        lights: vec![Light::new(
+            dir,
+            Vec3::new(1.0, 244.0 / 255.0, 230.0 / 255.0),
+            2.0 + 2.0 * h(13),
+        )],
+        // eye 由 eval_camera_orbit 推导，此处仅为契约占位（与 movie.rs 同约定）。
+        camera: Camera::new(Vec3::new(0.0, 0.0, -orbit_radius), center, (30.0 + 35.0 * h(14)).to_radians()),
+        aesthetic: Aesthetic::new(h(15) > 0.5, 0.85 + 0.4 * h(16), h(17) > 0.5),
+    };
+    let mut scene = scene;
+    apply_overrides(&mut scene, &collect_overrides(graph, cone));
+    scene
+}
+
+/// 确定性亚像素抖动表（tap 序号 → 半像素偏移；无随机数状态）。
+fn jitter_offset(tap: u32) -> (f32, f32) {
+    match tap {
+        1 => (0.5, 0.5),
+        2 => (-0.5, 0.5),
+        3 => (0.5, -0.5),
+        _ => (-0.5, -0.5),
+    }
+}
+
+/// Real 档出帧：整图经**既有渲染管线**渲染为 RGBA8，`spp` 个确定性亚像素
+/// tap 在整数域平均（低采样保速度）。
+///
+/// # 抖动几何
+/// t=0 的轨道相机基座轴对齐（`eval_camera_orbit`：eye = center + (0,0,-r)，
+/// forward=+Z / right=-X / up=+Y），故平移 `orbit_center` 半像素 ≡ 相机
+/// 亚像素偏移（视方向不变，画面整体平移）。
+///
+/// # Errors
+/// 帧缓冲尺寸与请求不符（管线拒绝）→ `None`（调用方转 [`PreviewError::BadSize`]）。
+fn render_real_frame(
+    graph: &Graph,
+    cone: &BTreeSet<NodeId>,
+    width: u32,
+    height: u32,
+    spp: u32,
+) -> Option<Vec<u8>> {
+    let scene: Scene = scene_from_graph(graph, cone);
+    let mut device = CpuRefBackend;
+    let taps: u32 = spp.max(1);
+    let expect: usize = (width as usize) * (height as usize) * 4;
+
+    // tap 0：基准（像素中心采样）。
+    let first = render_frame(&mut device, &scene, 0.0, 1.0, width, height);
+    if first.pixels.len() != expect {
+        return None;
+    }
+    if taps <= 1 {
+        return Some(first.pixels);
+    }
+
+    // 半像素的世界尺寸（按目标距计算；aspect 防 height=0——入口已校验，防御性保留）。
+    let aspect: f32 = if height == 0 { 1.0 } else { width as f32 / height as f32 };
+    let dist: f32 = scene.orbit_radius.max(0.1);
+    let half_h: f32 = dist * det_tan(scene.camera.fov * 0.5);
+    let px_w: f32 = 2.0 * half_h * aspect / width as f32;
+    let px_h: f32 = 2.0 * half_h / height as f32;
+
+    let mut acc: Vec<u32> = first.pixels.iter().map(|&b| u32::from(b)).collect();
+    for tap in 1..taps {
+        let (dx, dy): (f32, f32) = jitter_offset(tap);
+        let mut jittered: Scene = scene.clone();
+        jittered.orbit_center = scene.orbit_center + Vec3::new(dx * px_w, dy * px_h, 0.0);
+        let fb = render_frame(&mut device, &jittered, 0.0, 1.0, width, height);
+        if fb.pixels.len() != expect {
+            return None;
+        }
+        for (a, &b) in acc.iter_mut().zip(fb.pixels.iter()) {
+            *a += u32::from(b);
+        }
+    }
+    // 整数域平均（round-half-up）；alpha 恒 255 不受影响。
+    let half: u32 = taps / 2;
+    Some(acc.iter().map(|&s| ((s + half) / taps).min(255) as u8).collect())
+}
+
+// ---------------------------------------------------------------------------
 // 单元测试（零 GPU 依赖，native 直接跑）
 // ---------------------------------------------------------------------------
 
@@ -925,5 +1224,93 @@ mod tests {
         assert_ne!(over, mul, "Over vs Multiply → 像素不同");
         assert_ne!(mul, plus, "Multiply vs Plus → 像素不同");
         assert_ne!(over, plus, "Over vs Plus → 像素不同");
+    }
+
+    #[test]
+    fn final_quality_uses_real_pipeline_not_geometric_pattern() {
+        // V1.5-F：Final 档必须走真实渲染管线（低 spp），不再是几何图案。
+        let g = build_reference_graph();
+        let mut r = PreviewRenderer::new();
+        let final_ = r.render(&g, &defs(), PreviewQuality::Final, 64, 48, 1, 0).unwrap();
+        // 统计口径如实：管线采样数 + 全输出分辨率。
+        assert_eq!(final_.stats.spp, FINAL_REAL_SPP, "Real 档应报管线采样数");
+        assert_eq!(
+            (final_.stats.internal_width, final_.stats.internal_height),
+            (64, 48),
+            "Real 档内部即输出分辨率"
+        );
+        assert_eq!(final_.rgba.len(), 64 * 48 * 4);
+        // 与 Draft（几何图案）逐像素不同 → 证明走了真渲染。
+        let draft = r.render(&g, &defs(), PreviewQuality::Draft, 64, 48, 1, 0).unwrap();
+        assert_ne!(draft.rgba, final_.rgba, "Real 档与 Draft 几何图案必须可区分");
+        // alpha 恒 255（管线输出不透明）。
+        assert!(final_.rgba.chunks_exact(4).all(|px| px[3] == 255));
+    }
+
+    #[test]
+    fn final_real_frame_is_byte_identical_across_runs_and_renderers() {
+        // 确定性铁律：同图同档同帧，跨调用、跨渲染器实例都逐字节一致。
+        let g = build_reference_graph();
+        let mut r1 = PreviewRenderer::new();
+        let a = r1.render(&g, &defs(), PreviewQuality::Final, 48, 32, 1, 0).unwrap();
+        let b = r1.render(&g, &defs(), PreviewQuality::Final, 48, 32, 1, 0).unwrap();
+        assert_eq!(a.rgba, b.rgba, "同渲染器两跑必须一致");
+        let mut r2 = PreviewRenderer::new();
+        let c = r2.render(&g, &defs(), PreviewQuality::Final, 48, 32, 1, 0).unwrap();
+        assert_eq!(a.rgba, c.rgba, "跨渲染器实例必须一致（纯函数场景映射）");
+    }
+
+    #[test]
+    fn final_real_frame_responds_to_param_edit() {
+        // Real 档场景对图内容敏感：改参数 → 种子变 → 像素变；撤销 → 逐字节还原。
+        let mut state = EditorState::with_reference_graph();
+        let mut r = PreviewRenderer::new();
+        let g0 = state.model().to_graph().unwrap();
+        let before = r.render(&g0, &defs(), PreviewQuality::Final, 32, 32, 1, 0).unwrap();
+
+        state.apply_edit(1, "scale", ParamValue::F32(0.9)).unwrap();
+        let g1 = state.model().to_graph().unwrap();
+        let after = r.render(&g1, &defs(), PreviewQuality::Final, 32, 32, 1, 0).unwrap();
+        assert_ne!(before.rgba, after.rgba, "Real 档预览应随编辑变化");
+
+        state.undo().unwrap();
+        let g2 = state.model().to_graph().unwrap();
+        let restored = r.render(&g2, &defs(), PreviewQuality::Final, 32, 32, 1, 0).unwrap();
+        assert_eq!(restored.rgba, before.rgba, "撤销后 Real 档像素必须逐字节还原");
+    }
+
+    #[test]
+    fn final_real_frame_param_override_drives_scene() {
+        // 真实命名参数（radius）直接驱动预览场景：同图不同 radius → 像素不同。
+        // （core 的 Graph 是只增结构、无 node_mut，故整图重建而非原地改。）
+        let leaf_with_radius = |radius: f32| -> Graph {
+            let mut g = Graph::new();
+            let mut n = Node::new(1, StructureId::ScalarField, Composition::Feed);
+            n.params.set("radius", ParamValue::F32(radius));
+            g.add_node(n).expect("单节点图构造应成功");
+            g
+        };
+        let mut r = PreviewRenderer::new();
+        let small = r
+            .render(&leaf_with_radius(0.4), &defs(), PreviewQuality::Final, 48, 48, 1, 0)
+            .unwrap()
+            .rgba;
+        let big = r
+            .render(&leaf_with_radius(1.6), &defs(), PreviewQuality::Final, 48, 48, 1, 0)
+            .unwrap()
+            .rgba;
+        assert_ne!(small, big, "radius 参数应改变 Real 档预览（球体大小不同）");
+    }
+
+    #[test]
+    fn final_real_frame_dimension_changes_pixels() {
+        // 帧维（D-28）与尺寸都进输出身份：不同尺寸 → 不同帧缓冲。
+        let g = build_reference_graph();
+        let mut r = PreviewRenderer::new();
+        let a = r.render(&g, &defs(), PreviewQuality::Final, 32, 32, 1, 0).unwrap();
+        let b = r.render(&g, &defs(), PreviewQuality::Final, 40, 24, 1, 0).unwrap();
+        assert_ne!(a.rgba.len(), b.rgba.len());
+        assert_eq!(a.rgba.len(), 32 * 32 * 4);
+        assert_eq!(b.rgba.len(), 40 * 24 * 4);
     }
 }
