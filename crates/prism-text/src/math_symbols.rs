@@ -39,7 +39,7 @@
 //! - [`tilde`]：等粗谷形波（≈ / ∼ 的波长线，端帽与谷底厚度一致）；
 //! - [`ellipse`] / [`dot`]：闭合椭圆 / 实心点。
 
-use crate::ttf::{Outline, OutlineContour, OutlinePoint};
+use crate::ttf::{FontError, Outline, OutlineContour, OutlinePoint};
 
 /// 合成字形 id 基址。
 ///
@@ -47,6 +47,51 @@ use crate::ttf::{Outline, OutlineContour, OutlinePoint};
 /// 以 gid 入键，合成 gid 与真实字形永不串键。表容量上限 256 项
 /// （`0xF000 + 255 = 0xF0FF`，仍在 u16 内）。
 pub const MATH_GID_BASE: u16 = 0xF000;
+
+/// 程序化符号表的 em 框单位数（upem）。
+///
+/// 表内全部轮廓按 upem=1000 定义（与内嵌 Regular 一致，见模块头
+/// 「坐标纪律」）；回退链渲染合成字形时以此为缩放基准（见 crate 根
+/// [`crate::FontSet`] 的 Synthetic 分支）。
+pub const MATH_UNITS_PER_EM: u16 = 1000;
+
+/// 缺失码位诊断错误码（V1.5-B：回退链 + 程序化符号表全缺失）。
+///
+/// 码段分配：T001–T007 归 `ttf.rs` 解析族；T008 = 字体文件读取失败
+/// （crate 根装载路径）；T009 = 本诊断（码位缺失）。
+const MISSING_CODEPOINT_CODE: &str = "T009";
+
+/// 缺失码位清单 → 三段式诊断错误（D-17 诚实边界：永不静默 tofu）。
+///
+/// 回退链（声明字体序列）与程序化符号表**全部**未覆盖某码位时，由
+/// 调用方以本函数构造错误：逐一列出具体缺失码位 `U+XXXX`（含字符
+/// 本身）与声明字体链，便于定位该补哪个字体——而不是静默落到
+/// `.notdef` 豆腐块。
+///
+/// `missing` 由调用方按首现顺序去重后传入；`chain` 为声明字体标签
+/// 序列（文件路径或 `<embedded:...>` 标记）。
+pub fn missing_codepoint_error(missing: &[char], chain: &[&str]) -> FontError {
+    let list: String = missing
+        .iter()
+        .map(|&ch| format!("U+{:04X} '{}'", ch as u32, ch))
+        .collect::<Vec<_>>()
+        .join("、");
+    let chain_desc: String = if chain.is_empty() {
+        "（空链：未声明任何字体）".to_string()
+    } else {
+        chain.join(" → ")
+    };
+    FontError {
+        code: MISSING_CODEPOINT_CODE,
+        problem: format!(
+            "字体回退链全部缺失码位：{}（共 {} 个；声明字体链：{}；程序化符号表亦未覆盖）",
+            list,
+            missing.len(),
+            chain_desc
+        ),
+        fix: "把一个覆盖该码位的字体文件加入回退链（DSL 侧即 font 指令的声明顺序，首选在前），或改写文本避开该码位".to_string(),
+    }
+}
 
 /// 圆 / 椭圆四次贝塞尔逼近常数（与 `symbols.rs` 同款标准值）。
 const K_CIRCLE: f32 = 0.5523;
@@ -858,5 +903,32 @@ mod tests {
         for g in &l.glyphs {
             assert!(!is_math_gid(g.gid), "已覆盖字符不得走合成 gid：{:?}", g.ch);
         }
+    }
+
+    /// 缺失码位诊断（V1.5-B 回退链末端；D-17）：三段式 + U+XXXX 清单。
+    #[test]
+    fn missing_codepoint_error_lists_codepoints_and_chain() {
+        // 单码位：含具体 U+XXXX 与字符本身。
+        let e = missing_codepoint_error(&['☃'], &["multiscript.ttf", "<embedded:PrismSansSC-Regular>"]);
+        assert_eq!(e.code, "T009");
+        assert!(e.problem.contains("U+2603"), "应含缺失码位：{}", e.problem);
+        assert!(e.problem.contains('☃'), "应含缺失字符本身：{}", e.problem);
+        assert!(e.problem.contains("multiscript.ttf"), "应列出声明链：{}", e.problem);
+        assert!(e.problem.contains("程序化符号表亦未覆盖"), "应说明末端也未覆盖：{}", e.problem);
+        assert!(!e.fix.is_empty(), "三段式必含建议段");
+        // 多码位：按传入序逐列出（BMP 外码位 5 位十六进制，标准记法）。
+        let e2 = missing_codepoint_error(&['☃', '😀'], &["a.ttf"]);
+        assert!(e2.problem.contains("U+2603"), "{}", e2.problem);
+        assert!(e2.problem.contains("U+1F600"), "BMP 外码位记法：{}", e2.problem);
+        // 空链如实说明（不伪装成"有字体但缺字形"）。
+        let e3 = missing_codepoint_error(&['☃'], &[]);
+        assert!(e3.problem.contains("空链"), "{}", e3.problem);
+    }
+
+    /// 符号表单位基准：与内嵌 Regular upem 一致（合成字形缩放基准）。
+    #[test]
+    fn math_units_per_em_matches_embedded_font() {
+        assert_eq!(MATH_UNITS_PER_EM, 1000);
+        assert_eq!(font_regular().units_per_em() as u16, MATH_UNITS_PER_EM);
     }
 }
