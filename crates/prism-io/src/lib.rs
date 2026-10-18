@@ -15,6 +15,32 @@ pub mod sha256;
 pub use sha256::sha256;
 
 // ---------------------------------------------------------------------------
+// V1.5-W1-A：统一图像解码门面（L0 PNG/JPEG 内置，L1/L2 三段式报错）
+// ---------------------------------------------------------------------------
+
+/// DEFLATE / zlib 解压门面（实现在 L0 叶子 crate `prism-bytes`，此处统一
+/// 以 `Result<_, String>` 口径暴露，供 PNG / EXR 解码共用）。
+pub mod inflate;
+
+/// 基线 JPEG 解码器（定点 IDCT：Stage1 i64 + Stage2 阈值内 i64 / 超阈 i128）。
+pub mod jpeg_baseline;
+
+/// PNG 解码器（非交错 8/16-bit，色型 0/2/3/4/6，滤波 0–4）。
+pub mod png;
+
+/// 统一图像解码门面：`decode_image(bytes, ext)`。
+pub mod image_decode;
+
+pub use image_decode::{decode_image, is_native_format, DecodedImage};
+
+pub use jpeg_baseline::{
+    decode_baseline, decode_baseline_rgba, idct_8x8_fixed, idct_8x8_fixed_wide, ycbcr_to_rgb,
+    HuffDec, JpegImage, IDCT_C_TABLE, IDCT_STAGE2_I64_THRESHOLD, IDCT_W_TABLE,
+};
+
+pub use png::{decode_png, PngImage};
+
+// ---------------------------------------------------------------------------
 // C3：增量渲染缓存清单（cache.json）——确定性序列化 + 快照库磁盘镜像
 // ---------------------------------------------------------------------------
 

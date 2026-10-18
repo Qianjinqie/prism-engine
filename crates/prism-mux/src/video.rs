@@ -843,8 +843,12 @@ fn idct_8x8(out: &mut [i32; 64], coef: &[i32; 64], cos: &[f64; 64]) {
     }
 }
 
-/// 解析并解码一个基线 JPEG 字节流，返回 RGBA8（灰度自动扩展为灰阶 RGB）。
-fn decode_jpeg(data: &[u8]) -> Result<Vec<u8>, String> {
+/// 解析并解码一个基线 JPEG 字节流，返回 `(width, height, RGBA8)`。
+///
+/// V1.5-W1-A：由私有 `decode_jpeg` 提升为公开 API（`prism-mux` 对外导出
+/// `decode_jpeg_color`），内部解码逻辑（浮点 IDCT 路径）保持不变；新增的只有
+/// 宽高返回，便于上层门面（`prism-io::image_decode`）拿到尺寸。
+pub fn decode_jpeg_color(data: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     if data.len() < 2 || &data[0..2] != [0xFF, 0xD8] {
         return Err("不是 JPEG（缺少 SOI）".to_string());
     }
@@ -1029,7 +1033,12 @@ fn decode_jpeg(data: &[u8]) -> Result<Vec<u8>, String> {
             rgba[i * 4 + 3] = 255;
         }
     }
-    Ok(rgba)
+    Ok((width, height, rgba))
+}
+
+/// 私有薄封装：只取 RGBA8（保持既有调用点签名不变）。
+fn decode_jpeg(data: &[u8]) -> Result<Vec<u8>, String> {
+    decode_jpeg_color(data).map(|(_w, _h, rgba)| rgba)
 }
 
 // ===========================================================================

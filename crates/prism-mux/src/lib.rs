@@ -44,7 +44,7 @@ pub use avi::{
 };
 pub use mp4::{write_mp4, write_mp4_jpeg, write_mp4_jpeg_color, TrackSpec};
 pub use jpeg::{encode_jpeg_gray, JpegConfig};
-pub use video::{decode_mp4_video, write_mp4_video, VideoConfig};
+pub use video::{decode_jpeg_color, decode_mp4_video, write_mp4_video, VideoConfig};
 
 use std::fmt;
 
