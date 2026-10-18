@@ -25,3 +25,5 @@ prism-dsl = { path = "../prism-dsl" }
 prism-infra = { path = "../prism-infra" }
 prism-aesthetic = { path = "../prism-aesthetic" }
 prism-ai = { path = "../prism-ai" }
+# V1.5-D：`render` 子命令的容器出口（内置 MP4(MJPEG) muxer + ffmpeg 降级链）。
+prism-mux = { path = "../prism-mux" }

@@ -222,6 +222,14 @@ pub use tile::{BoxBlur3, Tile, TileEffect, TileGrid};
 pub use orchestrator::{PixelSource, TileOrchestrator};
 
 // ---------------------------------------------------------------------------
+// V1.5-D：DSL v2 成片直达——CompileV2Output → 帧序列 Deliverable
+// ---------------------------------------------------------------------------
+
+pub mod movie;
+
+pub use movie::{render_movie, Deliverable, MovieResult, RenderError};
+
+// ---------------------------------------------------------------------------
 // C3：增量渲染——脏区间检测与复用（C3 行）
 // ---------------------------------------------------------------------------
 

@@ -43,6 +43,9 @@ mod codegen;
 mod lexer;
 mod packs;
 mod parser;
+// V1.5-D：组合子库（高层语义 → 等价 v2 节点图展开）。公开模块：展开函数经
+// `codegen::COMBINATOR_TABLE` 注册面查表，Rust 侧构造入口在 prism-author。
+pub mod combinators;
 
 use crate::lexer::{Token, tokenize};
 use prism_core::Scene;
@@ -234,6 +237,13 @@ pub use crate::codegen::{
     PostInfo, SceneV2, SimInfo, ThemeInfo, TransitionV2,
 };
 pub use crate::packs::{PackManifest, SemVer};
+// V1.5-D：组合子库公开面（展开函数 / 入参 / 产物 / 注册表）。
+pub use crate::combinators::{
+    sphere_fragment,
+    expand_ken_burns, expand_lower_third, expand_morph_between, expand_split_screen,
+    expand_title_card, CombinatorArgs, CombinatorError, NodeGraph,
+};
+pub use crate::codegen::COMBINATOR_TABLE;
 
 // ---------------------------------------------------------------------------
 // 测试

@@ -1,0 +1,53 @@
+// ============================================================================
+// w2d_showcase —— DSL v2 成片直达（render_movie）CLI 黄金示例（V1.5-D）
+//
+// 覆盖（V1.5-D 任务书 1.4 对示例的要求）：
+// - 已支持节点 4 类：camera(S5) / material(S8) / sphere(S12) / text(S12)；
+// - 组合子展开形态 2 种（DSL v2 本轮不加新指令，形态=同构节点图）：
+//   ① title_card 形态：文本层 + opacity 淡入淡出轨道（与 expand_title_card
+//      的「S12 文本节点 + opacity 通道绑定」同构）；
+//   ② morph_between 形态：两场景部分重叠 + crossfade 过渡（与
+//      expand_morph_between 的「后场平移 fd−overlap + TransitionV2」同构）。
+// - 时长 3s（≤3s），分辨率 320x180 @ 12fps = 36 帧。
+//
+// 实跑（workspace 根目录）：
+//   cargo run -p prism-app -- render examples/w2d_showcase.prism \
+//     --out output/w2d_showcase.mp4
+// ============================================================================
+
+// prism-dsl 1
+
+movie "w2d-showcase" { duration 3s fps 12 resolution 320x180 format png }
+
+theme { teal-orange contrast 1.08 filmic }
+
+// ---- 形态一：title_card 展开形态（文本 + opacity 淡入淡出轨道）-----------
+scene "开场标题" {
+    duration 1.5s
+    stage3d {
+        camera main { orbit { center 0,0,0 radius 7 } fov 45 }
+        sdf ball { kind sphere radius 1.2 }
+        material hero { albedo #e2b53f roughness 0.35 metalness 0.05 }
+        light key { direction(1,-1,-0.5) color #fff4e6 intensity 3 }
+    }
+    layer text title {
+        content "Prism DSL v2"
+        x 160 y 84 size 28px color #ffffff
+        opacity { key 0s 0 linear key 0.4s 1 linear key 1.1s 1 linear key 1.5s 0 linear }
+    }
+}
+
+// ---- 形态二：morph_between 展开形态（重叠 + crossfade 过渡）---------------
+scene "第二幕" {
+    duration 1.5s
+    stage3d {
+        camera c2 { orbit { center 1,0,0 radius 5 } fov 40 }
+        sdf gem { kind sphere radius 0.8 }
+        material cool { albedo #3f7fe2 roughness 0.2 metalness 0.1 }
+    }
+    layer text caption { content "crossfade" x 160 y 140 size 18px color #ffd9a0 }
+}
+
+transition "morph" { from "开场标题" to "第二幕" duration 0.5s kind crossfade }
+
+output { resolution 320x180 format png }
