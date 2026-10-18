@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 prism-io = { path = "../prism-io" }
 prism-audio = { path = "../prism-audio" }
+prism-math = { path = "../prism-math" }
 
 [dev-dependencies]
 prism-gpu = { path = "../prism-gpu" }

@@ -17,6 +17,7 @@
 //! - [`loudnorm`] — EBU R128 响度归一（BS.1770 K 加权 + 双门控）；
 //! - [`extprobe`] — ffmpeg 探测器（PATH 检测 + 编码器能力探测 + 自动降级链，C7）；
 //! - [`hwenc`] — 硬件编码器适配层（VideoToolbox/MediaFoundation/NVENC/VAAPI，骨架）。
+//! - [`rate_control`] — 帧级率控（water-filling 位分配 + 等失真证书 + B 帧闭式解）。
 //!
 //! # 确定性契约
 //!
@@ -36,6 +37,7 @@ pub mod hwenc;
 pub mod jpeg;
 pub mod loudnorm;
 pub mod mp4;
+pub mod rate_control;
 pub mod video;
 
 pub use avi::{
