@@ -36,6 +36,7 @@ mod cmd_critique;
 mod cmd_http;
 mod cmd_mcp;
 mod cmd_pack;
+mod cmd_preview;
 mod cmd_render;
 // 编辑器逻辑在库目标（lib.rs）中，binary 复用同一份实现（避免双编译漂移）。
 
@@ -77,6 +78,7 @@ const USAGE: &str = r#"prism-app — 「代码即视频/图片」命令行渲染
   prism-app http [--addr <ADDR>]   自写 HTTP/1.1 渲染服务
   prism-app pack <add|list|remove> 数据包市场本地库管理
   prism-app render <file.prism>    DSL v2 成片直达（整段渲染为 MP4）
+  prism-app preview <file.prism>   预览闭环（HTTP 预览循环 / 单帧直出）
 
 选项:
   --out <DIR>     输出目录（默认 "output"）
@@ -92,7 +94,9 @@ const USAGE: &str = r#"prism-app — 「代码即视频/图片」命令行渲染
   prism-app demo.prism --out render             # 整段渲染 -> render/frames/
   prism-app demo.prism --frame 1.5              # 单帧预览 -> output/preview.png
   prism-app demo.prism --width 1280 --height 720 --fps 30
-  prism-app render demo.prism                   # v2 成片直达 -> output/render.mp4"#;
+  prism-app render demo.prism                   # v2 成片直达 -> output/render.mp4
+  prism-app preview demo.prism                  # 起预览服务于 127.0.0.1:8790
+  prism-app preview demo.prism --frame 1.5      # 单帧直出 -> output/preview_frame.png"#;
 
 /// CLI 渲染配置（由 [`parse_args`] 从 argv 构造）。
 #[derive(Debug)]
@@ -144,6 +148,7 @@ fn main() {
             "pack" => Some(cmd_pack::run(rest)),
             "critique" => Some(cmd_critique::run(rest)),
             "render" => Some(cmd_render::run(rest)),
+            "preview" => Some(cmd_preview::run(rest)),
             _ => None,
         };
         if let Some(code) = code {

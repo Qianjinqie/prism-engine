@@ -26,18 +26,29 @@
 //! 数（[`FINAL_SPP`]）。具体数值经 [`prism_core::CacheDims`] 的 `spp_tier`
 //! 进入缓存键——档位切换天然使旧缓存失效（C13），无需手工清缓存。
 //!
+//! # 质量档位的两档分工（V1.5-F 起）
+//! - `Draft`：几何图案（整数散列 + 多项式插值，无 libm），1/4 内部分辨率，
+//!   快得可以每帧重算——交互期保延迟；
+//! - `Final`（Real 档）：低 spp **真实渲染**（走 `prism_render` 既有管线，
+//!   每像素 [`crate::editor::preview::FINAL_REAL_SPP`] 个确定性亚像素 tap）。
+//!   Real 档单帧耗时远超 Draft，故配 [`async_preview`] 的**后台刷新**机制
+//!   （提交即返回、完成后替换预览缓冲）；ABI 同步路径不变（已冻结）。
+//!
 //! # 零第三方依赖
-//! 仅用 `std` + workspace 内 `prism-core`（图 / 签名 / 节点模型）。
+//! 仅用 `std` + workspace 内 crate（`prism-core` 图 / 签名 / 节点模型；
+//! Real 档复用 `prism-render` / `prism-gpu` / `prism-math` 管线）。
 //! 编辑器不引入任何 UI / 序列化库；操作序列导出为手写 JSON 字符串。
 
 pub mod abi;
+pub mod async_preview;
 pub mod command;
 pub mod preview;
 pub mod state;
 
 pub use abi::EDITOR_ABI_VERSION;
+pub use async_preview::{AsyncFrame, AsyncPreview, PreviewRequest};
 pub use command::{EditCommand, EditError, ParamSpec};
-pub use preview::{PreviewError, PreviewRenderer, RenderStats, MAX_DIM};
+pub use preview::{PreviewError, PreviewRenderer, RenderStats, FINAL_REAL_SPP, MAX_DIM};
 pub use state::{
     DirtySet, EditorState, ExportError, PreviewQuality, EDITOR_SCHEMA_VERSION, DRAFT_SPP, FINAL_SPP,
 };

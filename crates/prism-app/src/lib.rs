@@ -8,6 +8,7 @@
 //! `cmd_pack` 与内置演示**保持不变**——本库是**纯新增**，不触碰它们。
 //!
 //! # 零第三方依赖
-//! 仅 `std` + workspace 内 `prism-core`。
+//! 仅 `std` + workspace 内 crate（`prism-core` 签名树；Real 档预览复用
+//! `prism-render` / `prism-gpu` 既有渲染管线，不另写渲染器）。
 
 pub mod editor;
