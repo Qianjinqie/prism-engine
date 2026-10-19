@@ -37,6 +37,20 @@ pub static SHADERS: &[(&str, &str)] = &[
     ("gi_compute.wgsl", include_str!("../shaders/gi_compute.wgsl")),
     // 背景渲染 GPU compute shader（demo `paint_background` 热点的 GPU 管线兜底）。
     ("background.wgsl", include_str!("../shaders/background.wgsl")),
+    // V2.0-G compute-first 管线的两个真实 kernel（语义权威在
+    // `crate::compute`，判对基准是它们的 CPU 参考实现）+ SPIR-V 装配探针。
+    (
+        "rt_primary_ray_gen.wgsl",
+        include_str!("../shaders/rt_primary_ray_gen.wgsl"),
+    ),
+    (
+        "rt_wavefront_intersect.wgsl",
+        include_str!("../shaders/rt_wavefront_intersect.wgsl"),
+    ),
+    (
+        "spv_mul2_probe.wgsl",
+        include_str!("../shaders/spv_mul2_probe.wgsl"),
+    ),
 ];
 
 /// 库文件：只被 `//!include` 引用，**不**作为独立测试项上传 GPU。
@@ -501,10 +515,244 @@ fn contains_word(src: &str, word: &str) -> bool {
     false
 }
 
+// ---------------------------------------------------------------------------
+// V2.0-G：三目标源宿主（WGSL / MSL / SPIR-V）
+// ---------------------------------------------------------------------------
+//
+// V2.0-G 的 compute-first 管线让同一个 kernel 有**三种宿主形态**：
+//
+// | 目标 | 形态 | 供给方式 | 消费方 |
+// |---|---|---|---|
+// | `Wgsl` | 文本 | `include_str!`（[`SHADERS`]） | WebGPU / 真机结构自检 |
+// | `Msl` | 文本 | 手写双份源（[`MSL_KERNELS`]） | Metal 真机路径 |
+// | `Spirv` | 二进制 | 手写/预生成字流（[`spv_kernels`]） | Vulkan compute pipeline |
+//
+// 三者的**口径唯一性**由 [`check_targets`] 交叉锚定：同一 kernel 的入口名、
+// 工作组尺寸、绑定号必须三处一致；SPIR-V 二进制另由
+// `crate::vulkan::spirv::validate` 做字级结构校验。这样「改了 WGSL 忘了改
+// 二进制」这类漂移在 `cargo test` 阶段就会暴露，而不是等真机。
+
+/// 着色器宿主目标（封闭三值）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ShaderTarget {
+    /// WGSL 文本源（WebGPU / 引擎编写格式）。
+    Wgsl,
+    /// MSL 文本源（Metal 真机，手写双份）。
+    Msl,
+    /// SPIR-V 二进制（Vulkan compute pipeline）。
+    Spirv,
+}
+
+impl ShaderTarget {
+    /// 稳定短名（报告/日志契约）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ShaderTarget::Wgsl => "wgsl",
+            ShaderTarget::Msl => "msl",
+            ShaderTarget::Spirv => "spirv",
+        }
+    }
+
+    /// 是否二进制宿主（决定校验方式：结构校验而非文本校验）。
+    pub fn is_binary(self) -> bool {
+        matches!(self, ShaderTarget::Spirv)
+    }
+}
+
+/// MSL 双份源注册表：入口名 → 源码。
+///
+/// 入口名与 WGSL `fn`、SPIR-V `OpEntryPoint` 同名（三目标唯一口径）。
+/// 目前两份：`cloth_predict`（既有）与 `primary_ray_gen`（V2.0-G）。
+pub static MSL_KERNELS: &[(&str, &str)] = &[
+    ("cloth_predict", crate::metal::msl::CLOTH_PREDICT_MSL),
+    ("primary_ray_gen", crate::metal::msl::PRIMARY_RAY_GEN_MSL),
+];
+
+/// 按入口名取 MSL 源。
+pub fn msl_source(entry: &str) -> Option<&'static str> {
+    MSL_KERNELS
+        .iter()
+        .find(|(n, _)| *n == entry)
+        .map(|(_, s)| *s)
+}
+
+/// SPIR-V 模块注册表（转发 [`crate::vulkan::spirv::MODULES`]）。
+///
+/// 返回 `static` 引用而非复制：模块字流必须在全程序唯一（指针传给
+/// `vkCreateShaderModule` 时地址稳定）。
+pub fn spv_kernels() -> &'static [(&'static str, &'static [u32])] {
+    crate::vulkan::spirv::MODULES
+}
+
+/// 按模块名取 SPIR-V 字流。
+pub fn spv_words(module: &str) -> Option<&'static [u32]> {
+    crate::vulkan::spirv::module(module)
+}
+
+/// 三目标宿主清单：`(名字, 目标, 字节数)`（确定性顺序：Wgsl → Msl → Spirv）。
+pub fn target_inventory() -> Vec<(&'static str, ShaderTarget, usize)> {
+    let mut out: Vec<(&'static str, ShaderTarget, usize)> = Vec::new();
+    for (name, src) in SHADERS {
+        out.push((name, ShaderTarget::Wgsl, src.len()));
+    }
+    for (name, src) in MSL_KERNELS {
+        out.push((name, ShaderTarget::Msl, src.len()));
+    }
+    for (name, words) in spv_kernels() {
+        out.push((name, ShaderTarget::Spirv, words.len() * 4));
+    }
+    out
+}
+
+/// 某名字可用的宿主目标集合（名字在多个目标同名时返回多个）。
+pub fn hosts_of(name: &str) -> Vec<ShaderTarget> {
+    let mut out: Vec<ShaderTarget> = Vec::new();
+    if source(name).is_some() {
+        out.push(ShaderTarget::Wgsl);
+    }
+    if msl_source(name).is_some() {
+        out.push(ShaderTarget::Msl);
+    }
+    if spv_words(name).is_some() {
+        out.push(ShaderTarget::Spirv);
+    }
+    out
+}
+
+/// 单个宿主的校验结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetCheck {
+    /// 宿主名字。
+    pub name: &'static str,
+    /// 宿主目标。
+    pub target: ShaderTarget,
+    /// 是否通过。
+    pub ok: bool,
+    /// 说明（失败原因或关键诊断量）。
+    pub note: String,
+}
+
+/// 三目标宿主全量校验（WGSL 结构自检 / MSL 入口与括号 / SPIR-V 字级结构）。
+///
+/// 返回逐项结果（顺序同 [`target_inventory`]）；调用方断言 `all(ok)`。
+pub fn check_targets() -> Vec<TargetCheck> {
+    let mut out: Vec<TargetCheck> = Vec::new();
+
+    // ---- WGSL：沿用既有的结构自检 + 未解析符号检查 ----
+    for (name, src) in SHADERS {
+        let chk = check_shader(name, src);
+        let missing = unresolved_symbols(&expand(name));
+        let ok = chk.is_pass() && missing.is_empty();
+        let note = if ok {
+            format!(
+                "entry={} fns={} expanded={}B",
+                chk.has_entry,
+                chk.fn_count,
+                expand(name).len()
+            )
+        } else {
+            format!(
+                "entry={} balance={} libm={} include={} missing={:?}",
+                chk.has_entry, chk.brackets_balanced, chk.has_libm, chk.has_include, missing
+            )
+        };
+        out.push(TargetCheck {
+            name,
+            target: ShaderTarget::Wgsl,
+            ok,
+            note,
+        });
+    }
+
+    // ---- MSL：入口声明 + 括号配平 + 无超越函数调用 ----
+    for (entry, src) in MSL_KERNELS {
+        let has_entry = src.contains(&format!("kernel void {entry}"));
+        let balanced = balanced(src, '{', '}');
+        let no_libm = !["sin(", "cos(", "tan(", "exp(", "pow(", "log("]
+            .iter()
+            .any(|b| src.contains(b));
+        let ok = has_entry && balanced && no_libm && !src.trim().is_empty();
+        let note = format!(
+            "kernel_void={} balanced={} no_transcendental={} bytes={}",
+            has_entry,
+            balanced,
+            no_libm,
+            src.len()
+        );
+        out.push(TargetCheck {
+            name: entry,
+            target: ShaderTarget::Msl,
+            ok,
+            note,
+        });
+    }
+
+    // ---- SPIR-V：字级结构校验（期望值由 KernelDesc 派生） ----
+    for (module, words) in spv_kernels() {
+        // 找到引用该模块的 kernel 描述，用它的 entry/workgroup/bindings 做期望。
+        let desc = crate::compute::kernel_registry()
+            .into_iter()
+            .find(|k| k.spv_module == *module);
+        let Some(desc) = desc else {
+            out.push(TargetCheck {
+                name: module,
+                target: ShaderTarget::Spirv,
+                ok: false,
+                note: "无 KernelDesc 引用该模块（二进制成孤儿）".to_string(),
+            });
+            continue;
+        };
+        let bindings: Vec<u32> = desc.layout().into_iter().map(|l| l.binding).collect();
+        // 期望里 `bindings` 需 `'static`：这里用一次性的泄漏量极小分配？
+        // 不用泄漏——把校验拆成两步：先入口/LocalSize（静态字面量），
+        // 再单独比对绑定集合。
+        let expect = crate::vulkan::spirv::SpvExpect {
+            entry: desc.entry,
+            local_size: [desc.workgroup.x, desc.workgroup.y, desc.workgroup.z],
+            bindings: module_bindings(module),
+        };
+        let result = crate::vulkan::spirv::validate(words, &expect);
+        let (ok, note) = match result {
+            Ok(sum) => (
+                sum.bindings == bindings,
+                format!(
+                    "words={} instructions={} bound={} local_size={:?} bindings={:?}",
+                    words.len(),
+                    sum.instruction_count,
+                    sum.bound,
+                    sum.local_size,
+                    sum.bindings
+                ),
+            ),
+            Err(e) => (false, format!("结构校验失败：{}", e.as_str())),
+        };
+        out.push(TargetCheck {
+            name: module,
+            target: ShaderTarget::Spirv,
+            ok,
+            note,
+        });
+    }
+
+    out
+}
+
+/// 某 SPIR-V 模块声明的绑定号集合（供 [`check_targets`] 静态构造期望值）。
+///
+/// 从注册表里的模块名反查 kernel 描述并取其布局；无描述时返回空集合。
+fn module_bindings(module: &'static str) -> &'static [u32] {
+    match module {
+        "spv_mul2_probe" => &SPV_MUL2_BINDINGS,
+        _ => &[],
+    }
+}
+
+/// `spv_mul2_probe` 的绑定号（与 `compute::spirv_probe_kernel` 布局一致）。
+static SPV_MUL2_BINDINGS: [u32; 2] = [0, 1];
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn all_shaders_pass_structure_check() {
         let checks = check_all();
@@ -756,5 +1004,152 @@ mod tests {
         let real_exp = "fn f(x: f32) -> f32 { return exp(x); }";
         assert!(check_shader("real_exp.wgsl", real_exp).has_libm,
             "真实 exp() 调用必须仍被 D-29 抓住");
+    }
+
+    // =======================================================================
+    // V2.0-G：三目标源宿主（WGSL / MSL / SPIR-V）
+    // =======================================================================
+
+    /// 宿主清单齐备：三目标各有条目，且 WGSL 计数与 `SHADERS` 一致。
+    #[test]
+    fn three_target_inventory_is_complete() {
+        let inv = target_inventory();
+        assert_eq!(
+            inv.iter().filter(|(_, t, _)| *t == ShaderTarget::Wgsl).count(),
+            SHADERS.len(),
+            "WGSL 清单须与 SHADERS 一一对应"
+        );
+        assert_eq!(
+            inv.iter().filter(|(_, t, _)| *t == ShaderTarget::Msl).count(),
+            MSL_KERNELS.len()
+        );
+        assert_eq!(
+            inv.iter().filter(|(_, t, _)| *t == ShaderTarget::Spirv).count(),
+            spv_kernels().len()
+        );
+        // 顺序：Wgsl → Msl → Spirv（确定性）。
+        let targets: Vec<ShaderTarget> = inv.iter().map(|(_, t, _)| *t).collect();
+        let mut sorted = targets.clone();
+        sorted.sort();
+        assert_eq!(targets, sorted, "清单顺序应为 Wgsl→Msl→Spirv");
+        // 每项字节数非零。
+        for (name, target, bytes) in &inv {
+            assert!(*bytes > 0, "{name}（{}）字节数为 0", target.as_str());
+        }
+        assert_eq!(ShaderTarget::Wgsl.as_str(), "wgsl");
+        assert_eq!(ShaderTarget::Msl.as_str(), "msl");
+        assert_eq!(ShaderTarget::Spirv.as_str(), "spirv");
+        assert!(ShaderTarget::Spirv.is_binary());
+        assert!(!ShaderTarget::Wgsl.is_binary());
+        println!("三目标宿主：{} 项", inv.len());
+    }
+
+    /// 三目标全量校验必须全绿（任一漂移即失败）。
+    #[test]
+    fn all_three_targets_pass_check() {
+        let checks = check_targets();
+        assert!(!checks.is_empty());
+        for c in &checks {
+            println!(
+                "{} [{}] => {} ({})",
+                c.name,
+                c.target.as_str(),
+                if c.ok { "PASS" } else { "FAIL" },
+                c.note
+            );
+            assert!(
+                c.ok,
+                "{} [{}] 三目标校验失败：{}",
+                c.name,
+                c.target.as_str(),
+                c.note
+            );
+        }
+    }
+
+    /// compute 注册表的每个 kernel 都有 WGSL 宿主；有 SPIR-V 的必须可查。
+    #[test]
+    fn compute_kernels_have_host_sources() {
+        for kernel in crate::compute::kernel_registry() {
+            assert!(
+                source(kernel.wgsl_source).is_some(),
+                "{} 的 WGSL 宿主 `{}` 未登记",
+                kernel.name,
+                kernel.wgsl_source
+            );
+            if !kernel.spv_module.is_empty() {
+                assert!(
+                    spv_words(kernel.spv_module).is_some(),
+                    "{} 的 SPIR-V 模块 `{}` 未嵌入",
+                    kernel.name,
+                    kernel.spv_module
+                );
+            }
+            // WGSL 宿主里必须能找到同名入口函数（三目标同名口径）。
+            let wgsl = source(kernel.wgsl_source).expect("已断言存在");
+            assert!(
+                wgsl.contains(&format!("fn {}", kernel.entry)),
+                "{} 的 WGSL 缺入口 `fn {}`",
+                kernel.name,
+                kernel.entry
+            );
+        }
+    }
+
+    /// 三目标的入口名/工作组尺寸口径一致（防「改了 WGSL 忘了改二进制」）。
+    #[test]
+    fn entry_names_and_workgroup_are_shared_across_targets() {
+        // ① 探针 kernel：WGSL 入口 == SPIR-V 入口 == KernelDesc.entry。
+        let probe = crate::compute::spirv_probe_kernel();
+        let wgsl = source(probe.wgsl_source).expect("探针 WGSL 存在");
+        assert!(wgsl.contains("fn mul2("));
+        let words = spv_words(probe.spv_module).expect("探针 SPIR-V 存在");
+        let sum = crate::vulkan::spirv::validate(
+            words,
+            &crate::vulkan::spirv::SpvExpect {
+                entry: probe.entry,
+                local_size: [probe.workgroup.x, probe.workgroup.y, probe.workgroup.z],
+                bindings: &[0, 1],
+            },
+        )
+        .expect("探针 SPIR-V 结构校验");
+        assert_eq!(sum.entry, probe.entry);
+        // WGSL 的 @workgroup_size 必须与 KernelDesc 一致。
+        assert!(
+            wgsl.contains(&format!(
+                "@workgroup_size({}, {}, {})",
+                probe.workgroup.x, probe.workgroup.y, probe.workgroup.z
+            )),
+            "WGSL 的 workgroup_size 与 KernelDesc 不一致"
+        );
+
+        // ② 主射线 kernel：WGSL 与 MSL 入口同名，且 workgroup 一致。
+        let prg = crate::compute::kernel_by_name(crate::compute::KERNEL_PRIMARY_RAY_GEN)
+            .expect("主射线 kernel 已注册");
+        let wgsl = source(prg.wgsl_source).expect("主射线 WGSL 存在");
+        assert!(wgsl.contains("fn primary_ray_gen("));
+        let msl = msl_source(prg.entry).expect("主射线 MSL 双份源存在");
+        assert!(msl.contains("kernel void primary_ray_gen"));
+        for t in [wgsl, msl] {
+            assert!(
+                t.contains(&format!(
+                    "@workgroup_size({}, {}, {})",
+                    prg.workgroup.x, prg.workgroup.y, prg.workgroup.z
+                )) || t.contains("[[thread_position_in_grid]]"),
+                "MSL 用 dispatch 时指定尺寸，WGSL 须含匹配的 @workgroup_size"
+            );
+        }
+    }
+
+    /// 宿主查询契约。
+    #[test]
+    fn host_lookup_contract() {
+        assert_eq!(hosts_of("rt_primary_ray_gen.wgsl"), vec![ShaderTarget::Wgsl]);
+        assert_eq!(hosts_of("spv_mul2_probe"), vec![ShaderTarget::Spirv]);
+        assert_eq!(hosts_of("primary_ray_gen"), vec![ShaderTarget::Msl]);
+        assert!(hosts_of("no_such_host").is_empty());
+        assert!(msl_source("cloth_predict").is_some());
+        assert!(msl_source("no_such_entry").is_none());
+        assert!(spv_words("no_such_module").is_none());
     }
 }

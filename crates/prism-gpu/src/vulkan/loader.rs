@@ -393,6 +393,8 @@ pub(crate) struct InstanceFnTable {
     pub get_queue_family_properties: Option<PfnVkGetPhysicalDeviceQueueFamilyProperties>,
     /// `vkCreateDevice`。
     pub create_device: Option<PfnVkCreateDevice>,
+    /// `vkGetPhysicalDeviceMemoryProperties`（compute 管线选 host 可见内存用）。
+    pub get_physical_device_memory_properties: Option<PfnVkGetPhysicalDeviceMemoryProperties>,
 }
 
 impl InstanceFnTable {
@@ -434,6 +436,10 @@ impl InstanceFnTable {
                 PfnVkGetPhysicalDeviceQueueFamilyProperties
             ),
             create_device: bind!(c"vkCreateDevice", PfnVkCreateDevice),
+            get_physical_device_memory_properties: bind!(
+                c"vkGetPhysicalDeviceMemoryProperties",
+                PfnVkGetPhysicalDeviceMemoryProperties
+            ),
         }
     }
 }
@@ -444,6 +450,74 @@ pub(crate) struct DeviceFnTable {
     pub destroy_device: Option<PfnVkDestroyDevice>,
     /// `vkGetDeviceQueue`。
     pub get_device_queue: Option<PfnVkGetDeviceQueue>,
+    /// `vkCreateShaderModule`（SPIR-V 载入）。
+    pub create_shader_module: Option<PfnVkCreateShaderModule>,
+    /// `vkDestroyShaderModule`。
+    pub destroy_shader_module: Option<PfnVkDestroyShaderModule>,
+    /// `vkCreateDescriptorSetLayout`。
+    pub create_descriptor_set_layout: Option<PfnVkCreateDescriptorSetLayout>,
+    /// `vkDestroyDescriptorSetLayout`。
+    pub destroy_descriptor_set_layout: Option<PfnVkDestroyDescriptorSetLayout>,
+    /// `vkCreatePipelineLayout`。
+    pub create_pipeline_layout: Option<PfnVkCreatePipelineLayout>,
+    /// `vkDestroyPipelineLayout`。
+    pub destroy_pipeline_layout: Option<PfnVkDestroyPipelineLayout>,
+    /// `vkCreateComputePipelines`。
+    pub create_compute_pipelines: Option<PfnVkCreateComputePipelines>,
+    /// `vkDestroyPipeline`。
+    pub destroy_pipeline: Option<PfnVkDestroyPipeline>,
+    /// `vkCreateBuffer`。
+    pub create_buffer: Option<PfnVkCreateBuffer>,
+    /// `vkDestroyBuffer`。
+    pub destroy_buffer: Option<PfnVkDestroyBuffer>,
+    /// `vkGetBufferMemoryRequirements`。
+    pub get_buffer_memory_requirements: Option<PfnVkGetBufferMemoryRequirements>,
+    /// `vkAllocateMemory`。
+    pub allocate_memory: Option<PfnVkAllocateMemory>,
+    /// `vkFreeMemory`。
+    pub free_memory: Option<PfnVkFreeMemory>,
+    /// `vkBindBufferMemory`。
+    pub bind_buffer_memory: Option<PfnVkBindBufferMemory>,
+    /// `vkCreateDescriptorPool`。
+    pub create_descriptor_pool: Option<PfnVkCreateDescriptorPool>,
+    /// `vkDestroyDescriptorPool`。
+    pub destroy_descriptor_pool: Option<PfnVkDestroyDescriptorPool>,
+    /// `vkAllocateDescriptorSets`。
+    pub allocate_descriptor_sets: Option<PfnVkAllocateDescriptorSets>,
+    /// `vkUpdateDescriptorSets`。
+    pub update_descriptor_sets: Option<PfnVkUpdateDescriptorSets>,
+    /// `vkCreateCommandPool`。
+    pub create_command_pool: Option<PfnVkCreateCommandPool>,
+    /// `vkDestroyCommandPool`。
+    pub destroy_command_pool: Option<PfnVkDestroyCommandPool>,
+    /// `vkAllocateCommandBuffers`。
+    pub allocate_command_buffers: Option<PfnVkAllocateCommandBuffers>,
+    /// `vkFreeCommandBuffers`。
+    pub free_command_buffers: Option<PfnVkFreeCommandBuffers>,
+    /// `vkBeginCommandBuffer`。
+    pub begin_command_buffer: Option<PfnVkBeginCommandBuffer>,
+    /// `vkEndCommandBuffer`。
+    pub end_command_buffer: Option<PfnVkEndCommandBuffer>,
+    /// `vkCmdBindPipeline`。
+    pub cmd_bind_pipeline: Option<PfnVkCmdBindPipeline>,
+    /// `vkCmdBindDescriptorSets`。
+    pub cmd_bind_descriptor_sets: Option<PfnVkCmdBindDescriptorSets>,
+    /// `vkCmdDispatch`。
+    pub cmd_dispatch: Option<PfnVkCmdDispatch>,
+    /// `vkQueueSubmit`。
+    pub queue_submit: Option<PfnVkQueueSubmit>,
+    /// `vkQueueWaitIdle`。
+    pub queue_wait_idle: Option<PfnVkQueueWaitIdle>,
+    /// `vkCreateFence`。
+    pub create_fence: Option<PfnVkCreateFence>,
+    /// `vkDestroyFence`。
+    pub destroy_fence: Option<PfnVkDestroyFence>,
+    /// `vkWaitForFences`。
+    pub wait_for_fences: Option<PfnVkWaitForFences>,
+    /// `vkMapMemory`。
+    pub map_memory: Option<PfnVkMapMemory>,
+    /// `vkUnmapMemory`。
+    pub unmap_memory: Option<PfnVkUnmapMemory>,
 }
 
 impl DeviceFnTable {
@@ -468,6 +542,67 @@ impl DeviceFnTable {
         DeviceFnTable {
             destroy_device: bind!(c"vkDestroyDevice", PfnVkDestroyDevice),
             get_device_queue: bind!(c"vkGetDeviceQueue", PfnVkGetDeviceQueue),
+            create_shader_module: bind!(c"vkCreateShaderModule", PfnVkCreateShaderModule),
+            destroy_shader_module: bind!(c"vkDestroyShaderModule", PfnVkDestroyShaderModule),
+            create_descriptor_set_layout: bind!(
+                c"vkCreateDescriptorSetLayout",
+                PfnVkCreateDescriptorSetLayout
+            ),
+            destroy_descriptor_set_layout: bind!(
+                c"vkDestroyDescriptorSetLayout",
+                PfnVkDestroyDescriptorSetLayout
+            ),
+            create_pipeline_layout: bind!(c"vkCreatePipelineLayout", PfnVkCreatePipelineLayout),
+            destroy_pipeline_layout: bind!(c"vkDestroyPipelineLayout", PfnVkDestroyPipelineLayout),
+            create_compute_pipelines: bind!(
+                c"vkCreateComputePipelines",
+                PfnVkCreateComputePipelines
+            ),
+            destroy_pipeline: bind!(c"vkDestroyPipeline", PfnVkDestroyPipeline),
+            create_buffer: bind!(c"vkCreateBuffer", PfnVkCreateBuffer),
+            destroy_buffer: bind!(c"vkDestroyBuffer", PfnVkDestroyBuffer),
+            get_buffer_memory_requirements: bind!(
+                c"vkGetBufferMemoryRequirements",
+                PfnVkGetBufferMemoryRequirements
+            ),
+            allocate_memory: bind!(c"vkAllocateMemory", PfnVkAllocateMemory),
+            free_memory: bind!(c"vkFreeMemory", PfnVkFreeMemory),
+            bind_buffer_memory: bind!(c"vkBindBufferMemory", PfnVkBindBufferMemory),
+            create_descriptor_pool: bind!(
+                c"vkCreateDescriptorPool",
+                PfnVkCreateDescriptorPool
+            ),
+            destroy_descriptor_pool: bind!(
+                c"vkDestroyDescriptorPool",
+                PfnVkDestroyDescriptorPool
+            ),
+            allocate_descriptor_sets: bind!(
+                c"vkAllocateDescriptorSets",
+                PfnVkAllocateDescriptorSets
+            ),
+            update_descriptor_sets: bind!(c"vkUpdateDescriptorSets", PfnVkUpdateDescriptorSets),
+            create_command_pool: bind!(c"vkCreateCommandPool", PfnVkCreateCommandPool),
+            destroy_command_pool: bind!(c"vkDestroyCommandPool", PfnVkDestroyCommandPool),
+            allocate_command_buffers: bind!(
+                c"vkAllocateCommandBuffers",
+                PfnVkAllocateCommandBuffers
+            ),
+            free_command_buffers: bind!(c"vkFreeCommandBuffers", PfnVkFreeCommandBuffers),
+            begin_command_buffer: bind!(c"vkBeginCommandBuffer", PfnVkBeginCommandBuffer),
+            end_command_buffer: bind!(c"vkEndCommandBuffer", PfnVkEndCommandBuffer),
+            cmd_bind_pipeline: bind!(c"vkCmdBindPipeline", PfnVkCmdBindPipeline),
+            cmd_bind_descriptor_sets: bind!(
+                c"vkCmdBindDescriptorSets",
+                PfnVkCmdBindDescriptorSets
+            ),
+            cmd_dispatch: bind!(c"vkCmdDispatch", PfnVkCmdDispatch),
+            queue_submit: bind!(c"vkQueueSubmit", PfnVkQueueSubmit),
+            queue_wait_idle: bind!(c"vkQueueWaitIdle", PfnVkQueueWaitIdle),
+            create_fence: bind!(c"vkCreateFence", PfnVkCreateFence),
+            destroy_fence: bind!(c"vkDestroyFence", PfnVkDestroyFence),
+            wait_for_fences: bind!(c"vkWaitForFences", PfnVkWaitForFences),
+            map_memory: bind!(c"vkMapMemory", PfnVkMapMemory),
+            unmap_memory: bind!(c"vkUnmapMemory", PfnVkUnmapMemory),
         }
     }
 }
@@ -739,3 +874,518 @@ mod tests {
         assert_eq!(RTLD_LAZY, 1, "glibc 的 RTLD_LAZY 为 1（见常量注释）");
     }
 }
+
+// ---------------------------------------------------------------------------
+// compute 管线扩展：SPIR-V 模块 / compute pipeline / 描述符 / 命令缓冲 /
+// 队列提交（V2.0-G）
+// ---------------------------------------------------------------------------
+//
+// 这一段的每个 `struct` 都与 `<vulkan/vulkan_core.h>` **逐字段对齐**
+// （字段顺序、`size_t`/`uint64_t` 宽度、指针对齐），并有编译期尺寸断言
+// （见本文件 `tests::v2g_struct_layouts`）。不加任何第三方 crate（D-15）。
+//
+// 诚实边界：本仓库构建环境**无 ICD**（见 `super` 模块头注），因此这段代码
+// 只能被「结构校验 + CPU 侧装配计划」测试覆盖；真机派发由
+// `crate::vulkan::compute` 的 `#[ignore]` 测试占位（探针如实报无设备）。
+
+/// 非分派句柄（Vulkan 规范：64 位不透明值，可为 0 表示空）。
+pub type VkShaderModule = u64;
+/// `VkBuffer`。
+pub type VkBuffer = u64;
+/// `VkDeviceMemory`。
+pub type VkDeviceMemory = u64;
+/// `VkPipeline`。
+pub type VkPipeline = u64;
+/// `VkPipelineLayout`。
+pub type VkPipelineLayout = u64;
+/// `VkDescriptorSetLayout`。
+pub type VkDescriptorSetLayout = u64;
+/// `VkDescriptorPool`。
+pub type VkDescriptorPool = u64;
+/// `VkDescriptorSet`。
+pub type VkDescriptorSet = u64;
+/// `VkCommandPool`。
+pub type VkCommandPool = u64;
+/// `VkFence`。
+pub type VkFence = u64;
+/// 可分派句柄（`VkCommandBuffer` 是指针，与 `VkDevice` 同类）。
+pub type VkCommandBuffer = *mut c_void;
+
+/// `VK_STRUCTURE_TYPE_SUBMIT_INFO`。
+pub const VK_STRUCTURE_TYPE_SUBMIT_INFO: i32 = 4;
+/// `VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO`。
+pub const VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO: i32 = 5;
+/// `VK_STRUCTURE_TYPE_FENCE_CREATE_INFO`。
+pub const VK_STRUCTURE_TYPE_FENCE_CREATE_INFO: i32 = 8;
+/// `VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO`。
+pub const VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO: i32 = 12;
+/// `VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO`。
+pub const VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO: i32 = 15;
+/// `VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO`。
+pub const VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO: i32 = 18;
+/// `VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO`。
+pub const VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO: i32 = 20;
+/// `VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO`。
+pub const VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO: i32 = 22;
+/// `VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO`。
+pub const VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO: i32 = 23;
+/// `VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO`。
+pub const VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO: i32 = 29;
+/// `VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO`。
+pub const VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO: i32 = 30;
+/// `VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET`。
+pub const VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET: i32 = 35;
+/// `VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO`。
+pub const VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO: i32 = 39;
+/// `VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO`。
+pub const VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO: i32 = 40;
+/// `VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO`。
+pub const VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO: i32 = 42;
+
+/// `VK_SHADER_STAGE_COMPUTE_BIT`。
+pub const VK_SHADER_STAGE_COMPUTE_BIT: u32 = 0x0000_0020;
+/// `VK_PIPELINE_BIND_POINT_COMPUTE`。
+pub const VK_PIPELINE_BIND_POINT_COMPUTE: u32 = 1;
+/// `VK_DESCRIPTOR_TYPE_STORAGE_BUFFER`。
+pub const VK_DESCRIPTOR_TYPE_STORAGE_BUFFER: u32 = 7;
+/// `VK_BUFFER_USAGE_STORAGE_BUFFER_BIT`。
+pub const VK_BUFFER_USAGE_STORAGE_BUFFER_BIT: u32 = 0x0000_0020;
+/// `VK_SHARING_MODE_EXCLUSIVE`。
+pub const VK_SHARING_MODE_EXCLUSIVE: u32 = 0;
+/// `VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT`。
+pub const VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT: u32 = 0x0000_0002;
+/// `VK_MEMORY_PROPERTY_HOST_COHERENT_BIT`。
+pub const VK_MEMORY_PROPERTY_HOST_COHERENT_BIT: u32 = 0x0000_0004;
+/// `VK_COMMAND_BUFFER_LEVEL_PRIMARY`。
+pub const VK_COMMAND_BUFFER_LEVEL_PRIMARY: u32 = 0;
+/// `VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT`。
+pub const VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT: u32 = 0x0000_0002;
+/// `VK_WHOLE_SIZE`（`VK_WHOLE_SIZE` = `(~0ULL)`，此处以 `u64::MAX` 表达）。
+pub const VK_WHOLE_SIZE: u64 = u64::MAX;
+
+/// `VkShaderModuleCreateInfo`。
+#[repr(C)]
+pub struct VkShaderModuleCreateInfo {
+    pub s_type: i32,
+    pub p_next: *const c_void,
+    pub flags: u32,
+    pub code_size: usize,
+    pub p_code: *const u32,
+}
+
+/// `VkPipelineShaderStageCreateInfo`。
+#[repr(C)]
+pub struct VkPipelineShaderStageCreateInfo {
+    pub s_type: i32,
+    pub p_next: *const c_void,
+    pub flags: u32,
+    pub stage: u32,
+    pub module: VkShaderModule,
+    pub p_name: *const c_char,
+    pub p_specialization_info: *const c_void,
+}
+
+/// `VkComputePipelineCreateInfo`。
+#[repr(C)]
+pub struct VkComputePipelineCreateInfo {
+    pub s_type: i32,
+    pub p_next: *const c_void,
+    pub flags: u32,
+    pub stage: VkPipelineShaderStageCreateInfo,
+    pub layout: VkPipelineLayout,
+    pub base_pipeline_handle: VkPipeline,
+    pub base_pipeline_index: i32,
+}
+
+/// `VkDescriptorSetLayoutBinding`。
+#[repr(C)]
+pub struct VkDescriptorSetLayoutBinding {
+    pub binding: u32,
+    pub descriptor_type: u32,
+    pub descriptor_count: u32,
+    pub stage_flags: u32,
+    pub p_immutable_samplers: *const c_void,
+}
+
+/// `VkDescriptorSetLayoutCreateInfo`。
+#[repr(C)]
+pub struct VkDescriptorSetLayoutCreateInfo {
+    pub s_type: i32,
+    pub p_next: *const c_void,
+    pub flags: u32,
+    pub binding_count: u32,
+    pub p_bindings: *const VkDescriptorSetLayoutBinding,
+}
+
+/// `VkPipelineLayoutCreateInfo`。
+#[repr(C)]
+pub struct VkPipelineLayoutCreateInfo {
+    pub s_type: i32,
+    pub p_next: *const c_void,
+    pub flags: u32,
+    pub set_layout_count: u32,
+    pub p_set_layouts: *const VkDescriptorSetLayout,
+    pub push_constant_range_count: u32,
+    pub p_push_constant_ranges: *const c_void,
+}
+
+/// `VkBufferCreateInfo`。
+#[repr(C)]
+pub struct VkBufferCreateInfo {
+    pub s_type: i32,
+    pub p_next: *const c_void,
+    pub flags: u32,
+    pub size: u64,
+    pub usage: u32,
+    pub sharing_mode: u32,
+    pub queue_family_index_count: u32,
+    pub p_queue_family_indices: *const u32,
+}
+
+/// `VkMemoryRequirements`。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VkMemoryRequirements {
+    pub size: u64,
+    pub alignment: u64,
+    pub memory_type_bits: u32,
+}
+
+/// `VkMemoryAllocateInfo`。
+#[repr(C)]
+pub struct VkMemoryAllocateInfo {
+    pub s_type: i32,
+    pub p_next: *const c_void,
+    pub allocation_size: u64,
+    pub memory_type_index: u32,
+}
+
+/// `VkMemoryType`（`VkPhysicalDeviceMemoryProperties` 的内嵌元素）。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VkMemoryType {
+    pub property_flags: u32,
+    pub heap_index: u32,
+}
+
+/// `VkMemoryHeap`（同上）。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VkMemoryHeap {
+    pub size: u64,
+    pub flags: u32,
+    pub _pad: u32,
+}
+
+/// `VkPhysicalDeviceMemoryProperties`（定长内嵌数组，POD）。
+#[repr(C)]
+pub struct VkPhysicalDeviceMemoryPropertiesStorage {
+    pub memory_type_count: u32,
+    pub memory_types: [VkMemoryType; 32],
+    pub memory_heap_count: u32,
+    pub memory_heaps: [VkMemoryHeap; 32],
+}
+
+impl VkPhysicalDeviceMemoryPropertiesStorage {
+    /// 全零初始化（驱动覆写；未写到的尾部保持 0，可安全读前缀）。
+    pub fn zeroed() -> Self {
+        // SAFETY: 结构体为 POD（全整型/数组），全零是合法位模式。
+        unsafe { std::mem::zeroed() }
+    }
+
+    /// 选一个满足 `required` 且 host 可见 + coherent 的内存类型下标。
+    ///
+    /// 返回 `None` 表示无匹配（调用方据此降级为「不可派发」，不 panic）。
+    pub fn pick_host_visible(&self, required: u32) -> Option<u32> {
+        let want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        let count = self.memory_type_count.min(32);
+        for i in 0..count {
+            let flags = self.memory_types[i as usize].property_flags;
+            if (required & (1 << i)) != 0 && (flags & want) == want {
+                return Some(i);
+            }
+        }
+        None
+    }
+}
+
+/// `VkCommandPoolCreateInfo`。
+#[repr(C)]
+pub struct VkCommandPoolCreateInfo {
+    pub s_type: i32,
+    pub p_next: *const c_void,
+    pub flags: u32,
+    pub queue_family_index: u32,
+}
+
+/// `VkCommandBufferAllocateInfo`。
+#[repr(C)]
+pub struct VkCommandBufferAllocateInfo {
+    pub s_type: i32,
+    pub p_next: *const c_void,
+    pub command_pool: VkCommandPool,
+    pub level: u32,
+    pub command_buffer_count: u32,
+}
+
+/// `VkCommandBufferBeginInfo`。
+#[repr(C)]
+pub struct VkCommandBufferBeginInfo {
+    pub s_type: i32,
+    pub p_next: *const c_void,
+    pub flags: u32,
+    pub p_inheritance_info: *const c_void,
+}
+
+/// `VkSubmitInfo`。
+#[repr(C)]
+pub struct VkSubmitInfo {
+    pub s_type: i32,
+    pub p_next: *const c_void,
+    pub wait_semaphore_count: u32,
+    pub p_wait_semaphores: *const u64,
+    pub p_wait_dst_stage_mask: *const u32,
+    pub command_buffer_count: u32,
+    pub p_command_buffers: *const VkCommandBuffer,
+    pub signal_semaphore_count: u32,
+    pub p_signal_semaphores: *const u64,
+}
+
+/// `VkFenceCreateInfo`。
+#[repr(C)]
+pub struct VkFenceCreateInfo {
+    pub s_type: i32,
+    pub p_next: *const c_void,
+    pub flags: u32,
+}
+
+/// `VkDescriptorPoolSize`。
+#[repr(C)]
+pub struct VkDescriptorPoolSize {
+    pub ty: u32,
+    pub descriptor_count: u32,
+}
+
+/// `VkDescriptorPoolCreateInfo`。
+#[repr(C)]
+pub struct VkDescriptorPoolCreateInfo {
+    pub s_type: i32,
+    pub p_next: *const c_void,
+    pub flags: u32,
+    pub max_sets: u32,
+    pub pool_size_count: u32,
+    pub p_pool_sizes: *const VkDescriptorPoolSize,
+}
+
+/// `VkDescriptorSetAllocateInfo`。
+#[repr(C)]
+pub struct VkDescriptorSetAllocateInfo {
+    pub s_type: i32,
+    pub p_next: *const c_void,
+    pub descriptor_pool: VkDescriptorPool,
+    pub descriptor_set_count: u32,
+    pub p_set_layouts: *const VkDescriptorSetLayout,
+}
+
+/// `VkDescriptorBufferInfo`。
+#[repr(C)]
+pub struct VkDescriptorBufferInfo {
+    pub buffer: VkBuffer,
+    pub offset: u64,
+    pub range: u64,
+}
+
+/// `VkWriteDescriptorSet`。
+#[repr(C)]
+pub struct VkWriteDescriptorSet {
+    pub s_type: i32,
+    pub p_next: *const c_void,
+    pub dst_set: VkDescriptorSet,
+    pub dst_binding: u32,
+    pub dst_array_element: u32,
+    pub descriptor_count: u32,
+    pub descriptor_type: u32,
+    pub p_image_info: *const c_void,
+    pub p_buffer_info: *const VkDescriptorBufferInfo,
+    pub p_texel_buffer_view: *const c_void,
+}
+
+// --- compute 相关函数指针类型 ------------------------------------------------
+
+/// `vkCreateShaderModule`。
+pub type PfnVkCreateShaderModule = unsafe extern "system" fn(
+    VkDevice,
+    *const VkShaderModuleCreateInfo,
+    *const c_void,
+    *mut VkShaderModule,
+) -> VkResult;
+/// `vkDestroyShaderModule`。
+pub type PfnVkDestroyShaderModule = unsafe extern "system" fn(VkDevice, VkShaderModule, *const c_void);
+/// `vkCreateDescriptorSetLayout`。
+pub type PfnVkCreateDescriptorSetLayout = unsafe extern "system" fn(
+    VkDevice,
+    *const VkDescriptorSetLayoutCreateInfo,
+    *const c_void,
+    *mut VkDescriptorSetLayout,
+) -> VkResult;
+/// `vkDestroyDescriptorSetLayout`。
+pub type PfnVkDestroyDescriptorSetLayout =
+    unsafe extern "system" fn(VkDevice, VkDescriptorSetLayout, *const c_void);
+/// `vkCreatePipelineLayout`。
+pub type PfnVkCreatePipelineLayout = unsafe extern "system" fn(
+    VkDevice,
+    *const VkPipelineLayoutCreateInfo,
+    *const c_void,
+    *mut VkPipelineLayout,
+) -> VkResult;
+/// `vkDestroyPipelineLayout`。
+pub type PfnVkDestroyPipelineLayout =
+    unsafe extern "system" fn(VkDevice, VkPipelineLayout, *const c_void);
+/// `vkCreateComputePipelines`。
+pub type PfnVkCreateComputePipelines = unsafe extern "system" fn(
+    VkDevice,
+    u64,
+    u32,
+    *const VkComputePipelineCreateInfo,
+    *const c_void,
+    *mut VkPipeline,
+) -> VkResult;
+/// `vkDestroyPipeline`。
+pub type PfnVkDestroyPipeline = unsafe extern "system" fn(VkDevice, VkPipeline, *const c_void);
+/// `vkCreateBuffer`。
+pub type PfnVkCreateBuffer = unsafe extern "system" fn(
+    VkDevice,
+    *const VkBufferCreateInfo,
+    *const c_void,
+    *mut VkBuffer,
+) -> VkResult;
+/// `vkDestroyBuffer`。
+pub type PfnVkDestroyBuffer = unsafe extern "system" fn(VkDevice, VkBuffer, *const c_void);
+/// `vkGetBufferMemoryRequirements`。
+pub type PfnVkGetBufferMemoryRequirements =
+    unsafe extern "system" fn(VkDevice, VkBuffer, *mut VkMemoryRequirements);
+/// `vkAllocateMemory`。
+pub type PfnVkAllocateMemory = unsafe extern "system" fn(
+    VkDevice,
+    *const VkMemoryAllocateInfo,
+    *const c_void,
+    *mut VkDeviceMemory,
+) -> VkResult;
+/// `vkFreeMemory`。
+pub type PfnVkFreeMemory = unsafe extern "system" fn(VkDevice, VkDeviceMemory, *const c_void);
+/// `vkBindBufferMemory`。
+pub type PfnVkBindBufferMemory = unsafe extern "system" fn(VkDevice, VkBuffer, VkDeviceMemory, u64) -> VkResult;
+/// `vkCreateDescriptorPool`。
+pub type PfnVkCreateDescriptorPool = unsafe extern "system" fn(
+    VkDevice,
+    *const VkDescriptorPoolCreateInfo,
+    *const c_void,
+    *mut VkDescriptorPool,
+) -> VkResult;
+/// `vkDestroyDescriptorPool`。
+pub type PfnVkDestroyDescriptorPool =
+    unsafe extern "system" fn(VkDevice, VkDescriptorPool, *const c_void);
+/// `vkAllocateDescriptorSets`。
+pub type PfnVkAllocateDescriptorSets = unsafe extern "system" fn(
+    VkDevice,
+    *const VkDescriptorSetAllocateInfo,
+    *mut VkDescriptorSet,
+) -> VkResult;
+/// `vkUpdateDescriptorSets`。
+pub type PfnVkUpdateDescriptorSets = unsafe extern "system" fn(
+    VkDevice,
+    u32,
+    *const VkWriteDescriptorSet,
+    u32,
+    *const c_void,
+);
+/// `vkCreateCommandPool`。
+pub type PfnVkCreateCommandPool = unsafe extern "system" fn(
+    VkDevice,
+    *const VkCommandPoolCreateInfo,
+    *const c_void,
+    *mut VkCommandPool,
+) -> VkResult;
+/// `vkDestroyCommandPool`。
+pub type PfnVkDestroyCommandPool = unsafe extern "system" fn(VkDevice, VkCommandPool, *const c_void);
+/// `vkAllocateCommandBuffers`。
+pub type PfnVkAllocateCommandBuffers = unsafe extern "system" fn(
+    VkDevice,
+    *const VkCommandBufferAllocateInfo,
+    *mut VkCommandBuffer,
+) -> VkResult;
+/// `vkFreeCommandBuffers`。
+pub type PfnVkFreeCommandBuffers =
+    unsafe extern "system" fn(VkDevice, VkCommandPool, u32, *const VkCommandBuffer);
+/// `vkBeginCommandBuffer`。
+pub type PfnVkBeginCommandBuffer =
+    unsafe extern "system" fn(VkCommandBuffer, *const VkCommandBufferBeginInfo) -> VkResult;
+/// `vkEndCommandBuffer`。
+pub type PfnVkEndCommandBuffer = unsafe extern "system" fn(VkCommandBuffer) -> VkResult;
+/// `vkCmdBindPipeline`。
+pub type PfnVkCmdBindPipeline = unsafe extern "system" fn(VkCommandBuffer, u32, VkPipeline);
+/// `vkCmdBindDescriptorSets`。
+pub type PfnVkCmdBindDescriptorSets = unsafe extern "system" fn(
+    VkCommandBuffer,
+    u32,
+    VkPipelineLayout,
+    u32,
+    u32,
+    *const VkDescriptorSet,
+    u32,
+    *const u32,
+);
+/// `vkCmdDispatch`。
+pub type PfnVkCmdDispatch = unsafe extern "system" fn(VkCommandBuffer, u32, u32, u32);
+/// `vkQueueSubmit`。
+pub type PfnVkQueueSubmit =
+    unsafe extern "system" fn(VkQueue, u32, *const VkSubmitInfo, VkFence) -> VkResult;
+/// `vkQueueWaitIdle`。
+pub type PfnVkQueueWaitIdle = unsafe extern "system" fn(VkQueue) -> VkResult;
+/// `vkCreateFence`。
+pub type PfnVkCreateFence = unsafe extern "system" fn(
+    VkDevice,
+    *const VkFenceCreateInfo,
+    *const c_void,
+    *mut VkFence,
+) -> VkResult;
+/// `vkDestroyFence`。
+pub type PfnVkDestroyFence = unsafe extern "system" fn(VkDevice, VkFence, *const c_void);
+/// `vkWaitForFences`。
+pub type PfnVkWaitForFences = unsafe extern "system" fn(VkDevice, u32, *const VkFence, u32, u64) -> VkResult;
+/// `vkMapMemory`。
+pub type PfnVkMapMemory =
+    unsafe extern "system" fn(VkDevice, VkDeviceMemory, u64, u64, u32, *mut *mut c_void) -> VkResult;
+/// `vkUnmapMemory`。
+pub type PfnVkUnmapMemory = unsafe extern "system" fn(VkDevice, VkDeviceMemory);
+/// `vkGetPhysicalDeviceMemoryProperties`。
+pub type PfnVkGetPhysicalDeviceMemoryProperties =
+    unsafe extern "system" fn(VkPhysicalDevice, *mut VkPhysicalDeviceMemoryPropertiesStorage);
+
+// ---------------------------------------------------------------------------
+// 编译期布局断言（真机 FFI 的**唯一**可在此环境验证的正确性证据）
+// ---------------------------------------------------------------------------
+
+const _: () = {
+    // 只断言本环境能验证的东西：尺寸 + 对齐。字段偏移由 `size` + `repr(C)`
+    // 的 C ABI 规则共同决定（见各 struct 上方的逐字段推导注释）。
+    assert!(std::mem::size_of::<VkShaderModuleCreateInfo>() == 40);
+    assert!(std::mem::size_of::<VkPipelineShaderStageCreateInfo>() == 48);
+    assert!(std::mem::size_of::<VkComputePipelineCreateInfo>() == 96);
+    assert!(std::mem::size_of::<VkDescriptorSetLayoutBinding>() == 24);
+    assert!(std::mem::size_of::<VkDescriptorSetLayoutCreateInfo>() == 32);
+    assert!(std::mem::size_of::<VkPipelineLayoutCreateInfo>() == 48);
+    assert!(std::mem::size_of::<VkBufferCreateInfo>() == 56);
+    assert!(std::mem::size_of::<VkMemoryRequirements>() == 24);
+    assert!(std::mem::size_of::<VkMemoryAllocateInfo>() == 32);
+    assert!(std::mem::size_of::<VkCommandPoolCreateInfo>() == 24);
+    assert!(std::mem::size_of::<VkCommandBufferAllocateInfo>() == 32);
+    assert!(std::mem::size_of::<VkCommandBufferBeginInfo>() == 32);
+    assert!(std::mem::size_of::<VkSubmitInfo>() == 72);
+    assert!(std::mem::size_of::<VkFenceCreateInfo>() == 24);
+    assert!(std::mem::size_of::<VkDescriptorPoolCreateInfo>() == 40);
+    assert!(std::mem::size_of::<VkDescriptorSetAllocateInfo>() == 40);
+    assert!(std::mem::size_of::<VkDescriptorBufferInfo>() == 24);
+    assert!(std::mem::size_of::<VkWriteDescriptorSet>() == 64);
+    assert!(std::mem::size_of::<VkPhysicalDeviceMemoryPropertiesStorage>() == 776);
+};
