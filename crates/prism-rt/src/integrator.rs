@@ -7,6 +7,13 @@
 //! 焦散（镜面链 k=1 / 球面折射链 k=2 MNEE + PSR 兜底）。
 //! NEE + BSDF 双策略 MIS 幂次启发式、RR 续弹、萤火钳制、均匀 HG 介质保持基线。
 //!
+//! # 三角几何（V2-h 接入）
+//! [`Mesh`] 承载索引网格与三角形 soup 两型三角几何，内建
+//! [`prism_geometry::bvh::Bvh`]（SAH，O(log n) 求交，100k 三角形构建 < 1s）。
+//! 命中经 [`ShapeRef::Triangle`]（网格下标 + 原始三角形下标）细化——法线精确、
+//! 材质/豁免语义与解析图元同口径；[`ShapeRef::Mesh`] / [`ShapeRef::Bvh`] 是
+//! 容器级引用（整体豁免 / 整体材质），不产生命中。
+//!
 //! # 维度预算（SampleIndex.dimension；与 sampler 超表兜底衔接）
 //! ```text
 //! 相机段：槽 0,1 = 光圈圆盘；2 = 快门；3,4 = 像素抖动（见 camera.rs）。
@@ -35,6 +42,7 @@
 use std::f32::consts::{FRAC_1_PI, PI};
 
 use prism_core::EvalCtx;
+use prism_geometry::bvh::{Bvh as GeoBvh, Triangle as GeoTriangle};
 use prism_math::Vec3;
 
 use crate::accum::mean_samples;
@@ -165,6 +173,103 @@ impl Plane {
     }
 }
 
+/// 三角网格（rt 侧三角几何；内建 SAH-BVH，随网格构建一次）。
+///
+/// # 两型构造（同一存储，语义只差"有无拓扑"）
+/// - [`Mesh::new`]：**索引网格**（顶点流 + 索引流），glTF/OBJ/USD 导入主路径；
+/// - [`Mesh::from_triangles`]：**三角形 soup**（无拓扑），独立 BVH 直挂路径
+///   （[`Scene::add_bvh`]）。soup 的 `positions` / `indices` 为空。
+///
+/// # 为什么 `triangles` 与 `bvh` 各存一份
+/// [`GeoBvh`] 内部 `tris` 是**重排后**的三角形副本，而求交返回的是**原始**
+/// 图元索引（`order` 反查）。本结构保留原始顺序的 `triangles`，使
+/// "命中图元索引 → 三角形几何" 的映射为 O(1) 直接下标（法线精确，
+/// 不做最近点回查）。代价是 ~32 B/三角形 的额外副本（100k 三角形 ≈ 3.2 MB）。
+///
+/// # 契约
+/// 构造绝不 panic：索引越界 / 顶点非有限的三角形被**剔除**（`indices`
+/// 同步只保留合法三元组，故 `indices.chunks_exact(3)` 与 `triangles`
+/// 恒一一对应）。
+#[derive(Debug, Clone)]
+pub struct Mesh {
+    /// 顶点位置（soup 构造时为空）。
+    pub positions: Vec<Vec3>,
+    /// 合法三角形索引流（每 3 个一三角形；soup 构造时为空）。
+    pub indices: Vec<u32>,
+    /// 原始顺序的三角形（与 `indices` 一一对应）。
+    pub triangles: Vec<GeoTriangle>,
+    /// SAH-BVH（与 `triangles` 同源构建）。
+    pub bvh: GeoBvh,
+}
+
+impl Mesh {
+    /// 索引网格构造：`indices.chunks_exact(3)` 逐个展开为三角形并建树。
+    ///
+    /// 越界索引、非有限顶点坐标 ⇒ 该三角形被剔除（不 panic，不产生
+    /// 错误几何）；`indices` 仅保留通过校验的三元组。
+    pub fn new(positions: Vec<Vec3>, indices: Vec<u32>) -> Self {
+        let n_pos = positions.len();
+        let mut valid: Vec<u32> = Vec::with_capacity(indices.len());
+        let mut triangles: Vec<GeoTriangle> = Vec::with_capacity(indices.len() / 3);
+        for c in indices.chunks_exact(3) {
+            let (i0, i1, i2) = (c[0] as usize, c[1] as usize, c[2] as usize);
+            if i0 >= n_pos || i1 >= n_pos || i2 >= n_pos {
+                continue; // 越界索引：剔除（绝不 panic）
+            }
+            let (a, b, cc) = (positions[i0], positions[i1], positions[i2]);
+            if !finite_vec3(a) || !finite_vec3(b) || !finite_vec3(cc) {
+                continue; // 非有限顶点：剔除（永不命中的垃圾图元不入树）
+            }
+            triangles.push(GeoTriangle { a, b, c: cc });
+            valid.extend_from_slice(c);
+        }
+        let bvh = GeoBvh::build(&triangles);
+        Mesh { positions, indices: valid, triangles, bvh }
+    }
+
+    /// 三角形 soup 构造（无拓扑；BVH 在此构建一次）。
+    pub fn from_triangles(triangles: Vec<GeoTriangle>) -> Self {
+        let bvh = GeoBvh::build(&triangles);
+        Mesh { positions: Vec::new(), indices: Vec::new(), triangles, bvh }
+    }
+
+    /// 顶点/索引**已构建树**的 soup 构造（零重建：直接接管调用方的树）。
+    ///
+    /// 前置条件：`bvh` 必须由同一 `triangles` 序列构建（否则图元索引
+    /// 对不上）；本函数不做校验（O(n) 校验会抵消零重建收益）。
+    pub fn from_prebuilt(triangles: Vec<GeoTriangle>, bvh: GeoBvh) -> Self {
+        Mesh { positions: Vec::new(), indices: Vec::new(), triangles, bvh }
+    }
+
+    /// 扁平 f32 顶点（`[[x, y, z]; n]`）+ 索引流构造（USD/glTF 桥接用）。
+    pub fn from_flat(positions: &[[f32; 3]], indices: &[u32]) -> Self {
+        let pts: Vec<Vec3> = positions
+            .iter()
+            .map(|p| Vec3::new(p[0], p[1], p[2]))
+            .collect();
+        Mesh::new(pts, indices.to_vec())
+    }
+
+    /// 三角形数。
+    pub fn tri_count(&self) -> usize {
+        self.triangles.len()
+    }
+
+    /// 是否 soup 型（无顶点/索引拓扑，经 [`Scene::add_bvh`] 注册）。
+    pub fn is_soup(&self) -> bool {
+        self.positions.is_empty() && self.indices.is_empty()
+    }
+
+    /// 轴对齐包围盒 `(min, max)`；空网格返回 `None`。
+    pub fn bounds(&self) -> Option<(Vec3, Vec3)> {
+        if self.triangles.is_empty() {
+            return None;
+        }
+        let b = self.bvh.bounds;
+        Some((b.min, b.max))
+    }
+}
+
 /// 材质（基线三型 + Disney PBR 全族）。
 #[derive(Debug, Clone, Copy)]
 pub enum MaterialKind {
@@ -250,10 +355,59 @@ pub struct Scene {
     pub paraboloids: Vec<(Paraboloid, MaterialKind)>,
     /// 平面几何（无限地面 / 可倾斜有限切片；S7 玻璃切平面）。
     pub planes: Vec<(Plane, MaterialKind)>,
+    /// 三角几何（网格或 soup；每项内建 SAH-BVH，见 [`Mesh`]）。
+    pub meshes: Vec<(Mesh, MaterialKind)>,
     /// 光源列表（NEE 采样对象）。
     pub lights: Vec<Light>,
     /// 可选单一介质区域。
     pub medium: Option<MediumRegion>,
+}
+
+impl Scene {
+    /// 注册**索引三角网格**（顶点流 + 索引流；内建 BVH 在此构建），
+    /// 返回网格下标（[`ShapeRef`] 索引空间 / [`Scene::meshes`] 下标）。
+    pub fn add_mesh(
+        &mut self,
+        positions: Vec<Vec3>,
+        indices: Vec<u32>,
+        material: MaterialKind,
+    ) -> usize {
+        self.meshes.push((Mesh::new(positions, indices), material));
+        self.meshes.len() - 1
+    }
+
+    /// 注册**三角形 soup**（无拓扑；BVH 在此构建），返回网格下标。
+    ///
+    /// 与 [`Scene::add_mesh`] 同一存储：soup 项的容器级引用走
+    /// [`ShapeRef::Bvh`]，索引网格走 [`ShapeRef::Mesh`]；两者命中均细化为
+    /// [`ShapeRef::Triangle`]（网格下标, 三角形下标）。
+    pub fn add_bvh(&mut self, triangles: Vec<GeoTriangle>, material: MaterialKind) -> usize {
+        self.meshes.push((Mesh::from_triangles(triangles), material));
+        self.meshes.len() - 1
+    }
+
+    /// 注册**已构建 BVH** 的 soup（零重建：直接接管调用方树与三角形）。
+    ///
+    /// 前置条件见 [`Mesh::from_prebuilt`]（`bvh` 必须由同一 `triangles` 构建）。
+    pub fn add_bvh_prebuilt(
+        &mut self,
+        triangles: Vec<GeoTriangle>,
+        bvh: GeoBvh,
+        material: MaterialKind,
+    ) -> usize {
+        self.meshes.push((Mesh::from_prebuilt(triangles, bvh), material));
+        self.meshes.len() - 1
+    }
+
+    /// 三角几何条目数（网格 + soup）。
+    pub fn mesh_count(&self) -> usize {
+        self.meshes.len()
+    }
+
+    /// 全场景三角形总数。
+    pub fn triangle_count(&self) -> usize {
+        self.meshes.iter().map(|(m, _)| m.tri_count()).sum()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -261,12 +415,27 @@ pub struct Scene {
 // ---------------------------------------------------------------------------
 
 /// 形状引用（借场景索引）。
+///
+/// # 三角几何的三变体语义（V2-h）
+/// - [`ShapeRef::Triangle`] `(网格下标, 原始三角形下标)` —— **唯一**的三角形
+///   命中结果形态：法线由三角形绕序直接给出（flat shading），材质取所属
+///   网格的材质；
+/// - [`ShapeRef::Mesh`] `(网格下标)` —— **索引网格**的容器级引用（整体豁免 /
+///   整体材质），`intersect` 不产生此变体；
+/// - [`ShapeRef::Bvh`] `(网格下标)` —— **soup（BVH 直挂）**的容器级引用，
+///   与 `Mesh` 共享同一存储 [`Scene::meshes`]（`Mesh::is_soup()` 可判别）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ShapeRef {
     Sphere(usize),
     Box(usize),
     Paraboloid(usize),
     Plane(usize),
+    /// 三角网格中的单个三角形：(网格下标, 原始三角形下标)。
+    Triangle(usize, usize),
+    /// 索引网格整体（材质 / 豁免的容器级引用；命中细化为 `Triangle`）。
+    Mesh(usize),
+    /// 独立 BVH（soup）整体（材质 / 豁免的容器级引用；命中细化为 `Triangle`）。
+    Bvh(usize),
 }
 
 /// 最近命中。
@@ -286,6 +455,22 @@ pub(crate) const T_MIN: f32 = 1e-4;
 fn finite_vec3(v: Vec3) -> bool {
     v.x.is_finite() && v.y.is_finite() && v.z.is_finite()
 }
+
+/// 三角形单位几何法线（绕序 a→b→c 右手；零面积退化返回零向量）。
+///
+/// 退化三角形（零面积）在 Möller–Trumbore 下分母为零 ⇒ **永不被射线命中**，
+/// 故零向量返回值对渲染路径不可达；保留它是为了"绝不 NaN"的兜底
+/// （归一化零长向量会产生 NaN 并污染整条路径的辐亮度）。
+#[inline]
+fn triangle_unit_normal(t: &GeoTriangle) -> Vec3 {
+    let n = t.normal_unnormalized();
+    let len2 = n.dot(&n);
+    if len2 > 1e-24 {
+        n * (1.0 / len2.sqrt())
+    } else {
+        Vec3::splat(0.0)
+    }
+}
 /// 自交防护下界的编译期镜像（wavefront 判对基准一致性核对；同值）。
 pub const T_MIN_SENTINEL: f32 = 1e-4;
 /// `FRAC_1_PI` 的编译期镜像（wavefront 与 integrator 同口径核对）。
@@ -302,6 +487,9 @@ impl Scene {
             ShapeRef::Box(i) => &self.boxes[i].1,
             ShapeRef::Paraboloid(i) => &self.paraboloids[i].1,
             ShapeRef::Plane(i) => &self.planes[i].1,
+            // 三角几何三变体同源：都取所属网格的材质（容器级引用与
+            // 图元级命中语义一致——一个网格一个材质）。
+            ShapeRef::Triangle(m, _) | ShapeRef::Mesh(m) | ShapeRef::Bvh(m) => &self.meshes[m].1,
         }
     }
 
@@ -341,6 +529,29 @@ impl Scene {
                 // 玻璃透射材质下由积分器 from_inside 翻转）。
                 self.planes[i].0.normal
             }
+            // 三角几何：几何法线（绕序 a→b→c 右手）。两面性由积分器
+            // `from_inside` 统一翻转，故此处恒返**绕序法线**（不按视角翻转）。
+            ShapeRef::Triangle(m, t) => self
+                .meshes
+                .get(m)
+                .and_then(|(mesh, _)| mesh.triangles.get(t))
+                .map_or(Vec3::splat(0.0), triangle_unit_normal),
+            // 容器级引用（整体豁免 / 外部构造的容器 ref）不承载图元索引：
+            // 法线按**最近图元**兜底（flat shading 语义，O(log n) 的
+            // BVH 最近点查询）。`intersect` 从不产生这两种变体，故该分支
+            // 只在调用方显式持有容器 ref 时到达。
+            ShapeRef::Mesh(m) | ShapeRef::Bvh(m) => self.meshes.get(m).map_or(
+                Vec3::splat(0.0),
+                |(mesh, _)| {
+                    let cp = mesh.bvh.closest_point(p);
+                    if cp.tri == u32::MAX {
+                        return Vec3::splat(0.0); // 空网格
+                    }
+                    mesh.triangles
+                        .get(cp.tri as usize)
+                        .map_or(Vec3::splat(0.0), triangle_unit_normal)
+                },
+            ),
         }
     }
 
@@ -489,6 +700,51 @@ impl Scene {
         Some(t)
     }
 
+    /// 网格求交：BVH 遍历 → `(t, 原始三角形下标)`。
+    ///
+    /// 契约与解析图元臂同口径：`t >= T_MIN` 且 `t < t_max`（`GeoBvh` 内部用
+    /// 闭区间 `[t_min, t_max]`，此处显式按半开 `t < t_max` 过滤，避免"恰在
+    /// 远端"的网格面遮蔽同距离的解析图元）。射线须为单位向量
+    /// （`Scene::intersect` 全局契约，`GeoBvh::ray_intersect` 以
+    /// `debug_assert` 断言）。
+    ///
+    /// `skip_tri = Some(k)` 排除第 k 个三角形：若最近命中恰为 k，则以
+    /// `t_min = t_k + T_MIN` 二次查询取其后最近命中（BVH 的 t_min 剪枝
+    /// 天然重做，无 O(n) 退化；与 k 共享同一 t 的图元属测度零边界）。
+    fn mesh_t(
+        &self,
+        i: usize,
+        ro: Vec3,
+        rd: Vec3,
+        t_max: f32,
+        skip_tri: Option<usize>,
+    ) -> Option<(f32, usize)> {
+        if !finite_vec3(ro) || !finite_vec3(rd) {
+            return None; // 非有限射线 ⇒ 该网格永不命中（与平面/抛物面臂同语义）
+        }
+        let mesh = &self.meshes[i].0;
+        if mesh.triangles.is_empty() {
+            return None;
+        }
+        let first = mesh.bvh.ray_intersect(ro, rd, T_MIN, t_max)?;
+        if !(first.t < t_max) {
+            return None; // 最近命中已在远端之外（或 NaN）
+        }
+        if skip_tri != Some(first.tri as usize) {
+            return Some((first.t, first.tri as usize));
+        }
+        // 排除被豁免图元后重查（起点沿射线推进一个自交下界）。
+        let t0 = first.t + T_MIN;
+        if !(t0 < t_max) {
+            return None;
+        }
+        let second = mesh.bvh.ray_intersect(ro, rd, t0, t_max)?;
+        if !(second.t < t_max) {
+            return None;
+        }
+        Some((second.t, second.tri as usize))
+    }
+
     /// 最近命中（可跳过指定形状——阴影射线对被采样光源豁免）。
     pub(crate) fn intersect(
         &self,
@@ -539,6 +795,21 @@ impl Scene {
                 limit = t;
             }
         }
+        for i in 0..self.meshes.len() {
+            // 容器级豁免：`Mesh(i)`（索引网格）与 `Bvh(i)`（soup）均指整块网格。
+            if skip == Some(ShapeRef::Mesh(i)) || skip == Some(ShapeRef::Bvh(i)) {
+                continue;
+            }
+            // 图元级豁免：单个三角形被显式豁免时走二次查询。
+            let skip_tri = match skip {
+                Some(ShapeRef::Triangle(m, t)) if m == i => Some(t),
+                _ => None,
+            };
+            if let Some((t, tri)) = self.mesh_t(i, ro, rd, limit, skip_tri) {
+                best = Some(Hit { t, shape: ShapeRef::Triangle(i, tri) });
+                limit = t;
+            }
+        }
         best
     }
 
@@ -571,6 +842,9 @@ impl Scene {
             ShapeRef::Sphere(i) => i,
             // 盒 / 抛物面 / 平面均非球光源几何：无立体角 pdf（与 Box 臂同语义）。
             ShapeRef::Box(_) | ShapeRef::Paraboloid(_) | ShapeRef::Plane(_) => return None,
+            // 三角几何（任意变体）：非球光源几何，未注册 NEE ⇒ 命中权重 1
+            // （仅 BSDF 策略；发光网格既未注册 Light 也无立体角 pdf）。
+            ShapeRef::Triangle(_, _) | ShapeRef::Mesh(_) | ShapeRef::Bvh(_) => return None,
         };
         let li = self.sphere_light_index(i)?;
         match self.lights[li] {
@@ -1140,6 +1414,7 @@ mod tests {
             }],
             medium: None,
             paraboloids: vec![],
+            meshes: Vec::new(),
             planes: vec![],
         }
     }
@@ -1225,6 +1500,7 @@ mod tests {
             }],
             medium: None,
             paraboloids: vec![],
+            meshes: Vec::new(),
             planes: vec![],
         };
         let cam = Camera::new(
@@ -1415,6 +1691,7 @@ mod tests {
                 medium: HomogeneousMedium::new(sigma_t, 0.0, 0.0),
             }),
             paraboloids: vec![],
+            meshes: Vec::new(),
             planes: vec![],
         };
         let cam = Camera::new(
@@ -1474,6 +1751,7 @@ mod tests {
             }],
             medium: None,
             paraboloids: vec![],
+            meshes: Vec::new(),
             planes: vec![],
         };
         let cam = Camera::new(
@@ -1547,6 +1825,7 @@ mod tests {
             }],
             medium: None,
             paraboloids: vec![],
+            meshes: Vec::new(),
             planes: vec![],
         };
         // 俯视地面，含球与球影区域。
@@ -1668,6 +1947,7 @@ mod tests {
             lights: vec![],
             medium: None,
             paraboloids: vec![(Paraboloid { k, r_max }, lambert_grey())],
+            meshes: Vec::new(),
             planes: vec![],
         }
     }
@@ -1680,6 +1960,7 @@ mod tests {
             lights: vec![],
             medium: None,
             paraboloids: vec![],
+            meshes: Vec::new(),
             planes: vec![(plane, lambert_grey())],
         }
     }
@@ -1960,6 +2241,7 @@ mod tests {
             }],
             medium: None,
             paraboloids: vec![(Paraboloid { k: 1.0, r_max: 1.5 }, lambert_grey())],
+            meshes: Vec::new(),
             planes: vec![(
                 Plane::new(Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), None),
                 lambert_grey(),
@@ -1982,6 +2264,7 @@ mod tests {
             lights: vec![],
             medium: None,
             paraboloids: vec![(Paraboloid { k: 1.0, r_max: 1.5 }, mat)],
+            meshes: Vec::new(),
             planes: vec![(Plane::new(Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), None), mat)],
         };
         let ro = Vec3::new(0.3, 0.0, 5.0);
@@ -1998,5 +2281,349 @@ mod tests {
         let h3 = sc.intersect(ro, rd, 1.0e30, Some(ShapeRef::Plane(0))).unwrap();
         assert_eq!(h3.shape, ShapeRef::Paraboloid(0));
         assert!((h3.t - 4.91).abs() < 1e-4, "t={}", h3.t);
+    }
+
+    // ===================================================================
+    //  V2-h：三角几何（Mesh / BVH）进 rt
+    // ===================================================================
+
+    use prism_geometry::bvh::{Bvh as GeoBvh, Triangle as GeoTriangle};
+
+    /// 轴对齐立方体（12 三角形，边长 `2h`，中心 `c`）。
+    ///
+    /// 顶点编号 `x + 2y + 4z`（各轴取 `c ± h`）；六个面按**外向绕序**
+    /// 逐面两三角形展开——法线朝外，故半球抽样、NEE 余弦全部落在可见侧。
+    fn cube_mesh(c: Vec3, h: f32) -> (Vec<Vec3>, Vec<u32>) {
+        let mut pts = Vec::with_capacity(8);
+        for z in 0..2 {
+            for y in 0..2 {
+                for x in 0..2 {
+                    let sx = if x == 0 { -1.0 } else { 1.0 };
+                    let sy = if y == 0 { -1.0 } else { 1.0 };
+                    let sz = if z == 0 { -1.0 } else { 1.0 };
+                    pts.push(Vec3::new(c.x + sx * h, c.y + sy * h, c.z + sz * h));
+                }
+            }
+        }
+        let v = |x: u32, y: u32, z: u32| x + 2 * y + 4 * z;
+        // 六个面的四边形（外向绕序；每面两三角形 v0v1v2 / v0v2v3）。
+        let quads: [[u32; 4]; 6] = [
+            [v(0, 0, 1), v(0, 1, 1), v(0, 1, 0), v(0, 0, 0)], // -X
+            [v(1, 0, 0), v(1, 1, 0), v(1, 1, 1), v(1, 0, 1)], // +X
+            [v(0, 0, 0), v(1, 0, 0), v(1, 0, 1), v(0, 0, 1)], // -Y
+            [v(0, 1, 1), v(1, 1, 1), v(1, 1, 0), v(0, 1, 0)], // +Y
+            [v(0, 0, 0), v(0, 1, 0), v(1, 1, 0), v(1, 0, 0)], // -Z
+            [v(0, 0, 1), v(1, 0, 1), v(1, 1, 1), v(0, 1, 1)], // +Z
+        ];
+        let mut ids: Vec<u32> = Vec::with_capacity(36);
+        for q in quads {
+            ids.extend_from_slice(&[q[0], q[1], q[2], q[0], q[2], q[3]]);
+        }
+        (pts, ids)
+    }
+
+    /// 程序化圆环网格（rings × segs 四边形 → 2·rings·segs 三角形）。
+    ///
+    /// 三角件走 [`prism_geometry::det_math::det_cos_sin`]（D-29：禁 libm，
+    /// 同输入逐位一致）——网格本身可复现，100k 计时测试才可重复对账。
+    fn torus_mesh(rings: usize, segs: usize, big_r: f32, small_r: f32) -> (Vec<Vec3>, Vec<u32>) {
+        let (two_pi_over_rings, two_pi_over_segs) = (
+            6.283_185_5 / rings as f32,
+            6.283_185_5 / segs as f32,
+        );
+        let mut pts = Vec::with_capacity(rings * segs);
+        for i in 0..rings {
+            let (cu, su) = prism_geometry::det_math::det_cos_sin(i as f32 * two_pi_over_rings);
+            for j in 0..segs {
+                let (cv, sv) = prism_geometry::det_math::det_cos_sin(j as f32 * two_pi_over_segs);
+                let r = big_r + small_r * cv;
+                pts.push(Vec3::new(r * cu, small_r * sv, r * su));
+            }
+        }
+        let at = |i: usize, j: usize| ((i % rings) * segs + (j % segs)) as u32;
+        let mut ids = Vec::with_capacity(rings * segs * 6);
+        for i in 0..rings {
+            for j in 0..segs {
+                let (a, b, c, d) = (at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1));
+                ids.extend_from_slice(&[a, b, c, a, c, d]);
+            }
+        }
+        (pts, ids)
+    }
+
+    /// 单个三角形：命中 / 未命中 / 法线 / 材质 / 远平面 一次过。
+    #[test]
+    fn mesh_single_triangle_hit_miss_normal_material() {
+        let mat = MaterialKind::Lambert { albedo: Vec3::new(0.5, 0.5, 0.5) };
+        let mut sc = Scene::default();
+        let mi = sc.add_bvh(
+            vec![GeoTriangle {
+                a: Vec3::new(-1.0, -1.0, 0.0),
+                b: Vec3::new(1.0, -1.0, 0.0),
+                c: Vec3::new(0.0, 1.0, 0.0),
+            }],
+            mat,
+        );
+        assert_eq!(mi, 0, "add_bvh 返回首项下标 0");
+        assert_eq!(sc.mesh_count(), 1);
+        assert_eq!(sc.triangle_count(), 1);
+
+        // 命中：(0,0,-2) 沿 +z 射向三角形重心。
+        let h = sc
+            .intersect(Vec3::new(0.0, 0.0, -2.0), Vec3::new(0.0, 0.0, 1.0), 1.0e30, None)
+            .expect("应命中单三角形");
+        assert_eq!(h.shape, ShapeRef::Triangle(0, 0), "命中细化为 Triangle(mesh, tri)");
+        assert!((h.t - 2.0).abs() < 1e-6, "t = {}", h.t);
+        // 绕序 a→b→c 右手 ⇒ +z 法线。
+        let n = sc.normal_at(h.shape, Vec3::new(0.0, 0.0, 0.0));
+        assert!((n.z - 1.0).abs() < 1e-6 && n.x.abs() < 1e-6 && n.y.abs() < 1e-6, "n = {n:?}");
+        assert!(matches!(
+            sc.material(h.shape),
+            MaterialKind::Lambert { albedo } if (albedo.x - 0.5).abs() < 1e-6
+        ));
+        assert!((sc.primary_hit_distance(Vec3::new(0.0, 0.0, -2.0), Vec3::new(0.0, 0.0, 1.0), 1.0e30)
+            .expect("primary_hit_distance 同源")
+            - 2.0)
+            .abs()
+            < 1e-6);
+
+        // 未命中 1：射线偏离三角形（x = 3 在包围盒外）。
+        assert!(sc
+            .intersect(Vec3::new(3.0, 0.0, -2.0), Vec3::new(0.0, 0.0, 1.0), 1.0e30, None)
+            .is_none());
+        // 未命中 2：反方向（背离三角形）。
+        assert!(sc
+            .intersect(Vec3::new(0.0, 0.0, 2.0), Vec3::new(0.0, 0.0, 1.0), 1.0e30, None)
+            .is_none());
+        // 未命中 3：远平面在命中之前（t_max = 1.5 < 2.0）。
+        assert!(sc
+            .intersect(Vec3::new(0.0, 0.0, -2.0), Vec3::new(0.0, 0.0, 1.0), 1.5, None)
+            .is_none());
+        // 非有限射线：永不命中（与平面/抛物面臂同语义）。
+        assert!(sc
+            .intersect(
+                Vec3::new(f32::NAN, 0.0, -2.0),
+                Vec3::new(0.0, 0.0, 1.0),
+                1.0e30,
+                None
+            )
+            .is_none());
+    }
+
+    /// 图元级 / 容器级豁免语义（阴影射线 skip）：两层平行三角形叠放。
+    #[test]
+    fn mesh_skip_triangle_and_container() {
+        let mat = lambert_grey();
+        let tri = |z: f32| GeoTriangle {
+            a: Vec3::new(-1.0, -1.0, z),
+            b: Vec3::new(1.0, -1.0, z),
+            c: Vec3::new(0.0, 1.0, z),
+        };
+        let mut sc = Scene::default();
+        sc.add_bvh(vec![tri(0.0), tri(-2.0)], mat);
+        let ro = Vec3::new(0.0, 0.0, 5.0);
+        let rd = Vec3::new(0.0, 0.0, -1.0);
+        let h = sc.intersect(ro, rd, 1.0e30, None).unwrap();
+        assert_eq!(h.shape, ShapeRef::Triangle(0, 0));
+        assert!((h.t - 5.0).abs() < 1e-6, "近面 t = {}", h.t);
+        // 豁免近三角形 ⇒ 落到远三角形（t = 7）。
+        let h2 = sc
+            .intersect(ro, rd, 1.0e30, Some(ShapeRef::Triangle(0, 0)))
+            .unwrap();
+        assert_eq!(h2.shape, ShapeRef::Triangle(0, 1));
+        assert!((h2.t - 7.0).abs() < 1e-6, "远面 t = {}", h2.t);
+        // 容器级豁免（Mesh / Bvh 两种容器引用等价）⇒ 全无命中。
+        assert!(sc.intersect(ro, rd, 1.0e30, Some(ShapeRef::Mesh(0))).is_none());
+        assert!(sc.intersect(ro, rd, 1.0e30, Some(ShapeRef::Bvh(0))).is_none());
+        // 三角几何无立体角 pdf（未注册 NEE ⇒ 命中权重 1）。
+        assert_eq!(sc.light_pdf_sa(ro, ShapeRef::Triangle(0, 0)), None);
+        assert_eq!(sc.light_pdf_sa(ro, ShapeRef::Mesh(0)), None);
+        assert_eq!(sc.light_pdf_sa(ro, ShapeRef::Bvh(0)), None);
+    }
+
+    /// 小网格出图：12 三角形立方体 + 矩形面光（无环境光 ⇒ 背景恒 0）。
+    ///
+    /// 验收：图像全有限、立方体覆盖区有能量、四角（逃逸）恰为 0。
+    #[test]
+    fn mesh_cube_12_triangles_renders() {
+        let (pts, ids) = cube_mesh(Vec3::new(0.0, 0.0, 0.0), 0.8);
+        assert_eq!(ids.len() / 3, 12, "立方体应为 12 三角形");
+        let mut scene = Scene::default();
+        let mi = scene.add_mesh(pts, ids, MaterialKind::Lambert { albedo: Vec3::splat(0.8) });
+        assert_eq!(mi, 0);
+        assert_eq!(scene.meshes[0].0.tri_count(), 12);
+        assert!(!scene.meshes[0].0.is_soup());
+        let (bmin, bmax) = scene.meshes[0].0.bounds().expect("非空网格必有包围盒");
+        assert!((bmin.x + 0.8).abs() < 1e-6 && (bmax.z - 0.8).abs() < 1e-6);
+        scene.lights.push(Light::Rect {
+            center: Vec3::new(0.0, 3.0, 1.0),
+            edge_u: Vec3::new(2.0, 0.0, 0.0),
+            edge_v: Vec3::new(0.0, 0.0, 2.0),
+            radiance: Vec3::new(18.0, 16.0, 12.0),
+        });
+        let cam = Camera::new(
+            Vec3::new(0.0, 0.0, 3.0),
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            50.0,
+            0.0,
+            3.0,
+            0.0,
+            1.0 / 24.0,
+        );
+        let ctx = EvalCtx::new(11, 7, 3);
+        let res = (12, 12);
+        let params = RenderParams::new(24, 2);
+        let frame = render_frame(&scene, &cam, &ctx, res, &params);
+        assert_eq!(frame.len(), (res.0 * res.1) as usize);
+        let mut max_l = 0.0f32;
+        let mut lit = 0usize;
+        for (i, px) in frame.iter().enumerate() {
+            for c in 0..4 {
+                assert!(px[c].is_finite(), "像素 {i} ch{c} 非有限：{}", px[c]);
+            }
+            let l = px[0] + px[1] + px[2];
+            max_l = max_l.max(l);
+            if l > 1e-4 {
+                lit += 1;
+            }
+        }
+        // 四角为逃逸方向（无环境光）⇒ 恰为 0。
+        for corner in [0usize, res.0 as usize - 1, frame.len() - res.0 as usize, frame.len() - 1] {
+            let px = frame[corner];
+            assert_eq!(px[0], 0.0, "角像素 {corner} 应为背景 0");
+            assert_eq!(px[1], 0.0, "角像素 {corner} 应为背景 0");
+            assert_eq!(px[2], 0.0, "角像素 {corner} 应为背景 0");
+        }
+        assert!(max_l > 0.01, "立方体应被照亮：max_l = {max_l}");
+        assert!(lit > 20, "被照亮点过少：{lit}");
+        println!("12 三角形立方体出图：{res:?} spp{}，lit = {lit}，max_l = {max_l:.4}", params.spp);
+    }
+
+    /// 100k 三角形程序化网格：三角形数 ≥ 100k + BVH 构建耗时实测。
+    ///
+    /// 阈值说明：验收口径 "BVH 构建 < 1s" 以 **release** 为准（此处断言
+    /// `cfg!(debug_assertions)` 时放宽到 20 s——debug 下 SAH 构建有 ~10×
+    /// 常数惩罚，把 release 口径写死在 debug 里只会得到一条假的回归线）。
+    /// 实测值无论哪个 profile 都打印，便于对账。
+    #[test]
+    fn mesh_100k_triangles_bvh_build_timing() {
+        let (rings, segs) = (224usize, 224usize);
+        let (pts, ids) = torus_mesh(rings, segs, 1.0, 0.35);
+        let expected = rings * segs * 2;
+        assert_eq!(ids.len() / 3, expected);
+        assert!(expected >= 100_000, "三角形数应 ≥ 100k，实际 {expected}");
+
+        let t0 = std::time::Instant::now();
+        let mut sc = Scene::default();
+        let mi = sc.add_mesh(pts, ids, MaterialKind::Mirror);
+        let build_ms = t0.elapsed().as_secs_f64() * 1000.0;
+        assert_eq!(mi, 0);
+        assert_eq!(sc.triangle_count(), expected);
+        // BVH 结构自洽：节点非空、包围盒非退化、叶子覆盖全部图元。
+        let bvh: &GeoBvh = &sc.meshes[0].0.bvh;
+        assert!(!bvh.nodes.is_empty() && bvh.tris.len() == expected);
+        assert!(bvh.bounds.max.x > bvh.bounds.min.x);
+        let leaf_sum: usize = bvh
+            .nodes
+            .iter()
+            .filter(|n| n.count > 0)
+            .map(|n| n.count as usize)
+            .sum();
+        assert_eq!(leaf_sum, expected, "叶子图元数应覆盖全部三角形");
+
+        // 求交可用性：从环心上方沿 -y 应命中环体；从环心沿 +y 走洞中不命中。
+        let hit = sc.intersect(
+            Vec3::new(1.0, 5.0, 0.0),
+            Vec3::new(0.0, -1.0, 0.0),
+            1.0e30,
+            None,
+        );
+        assert!(hit.is_some(), "环体上方射线应命中");
+        let miss = sc.intersect(
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            1.0e30,
+            None,
+        );
+        assert!(miss.is_none(), "环洞中垂直射线不应命中");
+
+        let limit_ms = if cfg!(debug_assertions) { 20_000.0 } else { 1_000.0 };
+        println!(
+            "100k 三角形 BVH 构建：{expected} tris，{build_ms:.1} ms（{} 档，阈值 {limit_ms} ms）",
+            if cfg!(debug_assertions) { "debug" } else { "release" }
+        );
+        assert!(
+            build_ms < limit_ms,
+            "BVH 构建 {build_ms:.1} ms 超阈值 {limit_ms} ms"
+        );
+
+        // 双路径一致性：同一 100k 场景 integrator ≡ wavefront（逐位）。
+        sc.lights.push(Light::Rect {
+            center: Vec3::new(0.0, 3.0, 0.0),
+            edge_u: Vec3::new(2.0, 0.0, 0.0),
+            edge_v: Vec3::new(0.0, 0.0, 2.0),
+            radiance: Vec3::new(14.0, 13.0, 10.0),
+        });
+        sc.lights.push(Light::Ambient { radiance: Vec3::new(0.05, 0.06, 0.08) });
+        let cam = Camera::new(
+            Vec3::new(0.0, 0.0, 5.0),
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            50.0,
+            0.0,
+            5.0,
+            0.0,
+            1.0 / 24.0,
+        );
+        let ctx = EvalCtx::new(100_000, 7, 3);
+        let res = (4u32, 4u32);
+        let params = RenderParams::new(1, 2);
+        let wf = crate::wavefront::render_frame(&sc, &cam, &ctx, res, &params);
+        let mut lit = 0usize;
+        for y in 0..res.1 {
+            for x in 0..res.0 {
+                let rt = render_pixel(&sc, &cam, &ctx, (x, y), res, &params);
+                let i = (y * res.0 + x) as usize;
+                for c in 0..4 {
+                    assert_eq!(
+                        wf[i][c].to_bits(),
+                        rt[c].to_bits(),
+                        "100k 场景 parity 破：像素 ({x},{y}) 通道 {c}：{} ≠ {}",
+                        wf[i][c],
+                        rt[c]
+                    );
+                }
+                if wf[i][0] + wf[i][1] + wf[i][2] > 1e-4 {
+                    lit += 1;
+                }
+            }
+        }
+        assert!(lit > 0, "100k 场景应至少有一个像素被照亮");
+        println!("100k 场景双路径 parity：{res:?} spp{} 逐位一致，lit = {lit}", params.spp);
+    }
+
+    /// 索引越界 / 非有限顶点：剔除而非 panic（C18），且 `indices` 与
+    /// `triangles` 仍一一对应。
+    #[test]
+    fn mesh_invalid_triangles_are_dropped() {
+        let pts = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(f32::NAN, 0.0, 0.0),
+        ];
+        // 0,1,2 合法；0,1,9 越界；0,3,2 含 NaN。
+        let ids = vec![0u32, 1, 2, 0, 1, 9, 0, 3, 2];
+        let m = Mesh::new(pts, ids);
+        assert_eq!(m.tri_count(), 1);
+        assert_eq!(m.indices, vec![0, 1, 2]);
+        assert_eq!(m.indices.len() / 3, m.tri_count());
+        // 空网格：求交安全返回 None，bounds 为 None。
+        let mut sc = Scene::default();
+        sc.add_mesh(Vec::new(), Vec::new(), lambert_grey());
+        assert!(sc.intersect(Vec3::splat(0.0), Vec3::new(0.0, 0.0, 1.0), 1.0e30, None).is_none());
+        assert!(sc.meshes[0].0.bounds().is_none());
+        assert_eq!(sc.normal_at(ShapeRef::Mesh(0), Vec3::splat(0.0)).x, 0.0);
     }
 }

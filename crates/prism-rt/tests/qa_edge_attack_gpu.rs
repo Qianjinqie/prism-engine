@@ -51,6 +51,7 @@ fn cornell_scene() -> Scene {
         }],
         medium: None,
         paraboloids: vec![],
+        meshes: Vec::new(),
         planes: vec![],
     }
 }
@@ -84,6 +85,7 @@ fn medium_scene() -> Scene {
             medium: HomogeneousMedium::new(0.1, 0.9, 0.6),
         }),
         paraboloids: vec![],
+        meshes: Vec::new(),
         planes: vec![],
     }
 }
@@ -111,6 +113,7 @@ fn pbr_scene() -> Scene {
         }],
         medium: None,
         paraboloids: vec![],
+        meshes: Vec::new(),
         planes: vec![],
     }
 }

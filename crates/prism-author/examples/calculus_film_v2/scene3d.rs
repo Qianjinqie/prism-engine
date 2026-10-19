@@ -180,6 +180,7 @@ pub fn build_s7_scene(with_glass: bool) -> Scene {
         boxes: vec![],
         paraboloids: vec![(bowl, bowl_material)],
         planes,
+        meshes: Vec::new(),
         lights: vec![
             // 矩形面光：自上方倾斜照射（非几何 ⇒ NEE 权重恒 1，light.rs 契约）。
             Light::Rect {

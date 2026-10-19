@@ -56,12 +56,6 @@ pub(crate) fn vmaxc(v: Vec3) -> f32 {
     v.x.max(v.y).max(v.z)
 }
 
-/// 三分量最小值。
-#[inline]
-pub(crate) fn vminc(v: Vec3) -> f32 {
-    v.x.min(v.y).min(v.z)
-}
-
 /// XZ 平面子向量长度（圆柱/圆环共用）。
 #[inline]
 pub(crate) fn xz_len(v: Vec3) -> f32 {

@@ -1324,6 +1324,7 @@ mod tests {
             lights: Vec::new(),
             medium: None,
             paraboloids: vec![],
+            meshes: Vec::new(),
             planes: vec![],
         };
         let field = SceneSdf::from_scene(&scene);
@@ -1411,6 +1412,7 @@ mod tests {
             lights: Vec::new(),
             medium: None,
             paraboloids: vec![],
+            meshes: Vec::new(),
             planes: vec![],
         };
         SceneSdf::from_scene(&scene)

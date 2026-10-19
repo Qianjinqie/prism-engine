@@ -16,6 +16,14 @@
 //! 完全相同的顺序消耗相同维度槽的样本、走相同算术。本模块以"队列状态机"
 //! 显式表达四阶段，但下推的是与 `trace_one` 相同的 `PathState`。
 //!
+//! # 三角几何（V2-h 双路径同步）
+//! 求交/法线/材质/发射全走 [`Scene::intersect`] / [`Scene::normal_at`] /
+//! [`Scene::material`]（与 integrator 同一份实现），故**网格与独立 BVH
+//! 天然进 wavefront**：`ShapeRef::Triangle`（网格下标, 三角形下标）在
+//! 两个执行器里是同一个命中形态，三角形几何法线、mesh 材质、阴影射线穿网
+//! 格（[`crate::integrator::visibility`]）逐位一致——由
+//! `wavefront_equals_integrator_bitwise_mesh` 逐位对拍守门。
+//!
 //! # 禁 libm / 零第三方
 //! 只经 `crate::sampler`（Sobol + det 三角件）取随机与三角；无 `libm`、
 //! 无全局 RNG（D-29）。
@@ -645,6 +653,7 @@ mod tests {
             }],
             medium: None,
             paraboloids: vec![],
+            meshes: Vec::new(),
             planes: vec![],
         }
     }
@@ -861,6 +870,7 @@ mod tests {
             ],
             medium: None,
             paraboloids: vec![(Paraboloid { k: 1.0, r_max: 1.2 }, MaterialKind::Pbr(gold))],
+            meshes: Vec::new(),
             planes: vec![
                 (
                     Plane::new(Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), None),
@@ -901,6 +911,7 @@ mod tests {
             lights: vec![Light::Sphere { center, radius: 0.3, radiance }],
             medium: None,
             paraboloids: vec![(Paraboloid { k: 1.0, r_max: 1.4 }, MaterialKind::Pbr(gold))],
+            meshes: Vec::new(),
             planes: vec![(
                 Plane::new(Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), None),
                 MaterialKind::Lambert { albedo: Vec3::new(0.18, 0.20, 0.24) },
@@ -941,5 +952,123 @@ mod tests {
     #[test]
     fn wavefront_equals_integrator_bitwise_sphere_light_paraboloid() {
         assert_parity_bitwise(&e5_scene_b(), "E5-B 球光源/抛物面");
+    }
+
+    // ============== V2-h：三角几何（Mesh / BVH）双路径 parity ==============
+
+    /// 起伏网格（`n × n` 四边形 → 2n² 三角形；索引网格路径）。
+    ///
+    /// 高度用纯整数算术生成的确定性起伏（禁 libm；同输入同网格）：
+    /// `z = 0.12·(i² − j²)/(n²)`，起伏保证每块三角形法线互不相同——
+    /// 逐像素对拍才真正覆盖"三角形法线进 BSDF/NEE 余弦"的整条链。
+    fn wavy_grid(n: usize, size: f32) -> (Vec<Vec3>, Vec<u32>) {
+        let step = size / n as f32;
+        let mut pts = Vec::with_capacity((n + 1) * (n + 1));
+        for i in 0..=n {
+            for j in 0..=n {
+                let (fi, fj) = (i as f32, j as f32);
+                let h = 0.12 * (fi * fi - fj * fj) / (n as f32 * n as f32);
+                pts.push(Vec3::new(
+                    -size * 0.5 + j as f32 * step,
+                    h,
+                    -size * 0.5 + i as f32 * step,
+                ));
+            }
+        }
+        let at = |i: usize, j: usize| (i * (n + 1) + j) as u32;
+        let mut ids = Vec::with_capacity(n * n * 6);
+        for i in 0..n {
+            for j in 0..n {
+                let (a, b, c, d) = (at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1));
+                ids.extend_from_slice(&[a, b, c, a, c, d]);
+            }
+        }
+        (pts, ids)
+    }
+
+    /// V2-h parity 场景：索引网格（起伏地面，128 三角形）+ 三角形 soup
+    /// （直立挡板，经 `add_bvh` 直挂）+ 矩形面光 + 环境光。
+    ///
+    /// 覆盖：`ShapeRef::Triangle` 命中细化、三角形几何法线、mesh 材质、
+    /// 阴影射线穿网格（`visibility` 走同一条 `Scene::intersect`）。
+    fn mesh_scene() -> Scene {
+        let (pts, ids) = wavy_grid(8, 3.0);
+        let wall_mat = MaterialKind::Lambert { albedo: Vec3::new(0.55, 0.35, 0.22) };
+        let soup = vec![
+            prism_geometry::bvh::Triangle {
+                a: Vec3::new(-1.0, 0.0, -0.4),
+                b: Vec3::new(1.0, 0.0, -0.4),
+                c: Vec3::new(1.0, 1.6, -0.4),
+            },
+            prism_geometry::bvh::Triangle {
+                a: Vec3::new(-1.0, 0.0, -0.4),
+                b: Vec3::new(1.0, 1.6, -0.4),
+                c: Vec3::new(-1.0, 1.6, -0.4),
+            },
+        ];
+        let mut scene = Scene {
+            spheres: vec![],
+            boxes: vec![],
+            lights: vec![
+                Light::Rect {
+                    center: Vec3::new(0.0, 3.2, 0.6),
+                    edge_u: Vec3::new(2.4, 0.0, 0.0),
+                    edge_v: Vec3::new(0.0, 0.0, 2.4),
+                    radiance: Vec3::new(15.0, 13.5, 11.0),
+                },
+                Light::Ambient { radiance: Vec3::new(0.08, 0.10, 0.14) },
+            ],
+            medium: None,
+            paraboloids: vec![],
+            meshes: Vec::new(),
+            planes: vec![],
+        };
+        let grid = scene.add_mesh(
+            pts,
+            ids,
+            MaterialKind::Lambert { albedo: Vec3::new(0.55, 0.57, 0.60) },
+        );
+        let wall = scene.add_bvh(soup, wall_mat);
+        assert_eq!((grid, wall), (0, 1));
+        assert_eq!(scene.triangle_count(), 8 * 8 * 2 + 2);
+        scene
+    }
+
+    /// 判对 6（V2-h）：网格 + soup 场景 wavefront ≡ integrator（逐位）。
+    #[test]
+    fn wavefront_equals_integrator_bitwise_mesh() {
+        let scene = mesh_scene();
+        // 网格局中命中面：先确认场景本身有几何命中（防"两边都空"的假 parity）。
+        let hit = scene.primary_hit_distance(
+            Vec3::new(0.0, 2.0, 0.4),
+            Vec3::new(0.0, -1.0, 0.0),
+            1.0e30,
+        );
+        assert!(hit.is_some(), "网格场景应有几何命中");
+        assert_parity_bitwise(&scene, "V2-h 网格 + 三角形 soup");
+    }
+
+    /// 判对 7（V2-h）：网格场景出图为非平凡（有亮有暗，不全 0/不全同值）。
+    #[test]
+    fn wavefront_mesh_scene_renders_non_trivial_image() {
+        let scene = mesh_scene();
+        let cam = cornell_camera();
+        let ctx = EvalCtx::new(4242, 7, 3);
+        let res = (10, 10);
+        let params = RenderParams::new(24, 3);
+        let frame = render_frame(&scene, &cam, &ctx, res, &params);
+        let mut min_l = f32::INFINITY;
+        let mut max_l = f32::NEG_INFINITY;
+        for (i, px) in frame.iter().enumerate() {
+            for c in 0..4 {
+                assert!(px[c].is_finite(), "像素 {i} ch{c} 非有限：{}", px[c]);
+            }
+            let l = px[0] + px[1] + px[2];
+            min_l = min_l.min(l);
+            max_l = max_l.max(l);
+        }
+        assert!(max_l > 0.01, "网格场景应被照亮：max_l = {max_l}");
+        assert!(max_l - min_l > 1e-3, "图像应非平凡（应有明暗差异）");
+        println!("V2-h 网格场景出图：{res:?} spp{}，luma ∈ [{min_l:.4}, {max_l:.4}]", params.spp);
     }
 }

@@ -123,7 +123,7 @@ pub fn sphere_trace(field: &dyn Sdf, ro: Vec3, rd: Vec3, params: &TraceParams) -
 mod tests {
     use super::*;
     use crate::primitive::{Box3, Sphere};
-    use crate::{vmax, vmaxc, vmin, vminc};
+    use crate::{vmax, vmaxc, vmin};
 
     const SEED: u64 = 0x6E01_5EED; // 任意常量种子
 
@@ -222,7 +222,7 @@ mod tests {
         let tmin = vmin(t1, t2);
         let tmax = vmax(t1, t2);
         let enter = vmaxc(tmin).max(0.0);
-        let exit = vminc(tmax);
+        let exit = tmax.x.min(tmax.y).min(tmax.z);
         if enter <= exit {
             Some(enter)
         } else {
