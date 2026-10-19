@@ -195,6 +195,7 @@ pub fn build_s7_scene(with_glass: bool) -> Scene {
             },
         ],
         medium: None,
+        ..Default::default()
     }
 }
 

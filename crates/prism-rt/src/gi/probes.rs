@@ -1326,6 +1326,7 @@ mod tests {
             paraboloids: vec![],
             meshes: Vec::new(),
             planes: vec![],
+            ..Default::default()
         };
         let field = SceneSdf::from_scene(&scene);
         let p = Vec3::new(0.0, 0.5, 0.0); // 腔中
@@ -1414,6 +1415,7 @@ mod tests {
             paraboloids: vec![],
             meshes: Vec::new(),
             planes: vec![],
+            ..Default::default()
         };
         SceneSdf::from_scene(&scene)
     }

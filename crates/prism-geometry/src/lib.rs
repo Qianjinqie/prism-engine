@@ -3,6 +3,8 @@
 //! 模块一览：
 //!
 //! - [`primitive`] — 解析图元族闭式 SDF（球/盒/平面/圆柱/圆环/胶囊）与 [`primitive::Sdf`] trait。
+//! - [`quartic`] — 四次方程精确求根（Ferrari 闭式，零迭代；V2.0-W4 圆环求交内核）。
+//! - [`aabb_bvh`] — AABB-BVH：曲线图元族粗阶段加速（SAH + 回调精阶段，与 [`bvh`] 同确定性口径）。
 //! - [`sdf`] — SDF 域算子（并/交/差/平滑变体）、displace（接 prism-noise）与 sphere tracing。
 //! - [`csg`] — CSG 树：组合方式直接复用 [`sdf`] 域算子函数（D-16 避免双实现）。
 //! - [`bvh`] — SAH-BVH：射线求交 + 最近点 + 广义 winding number（一树两用）。
@@ -20,6 +22,7 @@
 //! asin/sin/cos 等）一律走 [`det_math`] 确定性件（纯 IEEE 运算，同输入逐位一致，
 //! 禁 libm）；禁 fma 内建（附注）。
 
+pub mod aabb_bvh;
 pub mod bvh;
 pub mod csg;
 pub mod det_math;
@@ -28,6 +31,7 @@ pub mod lod;
 pub mod mesh_sdf;
 pub mod obj;
 pub mod primitive;
+pub mod quartic;
 pub mod sdf;
 
 use prism_math::Vec3;

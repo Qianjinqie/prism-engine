@@ -655,6 +655,7 @@ mod tests {
             paraboloids: vec![],
             meshes: Vec::new(),
             planes: vec![],
+            ..Default::default()
         }
     }
 
@@ -885,6 +886,7 @@ mod tests {
                     MaterialKind::Pbr(glass),
                 ),
             ],
+            ..Default::default()
         }
     }
 
@@ -916,6 +918,7 @@ mod tests {
                 Plane::new(Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), None),
                 MaterialKind::Lambert { albedo: Vec3::new(0.18, 0.20, 0.24) },
             )],
+            ..Default::default()
         }
     }
 
@@ -1022,6 +1025,7 @@ mod tests {
             paraboloids: vec![],
             meshes: Vec::new(),
             planes: vec![],
+            ..Default::default()
         };
         let grid = scene.add_mesh(
             pts,
@@ -1571,6 +1575,7 @@ mod v2g_parity_tests {
             paraboloids: vec![],
             planes: vec![],
             meshes: vec![],
+            ..Default::default()
         }
     }
 

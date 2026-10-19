@@ -20,6 +20,7 @@ fn ball_scene() -> Scene {
         paraboloids: vec![],
         meshes: Vec::new(),
         planes: vec![],
+        ..Default::default()
     }
 }
 
@@ -67,6 +68,7 @@ fn rt_depth_empty_scene_all_miss() {
         paraboloids: vec![],
         meshes: Vec::new(),
         planes: vec![],
+        ..Default::default()
     };
     let ctx = EvalCtx::new(1, 1, 0);
     let dm = render_depth(&scene, &cam(), &ctx, 4, 4, DepthParams::default());

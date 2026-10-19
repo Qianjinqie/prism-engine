@@ -173,6 +173,177 @@ impl Plane {
     }
 }
 
+/// 有限圆柱（轴向 +Y，带上下端盖；V2.0-W4 曲线图元族）。
+///
+/// 求交口径：侧面（x²+z²=R² 二次方程，|y|<=H 裁剪）+ 上下端盖圆盘
+/// （y=±H 线性根，x²+z²<=R² 裁剪）；闭合实体语义（内外两侧命中都记录，
+/// 取最近 t>0）；切向 / 掠射 / 端盖内外侧统一走同一候选验证。
+/// `radius <= 0` / `half_height <= 0` / 非有限 ⇒ 该图元永不命中。
+#[derive(Debug, Clone, Copy)]
+pub struct Cylinder {
+    /// 圆柱中心（轴中点）。
+    pub center: Vec3,
+    /// 半径（> 0）。
+    pub radius: f32,
+    /// 半高（> 0）。
+    pub half_height: f32,
+}
+
+/// 有限圆锥（轴向 +Y；V2.0-W4 曲线图元族）。
+///
+/// 底面位于 `center.y - half_height`（半径 `radius`），顶点位于
+/// `center.y + half_height`（半径 0）。求交口径：斜锥侧面（二次方程，
+/// y∈[-H, H] 闭裁剪）+ 底面圆盘（y=-H 线性根，x²+z²<=R² 裁剪）；
+/// 顶点处侧面法线退化，按 (0,1,0) 兜底（测度零）。
+#[derive(Debug, Clone, Copy)]
+pub struct Cone {
+    /// 圆锥中心（轴中点）。
+    pub center: Vec3,
+    /// 底面半径（> 0）。
+    pub radius: f32,
+    /// 半高（> 0）。
+    pub half_height: f32,
+}
+
+/// 圆环（主环位于 XZ 平面，轴向 +Y；V2.0-W4 曲线图元族）。
+///
+/// 隐式方程 `(ρ-R)² + y² = r²`（ρ = √(x²+z²)，局部坐标）。射线代入得
+/// **四次方程**，精确求根走 [`prism_geometry::quartic::solve_quartic`]
+/// （Ferrari 闭式、零迭代；任务书钉死禁止牛顿迭代）。闭合实体语义：
+/// 四个实根（前外 / 前内 / 后内 / 后外）都记录，取最近 t>0。
+/// `major <= 0` / `minor <= 0` / 非有限 ⇒ 永不命中。
+#[derive(Debug, Clone, Copy)]
+pub struct Torus {
+    /// 环心。
+    pub center: Vec3,
+    /// 主半径（环心到管心，> 0）。
+    pub major: f32,
+    /// 管半径（> 0）。
+    pub minor: f32,
+}
+
+/// 旋转曲面（轮廓绕 +Y 轴旋转；V2.0-W4 曲线图元族）。
+///
+/// # 轮廓与段序列（钉死口径）
+/// `profile` 为 (r, y) 点列（r >= 0），相邻两点定义一个**斜锥环带段**；
+/// 段数 = 点数 − 1，**同参数声明 ⇒ 同段序列**（`new` 是纯函数：
+/// 仅做绕向归一，不增删点——非有限点由求交方按"永不命中"处理）。
+/// 求交对每个段解一个二次方程（过该段的斜锥；水平段特化为环带），
+/// y（或水平段的 ρ）落在段闭区间内算命中；闭合实体语义（内外两侧
+/// 都记录，取最近 t>0）。
+///
+/// # 绕向归一（外法线口径）
+/// 轮廓按 (r, y) 平面多边形（闭合边 末点→首点）计有向面积：负（CW）
+/// 时反转点序，保证内部恒在左侧 ⇒ 外向法线统一为剖面内 (Δy, −Δr)。
+/// 反转是纯置换：同声明 → 同归一结果 → 同段序列。
+#[derive(Debug, Clone)]
+pub struct Revolution {
+    /// 旋转心（轮廓平面的原点）。
+    pub center: Vec3,
+    /// 轮廓点列 (r, y)（`new` 已做绕向归一；直接构造字段时调用方自保）。
+    pub profile: Vec<[f32; 2]>,
+}
+
+impl Revolution {
+    /// 构造并归一化绕向（见类型文档；纯函数，同声明同结果）。
+    pub fn new(center: Vec3, profile: Vec<[f32; 2]>) -> Self {
+        let mut pts: Vec<[f32; 2]> = profile;
+        // 有向面积（shoelace，闭合边 末→首）：< 0 为 CW ⇒ 反转为 CCW。
+        if pts.len() >= 3 && profile_signed_area(&pts) < 0.0 {
+            pts.reverse();
+        }
+        Revolution { center, profile: pts }
+    }
+
+    /// 轮廓段数（点数 − 1；点数 < 2 时为 0 ⇒ 永不命中）。
+    pub fn segment_count(&self) -> usize {
+        self.profile.len().saturating_sub(1)
+    }
+}
+
+/// 轮廓多边形有向面积（2 倍；闭合边 末→首）。NaN 输入 ⇒ NaN（调用方
+/// 不反转，求交方按永不命中处理）。
+fn profile_signed_area(pts: &[[f32; 2]]) -> f32 {
+    let n = pts.len();
+    let mut sum = 0.0_f32;
+    for i in 0..n {
+        let a = pts[i];
+        let b = pts[(i + 1) % n];
+        sum += a[0] * b[1] - b[0] * a[1];
+    }
+    sum
+}
+
+/// XZ 平面子向量长度（圆柱 / 圆锥 / 圆环 / 旋转曲面共用）。
+#[inline]
+fn xz_len(v: Vec3) -> f32 {
+    (v.x * v.x + v.z * v.z).sqrt()
+}
+
+/// (ρ, y) 平面上的点到线段距离平方（旋转曲面法线选段用；退化线段
+/// 返回点到端点距离）。
+fn point_segment_dist2(px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
+    let ex = bx - ax;
+    let ey = by - ay;
+    let len2 = ex * ex + ey * ey;
+    if len2 <= 1e-24 {
+        // 退化段：点到端点 a。
+        let dx = px - ax;
+        let dy = py - ay;
+        return dx * dx + dy * dy;
+    }
+    let mut s = ((px - ax) * ex + (py - ay) * ey) / len2;
+    if !(s >= 0.0) {
+        s = 0.0;
+    } else if s > 1.0 {
+        s = 1.0;
+    }
+    let cx = ax + s * ex;
+    let cy = ay + s * ey;
+    let dx = px - cx;
+    let dy = py - cy;
+    dx * dx + dy * dy
+}
+
+/// 圆柱 AABB（中心 ± (R, H, R)）。
+fn cylinder_aabb(c: &Cylinder) -> Aabb {
+    let e = Vec3::new(c.radius, c.half_height, c.radius);
+    Aabb::new(c.center - e, c.center + e)
+}
+
+/// 圆锥 AABB（与圆柱同形：底面半径 R 与半高 H 即 x/z/y 向极值）。
+fn cone_aabb(c: &Cone) -> Aabb {
+    let e = Vec3::new(c.radius, c.half_height, c.radius);
+    Aabb::new(c.center - e, c.center + e)
+}
+
+/// 圆环 AABB（中心 ± (R+r, r, R+r)）。
+fn torus_aabb(t: &Torus) -> Aabb {
+    let e = Vec3::new(t.major + t.minor, t.minor, t.major + t.minor);
+    Aabb::new(t.center - e, t.center + e)
+}
+
+/// 旋转曲面 AABB（x/z ± max|r|，y ∈ [min y, max y]；点数 < 2 为
+/// ±∞ 空盒——BVH 构建按空盒安全跳过，求交按点数 < 2 永不命中）。
+fn revolution_aabb(r: &Revolution) -> Aabb {
+    let mut min = Vec3::splat(f32::INFINITY);
+    let mut max = Vec3::splat(f32::NEG_INFINITY);
+    for p in &r.profile {
+        for sx in [1.0_f32, -1.0] {
+            let pt = r.center + Vec3::new(sx * p[0], p[1], 0.0);
+            min = Vec3::new(min.x.min(pt.x), min.y.min(pt.y), min.z.min(pt.z));
+            max = Vec3::new(max.x.max(pt.x), max.y.max(pt.y), max.z.max(pt.z));
+        }
+    }
+    Aabb::new(min, max)
+}
+
+/// rt Aabb → geometry Aabb（同名同构字段；BVH 构建在 geometry 侧）。
+#[inline]
+fn to_geo_aabb(b: &Aabb) -> prism_geometry::bvh::Aabb {
+    prism_geometry::bvh::Aabb { min: b.min, max: b.max }
+}
+
 /// 三角网格（rt 侧三角几何；内建 SAH-BVH，随网格构建一次）。
 ///
 /// # 两型构造（同一存储，语义只差"有无拓扑"）
@@ -357,10 +528,29 @@ pub struct Scene {
     pub planes: Vec<(Plane, MaterialKind)>,
     /// 三角几何（网格或 soup；每项内建 SAH-BVH，见 [`Mesh`]）。
     pub meshes: Vec<(Mesh, MaterialKind)>,
+    /// 有限圆柱族（V2.0-W4 曲线图元；全局曲线 id 段 1）。
+    pub cylinders: Vec<(Cylinder, MaterialKind)>,
+    /// 有限圆锥族（V2.0-W4 曲线图元；全局曲线 id 段 2）。
+    pub cones: Vec<(Cone, MaterialKind)>,
+    /// 圆环族（V2.0-W4 曲线图元；全局曲线 id 段 3）。
+    pub toruses: Vec<(Torus, MaterialKind)>,
+    /// 旋转曲面族（V2.0-W4 曲线图元；全局曲线 id 段 4）。
+    pub revolutions: Vec<(Revolution, MaterialKind)>,
     /// 光源列表（NEE 采样对象）。
     pub lights: Vec<Light>,
     /// 可选单一介质区域。
     pub medium: Option<MediumRegion>,
+    /// 曲线图元 BVH（[`Scene::add_cylinder`] 等构造入口维护；外部只读，
+    /// 直接改四族字段后须调 [`Scene::rebuild_curve_bvh`]）。
+    ///
+    /// `None` 或图元计数与四族总数不符 ⇒ [`Scene::intersect`] 自动走线性
+    /// 兜底路径（两条路径结果一致——有对拍测试）。
+    ///
+    /// 设计说明：本字段为公开字段（而非私有缓存）——`Scene` 的既有构造
+    /// 模式是跨 crate 结构体字面量（tests / examples），私有字段会使外部
+    /// 字面量构造直接编译失败（E0451；函数更新语法 `..Default::default()`
+    /// 不能绕过私有性），故按"公开只读缓存"口径暴露。
+    pub curve_bvh: Option<prism_geometry::aabb_bvh::AabbBvh>,
 }
 
 impl Scene {
@@ -408,6 +598,102 @@ impl Scene {
     pub fn triangle_count(&self) -> usize {
         self.meshes.iter().map(|(m, _)| m.tri_count()).sum()
     }
+
+    // -----------------------------------------------------------------------
+    // 曲线图元族构造入口（V2.0-W4；add_* 维护曲线 BVH）
+    // -----------------------------------------------------------------------
+
+    /// 注册有限圆柱，返回圆柱下标（[`ShapeRef::Cylinder`] 索引空间）。
+    pub fn add_cylinder(&mut self, cylinder: Cylinder, material: MaterialKind) -> usize {
+        self.cylinders.push((cylinder, material));
+        self.rebuild_curve_bvh();
+        self.cylinders.len() - 1
+    }
+
+    /// 注册有限圆锥，返回圆锥下标（[`ShapeRef::Cone`] 索引空间）。
+    pub fn add_cone(&mut self, cone: Cone, material: MaterialKind) -> usize {
+        self.cones.push((cone, material));
+        self.rebuild_curve_bvh();
+        self.cones.len() - 1
+    }
+
+    /// 注册圆环，返回圆环下标（[`ShapeRef::Torus`] 索引空间）。
+    pub fn add_torus(&mut self, torus: Torus, material: MaterialKind) -> usize {
+        self.toruses.push((torus, material));
+        self.rebuild_curve_bvh();
+        self.toruses.len() - 1
+    }
+
+    /// 注册旋转曲面，返回曲面下标（[`ShapeRef::Revolution`] 索引空间）。
+    pub fn add_revolution(&mut self, revolution: Revolution, material: MaterialKind) -> usize {
+        self.revolutions.push((revolution, material));
+        self.rebuild_curve_bvh();
+        self.revolutions.len() - 1
+    }
+
+    /// 重建曲线图元 BVH（四族 AABB 按全局曲线 id 序：
+    /// cylinders → cones → toruses → revolutions）。
+    ///
+    /// 直接改 `cylinders` / `cones` / `toruses` / `revolutions` 字段后
+    /// 须调用本函数（或改用 `add_*`）；不重建时 `intersect` 按计数不符
+    /// 自动退化线性兜底（结果与 BVH 路径一致，仅无粗阶段加速）。
+    pub fn rebuild_curve_bvh(&mut self) {
+        let mut aabbs: Vec<Aabb> = Vec::with_capacity(self.curve_total());
+        for (c, _) in &self.cylinders {
+            aabbs.push(cylinder_aabb(c));
+        }
+        for (c, _) in &self.cones {
+            aabbs.push(cone_aabb(c));
+        }
+        for (t, _) in &self.toruses {
+            aabbs.push(torus_aabb(t));
+        }
+        for (r, _) in &self.revolutions {
+            aabbs.push(revolution_aabb(r));
+        }
+        self.curve_bvh = if aabbs.is_empty() {
+            None
+        } else {
+            let geo: Vec<prism_geometry::bvh::Aabb> = aabbs.iter().map(to_geo_aabb).collect();
+            Some(prism_geometry::aabb_bvh::AabbBvh::build(&geo))
+        };
+    }
+
+    /// 曲线图元四族总数。
+    pub(crate) fn curve_total(&self) -> usize {
+        self.cylinders.len() + self.cones.len() + self.toruses.len() + self.revolutions.len()
+    }
+
+    /// 全局曲线 id → 族内下标与种类（family-major 序，见
+    /// [`Scene::rebuild_curve_bvh`]）。
+    fn curve_locate(&self, id: u32) -> Option<ShapeRef> {
+        let nc = self.cylinders.len() as u32;
+        let nk = self.cones.len() as u32;
+        let nt = self.toruses.len() as u32;
+        let nr = self.revolutions.len() as u32;
+        if id < nc {
+            Some(ShapeRef::Cylinder(id as usize))
+        } else if id < nc + nk {
+            Some(ShapeRef::Cone((id - nc) as usize))
+        } else if id < nc + nk + nt {
+            Some(ShapeRef::Torus((id - nc - nk) as usize))
+        } else if id < nc + nk + nt + nr {
+            Some(ShapeRef::Revolution((id - nc - nk - nt) as usize))
+        } else {
+            None // id 越界（BVH 与四族不同步的防御）
+        }
+    }
+
+    /// 全局曲线 id → 最近有效 t（BVH 回调精阶段；口径与 `*_t` 一致）。
+    fn curve_t(&self, id: u32, ro: Vec3, rd: Vec3, t_max: f32) -> Option<f32> {
+        match self.curve_locate(id)? {
+            ShapeRef::Cylinder(i) => self.cylinder_t(i, ro, rd, t_max),
+            ShapeRef::Cone(i) => self.cone_t(i, ro, rd, t_max),
+            ShapeRef::Torus(i) => self.torus_t(i, ro, rd, t_max),
+            ShapeRef::Revolution(i) => self.revolution_t(i, ro, rd, t_max),
+            _ => None, // 其余 ShapeRef 变体不属曲线 id 空间
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -436,6 +722,14 @@ pub(crate) enum ShapeRef {
     Mesh(usize),
     /// 独立 BVH（soup）整体（材质 / 豁免的容器级引用；命中细化为 `Triangle`）。
     Bvh(usize),
+    /// 有限圆柱（V2.0-W4；下标见 [`Scene::cylinders`]）。
+    Cylinder(usize),
+    /// 有限圆锥（V2.0-W4；下标见 [`Scene::cones`]）。
+    Cone(usize),
+    /// 圆环（V2.0-W4；下标见 [`Scene::toruses`]）。
+    Torus(usize),
+    /// 旋转曲面（V2.0-W4；下标见 [`Scene::revolutions`]）。
+    Revolution(usize),
 }
 
 /// 最近命中。
@@ -487,6 +781,11 @@ impl Scene {
             ShapeRef::Box(i) => &self.boxes[i].1,
             ShapeRef::Paraboloid(i) => &self.paraboloids[i].1,
             ShapeRef::Plane(i) => &self.planes[i].1,
+            // 曲线图元族（V2.0-W4）：各取所属条目材质。
+            ShapeRef::Cylinder(i) => &self.cylinders[i].1,
+            ShapeRef::Cone(i) => &self.cones[i].1,
+            ShapeRef::Torus(i) => &self.toruses[i].1,
+            ShapeRef::Revolution(i) => &self.revolutions[i].1,
             // 三角几何三变体同源：都取所属网格的材质（容器级引用与
             // 图元级命中语义一致——一个网格一个材质）。
             ShapeRef::Triangle(m, _) | ShapeRef::Mesh(m) | ShapeRef::Bvh(m) => &self.meshes[m].1,
@@ -528,6 +827,99 @@ impl Scene {
                 // 平面外法线即构造时的单位化法线（切片两面同法线约定；
                 // 玻璃透射材质下由积分器 from_inside 翻转）。
                 self.planes[i].0.normal
+            }
+            // ---- 曲线图元族（V2.0-W4）：由命中点 p 纯函数重判表面归属 ----
+            // 口径：法线只依赖命中点与图元参数（与 `*_t` 的候选验证同源），
+            // 故 integrator / wavefront 双路径天然一致；棱掠点（侧/盖残差
+            // 并列）按固定优先级取侧面（测度零，纯函数保证确定性）。
+            ShapeRef::Cylinder(i) => {
+                let c = &self.cylinders[i].0;
+                let pl = p - c.center;
+                let dr = xz_len(pl) - c.radius; // 侧面残差
+                let dc = pl.y.abs() - c.half_height; // 端盖残差
+                if dr <= dc {
+                    // 侧面外法线（轴向 +Y 圆柱侧面法线即径向）。
+                    Vec3::new(pl.x, 0.0, pl.z) * (1.0 / c.radius)
+                } else {
+                    // 端盖外法线（pl.y == 0 不可达：half_height > 0 且盖在
+                    // |y| = H；符号兜底防零向量）。
+                    Vec3::new(0.0, if pl.y >= 0.0 { 1.0 } else { -1.0 }, 0.0)
+                }
+            }
+            ShapeRef::Cone(i) => {
+                let c = &self.cones[i].0;
+                let pl = p - c.center;
+                let k = c.radius / (2.0 * c.half_height);
+                // 侧/底残差（(ρ, y) 平面）：侧面 ρ = k(H−y)，底面 y = −H。
+                let rs = xz_len(pl) - k * (c.half_height - pl.y);
+                let rc = pl.y + c.half_height;
+                if rs.abs() <= rc.abs() {
+                    // 侧面外法线 ∝ (x, k²(H−y), z)（顶点处退化 → (0,1,0)）。
+                    let n = Vec3::new(pl.x, k * k * (c.half_height - pl.y), pl.z);
+                    let l2 = n.dot(&n);
+                    if l2 > 1e-24 {
+                        n * (1.0 / l2.sqrt())
+                    } else {
+                        Vec3::new(0.0, 1.0, 0.0)
+                    }
+                } else {
+                    // 底面外法线（朝 −Y）。
+                    Vec3::new(0.0, -1.0, 0.0)
+                }
+            }
+            ShapeRef::Torus(i) => {
+                let t = &self.toruses[i].0;
+                let pl = p - t.center;
+                let rho = xz_len(pl);
+                if rho > 1e-12 {
+                    // 外法线 ∝ ((1−R/ρ)x, y, (1−R/ρ)z)（表面上模长 = minor）。
+                    let s = 1.0 - t.major / rho;
+                    let n = Vec3::new(pl.x * s, pl.y, pl.z * s);
+                    let l2 = n.dot(&n);
+                    if l2 > 1e-24 {
+                        n * (1.0 / l2.sqrt())
+                    } else {
+                        Vec3::new(0.0, 1.0, 0.0)
+                    }
+                } else {
+                    // 轴心测度零（仅 minor >= major 的自交纺锤可达）：兜底。
+                    Vec3::new(0.0, if pl.y >= 0.0 { 1.0 } else { -1.0 }, 0.0)
+                }
+            }
+            ShapeRef::Revolution(i) => {
+                let rev = &self.revolutions[i].0;
+                let pl = p - rev.center;
+                let rho = xz_len(pl);
+                // 最近轮廓段（(ρ, y) 平面点段距离；并列取小索引 → 确定性）。
+                let mut best_j: Option<usize> = None;
+                let mut best_d2 = f32::INFINITY;
+                for j in 0..rev.segment_count() {
+                    let a = rev.profile[j];
+                    let b = rev.profile[j + 1];
+                    let d2 = point_segment_dist2(rho, pl.y, a[0], a[1], b[0], b[1]);
+                    if d2 < best_d2 {
+                        best_d2 = d2;
+                        best_j = Some(j);
+                    }
+                }
+                match best_j {
+                    Some(j) => {
+                        let a = rev.profile[j];
+                        let b = rev.profile[j + 1];
+                        let dr = b[0] - a[0];
+                        let dy = b[1] - a[1];
+                        // 外法线（CCW 归一后）：剖面 (Δy, −Δr) → 三维径向+竖向。
+                        let inv_rho = if rho > 1e-12 { 1.0 / rho } else { 0.0 };
+                        let n = Vec3::new(dy * pl.x * inv_rho, -dr, dy * pl.z * inv_rho);
+                        let l2 = n.dot(&n);
+                        if l2 > 1e-24 {
+                            n * (1.0 / l2.sqrt())
+                        } else {
+                            Vec3::new(0.0, 1.0, 0.0)
+                        }
+                    }
+                    None => Vec3::new(0.0, 1.0, 0.0), // 点数 < 2：永不命中图元的兜底
+                }
             }
             // 三角几何：几何法线（绕序 a→b→c 右手）。两面性由积分器
             // `from_inside` 统一翻转，故此处恒返**绕序法线**（不按视角翻转）。
@@ -745,6 +1137,291 @@ impl Scene {
         Some((second.t, second.tri as usize))
     }
 
+    // -----------------------------------------------------------------------
+    // 曲线图元族求交（V2.0-W4；闭式解析，口径与 sphere_t 家族一致：
+    // `t >= T_MIN && t < t_max`，候选并列先达者优先，闭合实体内外都记录）
+    // -----------------------------------------------------------------------
+
+    /// 圆柱求交：侧面二次方程（|y| <= H 裁剪）+ 上下端盖圆盘
+    /// （y = ±H 线性根，x²+z² <= R² 裁剪）。
+    ///
+    /// - `a == 0`（射线平行轴，dx²+dz² 恰为零）：侧面跳过（测度零；
+    ///   轴上射线仍由端盖覆盖）；`dy == 0`：端盖跳过；
+    /// - `disc < 0`：侧面不交；切向（disc == 0）单根照常验证；
+    /// - 数值稳健：o/d 非有限、`radius <= 0` / `half_height <= 0` /
+    ///   非有限 ⇒ None（永不命中），不 panic。
+    fn cylinder_t(&self, i: usize, ro: Vec3, rd: Vec3, t_max: f32) -> Option<f32> {
+        if !finite_vec3(ro) || !finite_vec3(rd) {
+            return None;
+        }
+        let c = &self.cylinders[i].0;
+        if !finite_vec3(c.center) || !(c.radius > 0.0) || !(c.half_height > 0.0) {
+            return None; // 图元自身非法 ⇒ 永不命中
+        }
+        let q = ro - c.center;
+        let (r, h) = (c.radius, c.half_height);
+        let mut best: Option<f32> = None;
+
+        // 侧面：x²+z² = R²（局部坐标）。
+        let a = rd.x * rd.x + rd.z * rd.z;
+        if a != 0.0 {
+            let b = 2.0 * (q.x * rd.x + q.z * rd.z);
+            let cc = q.x * q.x + q.z * q.z - r * r;
+            let disc = b * b - 4.0 * a * cc;
+            if disc >= 0.0 {
+                let sq = disc.sqrt();
+                for t in [(-b - sq) / (2.0 * a), (-b + sq) / (2.0 * a)] {
+                    if !(t >= T_MIN && t < t_max) {
+                        continue;
+                    }
+                    let y = q.y + t * rd.y;
+                    if y < -h || y > h {
+                        continue; // 段界外（闭边界：== 算命中）
+                    }
+                    best = Some(match best {
+                        Some(bt) if bt <= t => bt,
+                        _ => t,
+                    });
+                }
+            }
+        }
+
+        // 端盖：y = ±H（线性根；半径内闭边界）。
+        if rd.y != 0.0 {
+            for ny in [-h, h] {
+                let t = (ny - q.y) / rd.y;
+                if !(t >= T_MIN && t < t_max) {
+                    continue;
+                }
+                let x = q.x + t * rd.x;
+                let z = q.z + t * rd.z;
+                if x * x + z * z > r * r {
+                    continue;
+                }
+                best = Some(match best {
+                    Some(bt) if bt <= t => bt,
+                    _ => t,
+                });
+            }
+        }
+        best
+    }
+
+    /// 圆锥求交：斜锥侧面二次方程（y ∈ [-H, H] 闭裁剪）+ 底面圆盘
+    /// （y = -H 线性根，x²+z² <= R² 裁剪）。
+    ///
+    /// 侧面方程（局部坐标，k = R/(2H)，底面 y=-H 半径 R、顶点 y=+H）：
+    /// `(dx²+dz²-k²dy²)t² + 2(qx·dx+qz·dz+k²·dy·(H-qy))t
+    ///  + (qx²+qz²-k²(H-qy)²) = 0`。
+    /// `a == 0`（射线平行斜锥母线，测度零）：退线性根 `t = -c/b`；
+    /// `dy == 0`：底面跳过。顶点（y=+H）闭边界算命中。
+    fn cone_t(&self, i: usize, ro: Vec3, rd: Vec3, t_max: f32) -> Option<f32> {
+        if !finite_vec3(ro) || !finite_vec3(rd) {
+            return None;
+        }
+        let c = &self.cones[i].0;
+        if !finite_vec3(c.center) || !(c.radius > 0.0) || !(c.half_height > 0.0) {
+            return None; // 图元自身非法 ⇒ 永不命中
+        }
+        let q = ro - c.center;
+        let (r, h) = (c.radius, c.half_height);
+        let k = r / (2.0 * h);
+        let mut best: Option<f32> = None;
+
+        // 侧面（斜锥，过底面圆 + 顶点的无限锥，段内裁剪）。
+        let a = (rd.x * rd.x + rd.z * rd.z) - k * k * rd.y * rd.y;
+        let b = 2.0 * (q.x * rd.x + q.z * rd.z) + 2.0 * k * k * rd.y * (h - q.y);
+        let cc = q.x * q.x + q.z * q.z - k * k * (h - q.y) * (h - q.y);
+        if a != 0.0 {
+            let disc = b * b - 4.0 * a * cc;
+            if disc >= 0.0 {
+                let sq = disc.sqrt();
+                for t in [(-b - sq) / (2.0 * a), (-b + sq) / (2.0 * a)] {
+                    if !(t >= T_MIN && t < t_max) {
+                        continue;
+                    }
+                    let y = q.y + t * rd.y;
+                    if y < -h || y > h {
+                        continue; // 段界外（闭边界）
+                    }
+                    best = Some(match best {
+                        Some(bt) if bt <= t => bt,
+                        _ => t,
+                    });
+                }
+            }
+        } else if b != 0.0 {
+            // 平行母线退化：线性单根。
+            let t = -cc / b;
+            if t >= T_MIN && t < t_max {
+                let y = q.y + t * rd.y;
+                if y >= -h && y <= h {
+                    best = Some(t);
+                }
+            }
+        }
+
+        // 底面圆盘：y = -H（半径内闭边界）。
+        if rd.y != 0.0 {
+            let t = (-h - q.y) / rd.y;
+            if t >= T_MIN && t < t_max {
+                let x = q.x + t * rd.x;
+                let z = q.z + t * rd.z;
+                if x * x + z * z <= r * r {
+                    best = Some(match best {
+                        Some(bt) if bt <= t => bt,
+                        _ => t,
+                    });
+                }
+            }
+        }
+        best
+    }
+
+    /// 圆环求交：隐式方程 `(ρ-R)² + y² = r²` 代入射线得**四次方程**，
+    /// 精确求根走 [`prism_geometry::quartic::solve_quartic`]（Ferrari
+    /// 闭式、零迭代；禁止牛顿迭代——确定性 D-29）。
+    ///
+    /// 系数（局部坐标 q = o-c；A = |q+td|² = a2t²+a1t+a0，
+    /// B = |q_xz+td_xz|² = b2t²+b1t+b0，u = R²-r²）：
+    /// `c4 = a2²`、`c3 = 2·a2·a1`、
+    /// `c2 = a1² + 2·a2·(a0+u) - 4R²·b2`、
+    /// `c1 = 2·a1·(a0+u) - 4R²·b1`、
+    /// `c0 = (a0+u)² - 4R²·b0`。
+    /// 四个实根（前外/前内/后内/后外）都验证，取最小有效 t
+    /// （闭合实体语义：穿环孔的射线在后半还有两次命中）。
+    fn torus_t(&self, i: usize, ro: Vec3, rd: Vec3, t_max: f32) -> Option<f32> {
+        if !finite_vec3(ro) || !finite_vec3(rd) {
+            return None;
+        }
+        let t = &self.toruses[i].0;
+        if !finite_vec3(t.center) || !(t.major > 0.0) || !(t.minor > 0.0) {
+            return None; // 图元自身非法 ⇒ 永不命中
+        }
+        let q = ro - t.center;
+        let u = t.major * t.major - t.minor * t.minor;
+        let a2 = rd.dot(&rd);
+        let a1 = 2.0 * q.dot(&rd);
+        let a0 = q.dot(&q);
+        let b2 = rd.x * rd.x + rd.z * rd.z;
+        let b1 = 2.0 * (q.x * rd.x + q.z * rd.z);
+        let b0 = q.x * q.x + q.z * q.z;
+        let mm = t.major * t.major;
+        let c4 = a2 * a2;
+        let c3 = 2.0 * a2 * a1;
+        let c2 = a1 * a1 + 2.0 * a2 * (a0 + u) - 4.0 * mm * b2;
+        let c1 = 2.0 * a1 * (a0 + u) - 4.0 * mm * b1;
+        let c0 = (a0 + u) * (a0 + u) - 4.0 * mm * b0;
+        let mut roots = [0.0_f32; 4];
+        let n = prism_geometry::quartic::solve_quartic(c4, c3, c2, c1, c0, &mut roots);
+        let mut best: Option<f32> = None;
+        for &tr in &roots[..n] {
+            if !(tr >= T_MIN && tr < t_max) {
+                continue;
+            }
+            best = Some(match best {
+                Some(bt) if bt <= tr => bt,
+                _ => tr,
+            });
+        }
+        best
+    }
+
+    /// 旋转曲面求交：轮廓逐段解二次方程（过该段的斜锥；水平段特化为
+    /// 环带），段内闭裁剪；**同参数声明 → 同段序列**（段序 =
+    /// [`Revolution::new`] 归一后的点列邻接序，纯函数）。
+    ///
+    /// 斜锥段（Δy != 0；A = Δr·(qy-y0) + Δy·r0）：
+    /// `(Δy²·b2 - Δr²·dy²)t² + (Δy²·b1 - 2·Δr·dy·A)t
+    ///  + (Δy²·b0 - A²) = 0`，命中需 y(t) ∈ [y0, y1]（闭）。
+    /// 水平段（Δy == 0）：环带 y = y0、ρ ∈ [min(r0,r1), max(r0,r1)]
+    /// （闭）；射线平行环带平面（dy == 0）⇒ 共面测度零，不命中。
+    fn revolution_t(&self, i: usize, ro: Vec3, rd: Vec3, t_max: f32) -> Option<f32> {
+        if !finite_vec3(ro) || !finite_vec3(rd) {
+            return None;
+        }
+        let rev = &self.revolutions[i].0;
+        if !finite_vec3(rev.center) || rev.profile.len() < 2 {
+            return None;
+        }
+        for p in &rev.profile {
+            if !p[0].is_finite() || !p[1].is_finite() {
+                return None; // 非有限轮廓点 ⇒ 整图元永不命中
+            }
+        }
+        let q = ro - rev.center;
+        let b2 = rd.x * rd.x + rd.z * rd.z;
+        let b1 = 2.0 * (q.x * rd.x + q.z * rd.z);
+        let b0 = q.x * q.x + q.z * q.z;
+        let mut best: Option<f32> = None;
+        for j in 0..rev.segment_count() {
+            let (r0, y0) = (rev.profile[j][0], rev.profile[j][1]);
+            let (r1, y1) = (rev.profile[j + 1][0], rev.profile[j + 1][1]);
+            let dr = r1 - r0;
+            let dy = y1 - y0;
+            if dr == 0.0 && dy == 0.0 {
+                continue; // 重复点：退化段
+            }
+            if dy != 0.0 {
+                // 斜锥段：二次方程。
+                let a = dy * dy * b2 - dr * dr * rd.y * rd.y;
+                let big_a = dr * (q.y - y0) + dy * r0;
+                let b = dy * dy * b1 - 2.0 * dr * rd.y * big_a;
+                let cc = dy * dy * b0 - big_a * big_a;
+                let mut cand = [0.0_f32; 2];
+                let n_cand = if a != 0.0 {
+                    let disc = b * b - 4.0 * a * cc;
+                    if !(disc >= 0.0) {
+                        continue;
+                    }
+                    let sq = disc.sqrt();
+                    cand[0] = (-b - sq) / (2.0 * a);
+                    cand[1] = (-b + sq) / (2.0 * a);
+                    2
+                } else if b != 0.0 {
+                    cand[0] = -cc / b; // 平行母线退化：线性单根
+                    1
+                } else {
+                    continue; // 射线落在斜锥面上（测度零）或永不相交
+                };
+                for &t in &cand[..n_cand] {
+                    if !(t >= T_MIN && t < t_max) {
+                        continue;
+                    }
+                    let y = q.y + t * rd.y;
+                    if (y - y0) * (y - y1) > 0.0 {
+                        continue; // 段界外（闭边界：== 算命中）
+                    }
+                    best = Some(match best {
+                        Some(bt) if bt <= t => bt,
+                        _ => t,
+                    });
+                }
+            } else {
+                // 水平段（环带）：y = y0 平面上半径 ∈ [r0, r1] 的圆环。
+                if rd.y == 0.0 {
+                    continue; // 共面（测度零）⇒ 不命中
+                }
+                let t = (y0 - q.y) / rd.y;
+                if !(t >= T_MIN && t < t_max) {
+                    continue;
+                }
+                let x = q.x + t * rd.x;
+                let z = q.z + t * rd.z;
+                let rho2 = x * x + z * z;
+                let (rlo, rhi) = if r0 <= r1 { (r0, r1) } else { (r1, r0) };
+                if rho2 < rlo * rlo || rho2 > rhi * rhi {
+                    continue; // 环带界外（闭边界）
+                }
+                best = Some(match best {
+                    Some(bt) if bt <= t => bt,
+                    _ => t,
+                });
+            }
+        }
+        best
+    }
+
     /// 最近命中（可跳过指定形状——阴影射线对被采样光源豁免）。
     pub(crate) fn intersect(
         &self,
@@ -810,6 +1487,55 @@ impl Scene {
                 limit = t;
             }
         }
+        // ---- 曲线图元族（V2.0-W4；测尾，既有族行为不变）----------------
+        // 快路径：曲线 BVH 粗阶段 + 回调精阶段；线性兜底：四族按全局
+        // 曲线 id 序逐图元 `*_t`（与既有族同款 running limit 口径）。
+        // 两路结果一致：min t 优先、t 并列取最小全局 id（BVH 的
+        // `(t, idx)` tie-break 与线性的前达者优先在 id 序下同解），
+        // 由 `curve_bvh_matches_linear_scan` 对拍钉死。
+        let curve_total = self.curve_total();
+        if curve_total > 0 {
+            let bvh_live = self
+                .curve_bvh
+                .as_ref()
+                .is_some_and(|b| b.prim_count() == curve_total);
+            if bvh_live {
+                let bvh = self.curve_bvh.as_ref().expect("bvh_live 已判定存在");
+                let limit_entry = limit;
+                let mut cb = |id: u32| self.curve_t(id, ro, rd, limit_entry);
+                if let Some((t, id)) = bvh.ray_intersect(ro, rd, T_MIN, limit_entry, &mut cb) {
+                    if let Some(shape) = self.curve_locate(id) {
+                        best = Some(Hit { t, shape });
+                        // 末族：limit 不再被读，无需回写（避免 unused 警告）。
+                    }
+                }
+            } else {
+                for i in 0..self.cylinders.len() {
+                    if let Some(t) = self.cylinder_t(i, ro, rd, limit) {
+                        best = Some(Hit { t, shape: ShapeRef::Cylinder(i) });
+                        limit = t;
+                    }
+                }
+                for i in 0..self.cones.len() {
+                    if let Some(t) = self.cone_t(i, ro, rd, limit) {
+                        best = Some(Hit { t, shape: ShapeRef::Cone(i) });
+                        limit = t;
+                    }
+                }
+                for i in 0..self.toruses.len() {
+                    if let Some(t) = self.torus_t(i, ro, rd, limit) {
+                        best = Some(Hit { t, shape: ShapeRef::Torus(i) });
+                        limit = t;
+                    }
+                }
+                for i in 0..self.revolutions.len() {
+                    if let Some(t) = self.revolution_t(i, ro, rd, limit) {
+                        best = Some(Hit { t, shape: ShapeRef::Revolution(i) });
+                        // 末族：limit 不再被读，无需回写（避免 unused 警告）。
+                    }
+                }
+            }
+        }
         best
     }
 
@@ -842,6 +1568,11 @@ impl Scene {
             ShapeRef::Sphere(i) => i,
             // 盒 / 抛物面 / 平面均非球光源几何：无立体角 pdf（与 Box 臂同语义）。
             ShapeRef::Box(_) | ShapeRef::Paraboloid(_) | ShapeRef::Plane(_) => return None,
+            // 曲线图元族（V2.0-W4）：非球光源几何，未注册 NEE ⇒ 命中权重 1。
+            ShapeRef::Cylinder(_)
+            | ShapeRef::Cone(_)
+            | ShapeRef::Torus(_)
+            | ShapeRef::Revolution(_) => return None,
             // 三角几何（任意变体）：非球光源几何，未注册 NEE ⇒ 命中权重 1
             // （仅 BSDF 策略；发光网格既未注册 Light 也无立体角 pdf）。
             ShapeRef::Triangle(_, _) | ShapeRef::Mesh(_) | ShapeRef::Bvh(_) => return None,
@@ -1416,6 +2147,7 @@ mod tests {
             paraboloids: vec![],
             meshes: Vec::new(),
             planes: vec![],
+            ..Default::default()
         }
     }
 
@@ -1502,6 +2234,7 @@ mod tests {
             paraboloids: vec![],
             meshes: Vec::new(),
             planes: vec![],
+            ..Default::default()
         };
         let cam = Camera::new(
             Vec3::new(0.0, 4.0, 0.0),
@@ -1693,6 +2426,7 @@ mod tests {
             paraboloids: vec![],
             meshes: Vec::new(),
             planes: vec![],
+            ..Default::default()
         };
         let cam = Camera::new(
             Vec3::new(0.0, 40.0, 0.0),
@@ -1753,6 +2487,7 @@ mod tests {
             paraboloids: vec![],
             meshes: Vec::new(),
             planes: vec![],
+            ..Default::default()
         };
         let cam = Camera::new(
             Vec3::new(0.0, 0.8, 3.0),
@@ -1827,6 +2562,7 @@ mod tests {
             paraboloids: vec![],
             meshes: Vec::new(),
             planes: vec![],
+            ..Default::default()
         };
         // 俯视地面，含球与球影区域。
         let cam = Camera::new(
@@ -1949,6 +2685,7 @@ mod tests {
             paraboloids: vec![(Paraboloid { k, r_max }, lambert_grey())],
             meshes: Vec::new(),
             planes: vec![],
+            ..Default::default()
         }
     }
 
@@ -1962,6 +2699,7 @@ mod tests {
             paraboloids: vec![],
             meshes: Vec::new(),
             planes: vec![(plane, lambert_grey())],
+            ..Default::default()
         }
     }
 
@@ -2246,6 +2984,7 @@ mod tests {
                 Plane::new(Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), None),
                 lambert_grey(),
             )],
+            ..Default::default()
         };
         let from = Vec3::new(0.3, 0.2, 0.4);
         assert_eq!(sc.light_pdf_sa(from, ShapeRef::Paraboloid(0)), None);
@@ -2266,6 +3005,7 @@ mod tests {
             paraboloids: vec![(Paraboloid { k: 1.0, r_max: 1.5 }, mat)],
             meshes: Vec::new(),
             planes: vec![(Plane::new(Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), None), mat)],
+            ..Default::default()
         };
         let ro = Vec3::new(0.3, 0.0, 5.0);
         let rd = Vec3::new(0.0, 0.0, -1.0);

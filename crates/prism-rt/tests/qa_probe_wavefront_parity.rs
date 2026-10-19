@@ -41,11 +41,12 @@ fn rich_scene() -> Scene {
         paraboloids: vec![],
         meshes: Vec::new(),
         planes: vec![],
+        ..Default::default()
     }
 }
 
 fn empty_scene() -> Scene {
-    Scene { spheres: Vec::new(), boxes: Vec::new(), lights: Vec::new(), medium: None, paraboloids: vec![], planes: vec![], meshes: Vec::new() }
+    Scene { spheres: Vec::new(), boxes: Vec::new(), lights: Vec::new(), medium: None, paraboloids: vec![], planes: vec![], meshes: Vec::new(), ..Default::default() }
 }
 
 fn cam() -> Camera {

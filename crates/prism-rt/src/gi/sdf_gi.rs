@@ -683,6 +683,7 @@ mod tests {
             paraboloids: vec![],
             meshes: Vec::new(),
             planes: vec![],
+            ..Default::default()
         };
         let field = SceneSdf::from_scene(&scene);
         assert!(!field.is_empty());

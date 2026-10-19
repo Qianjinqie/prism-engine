@@ -83,6 +83,7 @@ mod tests {
             paraboloids: vec![],
             meshes: Vec::new(),
             planes: vec![],
+            ..Default::default()
         }
     }
 
