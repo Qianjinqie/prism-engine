@@ -884,9 +884,11 @@ mod tests {
 // （字段顺序、`size_t`/`uint64_t` 宽度、指针对齐），并有编译期尺寸断言
 // （见本文件 `tests::v2g_struct_layouts`）。不加任何第三方 crate（D-15）。
 //
-// 诚实边界：本仓库构建环境**无 ICD**（见 `super` 模块头注），因此这段代码
-// 只能被「结构校验 + CPU 侧装配计划」测试覆盖；真机派发由
-// `crate::vulkan::compute` 的 `#[ignore]` 测试占位（探针如实报无设备）。
+// 诚实边界（V2.0-W4 起如实更正）：本仓库构建环境经
+// `apt install mesa-vulkan-drivers` 提供 lavapipe 软件 ICD，真机派发路径
+// **真跑**（`crate::vulkan::compute::tests::real_device_compute_dispatch_smoke`
+// 运行期自门控：有设备真断言、无设备如实报 skip，不用 `#[ignore]`）；
+// llvmpipe 是 CPU 软栅，只证明代码路径功能正确，不构成硬件加速比证据。
 
 /// 非分派句柄（Vulkan 规范：64 位不透明值，可为 0 表示空）。
 pub type VkShaderModule = u64;

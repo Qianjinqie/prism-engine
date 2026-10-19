@@ -20,7 +20,8 @@
 //! ```
 //!
 //! （即 [`cpu_reference_mul2`]，parity 由测试断言「二进制宣称的语义 == CPU
-//! 参考」——二进制无法在本环境执行，故只能做**结构 + 语义锚定**双重校验。）
+//! 参考」——V2.0-W4 起本仓库环境（lavapipe 软栅）**可真实执行**该 SPIR-V，
+//! 结构 + 语义锚定与真机读回三重校验。）
 //!
 //! # 供给边界（不撒谎）
 //!
@@ -464,8 +465,8 @@ pub fn module_names() -> Vec<&'static str> {
 
 /// `spv_mul2_probe` 的 CPU 参考语义：`dst[i] = src[i] * 2.0`（长度取二者较小值）。
 ///
-/// 二进制的语义主张由本函数锚定；本环境无法执行 SPIR-V，故测试断言的是
-/// 「结构校验通过 + 语义描述与参考一致」（不假装跑过 GPU）。
+/// 二进制的语义主张由本函数锚定：结构校验（[`validate`]）+ CPU 参考对拍
+/// + lavapipe 真机读回对拍（`compute::tests::real_device_compute_dispatch_smoke`）。
 pub fn cpu_reference_mul2(src: &[f32], dst: &mut [f32]) {
     let n = src.len().min(dst.len());
     for i in 0..n {

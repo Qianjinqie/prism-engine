@@ -52,7 +52,7 @@ use super::VulkanContext;
 pub enum DispatchStatus {
     /// 真机派发成功，已读回输出。
     Ok,
-    /// 无可用 Vulkan 设备（本环境：无 ICD）。
+    /// 无可用 Vulkan 设备（无 ICD / 无 lavapipe / 裸容器等）。
     DeviceUnavailable,
     /// 设备存在但缺少必备入口（loader/驱动异常）。
     MissingEntryPoints(Vec<&'static str>),
@@ -247,7 +247,8 @@ fn missing_entry_points(fns: &vk::DeviceFnTable) -> Vec<&'static str> {
     missing
 }
 
-/// 无设备上下文时的报告（**本环境的实际结果**：如实报无 ICD）。
+/// 无设备上下文时的报告（如实报无设备；本仓库环境装 mesa-vulkan-drivers
+/// 后经 lavapipe 有设备，走真机分支）。
 fn unavailable_report(
     kernel: &'static str,
     plan: &DispatchPlan,
@@ -882,9 +883,9 @@ unsafe fn run_on_device(
 
 /// 入口：在**已有或缺失**设备上下文的两种情形下走同一条报告口径。
 ///
-/// * 无上下文（本环境）：`DeviceUnavailable` + `detail = "no-vulkan-icd"`；
+/// * 无上下文（无 ICD 的裸环境）：`DeviceUnavailable` + `detail = "no-vulkan-icd"`；
 /// * wasm32：`UnsupportedPlatform`；
-/// * 有上下文：走 [`run_on_device`]。
+/// * 有上下文（本仓库环境：lavapipe 软件 ICD）：走 [`run_on_device`] 真跑。
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn dispatch(
     ctx: Option<&VulkanContext>,
@@ -898,7 +899,7 @@ pub(crate) fn dispatch(
             kernel.name,
             &plan,
             DispatchStatus::DeviceUnavailable,
-            "no-vulkan-icd：loader 在位但 vkCreateInstance 失败（本构建环境无 ICD）",
+            "no-vulkan-icd：loader 在位但 vkCreateInstance 失败（本环境无 Vulkan ICD）",
         ),
         Some(ctx) => {
             // SAFETY: `ctx` 由 `VulkanBackend` 持有，device/queue 遵循类型不变量。
@@ -962,11 +963,12 @@ mod tests {
         assert_eq!(exact.wasted_invocations, 0);
     }
 
-    /// 无 ICD 环境的真实行为：**不 panic、不返回假数据**，如实报原因。
+    /// 无设备环境的真实行为：**不 panic、不返回假数据**，如实报原因。
     ///
-    /// 这条测试在本沙箱（无 ICD）与真机（有 GPU）上都成立且**含义不同**：
-    /// 沙箱走 `DeviceUnavailable` 分支，真机走 `Ok` 分支并读回真实数据——
-    /// 两个分支都由同一断言刻画「报告与真实状态自洽」。
+    /// 这条测试在有 ICD（本仓库：lavapipe 软栅）与无 ICD（裸容器）两种
+    /// 环境下都成立且**含义不同**：无设备走 `DeviceUnavailable` 分支，
+    /// 有设备走 `Ok` 分支并读回真实数据——两个分支都由同一断言刻画
+    /// 「报告与真实状态自洽」。
     #[test]
     fn compute_dispatch_reports_truthfully_without_icd() {
         let kernel = spirv_probe_kernel();
@@ -1078,10 +1080,11 @@ mod tests {
     /// 本仓库的 `qa_ignore_guard` 把 `#[ignore]` 视为假绿手段并**全仓禁止**
     /// （硬门禁），因此本测试不用 `#[ignore]` 占位，改用**运行期自门控**：
     ///
-    /// 1. 先跑探针；`device_created == false`（本构建环境：loader 在位、无 ICD）
+    /// 1. 先跑探针；`device_created == false`（无 ICD 的裸环境）
     ///    ⇒ 打印真实探测结果后返回——**不 panic、不假装跑过、不产生假绿**
     ///    （跳过的是「真机派发」这一步，原因与实测状态都在测试输出里）；
-    /// 2. 有设备（真机）⇒ 真跑 SPIR-V → pipeline → dispatch → 读回，并断言
+    /// 2. 有设备（本仓库环境：lavapipe 软栅；真硬件 GPU 同理）
+    ///    ⇒ 真跑 SPIR-V → pipeline → dispatch → 读回，并断言
     ///    GPU 结果等于 CPU 参考 `src * 2`。
     ///
     /// 即：这条测试在**任何**环境下都会真正执行并能失败（有设备但派发错
@@ -1090,8 +1093,8 @@ mod tests {
     fn real_device_compute_dispatch_smoke() {
         let report = VulkanBackend::probe();
         if !report.device_created {
-            // **如实输出后跳过**：本机无可用设备（本仓库 CI 沙箱即如此）。
-            // 不 panic、不假装跑过——真机结果只可能来自有 GPU 的机器。
+            // **如实输出后跳过**：本机无可用 Vulkan 设备（未装 mesa 的裸容器）。
+            // 不 panic、不假装跑过——真机结果只可能来自有设备的机器。
             println!(
                 "[真机占位] 无可用 Vulkan 设备：supported_platform={} loader_loaded={} \
                  instance_created={} device_count={} reason={:?} → 跳过真机派发（不 panic）",

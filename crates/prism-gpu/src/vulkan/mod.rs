@@ -24,8 +24,19 @@
 //!
 //! 本模块**不链接** `libvulkan`（无 `#[link(name = "vulkan")]`）。loader 库
 //! 在**运行期**经 `dlopen` 探测；拿不到 `libvulkan.so.1` / `libvulkan.so`
-//! 就判定不可用。故即便构建机没有 Vulkan（如本仓库的 CI 沙箱），本 crate
+//! 就判定不可用。故即便构建机没有 Vulkan（如未装 mesa 的裸容器），本 crate
 //! 仍可正常编译、链接、测试。
+//!
+//! # 运行环境（V2.0-W4 起如实更正）
+//!
+//! 本仓库开发/CI 环境经 `apt install mesa-vulkan-drivers` 提供
+//! **lavapipe（llvmpipe）软件 ICD**（`lvp_icd.json` →
+//! `/usr/share/vulkan/icd.d/`），无需 X/Wayland 即可枚举到物理设备
+//! （Vulkan 1.4.318，`VK_PHYSICAL_DEVICE_TYPE_CPU`）。真机 compute 派发
+//! （SPIR-V → pipeline → dispatch → 读回）在本环境**真跑**，由
+//! `compute::tests::real_device_compute_dispatch_smoke` 运行期自门控
+//! 验证。llvmpipe 是 CPU 软栅：只证明 GPU 代码路径功能正确，
+//! **不构成硬件加速比证据**（真硬件性能/硬编仍缺硬件）。
 //!
 //! # 平台门禁
 //!
@@ -54,7 +65,8 @@ pub mod loader;
 /// 手写 / 嵌入的 SPIR-V 模块表与结构校验。
 pub mod spirv;
 
-/// compute pipeline 装配 + 队列提交（真机路径写全，本环境无 ICD 走降级分支）。
+/// compute pipeline 装配 + 队列提交（真机路径；有设备真跑，无设备如实报
+/// `DeviceUnavailable`，不假装跑过）。
 pub mod compute;
 
 // ---------------------------------------------------------------------------
@@ -675,7 +687,7 @@ impl loader::VkPhysicalDevicePropertiesStorage {
 }
 
 // ---------------------------------------------------------------------------
-// 单元测试（在无 Vulkan 的沙箱中验证降级语义与探测链边界）
+// 单元测试（有 Vulkan 真跑真机路径，无 Vulkan 验证降级语义与探测链边界）
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
