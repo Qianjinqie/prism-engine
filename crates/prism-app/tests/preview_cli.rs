@@ -11,7 +11,7 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
@@ -56,8 +56,15 @@ fn free_port() -> u16 {
 }
 
 /// 起 `prism-app preview <file> --addr 127.0.0.1:<port>` 子进程。
-fn spawn_server(prism_path: &PathBuf, port: u16) -> Child {
-    Command::new(env!("CARGO_BIN_EXE_prism-app"))
+///
+/// stderr **落盘**到 `server.stderr`（不丢）：全仓并行压测下服务若猝死
+/// （OOM kill / abort），连接被拒时能拿到现场的 stderr 与退出状态——
+/// 不静默原则对测试同样适用（否则一次负载抖动会伪装成"无法复现的玄学"）。
+fn spawn_server(prism_path: &PathBuf, port: u16) -> (Child, PathBuf) {
+    let stderr_path: PathBuf = tmp_dir("server").join("server.stderr");
+    let stderr_file: std::fs::File =
+        std::fs::File::create(&stderr_path).expect("stderr 日志文件应可创建");
+    let child = Command::new(env!("CARGO_BIN_EXE_prism-app"))
         .args([
             "preview",
             prism_path.to_str().expect("路径应可转 str"),
@@ -65,9 +72,10 @@ fn spawn_server(prism_path: &PathBuf, port: u16) -> Child {
             &format!("127.0.0.1:{port}"),
         ])
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::from(stderr_file))
         .spawn()
-        .expect("预览服务进程应能启动")
+        .expect("预览服务进程应能启动");
+    (child, stderr_path)
 }
 
 /// 等待服务可连（绑定在渲染之前，故应很快；给 30s 宽松上限）。
@@ -88,12 +96,31 @@ fn wait_connect(port: u16) -> TcpStream {
 }
 
 /// 发一个 GET 请求，读回完整响应字节（服务端 Connection: close）。
-fn http_get(port: u16, target: &str) -> Vec<u8> {
-    let mut stream = TcpStream::connect_timeout(
+///
+/// 连接失败时**带诊断 panic**：子进程退出状态（若已死）+ stderr 尾部
+/// （服务被 OOM kill / abort 时连接被拒，没有这些信息就是无头悬案）。
+fn http_get(child: &mut Child, stderr_path: &Path, port: u16, target: &str) -> Vec<u8> {
+    let mut stream = match TcpStream::connect_timeout(
         &format!("127.0.0.1:{port}").parse().expect("地址应可解析"),
         Duration::from_secs(5),
-    )
-    .expect("应能连上预览服务");
+    ) {
+        Ok(stream) => stream,
+        Err(e) => {
+            let exit: Option<std::process::ExitStatus> = child.try_wait().ok().flatten();
+            let stderr_tail: String = std::fs::read_to_string(stderr_path)
+                .unwrap_or_default()
+                .chars()
+                .rev()
+                .take(600)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            panic!(
+                "应能连上预览服务（GET {target}）：{e}；子进程状态：{exit:?}；stderr 尾部：{stderr_tail}"
+            );
+        }
+    };
     stream
         .set_read_timeout(Some(Duration::from_secs(60)))
         .expect("应能设置读超时");
@@ -107,7 +134,7 @@ fn http_get(port: u16, target: &str) -> Vec<u8> {
 /// 从响应字节解析 (状态码, 正文)。
 fn parse_response(raw: &[u8]) -> (u16, Vec<u8>) {
     let text = String::from_utf8_lossy(raw);
-    let (head, body) = text.split_once("\r\n\r\n").expect("响应应含头/体分隔");
+    let (head, _body) = text.split_once("\r\n\r\n").expect("响应应含头/体分隔");
     let status: u16 = head
         .lines()
         .next()
@@ -158,36 +185,39 @@ fn server_serves_frame_200_png_and_scrub_differs() {
     // 验收 ②③：起服务 → HTTP 拉帧 200 + 非空；两个时间点的帧不同。
     let prism = write_prism("server", "min.prism", MINIMAL_PRISM);
     let port = free_port();
-    let mut child = spawn_server(&prism, port);
+    let (child, stderr_path) = spawn_server(&prism, port);
     // 确保子进程最终被回收（即使断言失败）。
-    let guard = ChildGuard(&mut child);
+    let mut guard = ChildGuard(child);
 
     let _ = wait_connect(port);
 
     // /health：200（渲染中或就绪都可能，状态必须 200）。
-    let (status, body) = parse_response(&http_get(port, "/health"));
+    let (status, body) = parse_response(&http_get(guard.child_mut(), &stderr_path, port, "/health"));
     assert_eq!(status, 200, "/health 应 200");
     assert!(!body.is_empty(), "/health 正文不应为空");
 
     // /frame?t=0：200 + PNG magic + 非空（内部有界等待整片就绪）。
-    let (status, frame0) = parse_response(&http_get(port, "/frame?t=0"));
+    let (status, frame0) =
+        parse_response(&http_get(guard.child_mut(), &stderr_path, port, "/frame?t=0"));
     assert_eq!(status, 200, "/frame 应 200（就绪后）");
     assert!(!frame0.is_empty(), "帧字节不应为空");
     assert!(is_png(&frame0), "帧应为 PNG：{:02X?}", &frame0[..frame0.len().min(8)]);
 
     // scrub：t=0（文本不可见）vs t=0.5（文本满不透明 + 相机已环绕）→ 不同帧。
-    let (status2, frame_mid) = parse_response(&http_get(port, "/frame?t=0.5"));
+    let (status2, frame_mid) =
+        parse_response(&http_get(guard.child_mut(), &stderr_path, port, "/frame?t=0.5"));
     assert_eq!(status2, 200, "/frame?t=0.5 应 200");
     assert!(is_png(&frame_mid), "t=0.5 帧应为 PNG");
     assert_ne!(frame0, frame_mid, "两个时间点的帧必须不同（scrub 语义）");
 
     // 超时长钳制到末帧：仍应 200 + PNG（不报错、不挂起）。
-    let (status3, frame_last) = parse_response(&http_get(port, "/frame?t=99"));
+    let (status3, frame_last) =
+        parse_response(&http_get(guard.child_mut(), &stderr_path, port, "/frame?t=99"));
     assert_eq!(status3, 200, "超时长请求应钳制后 200");
     assert!(is_png(&frame_last));
 
     // 未知路由：404。
-    let (status4, _) = parse_response(&http_get(port, "/nope"));
+    let (status4, _) = parse_response(&http_get(guard.child_mut(), &stderr_path, port, "/nope"));
     assert_eq!(status4, 404, "未知路由应 404");
 
     drop(guard); // 显式保留 guard 至测试结束
@@ -232,9 +262,19 @@ fn help_flag_exits_zero() {
 }
 
 /// 子进程 RAII 守卫：panic / 正常结束都 kill + wait，不遗留僵尸进程。
-struct ChildGuard<'a>(&'a mut Child);
+///
+/// 按值持有 `Child`（而非借用）：测试中途要 `try_wait` 查退出状态做诊断，
+/// 借用会让 `http_get(&mut child, …)` 与守卫的存活期打架。
+struct ChildGuard(Child);
 
-impl Drop for ChildGuard<'_> {
+impl ChildGuard {
+    /// 借出子进程（诊断用：连接失败时查它是否已死）。
+    fn child_mut(&mut self) -> &mut Child {
+        &mut self.0
+    }
+}
+
+impl Drop for ChildGuard {
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
