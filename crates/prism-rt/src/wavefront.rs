@@ -1569,6 +1569,7 @@ mod v2g_parity_tests {
             medium: None,
             paraboloids: vec![],
             planes: vec![],
+            meshes: vec![],
         }
     }
 

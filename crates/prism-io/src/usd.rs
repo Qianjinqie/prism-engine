@@ -2034,7 +2034,7 @@ impl Mesh {
 /// crate，反向依赖会成环），故 USD 加载路径的终点是这份**中性**数据；rt 侧
 /// 一行接手：
 ///
-/// ```ignore
+/// ```text
 /// let m = prism_io::usd::parse_str(&usda)?;
 /// let scene = prism_io::usd::build_scene(&m.layer)?;
 /// for rm in scene.render_meshes() {
