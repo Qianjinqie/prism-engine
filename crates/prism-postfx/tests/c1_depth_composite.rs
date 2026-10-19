@@ -209,6 +209,7 @@ fn rt_depth_aov_feeds_fog_composite() {
         paraboloids: vec![],
         meshes: Vec::new(),
         planes: vec![],
+        ..Default::default()
     };
     let cam = Camera::new(
         Vec3::new(0.0, 0.0, 0.0),

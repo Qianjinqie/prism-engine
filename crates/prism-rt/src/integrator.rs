@@ -835,9 +835,12 @@ impl Scene {
             ShapeRef::Cylinder(i) => {
                 let c = &self.cylinders[i].0;
                 let pl = p - c.center;
-                let dr = xz_len(pl) - c.radius; // 侧面残差
-                let dc = pl.y.abs() - c.half_height; // 端盖残差
-                if dr <= dc {
+                let dr = xz_len(pl) - c.radius; // 侧面残差（侧面表面处 = 0）
+                let dc = pl.y.abs() - c.half_height; // 端盖残差（端盖表面处 = 0）
+                // 侧/盖归属按**残差绝对值**近者：纯侧面点（dr=0、端盖内
+                // dc<0）必须判侧面——早年签名比较会把侧面点误判成端盖
+                // （V2.0-W4 对拍修复：dr<=dc 在 dc<0<dr 时恒假）。
+                if dr.abs() <= dc.abs() {
                     // 侧面外法线（轴向 +Y 圆柱侧面法线即径向）。
                     Vec3::new(pl.x, 0.0, pl.z) * (1.0 / c.radius)
                 } else {
@@ -1347,6 +1350,12 @@ impl Scene {
         for p in &rev.profile {
             if !p[0].is_finite() || !p[1].is_finite() {
                 return None; // 非有限轮廓点 ⇒ 整图元永不命中
+            }
+            if p[0] < 0.0 {
+                // 契约要求 r >= 0（见 [`Revolution`] 文档）。负半径不仅几何
+                // 无意义，还会破坏"平方求根无外部增根"的论证（增根落在轮廓
+                // 线的镜像分支上，靠 y 段界 + r>=0 半平面排除）⇒ 按永不命中。
+                return None;
             }
         }
         let q = ro - rev.center;
@@ -3365,5 +3374,523 @@ mod tests {
         assert!(sc.intersect(Vec3::splat(0.0), Vec3::new(0.0, 0.0, 1.0), 1.0e30, None).is_none());
         assert!(sc.meshes[0].0.bounds().is_none());
         assert_eq!(sc.normal_at(ShapeRef::Mesh(0), Vec3::splat(0.0)).x, 0.0);
+    }
+
+    // -----------------------------------------------------------------------
+    // V2.0-W4 曲线图元族：圆柱 / 圆锥 / 圆环 / 旋转曲面
+    //
+    // 验收口径（任务书钉死）：每类 ≥1 条已知值解析对拍（手算参考值写进
+    // 注释）+ 1 条边界语义测试；另加全族确定性、BVH≡线性兜底、
+    // wavefront 双路径对拍。全部为正向断言 + 变异自证（边界用例同时是
+    // 变异杀器：闭边界改开、残差比较改签名比较都会红）。
+    // -----------------------------------------------------------------------
+
+    /// t 近似相等（解析对拍容差；参考值均为 O(10) 量级）。
+    fn assert_t_close(got: f32, want: f32) {
+        assert!(
+            (got - want).abs() <= 1.0e-4,
+            "t 对拍失败：got = {got}，want = {want}（|Δ| = {}）",
+            (got - want).abs()
+        );
+    }
+
+    /// Vec3 近似相等（法线对拍容差；含 √ 归一化的参考值）。
+    fn assert_vec3_close(got: Vec3, want: Vec3) {
+        let d = (got - want).length();
+        assert!(d <= 1.0e-4, "向量对拍失败：got = {got:?}，want = {want:?}（|Δ| = {d}）");
+    }
+
+    /// 四族各一的中置场景（BVH 随 `add_*` 自动重建）。
+    fn curve_family_scene() -> Scene {
+        let mat = lambert_grey();
+        let mut sc = Scene::default();
+        sc.add_cylinder(
+            Cylinder { center: Vec3::new(0.0, 0.0, 0.0), radius: 1.0, half_height: 1.0 },
+            mat,
+        );
+        sc.add_cone(
+            Cone { center: Vec3::new(4.0, 0.0, 0.0), radius: 1.0, half_height: 1.0 },
+            mat,
+        );
+        sc.add_torus(
+            Torus { center: Vec3::new(8.0, 0.0, 0.0), major: 2.0, minor: 0.5 },
+            mat,
+        );
+        sc.add_revolution(
+            Revolution::new(Vec3::new(12.0, 0.0, 0.0), vec![[0.0, -1.0], [1.0, 0.0], [0.0, 1.0]]),
+            mat,
+        );
+        sc.lights = vec![Light::Directional {
+            direction: Vec3::new(-0.3, -0.8, -0.52).normalize(),
+            radiance: Vec3::splat(5.0),
+            cos_theta_max: 0.9,
+        }];
+        sc
+    }
+
+    /// 每族 3 个、共 12 个曲线图元（BVH 多叶节点，喂 ≡ 线性对拍）。
+    fn curve_multi_scene() -> Scene {
+        let mat = lambert_grey();
+        let mut sc = Scene::default();
+        for i in 0..3usize {
+            let x = i as f32 * 3.0;
+            sc.add_cylinder(
+                Cylinder { center: Vec3::new(x, 0.0, 0.0), radius: 0.6, half_height: 1.2 },
+                mat,
+            );
+            sc.add_cone(
+                Cone { center: Vec3::new(x, 0.0, 3.0), radius: 0.7, half_height: 1.1 },
+                mat,
+            );
+            sc.add_torus(
+                Torus { center: Vec3::new(x, 0.0, 6.0), major: 1.6, minor: 0.4 },
+                mat,
+            );
+            sc.add_revolution(
+                Revolution::new(Vec3::new(x, 0.0, 9.0), vec![[0.0, -1.2], [0.9, 0.0], [0.0, 1.2]]),
+                mat,
+            );
+        }
+        sc
+    }
+
+    /// 曲线场景相机（四族沿 x 排布，焦距内全覆盖）。
+    fn curve_camera() -> Camera {
+        Camera::new(
+            Vec3::new(6.0, 2.5, 12.0),
+            Vec3::new(6.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            55.0,
+            0.0,
+            12.0,
+            0.0,
+            1.0 / 24.0,
+        )
+    }
+
+    /// 圆柱已知值对拍：侧面 t=4 + 顶盖 t=2（均为精确解析值）+ 双侧法线。
+    ///
+    /// 手算（圆柱 R=1、H=1、居中）：
+    /// - 射线 (0,0,-5)+t·(0,0,1) 代入 x²+z²=1：a=1、b=-10、c=24、
+    ///   disc=4 ⇒ t=4/6，y=0 段内 ⇒ 最近 t=4，命中点 (0,0,-1)（纯侧面，
+    ///   法线 (0,0,-1)——侧/盖归属按残差绝对值，见 `normal_at` 注释）；
+    /// - 射线 (0,3,0)+t·(0,-1,0) 顶盖 y=1：t=2，ρ=0 半径内，法线 (0,1,0)。
+    #[test]
+    fn cylinder_side_cap_known_hits_and_normals() {
+        let mut sc = Scene::default();
+        sc.add_cylinder(
+            Cylinder { center: Vec3::splat(0.0), radius: 1.0, half_height: 1.0 },
+            lambert_grey(),
+        );
+        let big = 1.0e30;
+
+        // 侧面：t = 4 精确。
+        let h = sc
+            .intersect(Vec3::new(0.0, 0.0, -5.0), Vec3::new(0.0, 0.0, 1.0), big, None)
+            .expect("圆柱侧面应命中");
+        assert_t_close(h.t, 4.0);
+        assert_eq!(h.shape, ShapeRef::Cylinder(0));
+        let p = Vec3::new(0.0, 0.0, -5.0) + Vec3::new(0.0, 0.0, 1.0) * h.t;
+        assert_eq!(sc.normal_at(h.shape, p), Vec3::new(0.0, 0.0, -1.0));
+
+        // 顶盖：t = 2 精确。
+        let h2 = sc
+            .intersect(Vec3::new(0.0, 3.0, 0.0), Vec3::new(0.0, -1.0, 0.0), big, None)
+            .expect("圆柱顶盖应命中");
+        assert_t_close(h2.t, 2.0);
+        let p2 = Vec3::new(0.0, 3.0, 0.0) + Vec3::new(0.0, -1.0, 0.0) * h2.t;
+        assert_eq!(sc.normal_at(h2.shape, p2), Vec3::new(0.0, 1.0, 0.0));
+    }
+
+    /// 圆柱边界语义：棱线闭裁剪（切向 Rim 单根 y==H）、端盖半径闭边界、
+    /// 闭合实体（体内发射取出口）、轴平行界外、退化参数永不命中。
+    #[test]
+    fn cylinder_boundary_semantics() {
+        let mut sc = Scene::default();
+        sc.add_cylinder(
+            Cylinder { center: Vec3::splat(0.0), radius: 1.0, half_height: 1.0 },
+            lambert_grey(),
+        );
+        let big = 1.0e30;
+        let side = |sc: &Scene, ro: Vec3, rd: Vec3| sc.intersect(ro, rd, big, None).map(|h| h.t);
+
+        // (a) 切向 Rim：射线 (1,1,-3)+t·(0,0,1) 与侧面相切（disc=0，t=3），
+        // 命中点 y=1 == H —— 闭段界（改开即脱靶）。
+        assert_t_close(side(&sc, Vec3::new(1.0, 1.0, -3.0), Vec3::new(0.0, 0.0, 1.0)).unwrap(), 3.0);
+        // (b) 端盖半径闭边界：ρ=1 == R 命中；ρ=1.001 界外（侧面 a=0 跳过）。
+        assert_t_close(side(&sc, Vec3::new(1.0, 3.0, 0.0), Vec3::new(0.0, -1.0, 0.0)).unwrap(), 2.0);
+        assert_eq!(side(&sc, Vec3::new(1.001, 3.0, 0.0), Vec3::new(0.0, -1.0, 0.0)), None);
+        // (c) 闭合实体：体内 (0,0,0) 沿 +z 发射取侧壁出口 t=1（最近 t>0）。
+        assert_t_close(side(&sc, Vec3::splat(0.0), Vec3::new(0.0, 0.0, 1.0)).unwrap(), 1.0);
+        // (d) 轴平行界外（x=2）：侧面退化跳过、端盖半径外 ⇒ None。
+        assert_eq!(side(&sc, Vec3::new(2.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0)), None);
+
+        // (e) 退化参数：radius <= 0 / half_height <= 0 ⇒ 永不命中。
+        let mut dz = Scene::default();
+        dz.add_cylinder(
+            Cylinder { center: Vec3::splat(0.0), radius: 0.0, half_height: 1.0 },
+            lambert_grey(),
+        );
+        dz.add_cylinder(
+            Cylinder { center: Vec3::splat(0.0), radius: 1.0, half_height: -1.0 },
+            lambert_grey(),
+        );
+        assert_eq!(side(&dz, Vec3::new(0.0, 0.0, -5.0), Vec3::new(0.0, 0.0, 1.0)), None);
+        // 非有限射线 ⇒ None（不 panic）。
+        assert!(sc
+            .intersect(Vec3::new(f32::NAN, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), big, None)
+            .is_none());
+    }
+
+    /// 圆锥已知值对拍：侧面 t=4.5 + 底面 t=2 + 顶点 t=2（全精确）+ 法线。
+    ///
+    /// 手算（圆锥 R=1、H=1、居中，k=R/2H=0.5，底面 y=-1、顶点 y=+1）：
+    /// - 射线 (0,0,-5)+t·(0,0,1)：a=1、b=-10、c=24.75、disc=1 ⇒ t=4.5/5.5，
+    ///   y=0 段内 ⇒ 最近 4.5，命中点 (0,0,-0.5)（ρ=0.5 = k(H-y) 侧面上），
+    ///   法线 (0, k²(H-y), z)/|·| = (0, 0.25, -0.5)/√0.3125 = (0,1,-2)/√5；
+    /// - 射线 (0,-3,0)+t·(0,1,0)：底面 y=-1 ⇒ t=2，ρ=0 半径内，法线 (0,-1,0)；
+    /// - 射线 (0,3,0)+t·(0,-1,0)：顶点 y=+1 ⇒ t=2（disc=0 相切），法线兜底
+    ///   (0,1,0)（顶点处侧面法线退化，测度零）。
+    #[test]
+    fn cone_known_hits_and_normals() {
+        let mut sc = Scene::default();
+        sc.add_cone(
+            Cone { center: Vec3::splat(0.0), radius: 1.0, half_height: 1.0 },
+            lambert_grey(),
+        );
+        let big = 1.0e30;
+
+        let h = sc
+            .intersect(Vec3::new(0.0, 0.0, -5.0), Vec3::new(0.0, 0.0, 1.0), big, None)
+            .expect("圆锥侧面应命中");
+        assert_t_close(h.t, 4.5);
+        assert_eq!(h.shape, ShapeRef::Cone(0));
+        let p = Vec3::new(0.0, 0.0, -5.0) + Vec3::new(0.0, 0.0, 1.0) * h.t;
+        assert_vec3_close(sc.normal_at(h.shape, p), Vec3::new(0.0, 1.0, -2.0) * (1.0 / 5.0_f32.sqrt()));
+
+        let h2 = sc
+            .intersect(Vec3::new(0.0, -3.0, 0.0), Vec3::new(0.0, 1.0, 0.0), big, None)
+            .expect("圆锥底面应命中");
+        assert_t_close(h2.t, 2.0);
+        let p2 = Vec3::new(0.0, -3.0, 0.0) + Vec3::new(0.0, 1.0, 0.0) * h2.t;
+        assert_eq!(sc.normal_at(h2.shape, p2), Vec3::new(0.0, -1.0, 0.0));
+
+        let h3 = sc
+            .intersect(Vec3::new(0.0, 3.0, 0.0), Vec3::new(0.0, -1.0, 0.0), big, None)
+            .expect("圆锥顶点应命中");
+        assert_t_close(h3.t, 2.0);
+        let p3 = Vec3::new(0.0, 3.0, 0.0) + Vec3::new(0.0, -1.0, 0.0) * h3.t;
+        assert_eq!(sc.normal_at(h3.shape, p3), Vec3::new(0.0, 1.0, 0.0));
+    }
+
+    /// 圆锥边界语义：顶点闭段界（y==H 命中，改开则坠落到底面 t=4）、
+    /// 底面半径闭边界、锥外完全脱靶、退化参数永不命中。
+    #[test]
+    fn cone_boundary_semantics() {
+        let mut sc = Scene::default();
+        sc.add_cone(
+            Cone { center: Vec3::splat(0.0), radius: 1.0, half_height: 1.0 },
+            lambert_grey(),
+        );
+        let big = 1.0e30;
+        let t_of = |sc: &Scene, ro: Vec3, rd: Vec3| sc.intersect(ro, rd, big, None).map(|h| h.t);
+
+        // (a) 顶点闭段界：轴射线自上方入射，侧面根 t=2（y=+1==H）必须胜过
+        // 底面根 t=4；段界若改开（y>=H 拒）则退化成 t=4 —— 本断言即杀器。
+        assert_t_close(t_of(&sc, Vec3::new(0.0, 3.0, 0.0), Vec3::new(0.0, -1.0, 0.0)).unwrap(), 2.0);
+        // 段界外：同向但起点偏移使侧面根 y>H，仅剩底面根。
+        // 射线 (0.1,2,0)+t·(0,-1,0)：侧面根 t=0.8/1.2，y=1.2 界外拒、
+        // y=0.8 命中 ⇒ t=1.2（手算 disc=0.01、sq=0.1）。
+        assert_t_close(t_of(&sc, Vec3::new(0.1, 2.0, 0.0), Vec3::new(0.0, -1.0, 0.0)).unwrap(), 1.2);
+        // (b) 底面半径闭边界：ρ=1 == R 命中；ρ=1.001 界外（侧面根 y=-1.002
+        // 段界外，底面 ρ²>R²）⇒ None。
+        assert_t_close(t_of(&sc, Vec3::new(1.0, -3.0, 0.0), Vec3::new(0.0, 1.0, 0.0)).unwrap(), 2.0);
+        assert_eq!(t_of(&sc, Vec3::new(1.001, -3.0, 0.0), Vec3::new(0.0, 1.0, 0.0)), None);
+        // (c) 锥外脱靶：x=2 轴平行入射，侧面根 y=5 界外、底面根 t=-1 拒。
+        assert_eq!(t_of(&sc, Vec3::new(2.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0)), None);
+
+        // (d) 退化参数 ⇒ 永不命中。
+        let mut dz = Scene::default();
+        dz.add_cone(Cone { center: Vec3::splat(0.0), radius: 0.0, half_height: 1.0 }, lambert_grey());
+        dz.add_cone(Cone { center: Vec3::splat(0.0), radius: 1.0, half_height: 0.0 }, lambert_grey());
+        assert_eq!(t_of(&dz, Vec3::new(0.0, 0.0, -5.0), Vec3::new(0.0, 0.0, 1.0)), None);
+    }
+
+    /// 圆环已知值对拍：−z 轴穿环射线四根 {2.5, 3.5, 6.5, 7.5}（精确）。
+    ///
+    /// 手算（圆环 R=2、r=0.5、居中，隐式 (ρ-2)²+y²=0.25）：
+    /// 射线 (0,0,5)+t·(0,0,-1) ⇒ ρ=|5-t|、y=0 ⇒ ρ=1.5/2.5 ⇒
+    /// t = 3.5/6.5（前内/后内）与 2.5/7.5（前外/后外）；代入射线的四次
+    /// 式为 (t-2.5)(t-3.5)(t-6.5)(t-7.5)（系数 c4..c0 = 1,-20,141.5,
+    /// -415,426.5625，f32 精确可表）。最近 t=2.5，命中点 (0,0,2.5)，
+    /// 法线 (1-R/ρ)·p = (0,0,1)。
+    #[test]
+    fn torus_known_hits_and_normal() {
+        let mut sc = Scene::default();
+        sc.add_torus(
+            Torus { center: Vec3::splat(0.0), major: 2.0, minor: 0.5 },
+            lambert_grey(),
+        );
+        let big = 1.0e30;
+
+        let h = sc
+            .intersect(Vec3::new(0.0, 0.0, 5.0), Vec3::new(0.0, 0.0, -1.0), big, None)
+            .expect("圆环应命中");
+        assert_t_close(h.t, 2.5);
+        assert_eq!(h.shape, ShapeRef::Torus(0));
+        let p = Vec3::new(0.0, 0.0, 5.0) + Vec3::new(0.0, 0.0, -1.0) * h.t;
+        assert_vec3_close(sc.normal_at(h.shape, p), Vec3::new(0.0, 0.0, 1.0));
+
+        // 管顶切向：射线 (0,0.5,5)+t·(0,0,-1)（y=r 顶 silhouette，
+        // 四次式 (t-3)²(t-7)² 精确双根）⇒ t=3，法线 (0,1,0)。
+        let h2 = sc
+            .intersect(Vec3::new(0.0, 0.5, 5.0), Vec3::new(0.0, 0.0, -1.0), big, None)
+            .expect("圆环管顶切向应命中");
+        assert_t_close(h2.t, 3.0);
+        let p2 = Vec3::new(0.0, 0.5, 5.0) + Vec3::new(0.0, 0.0, -1.0) * h2.t;
+        assert_vec3_close(sc.normal_at(h2.shape, p2), Vec3::new(0.0, 1.0, 0.0));
+    }
+
+    /// 圆环边界语义：穿环孔脱靶、管顶上方脱靶、退化参数永不命中。
+    #[test]
+    fn torus_boundary_semantics() {
+        let mut sc = Scene::default();
+        sc.add_torus(
+            Torus { center: Vec3::splat(0.0), major: 2.0, minor: 0.5 },
+            lambert_grey(),
+        );
+        let big = 1.0e30;
+        let t_of = |sc: &Scene, ro: Vec3, rd: Vec3| sc.intersect(ro, rd, big, None).map(|h| h.t);
+
+        // (a) 环孔内竖射：(ρ-2)²+y²=0.25 在 ρ=0 时 4+y²=0.25 无解 ⇒ None。
+        assert_eq!(t_of(&sc, Vec3::new(0.0, 0.0, 5.0), Vec3::new(0.0, 1.0, 0.0)), None);
+        // (b) 管顶上方水平射（y=3 > r）：四次式无实根 ⇒ None。
+        assert_eq!(t_of(&sc, Vec3::new(0.0, 3.0, 0.0), Vec3::new(0.0, 0.0, -1.0)), None);
+        // (c) t_max 裁剪：t_max=2.0 时最近根 2.5 界外 ⇒ None（闭区间上界）。
+        assert_t_close(t_of(&sc, Vec3::new(0.0, 0.0, 5.0), Vec3::new(0.0, 0.0, -1.0)).unwrap(), 2.5);
+        assert!(sc
+            .intersect(Vec3::new(0.0, 0.0, 5.0), Vec3::new(0.0, 0.0, -1.0), 2.0, None)
+            .is_none());
+
+        // (d) 退化参数 ⇒ 永不命中。
+        let mut dz = Scene::default();
+        dz.add_torus(Torus { center: Vec3::splat(0.0), major: 0.0, minor: 0.5 }, lambert_grey());
+        dz.add_torus(Torus { center: Vec3::splat(0.0), major: 2.0, minor: -0.5 }, lambert_grey());
+        assert_eq!(t_of(&dz, Vec3::new(0.0, 0.0, 5.0), Vec3::new(0.0, 0.0, -1.0)), None);
+    }
+
+    /// 旋转曲面已知值对拍：双锥轮廓 [(0,-1),(1,0),(0,1)] 赤道命中 t=4
+    /// （精确）+ 外法线 (0,-1,-1)/√2；绕向归一使 CW 声明与 CCW 同解。
+    ///
+    /// 手算（轮廓绕 +Y 旋转；段 0：(0,-1)→(1,0)，Δr=1、Δy=1）：
+    /// 射线 (0,0,-5)+t·(0,0,1)：b2=1、b1=-10、b0=25、A=Δr(qy-y0)+Δy·r0=1，
+    /// a=1、b=-10、c=24、disc=4 ⇒ t=4/6，y=0 段内 ⇒ 最近 4，命中点
+    /// (0,0,-1)（ρ=1 赤道棱）。两段在赤道并列 ⇒ 取小索引段 0，外法线
+    /// (Δy·x/ρ, -Δr, Δy·z/ρ) = (0,-1,-1)，归一 (0,-1,-1)/√2。
+    #[test]
+    fn revolution_known_hits_and_normal() {
+        let ccw: Vec<[f32; 2]> = vec![[0.0, -1.0], [1.0, 0.0], [0.0, 1.0]];
+        let cw: Vec<[f32; 2]> = vec![[0.0, 1.0], [1.0, 0.0], [0.0, -1.0]];
+
+        let mut sc = Scene::default();
+        sc.add_revolution(Revolution::new(Vec3::splat(0.0), ccw.clone()), lambert_grey());
+        assert_eq!(sc.revolutions[0].0.segment_count(), 2);
+
+        let big = 1.0e30;
+        let h = sc
+            .intersect(Vec3::new(0.0, 0.0, -5.0), Vec3::new(0.0, 0.0, 1.0), big, None)
+            .expect("旋转曲面应命中");
+        assert_t_close(h.t, 4.0);
+        assert_eq!(h.shape, ShapeRef::Revolution(0));
+        let p = Vec3::new(0.0, 0.0, -5.0) + Vec3::new(0.0, 0.0, 1.0) * h.t;
+        let inv_sqrt2 = 1.0 / 2.0_f32.sqrt();
+        assert_vec3_close(sc.normal_at(h.shape, p), Vec3::new(0.0, -inv_sqrt2, -inv_sqrt2));
+
+        // 绕向归一（shoelace 有向面积 <0 ⇒ 反转）：CW 声明归一后与 CCW
+        // 逐点相同 ⇒ 同段序列、同命中、同法线（纯函数口径）。
+        let mut sc_cw = Scene::default();
+        sc_cw.add_revolution(Revolution::new(Vec3::splat(0.0), cw), lambert_grey());
+        assert_eq!(sc_cw.revolutions[0].0.profile, ccw);
+        let h_cw = sc_cw
+            .intersect(Vec3::new(0.0, 0.0, -5.0), Vec3::new(0.0, 0.0, 1.0), big, None)
+            .expect("CW 旋转曲面应命中");
+        assert_eq!(h_cw.t.to_bits(), h.t.to_bits());
+        assert_eq!(h_cw.shape, h.shape);
+    }
+
+    /// 旋转曲面边界语义：水平段环带（ρ 闭区间 + 共面不命中）、斜段
+    /// y 闭段界、退化轮廓（点数 <2 / 非有限 / 负半径）永不命中。
+    #[test]
+    fn revolution_boundary_semantics() {
+        let big = 1.0e30;
+        let t_of = |sc: &Scene, ro: Vec3, rd: Vec3| sc.intersect(ro, rd, big, None).map(|h| h.t);
+
+        // (a) 水平段（环带 y=0、ρ∈[0.5,1.5]）：ρ=1 命中 t=2 精确；
+        // ρ=0.5/1.5 闭边界命中；ρ=0.4/1.6 界外脱靶。
+        let mut ann = Scene::default();
+        ann.add_revolution(
+            Revolution::new(Vec3::splat(0.0), vec![[0.5, 0.0], [1.5, 0.0]]),
+            lambert_grey(),
+        );
+        assert_t_close(t_of(&ann, Vec3::new(1.0, -2.0, 0.0), Vec3::new(0.0, 1.0, 0.0)).unwrap(), 2.0);
+        assert!(t_of(&ann, Vec3::new(0.5, -2.0, 0.0), Vec3::new(0.0, 1.0, 0.0)).is_some());
+        assert!(t_of(&ann, Vec3::new(1.5, -2.0, 0.0), Vec3::new(0.0, 1.0, 0.0)).is_some());
+        assert_eq!(t_of(&ann, Vec3::new(0.4, -2.0, 0.0), Vec3::new(0.0, 1.0, 0.0)), None);
+        assert_eq!(t_of(&ann, Vec3::new(1.6, -2.0, 0.0), Vec3::new(0.0, 1.0, 0.0)), None);
+        // 共面测度零：射线躺在环带平面内（dy=0）⇒ 不命中（钉死口径）。
+        assert_eq!(t_of(&ann, Vec3::new(1.0, 0.0, -3.0), Vec3::new(0.0, 0.0, 1.0)), None);
+
+        // (b) 斜段 y 闭段界：竖直管轮廓 [(1,-1),(1,1)]，射线 (0,1,-3)+
+        // t·(0,0,1) 命中点 y=1 == y1（闭）；手算 disc=64 ⇒ t=2/4。
+        let mut tube = Scene::default();
+        tube.add_revolution(
+            Revolution::new(Vec3::splat(0.0), vec![[1.0, -1.0], [1.0, 1.0]]),
+            lambert_grey(),
+        );
+        assert_t_close(t_of(&tube, Vec3::new(0.0, 1.0, -3.0), Vec3::new(0.0, 0.0, 1.0)).unwrap(), 2.0);
+
+        // (c) 退化轮廓 ⇒ 永不命中：点数 <2（段数 0）、非有限点、负半径。
+        let mut dz = Scene::default();
+        dz.add_revolution(Revolution::new(Vec3::splat(0.0), vec![[1.0, 0.0]]), lambert_grey());
+        dz.add_revolution(
+            Revolution::new(Vec3::splat(0.0), vec![[1.0, -1.0], [f32::NAN, 1.0]]),
+            lambert_grey(),
+        );
+        dz.add_revolution(
+            Revolution::new(Vec3::splat(0.0), vec![[-1.0, -1.0], [-1.0, 1.0]]),
+            lambert_grey(),
+        );
+        assert_eq!(t_of(&dz, Vec3::new(0.0, 0.0, -5.0), Vec3::new(0.0, 0.0, 1.0)), None);
+    }
+
+    /// 曲线四族渲染确定性：同参数两遍渲染逐位一致（D-29），md5 自锚。
+    #[test]
+    fn curve_family_render_bitwise_deterministic() {
+        let scene = curve_family_scene();
+        let cam = curve_camera();
+        let res = (12u32, 9u32);
+        let params = RenderParams::new(4, 2);
+        let f1 = render_frame(&scene, &cam, &EvalCtx::new(11, 7, 3), res, &params);
+        let f2 = render_frame(&scene, &cam, &EvalCtx::new(11, 7, 3), res, &params);
+        for i in 0..f1.len() {
+            for c in 0..4 {
+                assert_eq!(f1[i][c].to_bits(), f2[i][c].to_bits(), "曲线场景两遍渲染不逐位一致 px{i} ch{c}");
+            }
+        }
+        // 非空洞：至少一个像素被照亮（否则对拍是空转）。
+        let lit = f1
+            .iter()
+            .filter(|px| px[0] + px[1] + px[2] > 1.0e-4)
+            .count();
+        assert!(lit > 0, "曲线场景应至少有一个像素被照亮");
+        let mut bytes = Vec::new();
+        for px in &f1 {
+            for c in 0..4 {
+                bytes.extend_from_slice(&px[c].to_le_bytes());
+            }
+        }
+        println!("曲线四族 6×6 spp4 md5 = {}", md5_hex(&bytes));
+    }
+
+    /// BVH 快路径 ≡ 线性兜底：12 图元 × 256 射线扇，(t, shape) 逐位同解。
+    ///
+    /// 对拍方法：同源场景两份，一份保留 `add_*` 自动建的 BVH，一份把
+    /// `curve_bvh` 置 None（计数不符 ⇒ `intersect` 自动退化线性兜底）。
+    /// 两路必须逐位一致（min t 优先、t 并列取最小全局曲线 id）。
+    #[test]
+    fn curve_bvh_matches_linear_scan() {
+        let bvh_scene = curve_multi_scene();
+        assert!(bvh_scene.curve_bvh.is_some(), "add_* 后曲线 BVH 应已构建");
+        assert_eq!(
+            bvh_scene.curve_bvh.as_ref().map(|b| b.prim_count()),
+            Some(12),
+            "BVH 图元数应等于四族总数"
+        );
+        let mut lin_scene = bvh_scene.clone();
+        lin_scene.curve_bvh = None; // 强制线性兜底路径
+
+        // 确定性射线扇（整数哈希 ⇒ 跨平台可复现，无 rand 依赖）。
+        let hash01 = |k: u32| -> f32 {
+            let mut x = k.wrapping_mul(2654435761);
+            x ^= x >> 13;
+            x = x.wrapping_mul(1274126177);
+            x ^= x >> 16;
+            (x & 0x00FF_FFFF) as f32 / 16777216.0
+        };
+        let mut hits = 0usize;
+        let mut per_family = [0usize; 4];
+        for i in 0..256u32 {
+            let ro = Vec3::new(
+                -4.0 + 14.0 * hash01(i.wrapping_mul(4)),
+                -3.0 + 6.0 * hash01(i.wrapping_mul(4).wrapping_add(1)),
+                -6.0 + 20.0 * hash01(i.wrapping_mul(4).wrapping_add(2)),
+            );
+            let mut d = Vec3::new(
+                hash01(i.wrapping_mul(4).wrapping_add(3)) - 0.5,
+                hash01(i.wrapping_mul(8).wrapping_add(5)) - 0.5,
+                hash01(i.wrapping_mul(8).wrapping_add(6)) - 0.5,
+            );
+            let l = d.length();
+            if l < 1.0e-6 {
+                continue; // 退化方向跳过（两路同样无命中）
+            }
+            d = d * (1.0 / l);
+            let a = bvh_scene.intersect(ro, d, 1.0e30, None);
+            let b = lin_scene.intersect(ro, d, 1.0e30, None);
+            match (a, b) {
+                (Some(ha), Some(hb)) => {
+                    assert_eq!(ha.t.to_bits(), hb.t.to_bits(), "射线 {i} t 不一致：{ha:?} vs {hb:?}");
+                    assert_eq!(ha.shape, hb.shape, "射线 {i} 形状不一致：{ha:?} vs {hb:?}");
+                    hits += 1;
+                    match ha.shape {
+                        ShapeRef::Cylinder(_) => per_family[0] += 1,
+                        ShapeRef::Cone(_) => per_family[1] += 1,
+                        ShapeRef::Torus(_) => per_family[2] += 1,
+                        ShapeRef::Revolution(_) => per_family[3] += 1,
+                        _ => {}
+                    }
+                }
+                (None, None) => {}
+                (x, y) => panic!("射线 {i} 一路命中一路未命中：{x:?} vs {y:?}"),
+            }
+        }
+        assert!(hits >= 20, "命中数过少（{hits}），覆盖不足");
+        for (f, n) in per_family.iter().enumerate() {
+            assert!(*n >= 1, "族 {f} 在射线扇中零命中，覆盖不足");
+        }
+        println!("曲线 BVH≡线性对拍：256 射线、{hits} 命中、分族 {per_family:?}");
+    }
+
+    /// 曲线四族 wavefront 双路径逐位对拍（探针：新族经 Scene 委派自动
+    /// 同步，无逐族特判；若将来 wavefront 绕过 Scene 自建求交即会红）。
+    #[test]
+    fn curve_family_wavefront_parity() {
+        let scene = curve_family_scene();
+        let cam = curve_camera();
+        let res = (12u32, 9u32);
+        let params = RenderParams::new(2, 2);
+        let ctx = EvalCtx::new(4242, 7, 3);
+        let wf = crate::wavefront::render_frame(&scene, &cam, &ctx, res, &params);
+        let mut lit = 0usize;
+        for y in 0..res.1 {
+            for x in 0..res.0 {
+                let rt = render_pixel(&scene, &cam, &ctx, (x, y), res, &params);
+                let i = (y * res.0 + x) as usize;
+                for c in 0..4 {
+                    assert_eq!(
+                        wf[i][c].to_bits(),
+                        rt[c].to_bits(),
+                        "曲线场景 parity 破：像素 ({x},{y}) 通道 {c}：{} ≠ {}",
+                        wf[i][c],
+                        rt[c]
+                    );
+                }
+                if wf[i][0] + wf[i][1] + wf[i][2] > 1.0e-4 {
+                    lit += 1;
+                }
+            }
+        }
+        assert!(lit > 0, "曲线场景应至少有一个像素被照亮");
+        println!("曲线四族双路径 parity：{res:?} spp{} 逐位一致，lit = {lit}", params.spp);
     }
 }

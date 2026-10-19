@@ -74,9 +74,12 @@ pub fn solve_quartic(c4: f32, c3: f32, c2: f32, c1: f32, c0: f32, out: &mut [f32
     let alpha = alpha2.sqrt();
     let beta = -q / (2.0 * alpha);
     // x⁴ + p·x² + q·x + r = (x² + αx + (m+β))(x² − αx + (m−β))。
+    // 注意：`solve_quadratic_shifted` 返回的是**累计**总根数（不是新增
+    // 数），故用赋值而非累加——累加会重复计数（2+4=6 越界，V2.0-W4
+    // 圆环求交对拍修复：两因子均出根时 `roots[..n]` 直接 panic）。
     let mut n = 0usize;
-    n += solve_quadratic_shifted(1.0, alpha, m + beta, a / 4.0, out, n);
-    n += solve_quadratic_shifted(1.0, -alpha, m - beta, a / 4.0, out, n);
+    n = solve_quadratic_shifted(1.0, alpha, m + beta, a / 4.0, out, n);
+    n = solve_quadratic_shifted(1.0, -alpha, m - beta, a / 4.0, out, n);
     n
 }
 
@@ -218,6 +221,10 @@ mod tests {
 
     /// 已知值对拍（手算参考）：(t−1)(t−2)(t−3)(t−4) 展开为
     /// t⁴−10t³+35t²−50t+24 ⇒ 根 {1,2,3,4}。
+    ///
+    /// 第二组 (t−1)(t−2)(t−4)(t−8) = t⁴−15t³+70t²−120t+64 走
+    /// **Ferrari 主路径**（q=−16.875≠0，且两因子均出实根）——专杀
+    /// 「累计数被当新增数累加」的重复计数回归（n=2+4=6 越界）。
     #[test]
     fn quartic_known_roots() {
         let mut out = [0.0f32; 4];
@@ -227,6 +234,14 @@ mod tests {
         got.sort_by(f32::total_cmp);
         for (g, want) in got.iter().zip([1.0, 2.0, 3.0, 4.0]) {
             assert!((g - want).abs() < 1e-5, "根 {g} 偏离 {want}");
+        }
+
+        let n2 = solve_quartic(1.0, -15.0, 70.0, -120.0, 64.0, &mut out);
+        assert_eq!(n2, 4, "Ferrari 主路径两因子均出根时应报 4（防重复计数回归）");
+        let mut got2 = out[..n2].to_vec();
+        got2.sort_by(f32::total_cmp);
+        for (g, want) in got2.iter().zip([1.0, 2.0, 4.0, 8.0]) {
+            assert!((g - want).abs() < 1e-4, "根 {g} 偏离 {want}");
         }
     }
 
