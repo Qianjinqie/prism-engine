@@ -48,6 +48,8 @@ mod queue;
 mod scheduler;
 mod split;
 mod task;
+mod transport;
+mod worker;
 
 pub use digest::md5_hex;
 pub use evidence::{
@@ -58,12 +60,26 @@ pub use merge::{
 };
 pub use queue::{FarmQueue, QueueState, RetryPolicy, SubmitOutcome, ThroughputLedger};
 pub use scheduler::{
-    flatten_in_frame_order, plan_dispatch, DispatchPlan, FarmNode, LocalScheduler, ShardOutcome,
+    dispatch_to_local_workers, dispatch_to_local_workers_with_cache, flatten_in_frame_order,
+    plan_dispatch, CachedShardOutcome, DispatchPlan, DispatchReport, FarmNode, LocalScheduler,
+    ShardOutcome,
 };
 pub use split::{
     frame_count, slot_counts, slot_ranges, split_frames, split_frames_shape_aligned,
 };
 pub use task::{ConfigHash, FrameTask, ResourceNeed, TaskId, TaskOrderKey};
+pub use transport::{
+    checksum_hex, checksum_of, decode_frame, decode_shard, decode_task, discover_worker_exe,
+    encode_frame, encode_shard, encode_task, read_frame, spawn_local_workers, write_frame,
+    FrameKind, FramePayloadShard, InProcessTransport, LocalProcessTransport, ShardTransport,
+    TcpTransport, TransportKind, CHECKSUM_BYTES, FRAME_MAGIC, HEADER_BYTES, MAX_FRAMES_PER_SHARD,
+    MAX_PAYLOAD_BYTES, TRANSPORT_VERSION, WORKER_BIN_NAME,
+};
+pub use worker::{
+    frame_cache_key, render_frame_payload, render_frame_payload_cost, run_stdio_worker, run_task,
+    run_task_with_cost, run_worker_stream, FrameCache, WorkerOptions, WorkerStats,
+    DEFAULT_WORK_ITERS, FRAME_PAYLOAD_BYTES,
+};
 
 // ---------------------------------------------------------------------------
 // 错误（C18 三段式；C19 必含建议段）
@@ -141,6 +157,33 @@ pub enum FarmError {
         /// 畸形细节。
         detail: String,
     },
+    /// 校验和不符：帧在传输/存储中被篡改或损坏（长度前缀帧协议的 SHA-256 兜底）。
+    ///
+    /// 与 [`FarmError::MalformedEnvelope`] 的分工：结构层面能解析、但**内容**
+    /// 与声明的摘要不符，归本变体——这样"改了一个字节"与"根本不是本格式"在报错
+    /// 上可区分（排查方向完全不同）。
+    ChecksumMismatch {
+        /// 三段式一【在哪】。
+        location: String,
+        /// 按收到的头部 + 载荷重算出的摘要（小写十六进制）。
+        expected: String,
+        /// 帧里携带的摘要（小写十六进制）。
+        actual: String,
+    },
+    /// 传输不可用：进程起不来 / 管道断裂 / 该变体本轮未实装。
+    TransportUnavailable {
+        /// 三段式一【在哪】。
+        location: String,
+        /// 具体原因。
+        detail: String,
+    },
+    /// 缓存 IO 失败：断点续算的 `cache_manifest` 读写不成功。
+    CacheIo {
+        /// 三段式一【在哪】。
+        location: String,
+        /// 具体原因。
+        detail: String,
+    },
 }
 
 impl fmt::Display for FarmError {
@@ -191,6 +234,28 @@ impl fmt::Display for FarmError {
                  什么事：线格式畸形——{detail}\n  \
                  建议：核对字段是否齐全（FrameTask 需 frames/config_hash/priority/resources；\
                  FrameShard 需 frames/values）；本轮线格式由 prism-infra 的 farm_wire 编解码"
+            ),
+            FarmError::ChecksumMismatch { location, expected, actual } => write!(
+                f,
+                "error[P5008] {location}\n  \
+                 什么事：SHA-256 校验和不符——按收到的头部+载荷重算得 {expected}，帧内声明 {actual}\n  \
+                 建议：帧在传输途中被改写或落盘时损坏；丢弃该帧并在主节点对该分片重派一次\
+                 （渲染是纯函数，重算结果与首次一致）；若反复不符，检查是否有进程在同时写同一个管道"
+            ),
+            FarmError::TransportUnavailable { location, detail } => write!(
+                f,
+                "error[P5009] {location}\n  \
+                 什么事：传输不可用——{detail}\n  \
+                 建议：本地子进程路径请先 `cargo build -p prism-render --bin farm-worker`，\
+                 或设环境变量 PRISM_FARM_WORKER 指向该可执行文件；跨机 TCP 变体本轮未实装，\
+                 请改用本地子进程（同一条帧协议，仅介质不同）"
+            ),
+            FarmError::CacheIo { location, detail } => write!(
+                f,
+                "error[P5010] {location}\n  \
+                 什么事：断点续算缓存 IO 失败——{detail}\n  \
+                 建议：确认缓存目录可写且磁盘未满；缓存文件损坏时删除后重建\
+                 （已完成的帧会重算，结果不变，只是慢一轮）；C13 决定旧版本缓存只失效不误复用"
             ),
         }
     }

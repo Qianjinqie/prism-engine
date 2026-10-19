@@ -34,6 +34,9 @@
 //! `throughput_ledger_changes_order_but_not_result` 钉住这一点。
 
 use crate::farm::task::{ConfigHash, FrameTask, TaskId};
+use crate::farm::transport::FramePayloadShard;
+use crate::farm::worker::FrameCache;
+use crate::incremental::FrameRange;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// 提交裁决。
@@ -178,6 +181,12 @@ pub struct FarmQueue {
     ledger: ThroughputLedger,
     /// 累计出队次数。
     dispatched: u64,
+    /// 已完成**帧**集合 `(配置哈希, 帧号)`——断点续算的完成集。
+    ///
+    /// 与 `done`（已完成**任务** id 集合）分工：任务是"一段帧区间"的派发单位，
+    /// 帧是"一个产物"的复用单位。中断时任务粒度太粗（半个任务也白扔），
+    /// 帧粒度才能"已完成的不重算"。
+    completed_frames: BTreeSet<(ConfigHash, u64)>,
 }
 
 impl FarmQueue {
@@ -241,6 +250,129 @@ impl FarmQueue {
     /// 注入的是**纯计数**（已完成帧数），不是时间——记时间就引入环境依赖了。
     pub fn seed_ledger(&mut self, config_hash: ConfigHash, frames_done: u64) {
         self.ledger.record(config_hash, frames_done);
+    }
+
+    // -----------------------------------------------------------------------
+    // 任务分发（V2.0-I）：批量入队 + 帧级完成集（断点续算接 cache_manifest）
+    // -----------------------------------------------------------------------
+
+    /// 批量提交切好的帧区间（**按区间起点升序**入队，故与传入顺序无关）。
+    ///
+    /// 返回逐区间的裁决（`Accepted` / `Duplicate`），下标与 `ranges` 严格对齐——
+    /// 调用方据此知道哪几块是重复提交（幂等命中）。
+    ///
+    /// # 确定性
+    /// 排序键是 `(区间起点, 区间终点)`（内容派生），故同一区间集合在任何传入
+    /// 顺序下得到**同一**入队集合；出队序仍由 [`DequeueKey`] 决定。
+    pub fn submit_ranges(
+        &mut self,
+        ranges: &[FrameRange],
+        config_hash: ConfigHash,
+        priority: u32,
+    ) -> Vec<SubmitOutcome> {
+        let mut sorted: Vec<FrameRange> = ranges.to_vec();
+        sorted.sort_by_key(|r| (r.start, r.end));
+        let mut out: Vec<SubmitOutcome> = Vec::with_capacity(sorted.len());
+        for r in sorted {
+            let task: FrameTask =
+                FrameTask { frames: r, config_hash, priority, resources: Default::default() };
+            out.push(self.submit(task));
+        }
+        out
+    }
+
+    /// 标记某帧已完成（进入帧级完成集，供断点续算跳过）。
+    pub fn mark_frame_done(&mut self, config_hash: ConfigHash, frame: u64) {
+        self.completed_frames.insert((config_hash, frame));
+    }
+
+    /// 某帧是否已完成。
+    pub fn is_frame_done(&self, config_hash: ConfigHash, frame: u64) -> bool {
+        self.completed_frames.contains(&(config_hash, frame))
+    }
+
+    /// 已完成帧数。
+    pub fn frames_done(&self) -> usize {
+        self.completed_frames.len()
+    }
+
+    /// 从缓存清单派生完成集并在队列内种下（**重启续算入口**）。
+    ///
+    /// 入参是**已落盘的**帧缓存（[`FrameCache`]，`prism_io::CacheManifest` 布局）
+    /// 与作业的帧区间：缓存里有的帧即视为已完成。
+    ///
+    /// 返回被种下的帧数。这依赖一条公理：**缓存里存的载荷就是纯函数的像**——
+    /// 故"缓存命中"等价于"该帧已正确产出"，跳过它不改变任何结果（只省时间）。
+    ///
+    /// 幂等：重复调用不会重复计数（完成集是集合）。
+    pub fn seed_from_cache(
+        &mut self,
+        config_hash: ConfigHash,
+        cache: &FrameCache,
+        frames: FrameRange,
+    ) -> usize {
+        if frames.is_empty() {
+            return 0;
+        }
+        let mut seeded: usize = 0;
+        let mut frame: u64 = frames.start;
+        loop {
+            if cache.has(config_hash, frame) && self.completed_frames.insert((config_hash, frame)) {
+                seeded = seeded.saturating_add(1);
+            }
+            if frame == frames.end {
+                break;
+            }
+            frame = frame.saturating_add(1);
+        }
+        seeded
+    }
+
+    /// 某任务里**尚未完成**的帧（升序）；空 ⇒ 该任务已全部完成，无需再派。
+    ///
+    /// 用途：续算时把"任务"收窄成"真正还缺的帧"，避免整块重算。
+    pub fn missing_frames(&self, task: &FrameTask) -> Vec<u64> {
+        let mut out: Vec<u64> = Vec::new();
+        if task.frames.is_empty() {
+            return out;
+        }
+        let mut frame: u64 = task.frames.start;
+        loop {
+            if !self.completed_frames.contains(&(task.config_hash, frame)) {
+                out.push(frame);
+            }
+            if frame == task.frames.end {
+                break;
+            }
+            frame = frame.saturating_add(1);
+        }
+        out
+    }
+
+    /// 记录一个回传分片完成：逐帧入完成集，并向吞吐记账累计帧数。
+    ///
+    /// **不校验载荷内容**（内容校验在传输层 SHA-256 与合并点覆盖校验）——本方法
+    /// 只维护"哪些帧已经有产物"这一事实。
+    ///
+    /// 分片的 `frames` 与 `payloads` 长度不一致时按**较短者**记账（绝不凭空标记
+    /// 未收到的帧为完成），返回实际记账帧数。
+    pub fn complete_shard(&mut self, shard: &FramePayloadShard) -> u64 {
+        let mut recorded: u64 = 0;
+        let limit: usize = shard.payloads.len();
+        let mut idx: usize = 0;
+        while idx < limit {
+            let frame: u64 = shard.frames.start.saturating_add(idx as u64);
+            if frame > shard.frames.end {
+                break;
+            }
+            self.completed_frames.insert((shard.config_hash, frame));
+            recorded = recorded.saturating_add(1);
+            idx = idx.saturating_add(1);
+        }
+        if recorded > 0 {
+            self.ledger.record(shard.config_hash, recorded);
+        }
+        recorded
     }
 
     /// 队列状态快照。
@@ -433,5 +565,82 @@ mod tests {
         let order: Vec<TaskId> = drain(&mut q);
         let starts: Vec<u64> = order.iter().map(|id| id.frames.start).collect();
         assert_eq!(starts, vec![0, 25, 50, 75], "同优先级同配置 ⇒ 按帧起点升序出队");
+    }
+
+    #[test]
+    fn submit_ranges_is_order_independent_and_idempotent() {
+        let cfg: ConfigHash = ConfigHash::of_bytes(b"ranges");
+        let ranges: Vec<FrameRange> = split_frames(0, 39, 4).expect("应可切分");
+        let mut q1: FarmQueue = FarmQueue::new();
+        let out1: Vec<SubmitOutcome> = q1.submit_ranges(&ranges, cfg, 0);
+        assert!(out1.iter().all(|o| *o == SubmitOutcome::Accepted), "首次提交应全部接受");
+
+        // 逆序提交同一集合 ⇒ 出队序与幂等裁决都与正序一致。
+        let mut reversed: Vec<FrameRange> = ranges.clone();
+        reversed.reverse();
+        let mut q2: FarmQueue = FarmQueue::new();
+        let out2: Vec<SubmitOutcome> = q2.submit_ranges(&reversed, cfg, 0);
+        assert!(out2.iter().all(|o| *o == SubmitOutcome::Accepted));
+        assert_eq!(drain(&mut q1), drain(&mut q2), "入队集合与传入顺序无关");
+
+        // 重复提交整批（仍在队、未完成）⇒ 全部 Duplicate（幂等：同 id 不重复执行）。
+        let mut q3: FarmQueue = FarmQueue::new();
+        assert!(q3
+            .submit_ranges(&ranges, cfg, 0)
+            .iter()
+            .all(|o| *o == SubmitOutcome::Accepted));
+        let dup: Vec<SubmitOutcome> = q3.submit_ranges(&reversed, cfg, 0);
+        assert!(dup.iter().all(|o| *o == SubmitOutcome::Duplicate), "重复提交必须全部幂等命中");
+        assert_eq!(q3.len(), ranges.len(), "重复提交不得让队列变长");
+    }
+
+    #[test]
+    fn seed_from_cache_narrows_task_to_missing_frames() {
+        let cfg: ConfigHash = ConfigHash::of_bytes(b"resume");
+        let mut cache: FrameCache = FrameCache::new();
+        // 模拟"中断前已完成 0..=4 帧"的落盘缓存。
+        for f in 0..5u64 {
+            cache.put(cfg, f, crate::farm::worker::render_frame_payload(cfg, f));
+        }
+        let mut q: FarmQueue = FarmQueue::new();
+        let seeded: usize = q.seed_from_cache(cfg, &cache, FrameRange { start: 0, end: 9 });
+        assert_eq!(seeded, 5, "缓存里有的 5 帧必须被种为已完成");
+        assert_eq!(q.frames_done(), 5);
+        assert!(q.is_frame_done(cfg, 0) && q.is_frame_done(cfg, 4));
+        assert!(!q.is_frame_done(cfg, 5));
+
+        // 任务被收窄为"真正还缺的帧"——续算的核心收益。
+        let t: FrameTask = task(b"resume", 0, 9, 0);
+        assert_eq!(q.missing_frames(&t), vec![5, 6, 7, 8, 9], "只应重算缺的帧");
+
+        // 幂等：重复种入不重复计数。
+        assert_eq!(q.seed_from_cache(cfg, &cache, FrameRange { start: 0, end: 9 }), 0);
+        assert_eq!(q.frames_done(), 5);
+
+        // 全部补齐后 missing_frames 为空（该任务无需再派）。
+        let shard: crate::farm::transport::FramePayloadShard =
+            crate::farm::transport::FramePayloadShard::new(
+                "n",
+                FrameRange { start: 5, end: 9 },
+                cfg,
+                (5..10u64)
+                    .map(|f| crate::farm::worker::render_frame_payload(cfg, f))
+                    .collect(),
+            );
+        assert_eq!(q.complete_shard(&shard), 5, "5 帧全部记账");
+        assert!(q.missing_frames(&t).is_empty(), "补齐后不应再有缺帧");
+        assert_eq!(q.ledger().frames_of(cfg), 5, "回传分片向吞吐记账累计帧数");
+
+        // 长度不足的分片只按收到的帧数记账（绝不凭空标完成）。
+        let short: crate::farm::transport::FramePayloadShard =
+            crate::farm::transport::FramePayloadShard::new(
+                "n",
+                FrameRange { start: 20, end: 24 },
+                cfg,
+                vec![vec![1u8; 4]],
+            );
+        assert_eq!(q.complete_shard(&short), 1, "只记账真正收到的 1 帧");
+        assert!(q.is_frame_done(cfg, 20));
+        assert!(!q.is_frame_done(cfg, 21), "未收到的帧不得标记完成");
     }
 }
