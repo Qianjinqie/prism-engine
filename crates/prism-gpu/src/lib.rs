@@ -99,6 +99,12 @@ pub mod scan;
 pub mod sort;
 pub mod sync;
 
+// **compute 语义层**（V2.0-G，GPU compute-first 管线的基础件）：
+// 设备无关的 kernel 描述 / dispatch 形状 / buffer 布局 + 真实 kernel 语义的
+// CPU 参考实现（主射线发射、wavefront 求交一步）。真机执行经
+// [`vulkan::compute`] 的装配路径；本层保证「语义与设备无关」这一条硬约束。
+pub mod compute;
+
 // ----------------------------------------------------------------------------
 // Framebuffer
 // ----------------------------------------------------------------------------

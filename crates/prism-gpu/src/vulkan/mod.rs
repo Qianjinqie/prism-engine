@@ -44,6 +44,20 @@ use crate::{Framebuffer, GpuDevice, SceneRenderRequest};
 pub mod loader;
 
 // ---------------------------------------------------------------------------
+// compute 管线（V2.0-G）：SPIR-V 供给 + dispatch / queue 提交
+// ---------------------------------------------------------------------------
+//
+// `spirv` 是纯数据（手写 SPIR-V 字流），**所有平台**都编译——wasm 侧也要能
+// 报「本 kernel 的 SPIR-V 是什么」；`compute` 含真机 FFI 装配路径，wasm 上
+// 只剩「如实报 unsupported」的入口（见其 `dispatch` 的 cfg 分支）。
+
+/// 手写 / 嵌入的 SPIR-V 模块表与结构校验。
+pub mod spirv;
+
+/// compute pipeline 装配 + 队列提交（真机路径写全，本环境无 ICD 走降级分支）。
+pub mod compute;
+
+// ---------------------------------------------------------------------------
 // 探测结果（跨平台可见的诊断结构）
 // ---------------------------------------------------------------------------
 
@@ -148,9 +162,11 @@ impl ProbeFailure {
 /// 持有它即代表「探测链成功」。销毁顺序与创建顺序相反（device 先于
 /// instance），且全部在 [`VulkanContext::drop`] 中释放——**不 panic**。
 #[cfg(not(target_arch = "wasm32"))]
-struct VulkanContext {
+pub(crate) struct VulkanContext {
     /// `VkInstance`。
     instance: loader::VkInstance,
+    /// 选中的 `VkPhysicalDevice`（compute 管线查内存属性用）。
+    physical_device: loader::VkPhysicalDevice,
     /// `VkDevice`。
     device: loader::VkDevice,
     /// graphics 队列句柄。
@@ -319,6 +335,32 @@ impl VulkanBackend {
             .as_ref()
             .map(|c| c.queue as usize)
             .filter(|&p| p != 0)
+    }
+
+    /// **compute 派发入口**（V2.0-G）。
+    ///
+    /// 走 [`compute::dispatch`]：有设备上下文则在真机上装配 SPIR-V → compute
+    /// pipeline → 命令缓冲 → 队列提交 → 读回；无上下文（本仓库构建环境无
+    /// ICD）则如实返回 [`compute::DispatchStatus::DeviceUnavailable`]，
+    /// **不 panic、不返回假输出**。
+    ///
+    /// 注意：本方法与 [`GpuDevice::is_available`] 语义不同——后者刻画的是
+    /// 「能否 service `render_scene`」（渲染管线仍未实装，恒 `false`），
+    /// compute 派发是**另一条独立路径**。
+    pub fn compute_dispatch(
+        &mut self,
+        kernel: &crate::compute::KernelDesc,
+        extent: [u32; 3],
+        input: &[f32],
+    ) -> compute::ComputeRunReport {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            compute::dispatch(self.context.as_deref(), kernel, extent, input)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            compute::dispatch((), kernel, extent, input)
+        }
     }
 
     /// 构造后端时建立探测上下文。
@@ -563,6 +605,7 @@ impl VulkanBackend {
 
         Ok(VulkanContext {
             instance,
+            physical_device,
             device,
             queue,
             graphics_queue_family,

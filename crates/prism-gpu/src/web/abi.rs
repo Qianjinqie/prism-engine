@@ -2481,6 +2481,48 @@ static COVERAGE: &[(&str, &[(&str, &str, &str)])] = &[
              shader 已嵌入 SHADERS 并过 D-29 结构自检，等待 WebGPU 运行时真 dispatch",
         )],
     ),
+    // ---- V2.0-G compute-first 管线（三个新 kernel） ----
+    //
+    // 三个入口都**如实标 SKIP**：本构建环境只有 libvulkan loader、无 ICD，
+    // 真机 dispatch 无法执行（`vulkan::compute` 的探针报告为
+    // `device-unavailable / no-vulkan-icd`）。它们的判对不靠「假装跑过 GPU」，
+    // 而靠两条真实且可执行的判据：
+    //   ① `prism-gpu::compute` 的 CPU 参考实现（kernel 语义真测）；
+    //   ② `prism-rt::wavefront` 的 double gate parity 网（CPU 递归序 vs
+    //      GPU 数组序的统计判定 + PSNR）。
+    // 真机派发由 `vulkan::compute::real_device_compute_dispatch_smoke`
+    // （probe 先行、无设备自跳过），有 GPU 的机器上随 `cargo test` 实跑。
+    (
+        "rt_primary_ray_gen.wgsl",
+        &[(
+            "primary_ray_gen",
+            ST_SKIP,
+            "V2.0-G 主射线发射 kernel：SPIR-V 待真机 glslang 生成（本环境无工具链），\
+             本环境无 ICD 故无真机 dispatch。语义由 prism-gpu::compute::primary_ray_gen_cpu \
+             真实测（像素覆盖/几何/确定性）、并由 prism-rt::wavefront 的 parity 网对拍；\
+             真机 smoke 见 vulkan::compute::real_device_compute_dispatch_smoke（无设备自跳过）",
+        )],
+    ),
+    (
+        "rt_wavefront_intersect.wgsl",
+        &[(
+            "wavefront_intersect",
+            ST_SKIP,
+            "V2.0-G wavefront 求交一步 kernel：同上（SPIR-V 待工具链 + 本环境无 ICD）。\
+             语义由 prism-gpu::compute::wavefront_intersect_step_cpu 真实测\
+             （最近命中/平局 tie-break/球内出射/批量对齐/确定性）",
+        )],
+    ),
+    (
+        "spv_mul2_probe.wgsl",
+        &[(
+            "mul2",
+            ST_SKIP,
+            "V2.0-G SPIR-V 装配探针（dst=src*2）：手写 SPIR-V 已嵌入二进制并过字级结构校验，\
+             但本环境无 ICD 无法真机派发。真机 smoke 见 \
+             vulkan::compute::real_device_compute_dispatch_smoke（无设备自跳过）",
+        )],
+    ),
 ];
 
 // ---------------------------------------------------------------------------

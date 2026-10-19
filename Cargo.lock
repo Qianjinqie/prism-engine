@@ -252,6 +252,7 @@ version = "0.1.0"
 dependencies = [
  "prism-core",
  "prism-geometry",
+ "prism-gpu",
  "prism-io",
  "prism-math",
  "prism-noise",
