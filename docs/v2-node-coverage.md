@@ -2,6 +2,11 @@
 
 > 维护人：寇豆码（工程师） · 波次：W2 执行闭合波·D 单顶 · 日期：2026-10-18
 >
+> **V2.0-W4 更新**（RQ-3 曲线图元完善）：S12 实体曲线四族
+> （cylinder / cone / torus / revolution）进入已支持子集——见 §1 第 2 行
+> 与 §2 帧求值路径；GPU 曲线槽位未建，走 rt CPU 波前路径（诚实口径，
+> 不假装 GPU 已支持）。
+>
 > 权威来源：节点全集取 `crates/prism-dsl/src/codegen.rs` 的
 > `codegen_v2`（v2 编译产物 `CompileV2Output`）与各 `build_*` 函数；
 > render 侧覆盖状态取 `crates/prism-render/src/movie.rs`（`render_movie`
@@ -15,7 +20,8 @@
 | # | DSL v2 写法 | 节点类型 | 结构段 | render_movie | 报错码 / 说明 |
 |---|---|---|---|---|---|
 | 1 | `stage3d { camera … }` | camera | S5 Reparameterization | **已支持** | orbit center / radius / fov；绑定通道可覆盖 |
-| 2 | `stage3d { sdf { kind sphere … } }` | sphere | S12 EntityRepresentation | **已支持** | `kind ≠ sphere`（box/…）→ R5013 |
+| 2 | `stage3d { sdf { kind sphere … } }` | sphere | S12 EntityRepresentation | **已支持** | `kind ∉ {sphere, cylinder, cone, torus, revolution}`（box/…）→ R5013 |
+| 2b | `stage3d { sdf { kind cylinder / cone / torus / revolution … } }` | 曲线图元族 | S12 EntityRepresentation | **已支持**（V2.0-W4） | 多曲线节点同场（按节点序入 rt 场景）；求值走 rt CPU 波前路径 + SAH-BVH；尺寸退化（≤0 / 轮廓点 <2）→ R5016；GPU 曲线槽位留待后续波次 |
 | 3 | `stage3d { material … }` | material | S8 RadiativeTransfer | **已支持** | albedo / roughness / metalness |
 | 4 | `stage3d { light … }` | light | —（校验后不建节点） | 不适用 | render 侧固定缺省暖色灯（与 v1 演示一致） |
 | 5 | `layer text { … }` | text | S12 EntityRepresentation | **已支持** | prism-text 排版 + 光栅化 + u8 src-over；`rotation ≠ 0` → R5014 |
@@ -27,8 +33,10 @@
 | 11 | `transition { … }` | 转场 | TransitionV2（非节点） | **已支持** | crossfade / fade / cut / black / white / wipe / dissolve / push |
 | 12 | 字段级关键帧 / `anim` / `expr` | 命名通道 | NamedChannel（非节点） | **已支持** | `sample_binding` 逐绑定覆盖节点参数 |
 
-已支持集合（R5010 建议段的原话）：**stage3d camera / material / sdf sphere、layer text**。
-即 DSL v2 的 8 类可建节点写法中 4 类已支持（camera / material / sphere / text），
+已支持集合（R5010 建议段的原话）：**stage3d camera / material、sdf sphere 与曲线
+四族（cylinder / cone / torus / revolution）、layer text**。
+即 DSL v2 的 8 类可建节点写法中 4 类已支持（camera / material / sdf / text，
+其中 sdf 覆盖 5 种 kind），
 3 类明确报错（particles / sim / compose），1 类不建节点（light）；外加 2 类非节点
 能力（transition / 通道）已支持、1 项矢量能力（layer morph）不在本轮覆盖面。
 
@@ -44,8 +52,11 @@
 | 空档（timeline 长于内容） | 黑帧 | 确定性（固定背景色） |
 | 其余多场景同时活跃 | 明确报错 | R5020：三场景同时活跃、或两场景同时活跃但既非同程也无匹配过渡 |
 
-帧数 = `ceil(fps × duration)`；每帧 = 底片场景经 `render_frame`（复用 v1 求值器）
-+ 按节点序 `overlay_text` 文本合成。确定性：两跑 MD5 一致（有单测凭证）。
+帧数 = `ceil(fps × duration)`；每帧 = 底片场景经 `render_frame`（复用 v1 求值器；
+场景含曲线图元节点时走 `render_curve_frame`：rt CPU 波前路径 + SAH-BVH，
+固定 spp/弹射深度常量，tone-map 与 GPU 路径同口径）
++ 按节点序 `overlay_text` 文本合成。确定性：两跑 MD5 一致（有单测凭证，
+含曲线四族同场端到端用例）。
 
 ## 3. 组合子库 × 展开形态（V1.5-D 新增）
 
@@ -71,9 +82,10 @@ name → 展开 fn，与 codegen 同 crate）；`prism-author/src/combinators.rs
 | R5010 | 不支持的节点类型（particles / sim / compose / 未知结构） |
 | R5011 | 同一场景多重相机 |
 | R5012 | 同一场景多重材质 |
-| R5013 | sdf kind ≠ sphere，或多球体场景未拆分 |
+| R5013 | sdf kind ∉ {sphere, cylinder, cone, torus, revolution}，或多球体场景未拆分 |
 | R5014 | 文本节点 rotation ≠ 0，或 S12 节点无法归类 |
 | R5015 | 文本 size ≤ 0 |
+| R5016 | 曲线图元尺寸退化（radius / half_height / major / minor ≤ 0，或 revolution 轮廓点 < 2）（V2.0-W4 新增） |
 | R5020 | 时间线出现无法解释的多场景同时活跃 |
 
 组合子参数错误为 C5xxx 段（`CombinatorError`，同为三段式），未登记组合子

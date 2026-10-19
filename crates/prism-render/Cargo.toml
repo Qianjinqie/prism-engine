@@ -17,6 +17,12 @@ prism-dsl = { path = "../prism-dsl" }
 # GlyphCache + 内嵌字体），不新写文本渲染器。prism-text → {raster, io, anim,
 # core, math}，无一环回 prism-render。
 prism-text = { path = "../prism-text" }
+# V2.0-W4：DSL stage3d sdf 曲线图元族（cylinder / cone / torus /
+# revolution）的帧求值走 prism-rt 的 CPU 波前参考路径（解析求交 +
+# SAH-BVH 在 prism-rt/prism-geometry，GPU 设备请求暂无曲线槽位）。
+# 依赖方向合法性：prism-rt → {prism-core, prism-math, prism-geometry,
+# prism-noise}，无一环回 prism-render（render → rt 是新增单向边）。
+prism-rt = { path = "../prism-rt" }
 
 # dev-only：movie 测试构造 Track 通道（prism-dsl 的 anim/expr 块产物类型）。
 # prism-anim → {prism-math, prism-noise}，无环回 prism-render。

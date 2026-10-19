@@ -247,6 +247,7 @@ dependencies = [
  "prism-gpu",
  "prism-io",
  "prism-math",
+ "prism-rt",
  "prism-text",
 ]
 

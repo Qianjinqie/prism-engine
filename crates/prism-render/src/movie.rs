@@ -13,6 +13,9 @@
 //! - S5 相机（stage3d camera）→ 场景相机轨道；
 //! - S8 材质（stage3d material）→ 场景材质；
 //! - S12 实体 `kind sphere`（stage3d sdf）→ 球体半径；
+//! - S12 曲线图元族 `kind ∈ {cylinder, cone, torus, revolution}`
+//!   （stage3d sdf，V2.0-W4）→ rt CPU 波前路径（BVH 加速、逐位确定性；
+//!   GPU 曲线槽位留待后续波次——不假装已支持）；
 //! - S12 文本图层（layer text）→ 帧上文本合成；
 //! - 场景时间线：顺序播放 / 过渡重叠混合 / 同程多场景左右分屏。
 //!
@@ -156,6 +159,9 @@ struct SceneModel {
     material: Option<NodeRef>,
     /// 球体节点（S12 sdf kind=sphere；None = 无实体，纯背景 / 文本场景）。
     sphere: Option<NodeRef>,
+    /// 曲线图元节点（S12 sdf kind ∈ {cylinder, cone, torus, revolution}；
+    /// 按节点序进入 rt 场景，非空即走 CPU 波前曲线路径）。
+    curves: Vec<NodeRef>,
     /// 文本图层（S12 layer text；按节点序合成）。
     texts: Vec<NodeRef>,
 }
@@ -331,6 +337,7 @@ fn build_models(
             camera: None,
             material: None,
             sphere: None,
+            curves: Vec::new(),
             texts: Vec::new(),
         };
         // node_ids 升序（codegen 保证）→ 合成序确定。
@@ -407,26 +414,35 @@ fn classify_node(
         StructureId::EntityRepresentation => {
             if node.params.get("kind").is_some() {
                 let kind: &str = p_str(&node.params, "kind").unwrap_or("");
-                if kind != "sphere" {
-                    return Err(RenderError::new(
-                        "R5013",
-                        format!("场景 '{}' 的 sdf 节点 {}（kind = '{kind}'）", scene.name, node.id),
-                        format!(
-                            "render 侧已支持的实体只有 sphere（球体）；'{kind}' 缺少求交实现"
-                        ),
-                        "把 sdf kind 写成 sphere；box 等基元待几何求交模块接入（后续波次）",
-                    ));
+                match kind {
+                    // V2.0-W4 曲线图元族：入 curves 槽位，帧求值走 rt 波前路径。
+                    "cylinder" | "cone" | "torus" | "revolution" => {
+                        model.curves.push(node_ref);
+                        Ok(())
+                    }
+                    "sphere" => {
+                        if model.sphere.is_some() {
+                            return Err(RenderError::new(
+                                "R5013",
+                                format!("场景 '{}' 的节点 {}", scene.name, node.id),
+                                "场景内含多个 sdf 实体，已支持子集只允许单球体".to_string(),
+                                "合并为一个 sdf 块；多实体场景请拆分为多个 scene",
+                            ));
+                        }
+                        model.sphere = Some(node_ref);
+                        Ok(())
+                    }
+                    other => {
+                        return Err(RenderError::new(
+                            "R5013",
+                            format!("场景 '{}' 的 sdf 节点 {}（kind = '{other}'）", scene.name, node.id),
+                            format!(
+                                "render 侧已支持的实体只有 sphere / cylinder / cone / torus / revolution；'{other}' 缺少求交实现"
+                            ),
+                            "把 sdf kind 写成 sphere / cylinder / cone / torus / revolution；box 等基元待几何求交模块接入（后续波次）",
+                        ));
+                    }
                 }
-                if model.sphere.is_some() {
-                    return Err(RenderError::new(
-                        "R5013",
-                        format!("场景 '{}' 的节点 {}", scene.name, node.id),
-                        "场景内含多个 sdf 实体，已支持子集只允许单球体".to_string(),
-                        "合并为一个 sdf 块；多实体场景请拆分为多个 scene",
-                    ));
-                }
-                model.sphere = Some(node_ref);
-                Ok(())
             } else if node.params.get("content").is_some() {
                 // 文本旋转：排版管线不承载任意角度（缺任意角光栅化）。
                 if let Some(ParamValue::F32(r)) = node.params.get("rotation") {
@@ -587,7 +603,12 @@ fn render_scene_frame(
     let t_local: f32 = t - model.start;
     // 场景时长为正（活跃判据已保证）；防御性下限防除零。
     let dur_local: f32 = if model.duration > 0.0 { model.duration } else { 1.0 };
-    let mut fb: Framebuffer = render_frame(device, &scene, t_local, dur_local, w, h);
+    let mut fb: Framebuffer = if model.curves.is_empty() {
+        render_frame(device, &scene, t_local, dur_local, w, h)
+    } else {
+        // V2.0-W4 曲线图元族：走 prism-rt CPU 波前路径（设备仅占位不用）。
+        render_curve_frame(model, &scene, channels, t_local, dur_local, frame, w, h)?
+    };
 
     // ---- 文本图层合成（按节点序；后建的压在上面）-------------------------
     for text in &model.texts {
@@ -603,6 +624,156 @@ fn render_scene_frame(
     }
 
     Ok(fb)
+}
+
+/// 曲线图元帧渲染（V2.0-W4）：prism-rt CPU 波前路径 + clamp tone-map 到 u8。
+///
+/// # 为什么走 CPU（诚实口径）
+/// curve 四族的解析求交在 prism-rt（CPU 参考实现，配 SAH-BVH 与逐位
+/// 确定性测试）；GPU 设备请求契约（`SphereReq`）暂无曲线基元槽位。
+/// 本波次以 CPU 路径交付端到端能力（先真跑、不假装），GPU 曲线槽位
+/// 留待后续波次——与 G 轨激活同口径。
+///
+/// # 确定性
+/// 种子恒 0（与参数解算一致）、spp/弹射深度为固定常量 ⇒ 同输入逐位
+/// 一致；tone-map 与 GPU 路径同口径（clamp[0,1]×255 四舍五入，alpha 恒 255）。
+fn render_curve_frame(
+    model: &SceneModel,
+    scene: &Scene,
+    channels: &BTreeMap<&str, &PropertyChannel>,
+    t: f32,
+    duration: f32,
+    frame: u64,
+    w: u32,
+    h: u32,
+) -> MovieResult<Framebuffer> {
+    use prism_rt::camera::Camera as RtCamera;
+    use prism_rt::integrator::{
+        Cone, Cylinder, MaterialKind, RenderParams, Revolution, Scene as RtScene, Torus,
+    };
+    use prism_rt::wavefront;
+
+    /// 曲线路径固定采样参数（CPU 参考路径的成本/质量折中；确定性常量）。
+    const CURVE_SPP: u32 = 4;
+    /// 固定弹射深度（直接光 + 一次间接足够呈现曲面明暗）。
+    const CURVE_BOUNCES: u32 = 2;
+
+    let mut rt: RtScene = RtScene::default();
+    // 材质映射：DSL material → Lambert 反照率（Pbr 的 metalness/roughness
+    // 映射留待后续波次；反照率是最影响识别的通道，先真跑）。
+    let mat: MaterialKind = MaterialKind::Lambert { albedo: scene.material.albedo };
+    for c in &model.curves {
+        let p = resolve_params(c, channels, t, frame);
+        let kind: &str = p_str(&p, "kind").unwrap_or("");
+        let center = Vec3::new(
+            p_f32(&p, "center_x", 0.0),
+            p_f32(&p, "center_y", 0.0),
+            p_f32(&p, "center_z", 0.0),
+        );
+        match kind {
+            "cylinder" => {
+                let radius = p_f32(&p, "radius", 1.0).max(0.0);
+                let half_height = p_f32(&p, "half_height", 1.0).max(0.0);
+                if radius <= 0.0 || half_height <= 0.0 {
+                    return Err(curve_degenerate_err(model, c.id, kind));
+                }
+                rt.add_cylinder(Cylinder { center, radius, half_height }, mat);
+            }
+            "cone" => {
+                let radius = p_f32(&p, "radius", 1.0).max(0.0);
+                let half_height = p_f32(&p, "half_height", 1.0).max(0.0);
+                if radius <= 0.0 || half_height <= 0.0 {
+                    return Err(curve_degenerate_err(model, c.id, kind));
+                }
+                rt.add_cone(Cone { center, radius, half_height }, mat);
+            }
+            "torus" => {
+                let major = p_f32(&p, "major", 1.0).max(0.0);
+                let minor = p_f32(&p, "minor", 0.5).max(0.0);
+                if major <= 0.0 || minor <= 0.0 {
+                    return Err(curve_degenerate_err(model, c.id, kind));
+                }
+                rt.add_torus(Torus { center, major, minor }, mat);
+            }
+            "revolution" => {
+                let n: usize = match p.get("profile_n") {
+                    Some(ParamValue::U32(n)) => *n as usize,
+                    _ => 0,
+                };
+                let mut pts: Vec<[f32; 2]> = Vec::with_capacity(n);
+                for i in 0..n {
+                    pts.push([
+                        p_f32(&p, &format!("profile_r_{i}"), 0.0),
+                        p_f32(&p, &format!("profile_y_{i}"), 0.0),
+                    ]);
+                }
+                if pts.len() < 2 {
+                    return Err(curve_degenerate_err(model, c.id, kind));
+                }
+                rt.add_revolution(Revolution::new(center, pts), mat);
+            }
+            other => {
+                return Err(RenderError::new(
+                    "R5013",
+                    format!("场景 '{}' 的 sdf 节点 {}（kind = '{other}'）", model.name, c.id),
+                    format!("render 侧曲线路径不支持的 kind '{other}'"),
+                    "曲线路径仅接受 cylinder / cone / torus / revolution（分类阶段已拦，此为纵深防御）",
+                ));
+            }
+        }
+    }
+    // 光源：与 GPU 球体路径同款固定暖色方向光（确定性常量，DSL light 块
+    // 的运行时接入留待后续波次——两路同口径，不静默双标）。
+    rt.lights = vec![prism_rt::integrator::Light::Directional {
+        direction: Vec3::new(1.0, -1.0, -0.5).normalize(),
+        radiance: Vec3::new(1.0, 244.0 / 255.0, 230.0 / 255.0) * 3.0,
+        cos_theta_max: 0.9,
+    }];
+
+    // 相机：复用 core 场景的轨道机位（eval_camera_orbit）与 fov（弧度）。
+    // rt Camera::new 对 fov_deg 有 (0,180) 开区间断言 ⇒ 非有限回落 45°、
+    // 钳制到 [1°,179°]（防通道化 fov 越界直接 panic）。
+    let eye: Vec3 = prism_core::eval_camera_orbit(scene, t, duration);
+    let target: Vec3 = scene.orbit_center;
+    let fov_deg: f32 = if scene.camera.fov.is_finite() {
+        scene.camera.fov.to_degrees().clamp(1.0, 179.0)
+    } else {
+        45.0
+    };
+    let cam = RtCamera::new(
+        eye,
+        target,
+        Vec3::new(0.0, 1.0, 0.0),
+        fov_deg,
+        0.0,                                   // 针孔（无 DOF）
+        (eye - target).length().max(1.0e-3),   // 焦距 = 机距
+        0.0,                                   // 快门开
+        1.0 / 24.0,                            // 快门闭（占位，无运动模糊）
+    );
+    let ctx = EvalCtx::new(0, 0, frame);
+    let params = RenderParams::new(CURVE_SPP, CURVE_BOUNCES);
+    let px: Vec<[f32; 4]> = wavefront::render_frame(&rt, &cam, &ctx, (w, h), &params);
+
+    // tone-map：与 GPU 路径同口径（clamp[0,1]×255 四舍五入，alpha 恒 255）。
+    let mut pixels: Vec<u8> = Vec::with_capacity((w as usize) * (h as usize) * 4);
+    for p in &px {
+        for c in 0..3 {
+            pixels.push((p[c].clamp(0.0, 1.0) * 255.0).round() as u8);
+        }
+        pixels.push(255);
+    }
+    Ok(Framebuffer { width: w, height: h, pixels })
+}
+
+/// 曲线图元尺寸退化（<= 0 或点数 < 2）的三段式错误（分类阶段不校值域，
+/// 通道化参数可能在运行期退化 ⇒ 求值前拦截，绝不静默出空帧）。
+fn curve_degenerate_err(model: &SceneModel, id: u64, kind: &str) -> RenderError {
+    RenderError::new(
+        "R5016",
+        format!("场景 '{}' 的 sdf 节点 {}（kind {kind}）", model.name, id),
+        "曲线图元尺寸参数退化为非正（或轮廓点数 < 2），求交将永不命中".to_string(),
+        "尺寸取正长度（radius / half_height / major / minor > 0）；revolution 至少 2 个轮廓点",
+    )
 }
 
 /// 文本图层合成：排版（`prism-text::layout_text`）→ 字形光栅化 → u8 整数
@@ -1026,6 +1197,91 @@ mod tests {
         assert_eq!(digest(&a), digest(&b), "同输入两跑必须逐位一致");
 
         // 相机环绕：首帧与末帧应不同（有运动才说明求值器真的在动）。
+        assert_ne!(a.frames[0].pixels, a.frames[a.frames.len() - 1].pixels);
+    }
+
+    /// V2.0-W4 RQ-3 端到端：`.prism` 四族曲线 kind 同场 → `compile_v2`
+    /// → `render_movie` → 帧序列 + 逐位确定性 + 非空渲染。
+    ///
+    /// 验收口径（任务书）：DSL 端到端 ≥2 种曲线 kind 经编译产出帧；本用例
+    /// 四种齐上（cylinder / cone / torus / revolution），并顺带覆盖规格
+    /// 推导（fps / resolution / duration）、节点分流与两跑 MD5 一致。
+    #[test]
+    fn render_movie_curve_kinds_end_to_end() {
+        let src: &str = concat!(
+            "// prism-dsl 1\n",
+            "movie \"curves\" {\n",
+            "  duration 1s\n",
+            "  fps 4\n",
+            "  resolution 48x27\n",
+            "}\n",
+            "scene \"curves\" {\n",
+            "  duration 1s\n",
+            "  stage3d {\n",
+            "    camera main { orbit { center 0,0,0 radius 9 } fov 50 }\n",
+            "    material m { albedo #c0392b roughness 0.4 }\n",
+            "    sdf rod { kind cylinder radius 0.6 half_height 1.6 center -2.5,0,0 }\n",
+            "    sdf spike { kind cone radius 0.9 half_height 1.4 center 0,0,0 }\n",
+            "    sdf ring { kind torus major 1.4 minor 0.4 center 2.5,0,0 }\n",
+            "    sdf vase { kind revolution profile { pt { r 0 y -1 } pt { r 0.7 y 0 } pt { r 0 y 1 } } center 4.5,0,0 }\n",
+            "  }\n",
+            "}\n"
+        );
+        let compile: CompileV2Output =
+            prism_dsl::compile_v2(src).expect("四族曲线 .prism 应编译成功");
+
+        // ---- 编译产物规格与节点分流 ----
+        assert_eq!(compile.fps, 4, "movie.fps 应落盘");
+        assert_eq!(compile.width, 48, "movie.resolution 宽应落盘");
+        assert_eq!(compile.height, 27, "movie.resolution 高应落盘");
+        assert_eq!(compile.duration, 1.0, "movie.duration 应落盘（秒）");
+        let ids: &[u64] = &compile.scenes[0].node_ids;
+        assert_eq!(ids.len(), 6, "camera + material + 4 个 sdf 实体节点");
+        let kinds: Vec<&str> = ids
+            .iter()
+            .filter_map(|&id| compile.graph.node(id))
+            .filter_map(|n| match n.params.get("kind") {
+                Some(ParamValue::Str(k)) => Some(k.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec!["cylinder", "cone", "torus", "revolution"],
+            "四族曲线 kind 应全部落入节点图"
+        );
+
+        // ---- 成片渲染（CPU 参考后端；曲线路径实际不用设备）----
+        let mut device = prism_gpu::CpuRefBackend;
+        let a: Deliverable = render_movie(&compile, &mut device).expect("曲线场景应可渲染");
+        let b: Deliverable = render_movie(&compile, &mut device).expect("曲线场景应可渲染");
+
+        // fps=4 × duration=1 → 4 帧；48x27。
+        assert_eq!(a.frame_count(), 4, "fps=4 × 1s 应得 4 帧");
+        for (i, fb) in a.frames.iter().enumerate() {
+            assert_eq!(fb.width, 48, "第 {i} 帧宽度");
+            assert_eq!(fb.height, 27, "第 {i} 帧高度");
+            assert_eq!(fb.pixels.len(), 48 * 27 * 4, "第 {i} 帧长度应恰为 w·h·4");
+        }
+
+        // 确定性宪章：两跑 MD5 一致（帧序列拼接后整体摘要）。
+        let digest = |d: &Deliverable| -> String {
+            let mut buf: Vec<u8> = Vec::new();
+            for fb in &d.frames {
+                buf.extend_from_slice(&fb.pixels);
+            }
+            crate::farm::md5_hex(&buf)
+        };
+        assert_eq!(digest(&a), digest(&b), "同输入两跑必须逐位一致");
+
+        // 非空渲染：至少一帧至少一个像素非黑（全黑 = 求交/光照静默失败）。
+        let any_lit: bool = a
+            .frames
+            .iter()
+            .any(|fb| fb.pixels.chunks_exact(4).any(|px| px[0] > 0 || px[1] > 0 || px[2] > 0));
+        assert!(any_lit, "曲线场景至少一帧应出现非黑像素");
+
+        // 相机环绕：首帧与末帧应不同（时间维真的在推进）。
         assert_ne!(a.frames[0].pixels, a.frames[a.frames.len() - 1].pixels);
     }
 
