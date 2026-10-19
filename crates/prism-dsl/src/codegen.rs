@@ -1344,27 +1344,51 @@ fn build_camera(b: &mut V2Builder, cam: &CameraV2Ast, si: usize) -> Result<Camer
     Ok(CameraOrbit { center, radius, fov_rad })
 }
 
-/// sdf 条目 → S12 实体表示节点。kind 必填（sphere / box）；radius 缺省 1，负值 P1015。
+/// sdf 条目 → S12 实体表示节点。
+///
+/// # kind 支持集（V2.0-W4 曲线图元扩展）
+/// - `sphere`：`radius` 缺省 1、负值 P1015（v1 既有口径不变）；
+/// - `box`：解析接受，render 侧 R5013（求交未接入，保留原错误）；
+/// - `cylinder` / `cone`：`radius` + `half_height`（必填，须 > 0）；
+/// - `torus`：`major` + `minor`（必填，须 > 0）；
+/// - `revolution`：`profile` 块（必填，≥ 2 个 `pt { r .. y .. }`）。
+///
+/// # 校验序（钉死）
+/// 字段白名单按 kind **解析后**校验（kind 可声明在任意字段序，故未知
+/// 字段先收集、kind 定株后再按该 kind 白名单报 P1002）；必填缺失
+/// P1027、尺寸非正/非有限 P1028、profile 非法 P1029。类型错误
+/// （P2xxx 段）在扫描期即报，与 kind 无关。
 fn build_sdf(b: &mut V2Builder, sdf: &SdfAst, si: usize) -> Result<NodeId, DslError> {
     let mut kind: &str = "";
     let mut radius: f32 = DEFAULT_RADIUS;
     let mut radius_channel: Option<PropertyChannel> = None;
+    let mut radius_seen: bool = false;
+    let mut radius_static: Option<f32> = None;
+    let mut radius_line: usize = sdf.line;
+    let mut center: Option<Vec3> = None;
+    let mut half_height: Option<f32> = None;
+    let mut major: Option<f32> = None;
+    let mut minor: Option<f32> = None;
+    let mut profile: Option<Vec<[f32; 2]>> = None;
     for f in &sdf.fields {
         match f.name.as_str() {
             "kind" => {
                 kind = ident_of(f.value.as_ref()).ok_or_else(|| {
-                    type_err(f.line, "sdf 块中字段 'kind'", "标识符（sphere / box）", f.value.as_ref())
+                    type_err(
+                        f.line,
+                        "sdf 块中字段 'kind'",
+                        "标识符（sphere / box / cylinder / cone / torus / revolution）",
+                        f.value.as_ref(),
+                    )
                 })?;
             }
             "radius" => {
-                // 负值防呆（P1015）在静态数字路径；通道化值域交由运行期语义。
+                radius_seen = true;
+                radius_line = f.line;
+                // 静态负值防呆按 kind 分流（sphere 走既有 P1015，曲线族走
+                // P1028）；通道化值域交由运行期语义（与既有注释同口径）。
                 if let Some(FieldValue::Num(n)) = f.value.as_ref() {
-                    if *n < 0.0 {
-                        return Err(err_at(
-                            f.line,
-                            format!("[P1015] sdf.radius 不能为负（得到 {}）\n  建议：半径是非负长度，如 radius 1", n),
-                        ));
-                    }
+                    radius_static = Some(*n);
                 }
                 let (r, ch): (f32, Option<PropertyChannel>) = b.scalar_or_channel(
                     f.value.as_ref(),
@@ -1375,39 +1399,210 @@ fn build_sdf(b: &mut V2Builder, sdf: &SdfAst, si: usize) -> Result<NodeId, DslEr
                 radius = r;
                 radius_channel = ch;
             }
-            other => {
-                return Err(err_at(
-                    f.line,
-                    format!(
-                        "[P1002] sdf 块中未知字段 '{}'（允许：kind / radius）\n  建议：kind sphere / kind box，radius 1",
-                        other
-                    ),
-                ));
+            "center" => {
+                center = Some(vec3_of(f.value.as_ref()).ok_or_else(|| {
+                    type_err(f.line, "sdf 块中字段 'center'", "vec3（如 0,1,0）", f.value.as_ref())
+                })?);
             }
+            "half_height" => {
+                half_height = Some(num_of(f.value.as_ref()).ok_or_else(|| {
+                    type_err(f.line, "sdf 块中字段 'half_height'", "正数字（如 1）", f.value.as_ref())
+                })?);
+            }
+            "major" => {
+                major = Some(num_of(f.value.as_ref()).ok_or_else(|| {
+                    type_err(f.line, "sdf 块中字段 'major'", "正数字（如 2）", f.value.as_ref())
+                })?);
+            }
+            "minor" => {
+                minor = Some(num_of(f.value.as_ref()).ok_or_else(|| {
+                    type_err(f.line, "sdf 块中字段 'minor'", "正数字（如 0.5）", f.value.as_ref())
+                })?);
+            }
+            "profile" => {
+                profile = Some(parse_sdf_profile(f)?);
+            }
+            // 其余字段名（含未识别与越权）由 kind 定株后的白名单重扫描
+            // 统一报 P1002——见下方 `allowed` 校验。
+            _ => {}
         }
     }
     if kind.is_empty() {
         return Err(err_at(
             sdf.line,
             format!(
-                "[P1003] sdf '{}' 缺少必填字段 'kind'\n  建议：kind sphere 或 kind box（最小支持集）",
+                "[P1003] sdf '{}' 缺少必填字段 'kind'\n  建议：kind sphere 或 kind cylinder（支持：sphere / box / cylinder / cone / torus / revolution）",
                 sdf.name
             ),
         ));
     }
-    if !matches!(kind, "sphere" | "box") {
+    if !matches!(kind, "sphere" | "box" | "cylinder" | "cone" | "torus" | "revolution") {
         return Err(err_at(
             sdf.line,
             format!(
-                "[P1002] 未知的 sdf kind '{}'\n  建议：当前支持 sphere / box 两种基元（更多基元随几何模块接入）",
+                "[P1002] 未知的 sdf kind '{}'\n  建议：当前支持 sphere / box / cylinder / cone / torus / revolution",
                 kind
             ),
         ));
+    }
+    // 按 kind 白名单校验全部字段（kind 已定株；取第一个越权字段报错，
+    // 修复后可再报下一个）。既覆盖未识别字段名，也覆盖"已识别但该 kind
+    // 不收起"的字段（如 torus 上的 radius）。
+    let allowed: &[&str] = match kind {
+        "sphere" => &["kind", "radius"],
+        "box" => &["kind"],
+        "cylinder" | "cone" => &["kind", "center", "radius", "half_height"],
+        "torus" => &["kind", "center", "major", "minor"],
+        "revolution" => &["kind", "center", "profile"],
+        _ => &[],
+    };
+    if let Some(f) = sdf.fields.iter().find(|f| !allowed.contains(&f.name.as_str())) {
+        return Err(err_at(
+            f.line,
+            format!(
+                "[P1002] sdf 块中字段 '{}' 对 kind '{}' 非法（允许：{}）\n  建议：按 kind 取字段子集；cylinder/cone=radius+half_height，torus=major+minor，revolution=profile",
+                f.name,
+                kind,
+                allowed.join(" / ")
+            ),
+        ));
+    }
+    // 必填字段（P1027）与尺寸值域（P1028 / sphere 既有 P1015）。
+    match kind {
+        "cylinder" | "cone" => {
+            if !radius_seen {
+                return Err(err_at(
+                    sdf.line,
+                    format!(
+                        "[P1027] sdf '{}'（kind {}）缺少必填字段 'radius'\n  建议：半径是正长度，如 radius 1",
+                        sdf.name, kind
+                    ),
+                ));
+            }
+            if half_height.is_none() {
+                return Err(err_at(
+                    sdf.line,
+                    format!(
+                        "[P1027] sdf '{}'（kind {}）缺少必填字段 'half_height'\n  建议：半高是正长度，如 half_height 1",
+                        sdf.name, kind
+                    ),
+                ));
+            }
+        }
+        "torus" => {
+            if major.is_none() {
+                return Err(err_at(
+                    sdf.line,
+                    format!(
+                        "[P1027] sdf '{}'（kind torus）缺少必填字段 'major'\n  建议：主半径是正长度（环心到管心），如 major 2",
+                        sdf.name
+                    ),
+                ));
+            }
+            if minor.is_none() {
+                return Err(err_at(
+                    sdf.line,
+                    format!(
+                        "[P1027] sdf '{}'（kind torus）缺少必填字段 'minor'\n  建议：管半径是正长度，如 minor 0.5",
+                        sdf.name
+                    ),
+                ));
+            }
+        }
+        "revolution" => {
+            if profile.is_none() {
+                return Err(err_at(
+                    sdf.line,
+                    format!(
+                        "[P1027] sdf '{}'（kind revolution）缺少必填字段 'profile'\n  建议：profile {{ pt {{ r 0 y -1 }} pt {{ r 1 y 0 }} }}（至少 2 个 pt）",
+                        sdf.name
+                    ),
+                ));
+            }
+        }
+        _ => {}
+    }
+    // 尺寸值域：曲线族尺寸须为正有限数（P1028）；sphere 半径负值走既有 P1015。
+    match kind {
+        "cylinder" | "cone" => {
+            if let Some(r) = radius_static {
+                if !(r > 0.0) {
+                    return Err(err_at(
+                        radius_line,
+                        format!(
+                            "[P1028] sdf.radius 必须为正数（得到 {}）\n  建议：半径是正长度，如 radius 1",
+                            r
+                        ),
+                    ));
+                }
+            }
+            if let Some(h) = half_height {
+                if !(h > 0.0) {
+                    return Err(err_at(
+                        sdf.line,
+                        format!(
+                            "[P1028] sdf.half_height 必须为正数（得到 {}）\n  建议：半高是正长度，如 half_height 1",
+                            h
+                        ),
+                    ));
+                }
+            }
+        }
+        "torus" => {
+            for (name, v) in [("major", major), ("minor", minor)] {
+                if let Some(v) = v {
+                    if !(v > 0.0) {
+                        return Err(err_at(
+                            sdf.line,
+                            format!(
+                                "[P1028] sdf.{} 必须为正数（得到 {}）\n  建议：{}是正长度",
+                                name, v, name
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        "sphere" => {
+            if let Some(r) = radius_static {
+                if r < 0.0 {
+                    return Err(err_at(
+                        radius_line,
+                        format!(
+                            "[P1015] sdf.radius 不能为负（得到 {}）\n  建议：半径是非负长度，如 radius 1",
+                            r
+                        ),
+                    ));
+                }
+            }
+        }
+        _ => {}
     }
     let id: NodeId = b.alloc_id();
     let mut node: Node = Node::new(id, StructureId::EntityRepresentation, Composition::Feed);
     node.params.set("kind", ParamValue::Str(kind.to_string()));
     node.params.set("radius", ParamValue::F32(radius));
+    if let Some(c) = center {
+        node.params.set("center_x", ParamValue::F32(c.x));
+        node.params.set("center_y", ParamValue::F32(c.y));
+        node.params.set("center_z", ParamValue::F32(c.z));
+    }
+    if let Some(h) = half_height {
+        node.params.set("half_height", ParamValue::F32(h));
+    }
+    if let Some(m) = major {
+        node.params.set("major", ParamValue::F32(m));
+    }
+    if let Some(n) = minor {
+        node.params.set("minor", ParamValue::F32(n));
+    }
+    if let Some(pts) = profile {
+        node.params.set("profile_n", ParamValue::U32(pts.len() as u32));
+        for (i, p) in pts.iter().enumerate() {
+            node.params.set(format!("profile_r_{i}"), ParamValue::F32(p[0]));
+            node.params.set(format!("profile_y_{i}"), ParamValue::F32(p[1]));
+        }
+    }
     if radius_channel.is_some() {
         node.bindings.push(NodeBinding {
             param: "radius".to_string(),
@@ -1417,6 +1612,103 @@ fn build_sdf(b: &mut V2Builder, sdf: &SdfAst, si: usize) -> Result<NodeId, DslEr
     b.graph.add_node(node).expect("递增 id 不应重复");
     b.block_nodes.insert((si, "sdf", sdf.name.clone()), id);
     Ok(id)
+}
+
+/// sdf `profile` 块 → `(r, y)` 点列（`{ pt { r .. y .. } ... }`）。
+///
+/// 非法形态一律 P1029（子条目名非 `pt` / 缺 `r` 或 `y` / `r < 0` /
+/// 非有限）或 P1002（pt 块内未知字段）——构造期拒收，运行期无需防御。
+fn parse_sdf_profile(f: &NamedField) -> Result<Vec<[f32; 2]>, DslError> {
+    let (_, entries) = block_of(f.value.as_ref()).ok_or_else(|| {
+        type_err(
+            f.line,
+            "sdf 块中字段 'profile'",
+            "子块（{ pt { r .. y .. } ... }）",
+            f.value.as_ref(),
+        )
+    })?;
+    let mut pts: Vec<[f32; 2]> = Vec::with_capacity(entries.len());
+    for e in entries {
+        let (block_name, pfs) = block_of(e.value.as_ref()).ok_or_else(|| {
+            type_err(
+                e.line,
+                "sdf profile 中的条目",
+                "带名子块（pt { r .. y .. }）",
+                e.value.as_ref(),
+            )
+        })?;
+        if e.name != "pt" || (!block_name.is_empty() && block_name != "pt") {
+            let shown: &str = if e.name.is_empty() { block_name } else { &e.name };
+            return Err(err_at(
+                e.line,
+                format!(
+                    "[P1029] sdf.profile 子条目名应为 'pt'，却得到 '{}'\n  建议：profile {{ pt {{ r 0 y -1 }} pt {{ r 1 y 0 }} }}",
+                    shown
+                ),
+            ));
+        }
+        let mut r: Option<f32> = None;
+        let mut y: Option<f32> = None;
+        for g in pfs {
+            match g.name.as_str() {
+                "r" => {
+                    r = Some(num_of(g.value.as_ref()).ok_or_else(|| {
+                        type_err(g.line, "sdf profile pt 块中字段 'r'", "非负数字", g.value.as_ref())
+                    })?);
+                }
+                "y" => {
+                    y = Some(num_of(g.value.as_ref()).ok_or_else(|| {
+                        type_err(g.line, "sdf profile pt 块中字段 'y'", "数字", g.value.as_ref())
+                    })?);
+                }
+                other => {
+                    return Err(err_at(
+                        g.line,
+                        format!(
+                            "[P1002] sdf profile pt 块中未知字段 '{}'（允许：r / y）\n  建议：轮廓点是 (r, y) 数对，如 pt {{ r 1 y 0 }}",
+                            other
+                        ),
+                    ));
+                }
+            }
+        }
+        let (rv, yv): (f32, f32) = match (r, y) {
+            (Some(rv), Some(yv)) => (rv, yv),
+            (None, _) => {
+                return Err(err_at(
+                    e.line,
+                    "[P1029] sdf.profile 的 pt 条目缺少 'r'\n  建议：pt { r 0 y -1 }（r 为轮廓半径）".to_string(),
+                ))
+            }
+            (_, None) => {
+                return Err(err_at(
+                    e.line,
+                    "[P1029] sdf.profile 的 pt 条目缺少 'y'\n  建议：pt { r 0 y -1 }（y 为轮廓高度）".to_string(),
+                ))
+            }
+        };
+        if !rv.is_finite() || !yv.is_finite() || rv < 0.0 {
+            return Err(err_at(
+                e.line,
+                format!(
+                    "[P1029] sdf.profile 的 pt 点非法（r = {}，y = {}）\n  建议：r / y 须有限，且半径 r >= 0",
+                    rv, yv
+                ),
+            ));
+        }
+        pts.push([rv, yv]);
+    }
+    if pts.len() < 2 {
+        // 点数 < 2 ⇒ 段数 0，rt 侧永不命中（`segment_count` 契约）⇒ 构造期拒收。
+        return Err(err_at(
+            f.line,
+            format!(
+                "[P1029] sdf.profile 至少需要 2 个 pt（当前 {} 个）\n  建议：旋转曲面由相邻轮廓点定义斜锥环带段，如 profile {{ pt {{ r 0 y -1 }} pt {{ r 1 y 0 }} }}",
+                pts.len()
+            ),
+        ));
+    }
+    Ok(pts)
 }
 
 /// material 条目 → S8 辐射传输节点。albedo 缺省白；roughness / metalness ∈ [0,1]。

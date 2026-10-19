@@ -1388,6 +1388,118 @@ mod tests {
         assert_eq!(o.get(ids[2]), Some(Payload::Scalar(0.5)), "material（S8 常量特解）");
     }
 
+    /// V2.0-W4 曲线图元 DSL：四族 kind 编译落盘 + 字段序无关 + 错误码对拍。
+    ///
+    /// 覆盖：cylinder / cone / torus / revolution 的参数落盘（kind /
+    /// center / radius / half_height / major / minor / profile_*）；
+    /// kind 声明在字段序任意位置；P1003（缺 kind）、P1002（未知 kind /
+    /// 越权字段）、P1027（缺必填）、P1028（尺寸非正）、P1029（profile
+    /// 非法）。sphere 既有口径（radius 缺省 1、负值 P1015）不回归。
+    #[test]
+    fn v2_stage3d_sdf_curve_kinds() {
+        // ---- 正路：四族同场，kind 均在字段序中段（序无关性对拍）----
+        let src: &str = concat!(
+            "// prism-dsl 1\n",
+            "scene \"s\" {\n",
+            "  stage3d {\n",
+            "    sdf rod { radius 0.5 half_height 1.5 kind cylinder center 1,2,3 }\n",
+            "    sdf spike { kind cone radius 1 half_height 2 }\n",
+            "    sdf ring { center 0,1,0 kind torus major 2 minor 0.5 }\n",
+            "    sdf vase { kind revolution profile { pt { r 0 y -1 } pt { r 1 y 0 } pt { r 0 y 1 } } }\n",
+            "  }\n",
+            "}\n"
+        );
+        let out: CompileV2Output = compile_v2(src).expect("四族曲线 sdf 应编译成功");
+        let ids = &out.scenes[0].node_ids;
+        assert_eq!(ids.len(), 4, "四个 sdf 实体节点");
+        let rod = out.graph.node(ids[0]).expect("cylinder 节点");
+        assert_eq!(rod.params.get("kind"), Some(&ParamValue::Str("cylinder".to_string())));
+        assert_eq!(f32_param(rod, "radius"), 0.5);
+        assert_eq!(f32_param(rod, "half_height"), 1.5);
+        assert_eq!(f32_param(rod, "center_x"), 1.0);
+        assert_eq!(f32_param(rod, "center_y"), 2.0);
+        assert_eq!(f32_param(rod, "center_z"), 3.0);
+        let cone = out.graph.node(ids[1]).expect("cone 节点");
+        assert_eq!(cone.params.get("kind"), Some(&ParamValue::Str("cone".to_string())));
+        assert_eq!(f32_param(cone, "radius"), 1.0);
+        assert_eq!(f32_param(cone, "half_height"), 2.0);
+        let ring = out.graph.node(ids[2]).expect("torus 节点");
+        assert_eq!(ring.params.get("kind"), Some(&ParamValue::Str("torus".to_string())));
+        assert_eq!(f32_param(ring, "major"), 2.0);
+        assert_eq!(f32_param(ring, "minor"), 0.5);
+        assert_eq!(f32_param(ring, "center_y"), 1.0);
+        let vase = out.graph.node(ids[3]).expect("revolution 节点");
+        assert_eq!(vase.params.get("kind"), Some(&ParamValue::Str("revolution".to_string())));
+        assert_eq!(vase.params.get("profile_n"), Some(&ParamValue::U32(3)));
+        assert_eq!(f32_param(vase, "profile_r_0"), 0.0);
+        assert_eq!(f32_param(vase, "profile_y_0"), -1.0);
+        assert_eq!(f32_param(vase, "profile_r_1"), 1.0);
+        assert_eq!(f32_param(vase, "profile_y_2"), 1.0);
+
+        // ---- 反路：错误码 + 行号对拍（C18/C19：错误码 + 建议段）----
+        // P1003：缺 kind。
+        expect_err_v2(
+            "// prism-dsl 1\nscene \"s\" {\n  stage3d { sdf b { radius 1 } }\n}\n",
+            3,
+            "P1003",
+        );
+        // P1002：未知 kind。
+        expect_err_v2(
+            "// prism-dsl 1\nscene \"s\" {\n  stage3d { sdf b { kind capsule } }\n}\n",
+            3,
+            "P1002",
+        );
+        // P1002：越权字段（torus 不收 radius；kind 前置也不影响白名单校验）。
+        expect_err_v2(
+            "// prism-dsl 1\nscene \"s\" {\n  stage3d { sdf b { kind torus major 2 minor 0.5 radius 1 } }\n}\n",
+            3,
+            "P1002",
+        );
+        // P1027：cylinder 缺 half_height。
+        expect_err_v2(
+            "// prism-dsl 1\nscene \"s\" {\n  stage3d { sdf b { kind cylinder radius 1 } }\n}\n",
+            3,
+            "P1027",
+        );
+        // P1028：cone 半径非正。
+        expect_err_v2(
+            "// prism-dsl 1\nscene \"s\" {\n  stage3d { sdf b { kind cone radius 0 half_height 1 } }\n}\n",
+            3,
+            "P1028",
+        );
+        // P1029：revolution profile 单点（段数 0，rt 侧永不命中 ⇒ 构造期拒收）。
+        expect_err_v2(
+            "// prism-dsl 1\nscene \"s\" {\n  stage3d { sdf b { kind revolution profile { pt { r 1 y 0 } } } }\n}\n",
+            3,
+            "P1029",
+        );
+        // P1029：profile 子条目名非 pt。
+        expect_err_v2(
+            "// prism-dsl 1\nscene \"s\" {\n  stage3d { sdf b { kind revolution profile { point { r 1 y 0 } } } }\n}\n",
+            3,
+            "P1029",
+        );
+        // sphere 既有口径不回归：radius 缺省 1、负值 P1015。
+        let ok: CompileV2Output = compile_v2(
+            "// prism-dsl 1\nscene \"s\" {\n  stage3d { sdf b { kind sphere } }\n}\n",
+        )
+        .expect("sphere 缺省半径应编译成功");
+        let ball = out_ball(&ok);
+        assert_eq!(f32_param(ball, "radius"), 1.0);
+        expect_err_v2(
+            "// prism-dsl 1\nscene \"s\" {\n  stage3d { sdf b { kind sphere radius -1 } }\n}\n",
+            3,
+            "P1015",
+        );
+    }
+
+    /// 取唯一 sdf 节点（单 stage3d 单实体场景的测试辅件）。
+    fn out_ball(out: &CompileV2Output) -> &Node {
+        let ids = &out.scenes[0].node_ids;
+        assert_eq!(ids.len(), 1, "单 sdf 场景应只有一个节点");
+        out.graph.node(ids[0]).expect("sdf 节点应在图内")
+    }
+
     // -----------------------------------------------------------------------
     // v2：参数落盘与通道绑定
     // -----------------------------------------------------------------------
