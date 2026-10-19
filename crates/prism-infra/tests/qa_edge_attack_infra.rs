@@ -376,7 +376,7 @@ fn mcp_initialize_shape() {
     assert!(result.get("capabilities").is_some(), "应含 capabilities");
 }
 
-/// tools/list 返回 4 个工具，每个含 name/description/inputSchema（object schema + required）。
+/// tools/list 返回 7 个工具，每个含 name/description/inputSchema（object schema + required）。
 /// 失败代表：工具 schema 缺失 → LLM 无法构造调用。
 #[test]
 fn mcp_tools_list_schema_complete() {
@@ -385,7 +385,7 @@ fn mcp_tools_list_schema_complete() {
     let tools = resp.get("result").unwrap().get("tools").unwrap();
     match tools {
         Json::Array(items) => {
-            assert_eq!(items.len(), 4, "应有 4 个工具");
+            assert_eq!(items.len(), 7, "V2.0-M3 EC-2 后应有 7 个工具");
             for t in items {
                 assert!(t.get("name").and_then(|n| n.as_str()).is_some(), "工具须有 name");
                 assert!(t.get("description").and_then(|d| d.as_str()).is_some(), "须有 description");
@@ -401,9 +401,64 @@ fn mcp_tools_list_schema_complete() {
         Json::Array(items) => items.iter().filter_map(|t| t.get("name").and_then(|n| n.as_str())).collect(),
         _ => vec![],
     };
-    for expected in ["compile", "render_frame", "render_video", "critique"] {
+    for expected in [
+        "compile", "render_frame", "render_video", "critique",
+        "scene_check", "render_submit", "diagnose",
+    ] {
         assert!(names.contains(&expected), "应含工具 {expected}");
     }
+}
+
+/// EC-2 三工具 round-trip 对拍（最小集）：scene_check / render_submit / diagnose
+/// 各一条 请求→响应。失败代表：新工具面未按文档契约回包。
+#[test]
+fn mcp_ec2_tools_roundtrip() {
+    let server = McpServer::new();
+    let text_of = |resp: &Json| -> String {
+        match resp.get("result").unwrap().get("content").unwrap() {
+            Json::Array(items) => items
+                .iter()
+                .filter(|c| c.get("type").and_then(|t| t.as_str()) == Some("text"))
+                .filter_map(|c| c.get("text").and_then(|t| t.as_str()))
+                .collect::<Vec<&str>>()
+                .join("\n"),
+            _ => panic!("content 应为数组"),
+        }
+    };
+    // scene_check：成功场景 → 文本块含检查结论。
+    let resp = mcp_call(
+        &server,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"tools/call","params":{{"name":"scene_check","arguments":{{"source":{}}}}},"id":1}}"#,
+            Json::Str(SRC.to_string()).to_string().unwrap()
+        ),
+    );
+    assert!(text_of(&resp).contains("场景检查通过"), "scene_check 应通过：{}", text_of(&resp));
+
+    // diagnose：坏源码 → 工具本身成功（无 error），带回行号的诊断。
+    let resp = mcp_call(
+        &server,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"tools/call","params":{{"name":"diagnose","arguments":{{"source":{}}}}},"id":2}}"#,
+            Json::Str("bogus command\n".to_string()).to_string().unwrap()
+        ),
+    );
+    assert!(resp.get("error").is_none(), "诊断工具不得把坏输入升级为 RPC 错误");
+    let text = text_of(&resp);
+    assert!(text.contains("编译失败") && text.contains("建议："), "诊断须含定位与建议：{text}");
+
+    // render_submit：坏源码 → INVALID_PARAMS（提交侧不留情）。
+    let resp = mcp_call(
+        &server,
+        &format!(
+            r#"{{"jsonrpc":"2.0","method":"tools/call","params":{{"name":"render_submit","arguments":{{"source":{}}}}},"id":3}}"#,
+            Json::Str("bogus command\n".to_string()).to_string().unwrap()
+        ),
+    );
+    assert_eq!(
+        resp.get("error").unwrap().get("code").unwrap().as_f64().unwrap() as i64,
+        error_code::INVALID_PARAMS
+    );
 }
 
 /// tools/call render_frame 返回 image 内容块（base64 PNG）。

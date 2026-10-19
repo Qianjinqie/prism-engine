@@ -80,17 +80,26 @@ pub fn compile_source(source: &str) -> Result<prism_dsl::CompileOutput, EngineEr
 /// 同 [`compile_source`]。
 pub fn compile_summary(source: &str) -> Result<CompileSummary, EngineError> {
     let out: prism_dsl::CompileOutput = compile_source(source)?;
+    Ok(summary_of(&out))
+}
+
+/// 已编译产物 → 摘要（不重复编译，供已持有 `CompileOutput` 的出口复用）。
+///
+/// MCP `scene_check` / `diagnose` 等工具先编译一次、再用同一份产物取摘要，
+/// 而不是"取摘要编一遍、渲染再编一遍"——省一次编译，更杜绝两遍编译结果
+/// 不一致的理论可能。
+pub fn summary_of(out: &prism_dsl::CompileOutput) -> CompileSummary {
     let format: String = match out.format {
         prism_dsl::OutputFormat::Frames => "frames".to_string(),
         prism_dsl::OutputFormat::Png => "png".to_string(),
     };
-    Ok(CompileSummary {
+    CompileSummary {
         width: out.width,
         height: out.height,
         fps: out.fps,
         duration: out.duration,
         format,
-    })
+    }
 }
 
 /// 渲染单帧（不落盘）。
