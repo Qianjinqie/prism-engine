@@ -110,6 +110,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "prism-ffi-hwenc"
+version = "0.1.0"
+
+[[package]]
 name = "prism-genart"
 version = "0.1.0"
 dependencies = [

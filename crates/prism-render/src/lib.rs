@@ -265,6 +265,20 @@ pub use farm::{
     ThroughputLedger, md5_hex,
 };
 
+// ---------------------------------------------------------------------------
+// V2.0-K：EXR 序列交付路径（逐帧 `.exr`；复用 prism-io 的 exr_write，不重写编解码）
+//
+// 交付矩阵（`docs/delivery-matrix.md`）的 `EXR-seq` 一列由本模块承载：
+// 无损、逐帧独立、浮点通道，面向合成/调色/后期。
+// ---------------------------------------------------------------------------
+
+pub mod exr_seq;
+
+pub use exr_seq::{
+    frame_file_name, frame_to_planes, plane_value_to_u8, read_exr_frame, write_exr_sequence,
+    ExrSeqError, ExrSeqOptions,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
