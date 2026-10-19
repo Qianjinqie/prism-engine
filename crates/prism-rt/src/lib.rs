@@ -24,6 +24,10 @@
 //!   [`integrator::Plane`]（可有限切片）闭式求交（微积分短片 v2 E5：
 //!   切平面叙事无法用轴对齐 `Aabb` 表达，故新增二次面/平面原语；与
 //!   [`wavefront`] 双路径同源对拍 parity）。
+//! - [`integrator::Mesh`]：三角几何（索引网格 / 三角形 soup 两型，内建
+//!   [`prism_geometry::bvh::Bvh`] SAH 树）。`Scene::add_mesh` / `add_bvh` /
+//!   `add_bvh_prebuilt` 为构造入口；命中共用 `ShapeRef` 细化，故 integrator 与
+//!   [`wavefront`] 天然同语义（V2-h：100k 三角形构建 < 1s，双路径逐位 parity）。
 //! - [`accum`]：算术累积缓冲 + prism-core 固定树形 spp 均值（禁跨 tile 归约）。
 //!
 //! # 范围（已接入）

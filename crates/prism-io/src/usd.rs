@@ -2024,6 +2024,125 @@ impl Mesh {
 }
 
 // ===========================================================================
+//  渲染就绪网格（USD → prism-rt `Scene::add_mesh` 的加载路径）
+// ===========================================================================
+
+/// 渲染就绪的三角网格：**f32 顶点 + u32 索引流**（三角化已完成、世界空间）。
+///
+/// # 为什么在 io 侧出这一层
+/// `prism-io` 不依赖 `prism-rt`（`prism-rt` 只在 *dev-dependencies* 里引用本
+/// crate，反向依赖会成环），故 USD 加载路径的终点是这份**中性**数据；rt 侧
+/// 一行接手：
+///
+/// ```ignore
+/// let m = prism_io::usd::parse_str(&usda)?;
+/// let scene = prism_io::usd::build_scene(&m.layer)?;
+/// for rm in scene.render_meshes() {
+///     rt_scene.add_mesh(
+///         rm.positions.iter().map(|p| Vec3::new(p[0], p[1], p[2])).collect(),
+///         rm.indices.clone(),
+///         material,
+///     );
+/// }
+/// ```
+///
+/// # 精度
+/// 顶点从 USD 的 f64 世界坐标**一次性**降到 f32（`as f32` 是 f64→f32 的
+/// 正确舍入，单调收敛）；rt 全链路 f32，避免"半截 f64 半截 f32"的语义分裂。
+/// 三角化在**降精度之前**完成（耳切的相对面积容差在 f64 域判定，不因降精度
+/// 变成退化面）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct RenderMesh {
+    /// 源 prim 路径。
+    pub path: String,
+    /// 顶点位置（世界空间 f32；三角化共享的顶点表）。
+    pub positions: Vec<[f32; 3]>,
+    /// 三角形索引流（每 3 个一三角形；耳切三角化结果）。
+    pub indices: Vec<u32>,
+    /// 材质绑定目标路径（`material:binding` 关系；无则 `None`）。
+    pub material: Option<String>,
+}
+
+impl RenderMesh {
+    /// 三角形数。
+    pub fn triangle_count(&self) -> usize {
+        self.indices.len() / 3
+    }
+
+    /// 顶点数。
+    pub fn vertex_count(&self) -> usize {
+        self.positions.len()
+    }
+
+    /// 第 `t` 个三角形的三个顶点坐标（越界返回 `None`；校验/调试用）。
+    pub fn triangle(&self, t: usize) -> Option<[[f32; 3]; 3]> {
+        let base = t.checked_mul(3)?;
+        let idx = self.indices.get(base..base + 3)?;
+        let pick = |i: u32| self.positions.get(i as usize).copied();
+        Some([pick(idx[0])?, pick(idx[1])?, pick(idx[2])?])
+    }
+
+    /// 包围盒 `(min, max)`；空网格返回 `None`（确定性：逐顶点 min/max）。
+    pub fn bounds(&self) -> Option<([f32; 3], [f32; 3])> {
+        let mut min = [f32::INFINITY; 3];
+        let mut max = [f32::NEG_INFINITY; 3];
+        if self.positions.is_empty() {
+            return None;
+        }
+        for p in &self.positions {
+            for k in 0..3 {
+                if p[k] < min[k] {
+                    min[k] = p[k];
+                }
+                if p[k] > max[k] {
+                    max[k] = p[k];
+                }
+            }
+        }
+        Some((min, max))
+    }
+}
+
+impl Mesh {
+    /// USD 网格 → 渲染就绪网格（三角化 + f64→f32 降精度）。
+    ///
+    /// 三角化走 [`Mesh::triangulated`]：退化/自交面**产出零三角形**（不静默
+    /// 降级为错几何，C20）；需要结构化错误码的调用方先用
+    /// [`Mesh::triangulated_ear`] 逐面取错误。
+    pub fn to_render_mesh(&self) -> RenderMesh {
+        let positions: Vec<[f32; 3]> = self
+            .points
+            .iter()
+            .map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
+            .collect();
+        let tris = self.triangulated();
+        let mut indices: Vec<u32> = Vec::with_capacity(tris.len() * 3);
+        for t in tris {
+            indices.extend_from_slice(&t);
+        }
+        RenderMesh {
+            path: self.path.clone(),
+            positions,
+            indices,
+            material: self.material.clone(),
+        }
+    }
+}
+
+impl Scene {
+    /// 全部网格的渲染就绪形态（按 prim 源顺序；确定性）。
+    pub fn render_meshes(&self) -> Vec<RenderMesh> {
+        self.meshes.iter().map(|m| m.to_render_mesh()).collect()
+    }
+
+    /// 渲染就绪形态的三角形总数（与 [`Scene::triangle_count`] 同口径——
+    /// 但按"耳切后实际产出"计数，退化面为零贡献）。
+    pub fn render_triangle_count(&self) -> usize {
+        self.render_meshes().iter().map(|m| m.triangle_count()).sum()
+    }
+}
+
+// ===========================================================================
 //  耳切三角化（Ear Clipping）
 // ===========================================================================
 
@@ -4152,5 +4271,56 @@ def Xform "root"
             .and_then(|v| v.as_str())
             .unwrap_or("");
         assert!(doc.contains('\n'), "三引号多行串应保留换行：{doc:?}");
+    }
+
+    // ── 渲染就绪网格（USD → prism-rt 加载路径）────────────────────────
+
+    /// `to_render_mesh` / `render_meshes`：三角化 + f64→f32 + 索引流扁平化
+    /// + world Xform 已烘焙。
+    #[test]
+    fn render_mesh_conversion_flattens_triangles_and_bakes_xform() {
+        let src = r#"#usda 1.0
+def Xform "root"
+{
+    double3 xformOp:translate = (1, 2, 3)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def Mesh "quad"
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(0,0,0), (1,0,0), (1,1,0), (0,1,0)]
+    }
+}
+"#;
+        let p = parse_str(src).unwrap_or_else(|e| panic!("{e}"));
+        let scene = build_scene(&p.layer).unwrap_or_else(|e| panic!("{e}"));
+        let rms = scene.render_meshes();
+        assert_eq!(rms.len(), 1);
+        let rm = &rms[0];
+        assert_eq!(rm.vertex_count(), 4);
+        assert_eq!(rm.triangle_count(), 2);
+        assert_eq!(scene.render_triangle_count(), 2);
+        // 索引流与 triangulated() 逐三元组一致。
+        let expect: Vec<u32> = scene.meshes[0].triangulated().into_iter().flatten().collect();
+        assert_eq!(rm.indices, expect);
+        // Xform 已在 build_scene 烘焙：首个顶点 = (0,0,0) + (1,2,3)。
+        assert_eq!(rm.positions[0], [1.0, 2.0, 3.0]);
+        assert_eq!(rm.triangle(0), Some([[1.0, 2.0, 3.0], [2.0, 2.0, 3.0], [2.0, 3.0, 3.0]]));
+        assert_eq!(rm.triangle(2), None, "越界三角形返回 None");
+        let (bmin, bmax) = rm.bounds().expect("非空网格有包围盒");
+        assert_eq!(bmin, [1.0, 2.0, 3.0]);
+        assert_eq!(bmax, [2.0, 3.0, 3.0]);
+        assert_eq!(rm.path, "/root/quad");
+    }
+
+    /// 空场景 / 空网格：渲染就绪形态无 panic，计数为 0。
+    #[test]
+    fn render_meshes_empty_scene_is_safe() {
+        let src = "#usda 1.0\ndef Xform \"only\"\n{\n}\n";
+        let p = parse_str(src).unwrap_or_else(|e| panic!("{e}"));
+        let scene = build_scene(&p.layer).unwrap_or_else(|e| panic!("{e}"));
+        assert!(scene.render_meshes().is_empty());
+        assert_eq!(scene.render_triangle_count(), 0);
     }
 }

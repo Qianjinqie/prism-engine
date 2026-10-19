@@ -16,7 +16,7 @@
 //! 近处簇下降到叶子用 van Oosterom–Strackee 闭式精确求和——mesh→SDF 烘焙的符号判定直接复用本树。
 
 use crate::det_math::{det_asin, det_atan2, det_cos_sin};
-use crate::{vmax, vmin, vmaxc, vminc};
+use crate::{vmax, vmin};
 use prism_math::Vec3;
 
 /// SAH 分桶数（12 桶）。
@@ -89,22 +89,46 @@ impl Aabb {
     /// 射线与盒的区间交（slab 法；`inv` 为 1/rd 分量）。
     ///
     ///  附注：`exit` 侧微量外扩（+1e-7）消除浮点边界漏交。
+    ///
+    /// # 零方向分量（平行轴）
+    /// `rd` 某分量为 0 时 `inv` 为 ±inf，而 `(min−o)·inf` 在 `min == o` 处
+    /// 得 0·inf = **NaN** → 整盒比较全假 → 轴对齐射线沿盒边界误判漏交
+    /// （轴对齐几何 + 轴对齐相机射线的常见组合会成片漏）。故平行轴**显式**
+    /// 判掉：起点在该轴 slab 之外 ⇒ 必然不命中（区间取空 (inf, −inf)），
+    /// slab 之内 ⇒ 该轴不构成约束（区间取 (−inf, inf)）。非平行轴仍走原
+    /// slab 算术（逐位不变）。
     #[inline]
     pub fn ray(&self, ro: Vec3, inv: Vec3, t_min: f32, t_max: f32) -> Option<(f32, f32)> {
         let a = self.min - ro;
         let b = self.max - ro;
         // 逐分量乘（Vec3 只定义了 Mul<f32>，保持与 prism-math API 一致）。
-        let t1 = Vec3::new(a.x * inv.x, a.y * inv.y, a.z * inv.z);
-        let t2 = Vec3::new(b.x * inv.x, b.y * inv.y, b.z * inv.z);
-        let lo = vmin(t1, t2);
-        let hi = vmax(t1, t2);
-        let enter = vmaxc(lo).max(t_min);
-        let exit = vminc(hi).min(t_max);
+        let (lo_x, hi_x) = slab_interval(a.x, b.x, inv.x);
+        let (lo_y, hi_y) = slab_interval(a.y, b.y, inv.y);
+        let (lo_z, hi_z) = slab_interval(a.z, b.z, inv.z);
+        let enter = lo_x.max(lo_y).max(lo_z).max(t_min);
+        let exit = hi_x.min(hi_y).min(hi_z).min(t_max);
         if enter <= exit + 1e-7 {
             Some((enter, exit))
         } else {
             None
         }
+    }
+}
+
+/// 单轴 slab 区间（平行轴显式处理，见 [`Aabb::ray`]）。
+#[inline]
+fn slab_interval(lo: f32, hi: f32, inv: f32) -> (f32, f32) {
+    if inv.is_infinite() {
+        // 平行轴：断开 0·inf = NaN 陷阱。
+        if lo > 0.0 || hi < 0.0 {
+            (f32::INFINITY, f32::NEG_INFINITY) // 区间取空 ⇒ enter > exit ⇒ 不命中
+        } else {
+            (f32::NEG_INFINITY, f32::INFINITY) // 无约束
+        }
+    } else {
+        let t1 = lo * inv;
+        let t2 = hi * inv;
+        (t1.min(t2), t1.max(t2))
     }
 }
 
@@ -938,6 +962,25 @@ mod tests {
         assert!(b.ray(ro, inv, 0.0, 100.0).is_some());
         let ro2 = Vec3::new(0.0, 5.0, -5.0);
         assert!(b.ray(ro2, inv, 0.0, 100.0).is_none(), "偏离应无交");
+    }
+
+    /// 轴对齐射线沿盒边界：平行轴上的 `0·inf = NaN` 曾致整盒误判漏交
+    /// （轴对齐几何 + 轴对齐相机射线的成片漏交根因）。修复后必须命中。
+    #[test]
+    fn aabb_ray_parallel_axis_on_boundary() {
+        // 盒的 min.z 恰为 0.0，射线原点 z 也恰为 0.0 → 老实现得 0·inf = NaN。
+        let b = Aabb { min: Vec3::new(-1.0, -1.0, 0.0), max: Vec3::new(1.0, 1.0, 2.0) };
+        let ro = Vec3::new(-5.0, 0.0, 0.0);
+        let inv = Vec3::new(1.0, f32::INFINITY, f32::INFINITY);
+        let (enter, exit) = b.ray(ro, inv, 0.0, 100.0).expect("沿边界平行轴应命中");
+        assert!((enter - 4.0).abs() < 1e-6, "enter = {enter}");
+        assert!((exit - 6.0).abs() < 1e-6, "exit = {exit}");
+        // 起点落在该轴 slab 之外 ⇒ 必不命中（平行轴显式判定）。
+        assert!(b.ray(Vec3::new(-5.0, 0.0, 3.0), inv, 0.0, 100.0).is_none());
+        assert!(b.ray(Vec3::new(-5.0, 0.0, -1.0), inv, 0.0, 100.0).is_none());
+        // 三个轴同时退化（射线原点在盒角上、沿 -x 反向）也不得 panic/误判。
+        let inv3 = Vec3::new(-1.0, f32::INFINITY, f32::NEG_INFINITY);
+        assert!(b.ray(Vec3::new(1.0, -1.0, 0.0), inv3, 0.0, 100.0).is_some());
     }
 
     /// mesh_triangles：索引流到三角形的适配。

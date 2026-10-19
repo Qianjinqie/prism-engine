@@ -38,7 +38,11 @@ fi
 AFFECTED="$(python3 - "$CHANGED_CRATES" <<'PY'
 import json, subprocess, sys
 
-changed = set(sys.argv[1:])
+changed = set()
+# 变更 crate 列表由 bash 以**单个多行字符串**传入（"$CHANGED_CRATES"），
+# 故按空白切分；同时兼容逐参数传入（argv 多元素）。
+for arg in sys.argv[1:]:
+    changed.update(part for part in arg.split() if part)
 meta = json.loads(subprocess.run(
     ["cargo", "metadata", "--no-deps", "--format-version", "1"],
     capture_output=True, text=True, check=True).stdout)

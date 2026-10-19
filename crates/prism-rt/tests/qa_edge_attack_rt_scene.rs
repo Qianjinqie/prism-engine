@@ -18,6 +18,7 @@ fn ball_scene() -> Scene {
         lights: Vec::new(),
         medium: None,
         paraboloids: vec![],
+        meshes: Vec::new(),
         planes: vec![],
     }
 }
@@ -64,6 +65,7 @@ fn rt_depth_empty_scene_all_miss() {
         lights: Vec::new(),
         medium: None,
         paraboloids: vec![],
+        meshes: Vec::new(),
         planes: vec![],
     };
     let ctx = EvalCtx::new(1, 1, 0);

@@ -146,6 +146,7 @@ fn rr_black_albedo_exact_zero_energy() {
         }],
         medium: None,
         paraboloids: vec![],
+        meshes: Vec::new(),
         planes: vec![],
     };
     let cam = Camera::new(
