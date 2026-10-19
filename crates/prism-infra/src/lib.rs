@@ -5,16 +5,18 @@
 //!
 //! # 四个出口（共用同一引擎门面，行为一致）
 //! - [`mcp`]：MCP server（自写 JSON-RPC 2.0，stdio 传输；tools: compile /
-//!   render_frame / render_video / critique）；
+//!   render_frame / render_video / critique / scene_check / render_submit /
+//!   diagnose）；
 //! - [`batch`]：批量渲染（任务清单解析 + 笛卡尔积展开 + 多线程帧渲染 + 进度）；
 //! - [`http`]：自写 HTTP/1.1 服务器（路由 compile / render_frame，默认绑 localhost）；
-//! - [`plugin`]：数据包市场（manifest 校验：semver / 许可证 / 资产清单；本地库
-//!   add / list / remove）。
+//! - [`plugin`]：数据包市场（manifest 校验：semver / 许可证 / 资产清单 / engine
+//!   版本协商；本地库 add / list / remove）。
 //!
 //! # 支撑模块
 //! - [`jsonrpc`]：自写 JSON-RPC 2.0 编解码（值模型 + 请求/通知/响应 + 错误码）；
 //! - [`engine`]：引擎门面（DSL 编译 + 渲染 + PNG 编码），三个出口共用；
-//! - [`farm_wire`]：农场线格式（主节点 ⇄ worker 的任务 / 分片编解码）。
+//! - [`farm_wire`]：农场线格式（主节点 ⇄ worker 的任务 / 分片编解码）；
+//! - [`sdk`]：数据包接口的语义化版本协商（兼容带 + engine 约束，不兼容明确报错）。
 //!
 //! # 硬约束
 //! - **零第三方依赖**（JSON-RPC / HTTP / TOML 子集 / base64 全部自写，仅 `std`）；
@@ -30,3 +32,4 @@ pub mod http;
 pub mod jsonrpc;
 pub mod mcp;
 pub mod plugin;
+pub mod sdk;

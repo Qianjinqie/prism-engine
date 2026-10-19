@@ -1,0 +1,48 @@
+// ============================================================================
+// grade-film —— 电影调色预设（cinematic-basic 包的 provides[0]）
+//
+// 预设 = 完整 DSL 文档：场景 + 时间线 + aesthetic 参数预设（本包的核心：
+// teal-orange 分级 + filmic 色调映射）+ 输出参数。作为数据包的"参数预设"
+// 落点，可直接整文档编译渲染，也可作为模板被复制改写。
+// ============================================================================
+
+scene "grade_film" {
+    sphere ball {
+        radius 1.0
+        material {
+            albedo #c0392b
+            roughness 0.3
+            metalness 0.05
+        }
+    }
+
+    camera main {
+        orbit {
+            center 0,0,0
+            radius 8.0
+        }
+        fov 45
+    }
+
+    light sun {
+        direction (1.0, -1.0, -0.5)
+        color #fff4e6
+        intensity 3.0
+    }
+}
+
+timeline {
+    duration 3s
+    fps 12
+}
+
+aesthetic {
+    teal-orange
+    contrast 1.12
+    filmic
+}
+
+output {
+    resolution 480x270
+    format frames
+}

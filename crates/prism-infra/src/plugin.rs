@@ -19,7 +19,9 @@
 //! - **无动态代码加载**：本模块只读文件、只做校验与登记（记录包目录路径），
 //!   绝不执行包内任何内容；
 //! - manifest 校验失败（非法名 / 非法 semver / 许可证不在白名单 / 资产清单与
-//!   实际不符）→ 结构化拒绝，不落库。
+//!   实际不符）→ 结构化拒绝，不落库；
+//! - **接口版本协商**（EC-3）：`engine` 约束按 `crate::sdk::ENGINE_VERSION`
+//!   求值，不兼容 ⇒ P4001 明确拒绝（见 [`crate::sdk`]）。
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -292,8 +294,14 @@ impl PackLibrary {
     ///
     /// **无动态代码加载**：只读 manifest 与资产存在性，不执行包内容。
     ///
+    /// 版本协商闸门（EC-3 SDK 稳定化）：manifest 的 `engine` 约束按
+    /// [`crate::sdk::ENGINE_VERSION`] 求值——不满足 ⇒ 明确拒绝（P4001，三段式
+    /// 含建议段；C20 不静默容错）；约束格式非法 ⇒ P4002。未声明 `engine`
+    /// ⇒ 放行（隐式"任意版本"）。
+    ///
     /// # Errors
-    /// 包目录不存在 / manifest 缺失或非法 / 资产缺失 / 同名包已存在 → [`PackError`]。
+    /// 包目录不存在 / manifest 缺失或非法 / 资产缺失 / 版本不兼容 /
+    /// 约束格式非法 / 同名包已存在 → [`PackError`]。
     pub fn add(&self, pack_dir: &Path) -> Result<LibraryEntry, PackError> {
         if !pack_dir.is_dir() {
             return Err(pack_err(format!("包目录 '{}' 不存在", pack_dir.display())));
@@ -304,6 +312,13 @@ impl PackLibrary {
         let manifest: Manifest = Manifest::parse_toml(&text)?;
         manifest.validate_static()?;
         manifest.validate_assets(pack_dir)?;
+        // 接口版本协商闸门：不兼容 / 坏约束都显式拒绝（不放行）。
+        match crate::sdk::check_manifest(&manifest).map_err(|e| pack_err(e.message))? {
+            crate::sdk::Compatibility::Incompatible(conflict) => {
+                return Err(pack_err(conflict.to_string()));
+            }
+            crate::sdk::Compatibility::Compatible | crate::sdk::Compatibility::Unconstrained => {}
+        }
 
         let mut entries: Vec<LibraryEntry> = self.list();
         if entries.iter().any(|e| e.name == manifest.name) {
@@ -417,7 +432,7 @@ mod tests {
 name = "cinematic-basic"
 version = "0.4.2"
 license = "MIT"
-engine = ">=0.4, <0.5"
+engine = ">=0.1, <0.2"
 provides = ["grade-film", "bloom"]
 assets = []
 "#;
@@ -523,6 +538,76 @@ assets = []
 
         let lib = PackLibrary::new(tmp.join("lib"));
         assert!(lib.add(&pack_dir).is_ok());
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    // -----------------------------------------------------------------------
+    // EC-3：接口版本协商闸门（add 时对 engine 约束求值）
+    // -----------------------------------------------------------------------
+
+    /// 写一个最小包（manifest + 可空资产）到临时目录。
+    fn write_pack(tmp: &Path, dir_name: &str, manifest: &str) -> PathBuf {
+        let pack_dir: PathBuf = tmp.join(dir_name);
+        fs::create_dir_all(&pack_dir).unwrap();
+        fs::write(pack_dir.join("manifest.toml"), manifest).unwrap();
+        pack_dir
+    }
+
+    #[test]
+    fn add_rejects_engine_incompatible_pack_explicitly() {
+        let tmp = std::env::temp_dir().join(format!("prism-pack-ver-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        // 约束窗口不含当前引擎接口版本（>=99.0 永不满足）。
+        let pack_dir: PathBuf = write_pack(
+            &tmp,
+            "future",
+            "name = \"future-pack\"\nversion = \"1.0.0\"\nlicense = \"MIT\"\nengine = \">=99.0\"\nprovides = [\"a\"]\n",
+        );
+        let lib = PackLibrary::new(tmp.join("lib"));
+        let err = lib.add(&pack_dir).expect_err("版本不兼容必须拒绝");
+        assert!(err.message.contains("P4001"), "须带版本错误码：{}", err.message);
+        assert!(err.message.contains("建议"), "必含建议段（C19）：{}", err.message);
+        // 拒绝即不落库（闸门在 write_index 之前）。
+        assert!(lib.list().is_empty(), "被拒的包不得落库");
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn add_rejects_malformed_engine_constraint() {
+        let tmp = std::env::temp_dir().join(format!("prism-pack-badver-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let pack_dir: PathBuf = write_pack(
+            &tmp,
+            "broken",
+            "name = \"broken-pack\"\nversion = \"1.0.0\"\nlicense = \"MIT\"\nengine = \"banana\"\nprovides = [\"a\"]\n",
+        );
+        let lib = PackLibrary::new(tmp.join("lib"));
+        let err = lib.add(&pack_dir).expect_err("坏约束必须拒绝");
+        assert!(err.message.contains("P4002"), "须带格式错误码：{}", err.message);
+        assert!(lib.list().is_empty(), "被拒的包不得落库");
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn add_accepts_engine_compatible_and_unconstrained_packs() {
+        let tmp = std::env::temp_dir().join(format!("prism-pack-verok-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let lib = PackLibrary::new(tmp.join("lib"));
+        // 显式兼容窗口（含当前引擎版本）。
+        let bounded: PathBuf = write_pack(
+            &tmp,
+            "bounded",
+            "name = \"bounded-pack\"\nversion = \"1.0.0\"\nlicense = \"MIT\"\nengine = \">=0.1, <0.2\"\nprovides = [\"a\"]\n",
+        );
+        assert!(lib.add(&bounded).is_ok(), "兼容窗口应放行");
+        // 未声明 engine ⇒ 放行（GOOD 常量即此形态，主流程测试已覆盖，此处显式钉一次）。
+        let open: PathBuf = write_pack(
+            &tmp,
+            "open",
+            "name = \"open-pack\"\nversion = \"1.0.0\"\nlicense = \"MIT\"\nprovides = [\"a\"]\n",
+        );
+        assert!(lib.add(&open).is_ok(), "无约束应放行");
+        assert_eq!(lib.list().len(), 2);
         let _ = fs::remove_dir_all(&tmp);
     }
 }

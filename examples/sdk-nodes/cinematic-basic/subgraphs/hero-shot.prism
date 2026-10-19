@@ -1,0 +1,55 @@
+// ============================================================================
+// hero-shot —— 主镜头子图模板（cinematic-basic 包的 provides[1]）
+//
+// 子图 = 可被 DSL 文档引用的完整场景文档（当前引擎按整文档编译；
+// 组件实例化（把子图内联进宿主场景）留 Phase 2/3，见 docs/v2-m3-ec3-sdk.md
+// 的"边界声明"）。作为数据包的"预制子图"落点：宿主文档按 provides 名
+// 引用本文件，编译期即得一致产物。
+// ============================================================================
+
+scene "hero_shot" {
+    sphere hero {
+        radius 1.2
+        material {
+            albedo #e6b01a
+            roughness 0.22
+            metalness 0.15
+        }
+    }
+
+    camera main {
+        orbit {
+            center 0,0,0
+            radius 9.5
+        }
+        fov 38
+    }
+
+    light key {
+        direction (1.0, -0.8, -0.6)
+        color #fff4e6
+        intensity 3.4
+    }
+
+    light rim {
+        direction (-0.8, -0.4, 0.7)
+        color #9fd8ff
+        intensity 1.6
+    }
+}
+
+timeline {
+    duration 4s
+    fps 24
+}
+
+aesthetic {
+    teal-orange
+    contrast 1.05
+    filmic
+}
+
+output {
+    resolution 960x540
+    format frames
+}

@@ -1,0 +1,17 @@
+# ============================================================================
+# cinematic-basic —— SDK 示例数据包（V2.0-M3 EC-3 端到端凭证）
+#
+# 覆盖 pack 契约全字段：
+#   name(kebab-case) / version(semver 严格 x.y.z) / license(白名单) /
+#   engine(接口版本协商约束) / provides(能力清单) / assets(资产清单)
+# 端到端判据：crates/prism-infra/tests/sdk_example_node.rs
+#   （可编译：presets/* 与 subgraphs/* 均过 prism_dsl::compile；
+#     可加载：市场 add → list 往返；版本协商：与 ENGINE_VERSION 兼容）
+# ============================================================================
+
+name = "cinematic-basic"
+version = "0.1.0"
+license = "MIT"
+engine = ">=0.1, <0.2"
+provides = ["grade-film", "hero-shot"]
+assets = ["assets/palette.cube"]
