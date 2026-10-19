@@ -551,7 +551,7 @@ pub fn dispatch_to_local_workers(
     tasks: &[FrameTask],
     workers: usize,
 ) -> Result<DispatchReport, crate::farm::FarmError> {
-    dispatch_with_worker_cache(tasks, workers, None)
+    dispatch_with_worker_cache(tasks, workers, None, None)
 }
 
 /// 同上，但每个 worker 一个**独立的断点续算缓存文件**（目录内 `farm-worker-<i>.cache`）。
@@ -564,20 +564,85 @@ pub fn dispatch_to_local_workers_with_cache(
     workers: usize,
     cache_dir: &Path,
 ) -> Result<DispatchReport, crate::farm::FarmError> {
-    dispatch_with_worker_cache(tasks, workers, Some(cache_dir))
+    dispatch_with_worker_cache(tasks, workers, Some(cache_dir), None)
 }
 
-/// [`dispatch_to_local_workers`] / `_with_cache` 的共同实现。
+/// 影片分发变体（PE-1）：把 DSL 源码经 [`crate::farm::movie::MOVIE_SRC_ENV`]
+/// 注入 worker 子进程，worker 渲染**真实帧像素**（而非 32 字节替身）。
+///
+/// 源码注入发生在进程级**分发互斥锁内**（见 [`dispatch_with_worker_cache`] 的
+/// 锁说明），用完即删——绝不把环境变量泄漏到其它并发分发路径。
+///
+/// # Errors
+/// 同 [`dispatch_to_local_workers`]。
+pub fn dispatch_to_local_workers_movie(
+    tasks: &[FrameTask],
+    workers: usize,
+    source: &str,
+) -> Result<DispatchReport, crate::farm::FarmError> {
+    dispatch_with_worker_cache(tasks, workers, None, Some(source))
+}
+
+/// 影片分发 + 断点续算缓存变体（源码注入与缓存目录同时生效）。
+///
+/// # Errors
+/// 同 [`dispatch_to_local_workers_with_cache`]。
+pub fn dispatch_to_local_workers_movie_cached(
+    tasks: &[FrameTask],
+    workers: usize,
+    cache_dir: &Path,
+    source: &str,
+) -> Result<DispatchReport, crate::farm::FarmError> {
+    dispatch_with_worker_cache(tasks, workers, Some(cache_dir), Some(source))
+}
+
+/// 子进程分发的进程级互斥锁。
+///
+/// 为什么需要：worker 的载荷模式由**进程级环境变量**（`PRISM_FARM_MOVIE_SRC`）
+/// 选择，而环境变量是全局态——若两条分发路径并发 spawn worker，后者的
+/// 子进程会读到前者的影片源码（或相反），载荷模式串味。锁把"源码注入 +
+/// spawn + 收发 + 收工"收敛为临界区：任一刻至多一条分发现在置环境变量。
+/// 进程内调度（`LocalScheduler`）不走环境变量，不受此锁约束。
+static SUBPROCESS_DISPATCH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// [`dispatch_to_local_workers`] / `_with_cache` / 影片变体的共同实现。
+///
+/// `movie_source = Some(src)` 时在锁内注入 / 清理影片源码环境变量。
 fn dispatch_with_worker_cache(
     tasks: &[FrameTask],
     workers: usize,
     cache_dir: Option<&Path>,
+    movie_source: Option<&str>,
 ) -> Result<DispatchReport, crate::farm::FarmError> {
     let location: &str = "farm::scheduler::dispatch_to_local_workers";
+    // 互斥锁：中毒（持锁线程 panic）时不返回 Err——临界区只含 spawn/收发包，
+    //  panic 时子进程由 Drop 回收，锁数据本身没被破坏；取 inner 继续用。
+    let _dispatch_guard: std::sync::MutexGuard<'_, ()> =
+        SUBPROCESS_DISPATCH_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     if tasks.is_empty() {
         return Ok(DispatchReport { shards: Vec::new(), workers: workers.max(1), tasks: 0, frames: 0 });
     }
     let n: usize = workers.max(1).min(tasks.len());
+    // 影片源码注入（锁内；失败也只是 spawn 出天然替身 worker——任务配置哈希
+    // 与替身不匹配时 worker 会显式报 P5007，不会静默产错产物）。
+    if let Some(src) = movie_source {
+        std::env::set_var(crate::farm::movie::MOVIE_SRC_ENV, src);
+    }
+    let dispatched: Result<DispatchReport, crate::farm::FarmError> =
+        dispatch_locked(tasks, n, cache_dir, location);
+    if movie_source.is_some() {
+        std::env::remove_var(crate::farm::movie::MOVIE_SRC_ENV);
+    }
+    dispatched
+}
+
+/// 锁内的实际分发逻辑（spawn → round-robin 收发 → 收工 → 归位校验）。
+fn dispatch_locked(
+    tasks: &[FrameTask],
+    n: usize,
+    cache_dir: Option<&Path>,
+    location: &str,
+) -> Result<DispatchReport, crate::farm::FarmError> {
     let mut transports = spawn_local_workers(n, cache_dir)?;
 
     // 下标 round-robin：确定的分派（与任务内容无关，只决定"谁算哪块"）。

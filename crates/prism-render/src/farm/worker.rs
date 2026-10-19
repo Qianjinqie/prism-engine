@@ -44,6 +44,49 @@ use std::path::{Path, PathBuf};
 /// 单帧载荷字节数（32：非 2 的幂帧数会让 MD5 走到 padding 分支，压测更狠）。
 pub const FRAME_PAYLOAD_BYTES: usize = 32;
 
+/// worker 的载荷产生模式（**进程启动时按环境决定一次，运行中不变**）。
+///
+/// - [`RenderMode::Synthetic`]（缺省）：32 字节 splitmix64 替身，验调度 /
+///   传输 / 续算的确定性（载荷廉价，可跑大帧数）；
+/// - [`RenderMode::Movie`]（环境变量 `PRISM_FARM_MOVIE_SRC` 注入）：真实影片
+///   帧像素，验**真实渲染产物**跨进程并行一致（PE-1 主判据）。
+///
+/// 两种模式的输出都只由 `(配置, 帧号)` 决定，与渲染发生在哪个进程无关——
+/// 区别只在"载荷由谁算"：替身是纯整数函数，影片是 CPU 参考渲染。
+#[derive(Debug, Clone)]
+pub enum RenderMode {
+    /// 合成替身模式（32 字节 / 帧）。
+    Synthetic,
+    /// 影片模式（真实帧像素 / 帧；由环境变量注入的 DSL 源码编译而来）。
+    Movie(crate::farm::movie::MovieRenderer),
+}
+
+impl RenderMode {
+    /// 从环境构造（worker 启动路径）：影片源已注入 ⇒ `Movie`；否则 `Synthetic`。
+    ///
+    /// 注入但编译失败 ⇒ `Err`（**不静默退回替身**：主节点会收到一份"看起来
+    /// 成功"的错产物，C20 禁）。
+    ///
+    /// # Errors
+    /// 环境变量注入的源码编译失败 / 为空 ⇒ [`FarmError::TransportUnavailable`]
+    /// （worker 起不来 = 传输不可用；细节保留影片错误原文）。
+    pub fn from_env() -> Result<RenderMode, FarmError> {
+        match crate::farm::movie::MovieRenderer::from_env()? {
+            Some(renderer) => Ok(RenderMode::Movie(renderer)),
+            None => Ok(RenderMode::Synthetic),
+        }
+    }
+
+    /// 渲染一帧载荷（影片模式**忽略** `work_iters`：真实渲染本身就是成本，
+    /// 再叠空转只会污染加速比口径）。
+    fn payload(&self, config_hash: ConfigHash, frame: u64) -> Vec<u8> {
+        match self {
+            RenderMode::Synthetic => render_frame_payload(config_hash, frame),
+            RenderMode::Movie(renderer) => renderer.render_pixels(frame),
+        }
+    }
+}
+
 /// 缓存键的域分隔标签（防与 tile / 快照键跨域拼接歧义）。
 const CACHE_TAG: &[u8; 16] = b"PRISM-FARM-CACHE";
 
@@ -255,6 +298,20 @@ pub fn run_task_with_cost(
     cache: &mut FrameCache,
     work_iters: u32,
 ) -> (FramePayloadShard, WorkerStats) {
+    run_task_with_mode(task, cache, &RenderMode::Synthetic, work_iters)
+}
+
+/// [`run_task_with_cost`] 的载荷模式显式版（影片模式由此进入 worker 主循环）。
+///
+/// 合并点纪律不变：worker 只产逐帧载荷、绝不本地预归约；缓存语义不变：
+/// 命中的帧直接复用、不重算（影片模式同理——像素载荷也按
+/// `frame_cache_key` 入缓存，断点续算覆盖真实渲染）。
+pub fn run_task_with_mode(
+    task: &FrameTask,
+    cache: &mut FrameCache,
+    mode: &RenderMode,
+    work_iters: u32,
+) -> (FramePayloadShard, WorkerStats) {
     let mut payloads: Vec<Vec<u8>> = Vec::with_capacity(usize_min(task.frames.len()));
     let mut stats: WorkerStats = WorkerStats::default();
     let mut frame: u64 = task.frames.start;
@@ -266,8 +323,12 @@ pub fn run_task_with_cost(
                 payloads.push(payload);
             }
             None => {
-                let payload: Vec<u8> =
-                    render_frame_payload_cost(task.config_hash, frame, work_iters);
+                let payload: Vec<u8> = if matches!(mode, RenderMode::Movie(_)) {
+                    // 影片模式：真实渲染（work_iters 不适用，见 RenderMode::payload）。
+                    mode.payload(task.config_hash, frame)
+                } else {
+                    render_frame_payload_cost(task.config_hash, frame, work_iters)
+                };
                 cache.put(task.config_hash, frame, payload.clone());
                 stats.rendered = stats.rendered.saturating_add(1);
                 payloads.push(payload);
@@ -328,7 +389,30 @@ impl WorkerOptions {
     }
 }
 
-/// **worker 主循环**：从 `input` 读任务帧，向 `output` 回分片帧，见 `Done` / EOF 退出。
+/// **worker 主循环**（进程内 / 测试入口）：恒用 [`RenderMode::Synthetic`] 替身
+/// 载荷——**不读环境变量**。
+///
+/// 为什么不读：测试二进制里进程内 worker 与真实 worker 子进程并存，若从环境
+/// 决定载荷模式，另一条并发的影片分发（在分发窗口内置 `PRISM_FARM_MOVIE_SRC`，
+/// 见 [`dispatch_to_local_workers_movie`](crate::farm::scheduler::dispatch_to_local_workers_movie)）
+/// 会让这里的进程内 worker 无端切到影片模式——环境变量是进程级全局态，进程内
+/// 路径读它就是竞态。模式选择因此**只发生在真实 worker 进程的启动处**
+/// （[`run_stdio_worker`] → [`RenderMode::from_env`]），单次决定、运行中不变。
+///
+/// 协议、返回码与错误语义同 [`run_worker_stream_with_mode`]。
+///
+/// # Errors
+/// 同 [`run_worker_stream_with_mode`]。
+pub fn run_worker_stream<R: std::io::Read, W: std::io::Write>(
+    input: &mut R,
+    output: &mut W,
+    options: &WorkerOptions,
+) -> Result<u32, FarmError> {
+    run_worker_stream_with_mode(input, output, options, RenderMode::Synthetic)
+}
+
+/// **worker 主循环**（载荷模式显式版）：从 `input` 读任务帧，向 `output` 回分片帧，
+/// 见 `Done` / EOF 退出。
 ///
 /// 协议（lock-step）：
 ///
@@ -343,10 +427,11 @@ impl WorkerOptions {
 ///
 /// # Errors
 /// 线格式畸形 / 校验和不符 / 缓存 IO 失败 → [`FarmError`]（三段式，已 flush 缓存）。
-pub fn run_worker_stream<R: std::io::Read, W: std::io::Write>(
+pub fn run_worker_stream_with_mode<R: std::io::Read, W: std::io::Write>(
     input: &mut R,
     output: &mut W,
     options: &WorkerOptions,
+    mode: RenderMode,
 ) -> Result<u32, FarmError> {
     let node_id: String = options
         .node_id
@@ -366,13 +451,31 @@ pub fn run_worker_stream<R: std::io::Read, W: std::io::Write>(
             Some((FrameKind::Hello, _)) => continue,
             Some((FrameKind::Task, payload)) => {
                 let task: FrameTask = decode_task(&payload)?;
+                // 影片模式同源校验：worker 只渲染与自己编译产物同配置的任务——
+                // 环境里恰好躺着另一部影片的源码时，绝不"顺手"渲染它。
+                if let RenderMode::Movie(renderer) = &mode {
+                    if task.config_hash != renderer.config_hash() {
+                        let err: FarmError = FarmError::MalformedEnvelope {
+                            location: "farm::worker::run_worker_stream_with_mode".to_string(),
+                            detail: format!(
+                                "任务配置哈希 {:#x} 与本 worker 的影片配置 {:#x} 不一致——\
+                                 本进程按 {} 注入的源码渲染，拒渲异源任务",
+                                task.config_hash.value(),
+                                renderer.config_hash().value(),
+                                crate::farm::movie::MOVIE_SRC_ENV
+                            ),
+                        };
+                        let _ = write_frame(output, FrameKind::Error, err.to_string().as_bytes());
+                        return Err(err);
+                    }
+                }
                 let (mut shard, stats) =
-                    run_task_with_cost(&task, &mut cache, options.work_iters);
+                    run_task_with_mode(&task, &mut cache, &mode, options.work_iters);
                 shard.node_id = node_id.clone();
                 if !shard.is_complete() {
                     // 绝不回半截分片：宁可报错让主节点重派（C20）。
                     let err: FarmError = FarmError::ShardLengthMismatch {
-                        location: "farm::worker::run_worker_stream".to_string(),
+                        location: "farm::worker::run_worker_stream_with_mode".to_string(),
                         start: shard.frames.start,
                         end: shard.frames.end,
                         declared: shard.frames.len(),
@@ -387,7 +490,7 @@ pub fn run_worker_stream<R: std::io::Read, W: std::io::Write>(
             }
             Some((kind, _)) => {
                 let err: FarmError = FarmError::MalformedEnvelope {
-                    location: "farm::worker::run_worker_stream".to_string(),
+                    location: "farm::worker::run_worker_stream_with_mode".to_string(),
                     detail: format!("worker 不接受 {kind:?} 帧"),
                 };
                 let _ = write_frame(output, FrameKind::Error, err.to_string().as_bytes());
@@ -404,12 +507,16 @@ pub fn run_worker_stream<R: std::io::Read, W: std::io::Write>(
 }
 
 /// 在进程的标准输入/输出上跑 worker（`farm-worker --stdio` 的实现）。
+///
+/// 载荷模式**只在这里**从环境决定一次（`PRISM_FARM_MOVIE_SRC` ⇒ 影片模式；
+/// 未设 ⇒ 替身）。注入但源码坏 ⇒ 启动即失败（不静默退回替身，C20）。
 pub fn run_stdio_worker(options: &WorkerOptions) -> Result<u32, FarmError> {
+    let mode: RenderMode = RenderMode::from_env()?;
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let mut input = stdin.lock();
     let mut output = stdout.lock();
-    run_worker_stream(&mut input, &mut output, options)
+    run_worker_stream_with_mode(&mut input, &mut output, options, mode)
 }
 
 // ---------------------------------------------------------------------------
@@ -637,5 +744,64 @@ mod tests {
         let mut reader = std::io::Cursor::new(out);
         let (k, _) = read_frame(&mut reader).expect("读 Hello").expect("Hello 存在");
         assert_eq!(k, FrameKind::Hello);
+    }
+
+    #[test]
+    fn worker_stream_movie_mode_renders_real_pixels_and_rejects_foreign_source() {
+        // 影片模式**不靠环境变量**直接构造（进程内无全局态竞态）：任务载荷 =
+        // 真实帧像素；异源任务被显式拒绝——worker 绝不渲染"手头恰好有的"
+        // 另一部影片（C20 禁静默容错）。
+        const SRC: &str = "scene \"w_movie\" {\n  sphere ball {\n    radius 1.0\n    material {\n      albedo #c0392b\n      roughness 0.35\n      metalness 0.05\n    }\n  }\n  camera main {\n    orbit {\n      center 0,0,0\n      radius 8.0\n    }\n    fov 45\n  }\n  light sun {\n    direction (1.0, -1.0, -0.5)\n    color #fff4e6\n    intensity 3.0\n  }\n}\ntimeline {\n  duration 0.25s\n  fps 8\n}\noutput {\n  resolution 32x24\n  format frames\n}\n";
+        let renderer: crate::farm::movie::MovieRenderer =
+            crate::farm::movie::MovieRenderer::from_source(SRC).expect("影片 DSL 应可编译");
+        // 同源任务：任务配置哈希 = 源码内容哈希（帧任务按源码寻址）。
+        let same: FrameTask = task(0, 1, SRC.as_bytes());
+        assert_eq!(same.config_hash, renderer.config_hash());
+
+        // ---- 同源：回真实帧像素分片 ----
+        let mut input: Vec<u8> = Vec::new();
+        crate::farm::transport::write_frame(&mut input, FrameKind::Task, &encode_task(&same))
+            .expect("写任务应成功");
+        crate::farm::transport::write_frame(&mut input, FrameKind::Done, b"").expect("写收工");
+        let mut out: Vec<u8> = Vec::new();
+        let served: u32 = run_worker_stream_with_mode(
+            &mut std::io::Cursor::new(input),
+            &mut out,
+            &WorkerOptions::new(),
+            RenderMode::Movie(renderer.clone()),
+        )
+        .expect("同源影片任务应跑通");
+        assert_eq!(served, 1, "一个任务必须被服务");
+        let mut reader = std::io::Cursor::new(out);
+        let (k0, _) = read_frame(&mut reader).expect("读 Hello").expect("Hello 必须存在");
+        assert_eq!(k0, FrameKind::Hello);
+        let (k1, p1) = read_frame(&mut reader).expect("读分片").expect("分片必须存在");
+        assert_eq!(k1, FrameKind::Shard);
+        let shard: FramePayloadShard = decode_shard(&p1).expect("分片应可解码");
+        assert_eq!(shard.len(), 2, "0..1 两帧");
+        assert_eq!(shard.payloads[0].len(), 32 * 24 * 4, "载荷必须是真实帧像素，不是 32 字节替身");
+        assert_eq!(shard.payloads[0], renderer.render_pixels(0), "第 0 帧必须等于参考渲染");
+        assert_eq!(shard.payloads[1], renderer.render_pixels(1), "第 1 帧必须等于参考渲染");
+
+        // ---- 异源：显式拒绝 + 先回 Error 帧（协议秩序不变）----
+        let foreign: FrameTask = task(0, 0, b"foreign-movie-source");
+        assert_ne!(foreign.config_hash, renderer.config_hash());
+        let mut bad_input: Vec<u8> = Vec::new();
+        crate::farm::transport::write_frame(&mut bad_input, FrameKind::Task, &encode_task(&foreign))
+            .expect("写异源任务");
+        let mut bad_out: Vec<u8> = Vec::new();
+        let err = run_worker_stream_with_mode(
+            &mut std::io::Cursor::new(bad_input),
+            &mut bad_out,
+            &WorkerOptions::new(),
+            RenderMode::Movie(renderer),
+        )
+        .expect_err("异源任务必须被拒绝");
+        assert!(err.to_string().contains("P5007"), "必须是 P5007 结构化错误：{err}");
+        let mut reader = std::io::Cursor::new(bad_out);
+        let (k, _) = read_frame(&mut reader).expect("读 Hello").expect("Hello 存在");
+        assert_eq!(k, FrameKind::Hello, "握手仍在最前");
+        let (k, _) = read_frame(&mut reader).expect("读 Error 帧").expect("Error 帧必须存在");
+        assert_eq!(k, FrameKind::Error, "拒绝必须显式回 Error 帧，不静默");
     }
 }

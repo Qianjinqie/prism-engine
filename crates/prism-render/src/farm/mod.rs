@@ -44,6 +44,7 @@ use std::fmt;
 mod digest;
 mod evidence;
 mod merge;
+mod movie;
 mod queue;
 mod scheduler;
 mod split;
@@ -58,11 +59,13 @@ pub use evidence::{
 pub use merge::{
     merge_shards, merge_shards_full, reduce_layered_parallel, FrameShard, FrameValue, MergeAudit,
 };
+pub use movie::{MovieError, MovieJob, MovieRenderer, MOVIE_SRC_ENV};
 pub use queue::{FarmQueue, QueueState, RetryPolicy, SubmitOutcome, ThroughputLedger};
 pub use scheduler::{
-    dispatch_to_local_workers, dispatch_to_local_workers_with_cache, flatten_in_frame_order,
-    plan_dispatch, CachedShardOutcome, DispatchPlan, DispatchReport, FarmNode, LocalScheduler,
-    ShardOutcome,
+    dispatch_to_local_workers, dispatch_to_local_workers_movie,
+    dispatch_to_local_workers_movie_cached, dispatch_to_local_workers_with_cache,
+    flatten_in_frame_order, plan_dispatch, CachedShardOutcome, DispatchPlan, DispatchReport,
+    FarmNode, LocalScheduler, ShardOutcome,
 };
 pub use split::{
     frame_count, slot_counts, slot_ranges, split_frames, split_frames_shape_aligned,
@@ -77,8 +80,8 @@ pub use transport::{
 };
 pub use worker::{
     frame_cache_key, render_frame_payload, render_frame_payload_cost, run_stdio_worker, run_task,
-    run_task_with_cost, run_worker_stream, FrameCache, WorkerOptions, WorkerStats,
-    DEFAULT_WORK_ITERS, FRAME_PAYLOAD_BYTES,
+    run_task_with_cost, run_task_with_mode, run_worker_stream, run_worker_stream_with_mode,
+    FrameCache, RenderMode, WorkerOptions, WorkerStats, DEFAULT_WORK_ITERS, FRAME_PAYLOAD_BYTES,
 };
 
 // ---------------------------------------------------------------------------
