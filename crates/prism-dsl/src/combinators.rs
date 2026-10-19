@@ -81,6 +81,8 @@ impl NodeGraph {
             packs: Vec::new(),
             theme: None,
             fonts: Vec::new(),
+            // 组合子不声明公式（formula 块是文档级声明，展开结果不带公式）。
+            formulas: Vec::new(),
         }
     }
 

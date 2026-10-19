@@ -30,8 +30,9 @@ use prism_math::Vec3;
 
 use crate::ast::{
     AngleUnit, AudioAst, CameraV2Ast, ComposeAst, ComposeRef, DocumentAst, DocumentV2Ast,
-    FieldValue, LayerAst, LightV2Ast, MaterialV2Ast, NamedField, NoteAst, OutputFormatAst,
-    PostAst, SceneItem, SdfAst, SimAst, Stage3dAst, TimeVal, TimeUnit, TransitionAst,
+    FieldValue, FormulaAst, LayerAst, LightV2Ast, MaterialV2Ast, NamedField, NoteAst,
+    OutputFormatAst, PostAst, SceneItem, SdfAst, SimAst, Stage3dAst, TimeVal, TimeUnit,
+    TransitionAst,
     AngleVal,
 };
 use crate::{DslError, err_at};
@@ -355,6 +356,8 @@ pub struct CompileV2Output {
     /// 字体回退链构造序列（V1.5-B）：push 顺序 = DSL 声明顺序 = 回退顺序。
     /// 空 = 文档未声明 font 指令（消费方按需自行补内嵌字体兜底）。
     pub fonts: Vec<FontSlotSpec>,
+    /// 公式节点列表（V2-j `formula` 块；按声明顺序）。
+    pub formulas: Vec<FormulaNode>,
 }
 
 /// `FontSet` 构造序列的一项（V1.5-B）。
@@ -372,6 +375,76 @@ pub struct FontSlotSpec {
     pub index: usize,
     /// 该槽位的声明行号（装载失败诊断定位用）。
     pub line: usize,
+}
+
+/// 公式对齐方式（`formula` 块的 `align` 字段；渲染侧据此把整条公式居中 / 贴边）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FormulaAlign {
+    /// 左对齐。
+    Left,
+    /// 居中（缺省：公式通常以锚点为中心摆放）。
+    #[default]
+    Center,
+    /// 右对齐。
+    Right,
+}
+
+impl FormulaAlign {
+    /// `align` 字段字面 → 对齐方式（表外 → `None`）。
+    pub fn parse(text: &str) -> Option<FormulaAlign> {
+        match text {
+            "left" => Some(FormulaAlign::Left),
+            "center" => Some(FormulaAlign::Center),
+            "right" => Some(FormulaAlign::Right),
+            _ => None,
+        }
+    }
+
+    /// 对齐方式的 DSL 字面（诊断 / 回写用）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FormulaAlign::Left => "left",
+            FormulaAlign::Center => "center",
+            FormulaAlign::Right => "right",
+        }
+    }
+}
+
+/// `formula` 块（V2-j 公式排版引擎化）的编译产物：**引擎节点 + 排版参数**。
+///
+/// DSL 层不依赖文本管线（编译期产物纯数据）：本节点只承载
+/// 「记法原文 + 归一化排版参数」，消费侧把它交给
+/// `prism-text::math_ast::MathExpr::parse`（记法 → AST）与
+/// `prism-text::math_layout::layout_math`（AST → 字形布局）即可渲染出字。
+#[derive(Debug, Clone, PartialEq)]
+pub struct FormulaNode {
+    /// 公式名（文档内唯一）。
+    pub name: String,
+    /// 记法原文（LaTeX 风格；`\frac{dy}{dx}` / `x^2` / `\sqrt[3]{x}` / …）。
+    pub notation: String,
+    /// 基座字号（px，归一化后的正数；缺省 32）。
+    pub size: f32,
+    /// 锚点 x（px；按 `align` 解释为左缘 / 中心 / 右缘）。
+    pub x: f32,
+    /// 锚点 y（px；公式**基线**的设备 y）。
+    pub y: f32,
+    /// 颜色（直通 alpha 线性 RGBA，0..1）。
+    pub color: [f32; 4],
+    /// 对齐方式。
+    pub align: FormulaAlign,
+    /// formula 关键字所在行（诊断定位）。
+    pub line: usize,
+}
+
+impl FormulaNode {
+    /// 公式锚点按对齐方式折算为**左缘** x（渲染侧定位公式盒用）。
+    pub fn left_x(&self, width: f32) -> f32 {
+        match self.align {
+            FormulaAlign::Left => self.x,
+            FormulaAlign::Center => self.x - width * 0.5,
+            FormulaAlign::Right => self.x - width,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1083,6 +1156,21 @@ pub(crate) fn codegen_v2(doc: &DocumentV2Ast) -> Result<CompileV2Output, DslErro
     // ---- 8. 字体回退链构造序列（V1.5-B：声明顺序 = push 顺序） ----
     let fonts: Vec<FontSlotSpec> = codegen_fonts(doc);
 
+    // ---- 9. formula 块 → 引擎公式节点（V2-j：记法 + 归一化排版参数） ----
+    let mut formulas: Vec<FormulaNode> = Vec::with_capacity(doc.formulas.len());
+    for f in &doc.formulas {
+        if formulas.iter().any(|n| n.name == f.name) {
+            return Err(err_at(
+                f.line,
+                format!(
+                    "[P1001] formula '{}' 重名（同一文档内公式名必须唯一）\n  建议：给其中一个改名，如 formula \"{}2\"",
+                    f.name, f.name
+                ),
+            ));
+        }
+        formulas.push(build_formula(f)?);
+    }
+
     Ok(CompileV2Output {
         title,
         width,
@@ -1097,6 +1185,7 @@ pub(crate) fn codegen_v2(doc: &DocumentV2Ast) -> Result<CompileV2Output, DslErro
         packs,
         theme,
         fonts,
+        formulas,
     })
 }
 
@@ -2132,6 +2221,132 @@ fn build_note(note: &NoteAst) -> Result<NoteInfo, DslError> {
         }
     }
     Ok(NoteInfo { name: note.name.clone(), scale, root, bpm, bars, seed, arpeggio })
+}
+
+/// 字段值 → 长度（px）：接受裸数字与 `120px`；其余 → `None`。
+fn length_of(fv: Option<&FieldValue>) -> Option<f32> {
+    match fv? {
+        FieldValue::Num(v) => Some(*v),
+        FieldValue::Px(v) => Some(*v),
+        _ => None,
+    }
+}
+
+/// `formula` 块 → [`FormulaNode`]（V2-j：记法必填 + 参数归一化 + 白名单校验）。
+///
+/// 校验清单：
+/// - `notation` 必填且非空（语法校验；结构校验由 `prism-text::math_ast` 负责）；
+/// - `size` 为正有限数（缺省 32）；`x` / `y` 有限（缺省 0）；
+/// - `color` 为 `#RRGGBB`（缺省白）；`align` ∈ {left, center, right}（缺省 center）；
+/// - 未知字段 → P1002（说人话 + 建议）。
+fn build_formula(f: &FormulaAst) -> Result<FormulaNode, DslError> {
+    let notation: String = match &f.notation {
+        Some(s) if !s.trim().is_empty() => s.clone(),
+        Some(_) => {
+            return Err(err_at(
+                f.line,
+                format!(
+                    "[P1022] formula '{}' 的 notation 为空\n  建议：填入公式记法，如 notation \"\\\\frac{{dy}}{{dx}} = 2x\"",
+                    f.name
+                ),
+            ));
+        }
+        None => {
+            return Err(err_at(
+                f.line,
+                format!(
+                    "[P2107] formula '{}' 缺少 notation 字段（公式记法）\n  建议：写成 formula \"{}\" {{ notation \"\\\\frac{{dy}}{{dx}} = 2x\" size 34 }}",
+                    f.name, f.name
+                ),
+            ));
+        }
+    };
+    let mut size: f32 = 32.0;
+    let mut x: f32 = 0.0;
+    let mut y: f32 = 0.0;
+    let mut color: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+    let mut align: FormulaAlign = FormulaAlign::Center;
+    for field in &f.fields {
+        match field.name.as_str() {
+            "size" => {
+                let v: f32 = length_of(field.value.as_ref()).ok_or_else(|| {
+                    type_err(field.line, "formula 块中字段 'size'", "数字或 px 长度", field.value.as_ref())
+                })?;
+                if !v.is_finite() || v <= 0.0 {
+                    return Err(err_at(
+                        field.line,
+                        format!(
+                            "[P1021] formula '{}' 的 size 必须为正有限数，却得到 {}\n  建议：size 是基座字号（px），如 size 34",
+                            f.name, v
+                        ),
+                    ));
+                }
+                size = v;
+            }
+            "x" | "y" => {
+                let v: f32 = length_of(field.value.as_ref()).ok_or_else(|| {
+                    type_err(
+                        field.line,
+                        &format!("formula 块中字段 '{}'", field.name),
+                        "数字或 px 长度",
+                        field.value.as_ref(),
+                    )
+                })?;
+                if !v.is_finite() {
+                    return Err(err_at(
+                        field.line,
+                        format!("[P1021] formula '{}' 的 {} 必须为有限数", f.name, field.name),
+                    ));
+                }
+                if field.name == "x" {
+                    x = v;
+                } else {
+                    y = v;
+                }
+            }
+            "color" => match field.value.as_ref() {
+                Some(FieldValue::Color(r, g, b)) => {
+                    color = [*r as f32 / 255.0, *g as f32 / 255.0, *b as f32 / 255.0, 1.0];
+                }
+                other => {
+                    return Err(type_err(field.line, "formula 块中字段 'color'", "颜色 #RRGGBB", other));
+                }
+            },
+            "align" => {
+                let text: &str = match field.value.as_ref() {
+                    Some(FieldValue::Ident(s)) => s.as_str(),
+                    Some(FieldValue::Str(s)) => s.as_str(),
+                    other => {
+                        return Err(type_err(
+                            field.line,
+                            "formula 块中字段 'align'",
+                            "标识符 left / center / right",
+                            other,
+                        ));
+                    }
+                };
+                align = FormulaAlign::parse(text).ok_or_else(|| {
+                    err_at(
+                        field.line,
+                        format!(
+                            "[P1021] formula '{}' 的 align 只能是 left / center / right，却得到 '{}'\n  建议：align center",
+                            f.name, text
+                        ),
+                    )
+                })?;
+            }
+            other => {
+                return Err(err_at(
+                    field.line,
+                    format!(
+                        "[P1002] formula 块中未知字段 '{}'（允许：notation / size / x / y / color / align）\n  建议：formula \"名\" {{ notation \"x^2\" size 34 x 200 y 300 }}",
+                        other
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(FormulaNode { name: f.name.clone(), notation, size, x, y, color, align, line: f.line })
 }
 
 /// post 块 → PostInfo 摘要（bloom / grain / vignette / chromatic ∈ [0,1]）。
