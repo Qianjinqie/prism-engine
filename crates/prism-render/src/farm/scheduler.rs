@@ -44,8 +44,11 @@ use crate::farm::merge::{FrameShard, FrameValue};
 use crate::farm::queue::RetryPolicy;
 use crate::farm::split::split_frames;
 use crate::farm::task::{ConfigHash, FrameTask, ResourceNeed};
+use crate::farm::transport::{spawn_local_workers, FramePayloadShard, ShardTransport};
+use crate::farm::worker::{render_frame_payload_cost, run_task_with_cost, FrameCache, WorkerStats};
 use crate::incremental::FrameRange;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
+use std::path::Path;
 use std::sync::Mutex;
 
 /// 一个农场节点（机器）的静态描述。本轮只做接口，不做真实传输。
@@ -360,13 +363,290 @@ pub fn plan_dispatch(tasks: &[FrameTask], nodes: &[FarmNode]) -> DispatchPlan {
 }
 
 // ---------------------------------------------------------------------------
+// V2.0-I：并行逐帧载荷 + 断点续算 + 本地子进程分发
+// ---------------------------------------------------------------------------
+
+/// 续算版分片结果：分片产物 + 执行统计（复用帧数 / 真算帧数）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CachedShardOutcome {
+    /// 分片产物（逐帧载荷，无块内汇总）。
+    pub shard: FramePayloadShard,
+    /// 执行统计。
+    pub stats: WorkerStats,
+}
+
+impl LocalScheduler {
+    /// **并行渲染逐帧载荷**（`workers` 个线程，槽位回填，结果按帧号升序）。
+    ///
+    /// 返回序列第 `i` 项恒为帧 `frames.start + i` 的载荷——**与 `workers` 无关**
+    /// （帧级天然并行 + 槽位回填）。
+    ///
+    /// `work_iters` 是**渲染成本**（空转迭代数），只影响耗时、不影响载荷
+    /// （见 [`crate::farm::worker::render_frame_payload_cost`]）——所以吞吐实验
+    /// 与正确性判据可以同时成立。
+    ///
+    /// # Errors
+    /// 区间非法 / 帧数溢出 → [`crate::farm::FarmError`]（P5001 / P5003）。
+    pub fn run_payloads(
+        &self,
+        frames: FrameRange,
+        config_hash: ConfigHash,
+        work_iters: u32,
+    ) -> Result<Vec<Vec<u8>>, crate::farm::FarmError> {
+        let parts: Vec<FrameRange> = split_frames(frames.start, frames.end, self.workers)?;
+        let render = |f: u64| render_frame_payload_cost(config_hash, f, work_iters);
+        let workers: usize = self.workers;
+        if parts.is_empty() || workers <= 1 || parts.len() == 1 {
+            let mut out: Vec<Vec<u8>> = Vec::new();
+            for p in &parts {
+                let mut f: u64 = p.start;
+                loop {
+                    out.push(render(f));
+                    if f == p.end {
+                        break;
+                    }
+                    f = f.saturating_add(1);
+                }
+            }
+            return Ok(out);
+        }
+        // 槽位回填：第 i 块写第 i 槽（与完成顺序无关 ⇒ 确定性）。
+        let slots: Vec<Mutex<Option<Vec<Vec<u8>>>>> =
+            parts.iter().map(|_| Mutex::new(None)).collect();
+        let slots_ref: &Vec<Mutex<Option<Vec<Vec<u8>>>>> = &slots;
+        let parts_ref: &[FrameRange] = &parts;
+        let render_ref: &(dyn Fn(u64) -> Vec<u8> + Sync) = &render;
+        std::thread::scope(|scope| {
+            for w in 0..workers {
+                let taken: Vec<usize> = (0..parts.len()).filter(|i| i % workers == w).collect();
+                scope.spawn(move || {
+                    for i in taken {
+                        let Some(part) = parts_ref.get(i).copied() else { continue };
+                        let mut local: Vec<Vec<u8>> = Vec::new();
+                        let mut f: u64 = part.start;
+                        loop {
+                            local.push(render_ref(f));
+                            if f == part.end {
+                                break;
+                            }
+                            f = f.saturating_add(1);
+                        }
+                        if let Some(slot) = slots_ref.get(i) {
+                            if let Ok(mut guard) = slot.lock() {
+                                *guard = Some(local);
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        // 按下标升序收集（确定性）；缺槽在此同步重算（宁可多算，不出错值）。
+        let mut out: Vec<Vec<u8>> = Vec::new();
+        for (i, slot) in slots.into_iter().enumerate() {
+            match slot.into_inner().ok().flatten() {
+                Some(v) => out.extend(v),
+                None => {
+                    if let Some(part) = parts.get(i).copied() {
+                        let mut f: u64 = part.start;
+                        loop {
+                            out.push(render(f));
+                            if f == part.end {
+                                break;
+                            }
+                            f = f.saturating_add(1);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// **断点续算版**分片渲染：命中 [`FrameCache`] 的帧**跳过不重算**。
+    ///
+    /// 顺序遍历分片（续算场景下重算率低，线程收益小于缓存查询开销；且顺序路径
+    /// 让"哪帧复用、哪帧重算"可逐帧断言）。返回序 = 输入分片序（**不是**完成序）。
+    ///
+    /// 每个分片的 `stats` 直接暴露"复用几帧 / 真算几帧"——这就是断点续算的
+    /// 可观测证据，而不是"感觉快了"。
+    pub fn run_shards_cached(
+        &self,
+        parts: &[FrameRange],
+        config_hash: ConfigHash,
+        cache: &mut FrameCache,
+    ) -> Vec<CachedShardOutcome> {
+        let mut out: Vec<CachedShardOutcome> = Vec::with_capacity(parts.len());
+        for part in parts {
+            if part.is_empty() {
+                out.push(CachedShardOutcome {
+                    shard: FramePayloadShard::new("local", *part, config_hash, Vec::new()),
+                    stats: WorkerStats::default(),
+                });
+                continue;
+            }
+            let task: FrameTask = FrameTask::new(*part, config_hash);
+            let (mut shard, stats) = run_task_with_cost(&task, cache, 0);
+            shard.node_id = "local".to_string();
+            out.push(CachedShardOutcome { shard, stats });
+        }
+        out
+    }
+}
+
+/// 一次本地子进程分发的报告（帧集合 + 吞吐证据）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DispatchReport {
+    /// 各 worker 回传的分片，**按帧号升序**（与完成顺序无关）。
+    pub shards: Vec<FramePayloadShard>,
+    /// 实际使用的 worker 进程数。
+    pub workers: usize,
+    /// 下发的任务数。
+    pub tasks: usize,
+    /// 总帧数（= 各分片帧数之和，已与覆盖校验对齐）。
+    pub frames: u64,
+}
+
+impl DispatchReport {
+    /// 帧集合的 MD5（按帧号顺序拼字节流）——与单机顺序渲染的判据**同一算法**。
+    pub fn digest(&self) -> String {
+        let mut payloads: Vec<Vec<u8>> = Vec::new();
+        for s in &self.shards {
+            payloads.extend(s.payloads.iter().cloned());
+        }
+        crate::farm::evidence::manifest_digest(&payloads)
+    }
+
+    /// 参与过计算的节点 id（升序、去重；证据用）。
+    pub fn node_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.shards.iter().map(|s| s.node_id.clone()).collect();
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
+    /// 各分片的逐帧载荷按帧号摊平（供合并点使用）。
+    pub fn payloads_in_frame_order(&self) -> Vec<Vec<u8>> {
+        let mut out: Vec<Vec<u8>> = Vec::new();
+        for s in &self.shards {
+            out.extend(s.payloads.iter().cloned());
+        }
+        out
+    }
+}
+
+/// **任务分发到本地 worker 子进程**（本地子进程优先路径）。
+///
+/// 流程：`spawn N 个 farm-worker` → 按**下标 round-robin**交错下发/回收 →
+/// `Done` 收工 → **按帧号归位** → 覆盖校验。返回序是帧号序，不是完成序。
+///
+/// # 确定性
+/// 任务是"帧区间 + 配置哈希"，渲染是 `(配置, 帧)` 的纯函数，回收后按帧号排序
+/// ⇒ worker 数、完成顺序、哪个进程抢到哪块**都不进结果**。
+///
+/// # Errors
+/// - 找不到 / 起不动 worker 可执行文件 → P5009；
+/// - worker 报错、帧被篡改 → P5007 / P5008；
+/// - 分片未恰好覆盖任务帧集 → P5005。
+pub fn dispatch_to_local_workers(
+    tasks: &[FrameTask],
+    workers: usize,
+) -> Result<DispatchReport, crate::farm::FarmError> {
+    dispatch_with_worker_cache(tasks, workers, None)
+}
+
+/// 同上，但每个 worker 一个**独立的断点续算缓存文件**（目录内 `farm-worker-<i>.cache`）。
+///
+/// 独立文件而非共享：并发写同一清单没有原子性保证（`CacheManifest` 是整文件
+/// 替换格式），共享会互相覆盖。分片缓存各管一段帧，语义上与"每台机器自己的
+/// 本地缓存"一致——真实农场也是这么做的。
+pub fn dispatch_to_local_workers_with_cache(
+    tasks: &[FrameTask],
+    workers: usize,
+    cache_dir: &Path,
+) -> Result<DispatchReport, crate::farm::FarmError> {
+    dispatch_with_worker_cache(tasks, workers, Some(cache_dir))
+}
+
+/// [`dispatch_to_local_workers`] / `_with_cache` 的共同实现。
+fn dispatch_with_worker_cache(
+    tasks: &[FrameTask],
+    workers: usize,
+    cache_dir: Option<&Path>,
+) -> Result<DispatchReport, crate::farm::FarmError> {
+    let location: &str = "farm::scheduler::dispatch_to_local_workers";
+    if tasks.is_empty() {
+        return Ok(DispatchReport { shards: Vec::new(), workers: workers.max(1), tasks: 0, frames: 0 });
+    }
+    let n: usize = workers.max(1).min(tasks.len());
+    let mut transports = spawn_local_workers(n, cache_dir)?;
+
+    // 下标 round-robin：确定的分派（与任务内容无关，只决定"谁算哪块"）。
+    let mut queues: Vec<VecDeque<FrameTask>> = (0..n).map(|_| VecDeque::new()).collect();
+    for (i, t) in tasks.iter().enumerate() {
+        queues[i % n].push_back(*t);
+    }
+
+    // 交错轮次：每轮先给各 worker 发一个任务，再各收一个分片。
+    // 这样既让 N 个进程真并行，又不会因为一方写满管道而互等（背压友好）。
+    let mut shards: Vec<FramePayloadShard> = Vec::with_capacity(tasks.len());
+    loop {
+        let mut dispatched: bool = false;
+        for w in 0..n {
+            if let Some(task) = queues[w].front() {
+                transports[w].send_task(task)?;
+                dispatched = true;
+            }
+        }
+        if !dispatched {
+            break;
+        }
+        for w in 0..n {
+            if queues[w].pop_front().is_some() {
+                shards.push(transports[w].recv_shard()?);
+            }
+        }
+    }
+    for transport in transports.iter_mut() {
+        transport.shutdown()?;
+    }
+
+    // 按帧号归位（律三"消序用排序"），再校验不重不漏。
+    shards.sort_by_key(|s| (s.frames.start, s.frames.end));
+    let frames: u64 = shards.iter().map(|s| s.frames.len()).sum();
+    let mut cursor: u64 = shards.first().map(|s| s.frames.start).unwrap_or(0);
+    for s in &shards {
+        if s.frames.start != cursor {
+            return Err(crate::farm::FarmError::FrameCoverageBroken {
+                location: location.to_string(),
+                frame: s.frames.start,
+                expected: frames,
+                got: s.payloads.len(),
+            });
+        }
+        cursor = s.frames.end.saturating_add(1);
+    }
+    let expected_frames: u64 = tasks.iter().map(|t| t.frames.len()).sum();
+    if frames != expected_frames {
+        return Err(crate::farm::FarmError::FrameCoverageBroken {
+            location: location.to_string(),
+            frame: cursor,
+            expected: expected_frames,
+            got: shards.len(),
+        });
+    }
+    Ok(DispatchReport { shards, workers: n, tasks: tasks.len(), frames })
+}
+
+// ---------------------------------------------------------------------------
 // 测试
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::farm::evidence::manifest_digest;
     use crate::farm::merge::merge_shards;
+    use crate::farm::worker::render_frame_payload;
     use crate::farm::split::slot_counts;
     use crate::farm::split::slot_ranges;
     use crate::farm::split::split_frames;
@@ -669,5 +949,262 @@ mod tests {
         for (i, v) in forward.iter().enumerate() {
             assert_eq!(*v, 1000 + i as u64, "摊平后第 {i} 项必须是帧 {i} 的值");
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // V2.0-I：传输 + worker + 断点续算
+    // ---------------------------------------------------------------------
+
+    /// 唯一临时缓存路径（避免测试间互相踩）。
+    fn temp_cache(tag: &str) -> std::path::PathBuf {
+        let mut p: std::path::PathBuf = std::env::temp_dir();
+        p.push(format!("prism-farm-sched-{}-{tag}.cache", std::process::id()));
+        p
+    }
+
+    /// 摊平分片的逐帧载荷（按帧号序 —— 分片已按帧号升序）。
+    fn flatten_payloads(outcomes: &[CachedShardOutcome]) -> Vec<Vec<u8>> {
+        let mut out: Vec<Vec<u8>> = Vec::new();
+        for o in outcomes {
+            out.extend(o.shard.payloads.iter().cloned());
+        }
+        out
+    }
+
+    #[test]
+    fn parallel_payloads_equal_serial_bitwise_and_md5_identical() {
+        // 验收线：N worker 并行渲染的帧集合与单机顺序渲染 **MD5 一致**。
+        let cfg: ConfigHash = ConfigHash::of_bytes(b"parallel-md5");
+        for n in [1u64, 2, 3, 7, 8, 33, 100, 1000, 1024] {
+            let serial: Vec<Vec<u8>> = (0..n).map(|f| render_frame_payload(cfg, f)).collect();
+            let serial_md5: String = manifest_digest(&serial);
+            for workers in [1usize, 2, 3, 4, 8, 16] {
+                let sched: LocalScheduler = LocalScheduler::new(workers, RetryPolicy::none());
+                let parallel: Vec<Vec<u8>> = sched
+                    .run_payloads(FrameRange { start: 0, end: n - 1 }, cfg, 0)
+                    .expect("合法区间应可并行");
+                assert_eq!(
+                    parallel, serial,
+                    "n={n} workers={workers}：逐帧载荷必须与顺序渲染逐字节相同"
+                );
+                assert_eq!(
+                    manifest_digest(&parallel),
+                    serial_md5,
+                    "n={n} workers={workers}：MD5 必须一致（确定性合并）"
+                );
+            }
+        }
+        // 非零起点也要一致（帧号进载荷，不能把"第几块"当帧号）。
+        let sched: LocalScheduler = LocalScheduler::new(3, RetryPolicy::none());
+        let shifted: Vec<Vec<u8>> = sched
+            .run_payloads(FrameRange { start: 500, end: 549 }, cfg, 0)
+            .expect("非零起点应可并行");
+        let reference: Vec<Vec<u8>> = (500..550u64).map(|f| render_frame_payload(cfg, f)).collect();
+        assert_eq!(shifted, reference, "非零起点必须逐帧对齐（不是从 0 数）");
+    }
+
+    #[test]
+    fn resume_after_interrupt_skips_completed_frames() {
+        let path: std::path::PathBuf = temp_cache("resume");
+        let _ = std::fs::remove_file(&path);
+        let cfg: ConfigHash = ConfigHash::of_bytes(b"resume");
+        let parts: Vec<FrameRange> = split_frames(0, 39, 4).expect("可切分"); // 4×10 帧
+        let sched: LocalScheduler = LocalScheduler::new(4, RetryPolicy::none());
+
+        // ---- 第一轮：只做前两块（10+10 帧），模拟中断 ----
+        {
+            let mut cache: FrameCache = FrameCache::open(&path).expect("首次打开");
+            let first: Vec<CachedShardOutcome> = sched.run_shards_cached(&parts[..2], cfg, &mut cache);
+            let rendered: u64 = first.iter().map(|o| o.stats.rendered).sum();
+            assert_eq!(rendered, 20, "中断前只算了前 20 帧");
+            cache.flush().expect("已完成帧必须落盘");
+        } // 进程"死"在这里
+
+        // ---- 第二轮：重启，从磁盘缓存派生完成集 ----
+        let mut cache: FrameCache = FrameCache::open(&path).expect("重启应能读到缓存");
+        assert_eq!(cache.len(), 20, "重启后缓存里有 20 帧");
+        let mut queue: crate::farm::queue::FarmQueue = crate::farm::queue::FarmQueue::new();
+        let seeded: usize =
+            queue.seed_from_cache(cfg, &cache, FrameRange { start: 0, end: 39 });
+        assert_eq!(seeded, 20, "完成集从缓存派生");
+
+        let second: Vec<CachedShardOutcome> = sched.run_shards_cached(&parts, cfg, &mut cache);
+        let reused: u64 = second.iter().map(|o| o.stats.reused).sum();
+        let rendered: u64 = second.iter().map(|o| o.stats.rendered).sum();
+        assert_eq!(reused, 20, "已完成的 20 帧必须被跳过");
+        assert_eq!(rendered, 20, "只剩 20 帧需要真算（不是全量 40）");
+        assert_eq!(second.iter().map(|o| o.stats.frames).sum::<u64>(), 40, "覆盖仍是全 40 帧");
+
+        // ---- 与"一次算完"逐字节一致（续算不改变结果） ----
+        let mut fresh: FrameCache = FrameCache::new();
+        let reference: Vec<CachedShardOutcome> = sched.run_shards_cached(&parts, cfg, &mut fresh);
+        assert_eq!(
+            manifest_digest(&flatten_payloads(&second)),
+            manifest_digest(&flatten_payloads(&reference)),
+            "续算与全算的 MD5 必须一致"
+        );
+        assert_eq!(flatten_payloads(&second), flatten_payloads(&reference));
+
+        // ---- 第三轮：全命中 ⇒ 零渲染（续算收敛） ----
+        let third: Vec<CachedShardOutcome> = sched.run_shards_cached(&parts, cfg, &mut cache);
+        assert!(
+            third.iter().all(|o| o.stats.rendered == 0),
+            "全部已完成后不得再渲染任何帧"
+        );
+        assert_eq!(third.iter().map(|o| o.stats.reused).sum::<u64>(), 40);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn local_worker_subprocess_end_to_end_single_and_multi_frame() {
+        // 真起子进程：单帧任务 + 多帧多任务，产物必须与顺序渲染逐字节相同。
+        //
+        // 前置：`farm-worker` 可执行文件必须存在。`cargo test -p prism-render`
+        // 会先构建 bin，故正常门禁下必然满足；仅当用 `--lib` 单独跑且从未构建过
+        // bin 时会缺——此时**显式跳过并大声说明**（不伪装成功）。
+        if crate::farm::transport::discover_worker_exe().is_none() {
+            eprintln!(
+                "[跳过] 未找到 {WORKER_BIN_NAME}：请先 `cargo build -p prism-render --bin {WORKER_BIN_NAME}`\
+                 （`cargo test -p prism-render` 会自动构建），或设 PRISM_FARM_WORKER 指向它。\
+                 进程内传输路径已由 transport/worker 单测覆盖。",
+                WORKER_BIN_NAME = crate::farm::transport::WORKER_BIN_NAME
+            );
+            return;
+        }
+        let cfg: ConfigHash = ConfigHash::of_bytes(b"e2e-subprocess");
+
+        // 单帧。
+        let single: FrameTask = FrameTask::new(FrameRange::single(7), cfg);
+        let report: DispatchReport =
+            dispatch_to_local_workers(&[single], 1).expect("单 worker 单帧任务应跑通");
+        assert_eq!(report.tasks, 1);
+        assert_eq!(report.frames, 1, "单帧任务只产 1 帧");
+        assert_eq!(report.shards.len(), 1);
+        assert_eq!(
+            report.payloads_in_frame_order(),
+            vec![render_frame_payload(cfg, 7)],
+            "子进程回传的载荷必须等于纯函数值"
+        );
+        assert_eq!(report.node_ids().len(), 1);
+
+        // 多帧 + 多 worker。
+        let tasks: Vec<FrameTask> = split_frames(0, 49, 4)
+            .expect("可切分")
+            .into_iter()
+            .map(|r| FrameTask::new(r, cfg))
+            .collect();
+        let multi: DispatchReport =
+            dispatch_to_local_workers(&tasks, 3).expect("三 worker 多任务应跑通");
+        assert_eq!(multi.tasks, 4);
+        assert_eq!(multi.frames, 50, "4 块共 50 帧，不重不漏");
+        assert_eq!(multi.shards.len(), 4, "每个任务一个分片");
+        let serial: Vec<Vec<u8>> = (0..50u64).map(|f| render_frame_payload(cfg, f)).collect();
+        assert_eq!(
+            multi.payloads_in_frame_order(),
+            serial,
+            "子进程并行的帧集合必须与单机顺序渲染逐字节相同"
+        );
+        assert_eq!(
+            multi.digest(),
+            manifest_digest(&serial),
+            "MD5 必须一致（确定性合并）"
+        );
+        assert!(multi.node_ids().len() >= 2, "多进程应出现多个节点 id");
+
+        // 空任务列表：不报错、不起进程、帧数为 0（幂等）。
+        let empty: DispatchReport = dispatch_to_local_workers(&[], 4).expect("空任务不应报错");
+        assert_eq!((empty.tasks, empty.frames), (0, 0));
+        assert!(empty.shards.is_empty());
+
+        // 本地子进程路径的吞吐实测（如实记录两种口径）：
+        // 1) 零渲染成本：耗时 = 进程启动 + 协议往返 ⇒ 加速比 < 1（并行无收益，
+        //    这正是"农场收益来自帧成本远大于传输成本"的反面证据）；
+        // 2) 有渲染成本（PRISM_FARM_COST 注入空转，**不改载荷**）⇒ 加速比随
+        //    worker 数上升，且 MD5 与单 worker 一致。
+        let bench: Vec<FrameTask> = split_frames(0, 95, 8)
+            .expect("可切分")
+            .into_iter()
+            .map(|r| FrameTask::new(r, cfg))
+            .collect();
+        let t0: std::time::Instant = std::time::Instant::now();
+        let one: DispatchReport = dispatch_to_local_workers(&bench, 1).expect("单 worker 应跑通");
+        let one_time: std::time::Duration = t0.elapsed();
+        let t1: std::time::Instant = std::time::Instant::now();
+        let four: DispatchReport = dispatch_to_local_workers(&bench, 4).expect("四 worker 应跑通");
+        let four_time: std::time::Duration = t1.elapsed();
+        assert_eq!(one.digest(), four.digest(), "子进程并行度不得改变 MD5");
+        let speedup: f64 = if four_time.as_secs_f64() > 0.0 {
+            one_time.as_secs_f64() / four_time.as_secs_f64()
+        } else {
+            0.0
+        };
+        println!(
+            "[farm 子进程吞吐·零成本] 96 帧 / 8 任务：1 worker {:?}；4 worker {:?}；加速比 {speedup:.2}×；MD5 {}",
+            one_time, four_time, one.digest()
+        );
+
+        // ---- 有渲染成本（子进程继承 PRISM_FARM_COST）----
+        std::env::set_var("PRISM_FARM_COST", "80000");
+        let t2: std::time::Instant = std::time::Instant::now();
+        let cost_one: DispatchReport =
+            dispatch_to_local_workers(&bench, 1).expect("单 worker（有成本）应跑通");
+        let cost_one_time: std::time::Duration = t2.elapsed();
+        let t3: std::time::Instant = std::time::Instant::now();
+        let cost_four: DispatchReport =
+            dispatch_to_local_workers(&bench, 4).expect("四 worker（有成本）应跑通");
+        let cost_four_time: std::time::Duration = t3.elapsed();
+        std::env::remove_var("PRISM_FARM_COST");
+        assert_eq!(
+            cost_one.digest(),
+            cost_four.digest(),
+            "成本注入不得改变 MD5（成本只影响耗时）"
+        );
+        assert_eq!(cost_one.digest(), one.digest(), "有成本与零成本必须同 MD5");
+        let cost_speedup: f64 = if cost_four_time.as_secs_f64() > 0.0 {
+            cost_one_time.as_secs_f64() / cost_four_time.as_secs_f64()
+        } else {
+            0.0
+        };
+        println!(
+            "[farm 子进程吞吐·有成本 cost=80000] 96 帧 / 8 任务：1 worker {:?}；4 worker {:?}；加速比 {cost_speedup:.2}×；MD5 {}",
+            cost_one_time, cost_four_time, cost_one.digest()
+        );
+    }
+
+    #[test]
+    fn throughput_speedup_is_measured_and_digest_is_unchanged() {
+        // 吞吐实测：同一（成本非零的）作业，单线程 vs N 线程。
+        // 断言的是"MD5 不变"（硬门槛）；加速比只打印记录（数值随机器波动，
+        // 不做脆断言——那是把测试变成性能跑分）。
+        const N: u64 = 96;
+        const COST: u32 = 120_000;
+        let cfg: ConfigHash = ConfigHash::of_bytes(b"bench");
+        let frames: FrameRange = FrameRange { start: 0, end: N - 1 };
+
+        let serial_sched: LocalScheduler = LocalScheduler::new(1, RetryPolicy::none());
+        let t0: std::time::Instant = std::time::Instant::now();
+        let serial: Vec<Vec<u8>> = serial_sched.run_payloads(frames, cfg, COST).expect("串行应成功");
+        let serial_time: std::time::Duration = t0.elapsed();
+
+        let parallel_sched: LocalScheduler = LocalScheduler::new(4, RetryPolicy::none());
+        let t1: std::time::Instant = std::time::Instant::now();
+        let parallel: Vec<Vec<u8>> =
+            parallel_sched.run_payloads(frames, cfg, COST).expect("并行应成功");
+        let parallel_time: std::time::Duration = t1.elapsed();
+
+        assert_eq!(serial, parallel, "吞吐实验不得改变结果（成本不泄漏进载荷）");
+        let serial_md5: String = manifest_digest(&serial);
+        assert_eq!(manifest_digest(&parallel), serial_md5, "MD5 必须一致");
+        let speedup: f64 = if parallel_time.as_secs_f64() > 0.0 {
+            serial_time.as_secs_f64() / parallel_time.as_secs_f64()
+        } else {
+            0.0
+        };
+        println!(
+            "[farm 吞吐实测] 单机顺序 {N} 帧 × cost={COST}: {:?}；4 worker: {:?}；加速比 {speedup:.2}×；MD5 {}",
+            serial_time, parallel_time, serial_md5
+        );
+        // 硬门槛只有确定性；加速比不设阈值（单核 CI 上并行反而可能更慢）。
+        assert!(speedup > 0.0, "加速比必须可计算（时间非零）");
     }
 }
