@@ -2491,7 +2491,7 @@ static COVERAGE: &[(&str, &[(&str, &str, &str)])] = &[
     //   ② `prism-rt::wavefront` 的 double gate parity 网（CPU 递归序 vs
     //      GPU 数组序的统计判定 + PSNR）。
     // 真机派发由 `vulkan::compute::real_device_compute_dispatch_smoke`
-    // （`#[ignore]`）占位，有 GPU 的机器上 `cargo test -- --ignored` 实跑。
+    // （probe 先行、无设备自跳过），有 GPU 的机器上随 `cargo test` 实跑。
     (
         "rt_primary_ray_gen.wgsl",
         &[(
@@ -2500,7 +2500,7 @@ static COVERAGE: &[(&str, &[(&str, &str, &str)])] = &[
             "V2.0-G 主射线发射 kernel：SPIR-V 待真机 glslang 生成（本环境无工具链），\
              本环境无 ICD 故无真机 dispatch。语义由 prism-gpu::compute::primary_ray_gen_cpu \
              真实测（像素覆盖/几何/确定性）、并由 prism-rt::wavefront 的 parity 网对拍；\
-             真机 smoke 为 vulkan::compute 的 #[ignore] 测试",
+             真机 smoke 见 vulkan::compute::real_device_compute_dispatch_smoke（无设备自跳过）",
         )],
     ),
     (
@@ -2520,7 +2520,7 @@ static COVERAGE: &[(&str, &[(&str, &str, &str)])] = &[
             ST_SKIP,
             "V2.0-G SPIR-V 装配探针（dst=src*2）：手写 SPIR-V 已嵌入二进制并过字级结构校验，\
              但本环境无 ICD 无法真机派发。真机 smoke 见 \
-             vulkan::compute::real_device_compute_dispatch_smoke（#[ignore]）",
+             vulkan::compute::real_device_compute_dispatch_smoke（无设备自跳过）",
         )],
     ),
 ];
