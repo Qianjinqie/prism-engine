@@ -522,23 +522,13 @@ unsafe fn run_on_device(
         base_pipeline_handle: 0,
         base_pipeline_index: -1,
     };
-    if create_pipelines(
-        device,
-        0, // 无 pipeline cache
-        1,
-        &cpci,
-        std::ptr::null(),
-        &mut pipeline,
-    ) != vk::VK_SUCCESS
-        || pipeline == 0
-    {
-        cleanup!();
-        return unavailable_report(
-            kernel.name,
-            plan,
-            DispatchStatus::PipelineFailed,
-            "vkCreateComputePipelines 失败",
+    let pipeline_result = create_pipelines(device, 0, 1, &cpci, std::ptr::null(), &mut pipeline);
+    if pipeline_result != vk::VK_SUCCESS || pipeline == 0 {
+        let detail: String = format!(
+            "vkCreateComputePipelines 失败（VkResult = 0x{pipeline_result:08X}）"
         );
+        cleanup!();
+        return unavailable_report(kernel.name, plan, DispatchStatus::PipelineFailed, &detail);
     }
 
     // --- 步骤 5：buffer + host 可见内存 ---------------------------------

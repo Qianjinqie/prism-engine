@@ -78,7 +78,13 @@ const OP_ACCESS_CHAIN: u32 = 65;
 const OP_DECORATE: u32 = 71;
 const OP_MEMBER_DECORATE: u32 = 72;
 const OP_COMPOSITE_EXTRACT: u32 = 81;
-const OP_F_MUL: u32 = 128;
+/// 指令 `OpFMul`（浮点乘）。
+///
+/// V2.0-W4 lavapipe 实测修正：旧值 128 实为 `OpIAdd`。算术指令段自 128 起
+/// 按「整/浮」交替编号：128 OpIAdd / 129 OpFAdd / 130 OpISub / 131 OpFSub /
+/// 132 OpIMul / **133 OpFMul**——错位使 `mul2` kernel 语义改变且结果类型
+/// 非法（spirv-val: "Expected int scalar or vector type as Result Type"）。
+const OP_F_MUL: u32 = 133;
 const OP_LABEL: u32 = 248;
 const OP_RETURN: u32 = 253;
 
@@ -163,9 +169,16 @@ pub const EXECUTION_MODEL_GLCOMPUTE: u32 = 5;
 pub const EXECUTION_MODE_LOCAL_SIZE: u32 = 17;
 /// 存储类：`Input`。
 pub const STORAGE_CLASS_INPUT: u32 = 1;
-/// 存储类：`Uniform`（SPIR-V 1.0 的 SSBO 承载类，配合 `BufferBlock`）。
+/// 存储类：`Uniform`（UBO 承载类；Vulkan SSBO 不用它，见 `STORAGE_CLASS_STORAGE_BUFFER`）。
 pub const STORAGE_CLASS_UNIFORM: u32 = 2;
-/// 装饰：`BufferBlock`。
+/// 存储类：`StorageBuffer`（Vulkan 存储缓冲（SSBO）承载类；与
+/// `VK_DESCRIPTOR_TYPE_STORAGE_BUFFER` 对应，可读写。V2.0-W4 修正：
+/// 旧版误用 `Uniform`+`BufferBlock`（OpenGL 口味）导致 lavapipe
+/// `vkCreateComputePipelines` 返回 `VK_ERROR_INVALID_SHADER_NV`）。
+pub const STORAGE_CLASS_STORAGE_BUFFER: u32 = 12;
+/// 装饰：`Block`（Vulkan SSBO 结构体装饰；配对 `StorageBuffer` 存储类）。
+pub const DECORATION_BLOCK: u32 = 2;
+/// 装饰：`BufferBlock`（OpenGL 口味 UBO/SSBO 装饰；Vulkan 路径不用）。
 pub const DECORATION_BUFFER_BLOCK: u32 = 3;
 /// 装饰：`Binding`。
 pub const DECORATION_BINDING: u32 = 33;
@@ -173,6 +186,15 @@ pub const DECORATION_BINDING: u32 = 33;
 pub const DECORATION_DESCRIPTOR_SET: u32 = 34;
 /// 装饰：`Offset`。
 pub const DECORATION_OFFSET: u32 = 35;
+/// 装饰：`ArrayStride`（BufferBlock 内数组/运行期数组的显式步长——
+/// Vulkan 消费方要求 Block 内数组必须显式声明步长，否则管线编译拒绝）。
+pub const DECORATION_ARRAY_STRIDE: u32 = 6;
+/// 装饰：`BuiltIn`（Input 存储类变量在 Vulkan compute 中**必须**以
+/// BuiltIn 注解声明语义，缺此装饰 ⇒ 模块非法，`vkCreateComputePipelines`
+/// 编译期拒绝——V2.0-W4 lavapipe 实测教训）。
+pub const DECORATION_BUILT_IN: u32 = 11;
+/// BuiltIn 语义：`GlobalInvocationId`。
+pub const BUILTIN_GLOBAL_INVOCATION_ID: u32 = 28;
 
 // ---------------------------------------------------------------------------
 // 手写模块：spv_mul2_probe（`dst[i] = src[i] * 2.0`，LocalSize 64×1×1）
@@ -190,6 +212,12 @@ pub const DECORATION_OFFSET: u32 = 35;
 //   14 %src  15 %struct_dst  16 %ptr_Uniform_struct_dst  17 %dst
 //   18 %main  19 %label  20 %gid  21 %i  22 %src_elem_ptr  23 %val
 //   24 %doubled  25 %dst_elem_ptr
+//
+// SPIR-V 1.0 / Vulkan 1.0 口径：SSBO = `Uniform` 存储类 + `BufferBlock` 装饰
+// （`Block` 才是 UBO；`StorageBuffer` 存储类是 SPIR-V 1.1+ 口味，本模块
+// 钉 1.0 不用）。V2.0-W4 lavapipe 实测补齐了三处此前缺失的强制件：
+// OpEntryPoint 入口名的 null 终结字、Input 变量的 BuiltIn 注解、
+// BufferBlock 内运行期数组的 ArrayStride。
 static MUL2: &[u32] = &[
     // --- 头部 ---
     MAGIC,
@@ -205,11 +233,17 @@ static MUL2: &[u32] = &[
     0,
     1,
     // ③ OpEntryPoint GLCompute %18 "mul2" %7
-    //    入口名 "mul2\0" 压入单字：'m'=0x6d 'u'=0x75 'l'=0x6c '2'=0x32（小端）。
-    inst(5, OP_ENTRY_POINT),
+    //    入口名 "mul2\0" 占**两个字**：'m'=0x6d 'u'=0x75 'l'=0x6c '2'=0x32
+    //    （小端）压首字，次字全零作 null 终结——少这个零字时入口名会
+    //    "越界"吞掉接口表首 id（0x07）的字节，驱动侧查不到 entry point
+    //    （V2.0-W4 lavapipe 实测：VUID-VkPipelineShaderStageCreateInfo-
+    //    pName-00707 "entrypoint not found"）。
+    //    操作数：model + entry id + 名 2 字 + 接口 1 id = 5 ⇒ 字长 6。
+    inst(6, OP_ENTRY_POINT),
     EXECUTION_MODEL_GLCOMPUTE,
     18,
-    0x326C_756D, // "mul2\0"
+    0x326C_756D, // "mul2"
+    0x0000_0000, // "\0" 终结 + 补齐
     7,
     // ③ OpExecutionMode %18 LocalSize 64 1 1
     //    操作数：entry id + mode + 3 个分支尺寸 = 5 ⇒ 字长 6。
@@ -259,6 +293,18 @@ static MUL2: &[u32] = &[
     17,
     DECORATION_BINDING,
     1,
+    // ④ OpDecorate %11 ArrayStride 4（BufferBlock 内运行期数组的显式步长；
+    //    Vulkan 消费方对 Block 内数组强制要求 ArrayStride，缺它管线编译拒绝）
+    inst(4, OP_DECORATE),
+    11,
+    DECORATION_ARRAY_STRIDE,
+    4,
+    // ④ OpDecorate %7 BuiltIn GlobalInvocationId（Vulkan compute 的 Input
+    //    变量必须 BuiltIn 注解；缺此装饰 ⇒ 模块非法，lavapipe 实测拒绝建管线）
+    inst(4, OP_DECORATE),
+    7,
+    DECORATION_BUILT_IN,
+    BUILTIN_GLOBAL_INVOCATION_ID,
     // ⑤ %1 = OpTypeVoid
     inst(2, OP_TYPE_VOID),
     1,
