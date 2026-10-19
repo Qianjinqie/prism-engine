@@ -570,8 +570,9 @@ pub fn dispatch_to_local_workers_with_cache(
 /// 影片分发变体（PE-1）：把 DSL 源码经 [`crate::farm::movie::MOVIE_SRC_ENV`]
 /// 注入 worker 子进程，worker 渲染**真实帧像素**（而非 32 字节替身）。
 ///
-/// 源码注入发生在进程级**分发互斥锁内**（见 [`dispatch_with_worker_cache`] 的
-/// 锁说明），用完即删——绝不把环境变量泄漏到其它并发分发路径。
+/// 源码注入发生在进程级**分发互斥锁内**（`SUBPROCESS_DISPATCH_LOCK`，私有
+/// 实现 `dispatch_with_worker_cache` 的锁说明），用完即删——绝不把环境变量
+/// 泄漏到其它并发分发路径。
 ///
 /// # Errors
 /// 同 [`dispatch_to_local_workers`]。
