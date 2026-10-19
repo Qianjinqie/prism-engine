@@ -1,0 +1,22 @@
+[package]
+name = "prism-ffi-hwenc"
+version = "0.1.0"
+edition = "2021"
+
+# V2.0-K 骨架：**零第三方依赖、零平台头文件**。
+# 真机 FFI 绑定（VideoToolbox / NVENC / VAAPI）留 V2.0-M3，见 src/lib.rs 的模块文档。
+#
+# 主干隔离纪律：本 crate **不在** `prism-mux`（或任何主干 crate）的依赖树里。
+# 需要硬件编码的下游必须显式 `prism-ffi-hwenc = { path = "...", features = [...] }`，
+# 且只有 `--features videotoolbox|nvenc|vaapi` 才会引入平台相关代码（当前仍为空实现）。
+# 因此 `cargo build -p prism-mux` 的依赖图与本 crate 完全无关（零改动风险）。
+[dependencies]
+
+[features]
+default = []
+# Apple VideoToolbox（macOS / iOS）
+videotoolbox = []
+# NVIDIA NVENC（Linux / Windows，需要驱动 + CUDA headers，M3 才引入）
+nvenc = []
+# Intel/AMD VA-API（Linux）
+vaapi = []

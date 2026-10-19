@@ -111,7 +111,7 @@ fn main() {
     let nframes = 120u32;
     let frames = gen_test_frames(w, h, nframes);
     let spec = TrackSpec { width: w, height: h, fps };
-    let cfg = VideoConfig { gop: 24, quality: 85, search_radius: 16 };
+    let cfg = VideoConfig { gop: 24, quality: 85, search_radius: 16, subpel: true };
 
     let t0 = std::time::Instant::now();
     let data = write_mp4_video(&frames, spec, cfg).unwrap();
