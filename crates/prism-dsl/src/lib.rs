@@ -4,7 +4,7 @@
 //! - **v1 入口** [`compile`]：单 scene 文档 → [`prism_core::Scene`] 与输出参数
 //!   （M0/M1 语法逐字保留，零回归）；
 //! - **v2 入口** [`compile_v2`] / [`compile_v2_with_diagnostics`]：全块语法
-//!   （movie / theme / import packs / scene / transition / anim / expr /
+//!   （movie / theme / import packs / scene / transition / anim / expr / formula /
 //!   layer / sim / stage3d / compose / audio / post / timeline / output）→
 //!   prism-core 节点图（`Graph` + `Node.params` + `Node.bindings`）与属性通道
 //!   （`PropertyChannel`），深语义（渲染 / 模拟步进 / 音频）留 Phase 2/3。
@@ -233,8 +233,8 @@ pub fn compile_v2_with_diagnostics(
 // ---------------------------------------------------------------------------
 
 pub use crate::codegen::{
-    AudioInfo, CameraOrbit, CompileV2Output, FontSlotSpec, LayerInfo, NamedChannel, NoteInfo,
-    PostInfo, SceneV2, SimInfo, ThemeInfo, TransitionV2,
+    AudioInfo, CameraOrbit, CompileV2Output, FontSlotSpec, FormulaAlign, FormulaNode, LayerInfo,
+    NamedChannel, NoteInfo, PostInfo, SceneV2, SimInfo, ThemeInfo, TransitionV2,
 };
 pub use crate::packs::{PackManifest, SemVer};
 // V1.5-D：组合子库公开面（展开函数 / 入参 / 产物 / 注册表）。

@@ -402,6 +402,22 @@ pub(crate) struct ImportPacksAst {
     pub(crate) line: usize,
 }
 
+/// formula 块（V2-j）：`formula "名" { notation "..." size 34 x 200 y 300 }`。
+///
+/// **纯声明**：DSL 层只承载公式记法与排版参数（不依赖文本管线，保持编译期
+/// 产物纯数据——见 codegen 的产物纪律），记法 → AST → 字形布局的换算由
+/// `prism-text` 的 `math_ast` / `math_layout` 在消费侧完成。
+pub(crate) struct FormulaAst {
+    /// 公式名（诊断 / 引用定位）。
+    pub(crate) name: String,
+    /// 记法原文（LaTeX 风格，如 `\frac{dy}{dx} = 2x`；由 `notation` 字段给出）。
+    pub(crate) notation: Option<String>,
+    /// 其余排版参数字段（size / x / y / color / align；codegen 白名单校验）。
+    pub(crate) fields: Vec<NamedField>,
+    /// 公式名所在行（诊断定位）。
+    pub(crate) line: usize,
+}
+
 /// font 指令：`font "首选.ttf" fallback "次级.ttf", "末级.ttf"`。
 ///
 /// 顶层**资产声明**（与 import packs 同层）：一条指令声明一个字体的回退链，
@@ -431,5 +447,7 @@ pub(crate) struct DocumentV2Ast {
     pub(crate) transitions: Vec<TransitionAst>,
     pub(crate) anims: Vec<AnimAst>,
     pub(crate) exprs: Vec<ExprDefAst>,
+    /// formula 块（V2-j；按声明顺序，重名报错）。
+    pub(crate) formulas: Vec<FormulaAst>,
     pub(crate) output: Option<OutputAst>,
 }

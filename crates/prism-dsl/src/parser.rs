@@ -11,7 +11,8 @@
 
 use crate::ast::{
     AnimAst, AudioAst, CameraV2Ast, ComposeAst, ComposeOpAst, ComposeRef, DocumentAst, DocumentV2Ast,
-    ExprDefAst, FieldValue, FontDecl, ImportPacksAst, KeyAst, LayerAst, LightV2Ast, MaterialV2Ast,
+    ExprDefAst, FieldValue, FontDecl, FormulaAst, ImportPacksAst, KeyAst, LayerAst, LightV2Ast,
+    MaterialV2Ast,
     MorphRefAst, MovieAst, NamedField, NoteAst, OutputAst, PostAst, SceneItem, SceneV2Ast, SdfAst,
     SimAst,
     Stage3dAst, TimeVal, TimeUnit, TransitionAst, AestheticAst, AngleVal, AngleUnit,
@@ -864,7 +865,7 @@ impl Parser {
                     return Err(err_at(
                         t.line,
                         format!(
-                            "[P1001] 顶层期望块定义（movie / font / scene / transition 等），却遇到 {}\n  建议：顶层只能出现 movie / timeline / theme / import packs / font / scene / transition / anim / expr / output 之一",
+                            "[P1001] 顶层期望块定义（movie / font / scene / transition 等），却遇到 {}\n  建议：顶层只能出现 movie / timeline / theme / import packs / font / scene / transition / anim / expr / formula / output 之一",
                             describe_tok(&other)
                         ),
                     ));
@@ -904,6 +905,7 @@ impl Parser {
                 "transition" => doc.transitions.push(self.parse_transition(line)?),
                 "anim" => doc.anims.push(self.parse_anim(line)?),
                 "expr" => doc.exprs.push(self.parse_expr_def(line)?),
+                "formula" => doc.formulas.push(self.parse_formula(line)?),
                 "output" => {
                     if doc.output.is_some() {
                         return Err(err_at(
@@ -926,7 +928,7 @@ impl Parser {
                     return Err(err_at(
                         line,
                         format!(
-                            "[P1002] 未知顶层块 '{}'（允许：movie / timeline / theme / import packs / font / scene / transition / anim / expr / output）\n  建议：检查块名拼写；audio 与 post 应写在 scene 块内",
+                            "[P1002] 未知顶层块 '{}'（允许：movie / timeline / theme / import packs / font / scene / transition / anim / expr / formula / output）\n  建议：检查块名拼写；audio 与 post 应写在 scene 块内",
                             other
                         ),
                     ));
@@ -1670,6 +1672,45 @@ impl Parser {
         let (name, _) = self.expect_str("expr 名称")?;
         let (body, _) = self.expect_str("expr 表达式（如 \"t*10\"）")?;
         Ok(ExprDefAst { name, body, line: kw_line })
+    }
+
+    /// formula 块（V2-j）：`formula "名" { notation "..." size? x? y? color? align? }`。
+    ///
+    /// 语法要点：
+    /// - 公式名必填（双引号字符串），同一文档内重名报 P1001（codegen 校验）；
+    /// - 块内字段为**开放参数集**（[`NamedField`]），`notation` 即公式记法原文，
+    ///   codegen 按白名单（notation / size / x / y / color / align）校验；
+    /// - 记法的结构校验（分式是否配平、矩阵是否矩形）不在 parser 做——本层只
+    ///   负责语法与「notation 必填」，语义换算由 `prism-text::math_ast` 负责。
+    fn parse_formula(&mut self, kw_line: usize) -> Result<FormulaAst, DslError> {
+        let (name, name_line) = self.expect_str("formula 名称")?;
+        if name.trim().is_empty() {
+            return Err(err_at(
+                name_line,
+                "[P1022] formula 名称不得为空\n  建议：写成 formula \"隐函数求导\" { notation \"...\" }",
+            ));
+        }
+        self.expect_punct(Tok::LBrace, "{")?;
+        let fields: Vec<NamedField> = self.parse_named_fields("formula")?;
+        // notation 从通用字段列表中提取（其余字段交给 codegen 白名单）。
+        let mut notation: Option<String> = None;
+        let mut rest: Vec<NamedField> = Vec::with_capacity(fields.len());
+        for f in fields {
+            if f.name == "notation" {
+                match &f.value {
+                    Some(FieldValue::Str(s)) => notation = Some(s.clone()),
+                    _ => {
+                        return Err(err_at(
+                            f.line,
+                            "[P2107] formula 块中字段 'notation' 需要字符串值（公式记法）\n  建议：写成 notation \"\\\\frac{dy}{dx} = 2x\"",
+                        ));
+                    }
+                }
+            } else {
+                rest.push(f);
+            }
+        }
+        Ok(FormulaAst { name, notation, fields: rest, line: kw_line })
     }
 
     /// import 声明：`import packs "名" { engine ">=0.4, <0.5" ... }`（块可省略）。

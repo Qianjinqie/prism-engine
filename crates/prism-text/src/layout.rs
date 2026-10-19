@@ -8,6 +8,14 @@
 //! - **对齐**：Left / Center / Right（参考宽 = max_width；非有限时退化为
 //!   内容最大行宽）。
 //!
+//! # 基线互操作（V2-j）
+//! 公式（[`crate::math_layout`]）与普通文本在**同一行混排**时共用一条基线：
+//! [`baseline_metrics`] 是唯一的基线度量入口（字号 → 上伸 / 下伸 px），
+//! [`place_formula_on_baseline`] 把公式字形（数学 y 向上）翻转到设备坐标
+//! （y 向下）并贴到给定基线，[`layout_mixed_line`] 则是「文本 + 公式」一行
+//! 混排的成品入口（文本先按 [`layout_text`] 定位，公式紧随其后并共用第 0
+//! 行基线）。
+//!
 //! # 确定性契约
 //! 布局是 (字体字节, 文本, 参数) 的纯函数：无隐藏状态、无随机源、
 //! 浮点仅 ±×÷。同输入必得同 `Layout`（golden-file 测试锁定）。
@@ -15,6 +23,7 @@
 //! 注：GPOS kern 表不解析（子集未保留；字距用 letter_spacing 追踪），
 //! 为已知实现边界，见 crate 根 README 的遗留问题清单。
 
+use crate::math_layout::MathLayout;
 use crate::math_symbols::{advance_for_gid, fallback_gid, MATH_GID_BASE};
 use crate::ttf::Font;
 
@@ -107,6 +116,114 @@ pub fn line_height(font: &Font, params: &TextParams) -> f32 {
     let scale = params.font_size / font.units_per_em() as f32;
     let lh_units = (font.ascender() - font.descender() + font.line_gap()) as f32;
     lh_units * scale + params.line_spacing
+}
+
+/// 基线度量（px；`ascent` = 基线以上、`descent` = 基线以下，均非负）。
+///
+/// 文字与公式共用的**唯一**基线度量入口（V2-j）：公式盒的高度口径与此
+/// 逐位一致，因此同一行混排时基线不会错位。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BaselineMetrics {
+    /// 基线以上高度（px，正数）。
+    pub ascent: f32,
+    /// 基线以下深度（px，正数）。
+    pub descent: f32,
+}
+
+/// 字号 → 基线度量（`ascender/upem × size`、`−descender/upem × size`）。
+///
+/// 非有限 / 非正字号 → 全零度量（调用方退化为无行盒，不 panic）。
+pub fn baseline_metrics(font: &Font, font_size: f32) -> BaselineMetrics {
+    if !font_size.is_finite() || font_size <= 0.0 {
+        return BaselineMetrics { ascent: 0.0, descent: 0.0 };
+    }
+    let scale = font_size / font.units_per_em() as f32;
+    BaselineMetrics {
+        ascent: font.ascender() as f32 * scale,
+        descent: -(font.descender() as f32) * scale,
+    }
+}
+
+/// 把公式字形贴到文本基线（设备坐标，y 向下）：公式基座字形与文本基线重合。
+///
+/// - `formula`：公式布局（数学坐标，原点 = 基线左缘，y 向上）；
+/// - `dx`：公式左缘的设备 x；
+/// - `baseline_y`：公式基线的设备 y（与 [`GlyphPos::y`] 同口径）；
+/// - `index_base`：输出字形的原文本索引起点（接在文本字符之后）。
+///
+/// 输出 `layout = 0` 的字形序列，供 [`Layout`] 直接拼接（同一行混排）。
+pub fn place_formula_on_baseline(
+    formula: &MathLayout,
+    dx: f32,
+    baseline_y: f32,
+    index_base: usize,
+    line: usize,
+) -> Vec<GlyphPos> {
+    formula
+        .place_on_baseline(dx, baseline_y)
+        .into_iter()
+        .enumerate()
+        .map(|(i, g)| GlyphPos {
+            ch: g.ch,
+            gid: g.gid,
+            x: g.x,
+            y: g.y,
+            advance: g.advance,
+            line,
+            index: index_base + i,
+        })
+        .collect()
+}
+
+/// 文本 + 公式**同行混排**（基线对齐）。
+///
+/// 文本按 [`layout_text`] 排成单列行（`max_width` 建议有限），公式整体排在
+/// **第 0 行基线**、文本内容右缘之后 `gap` 处：
+/// 文本字形 y = 行基线，公式基座字形 y = 同一行基线（数学 y 向上翻转），
+/// 因此两者基线逐位相同（`layout.text_baseline()` 可查）。
+///
+/// 行盒高度取「文本行高」与「公式盒高」的较大者（[`MathLayout::line_extent`]
+/// 复用 [`baseline_metrics`]），行宽 = 文本行宽 + gap + 公式宽。
+/// 空文本 / 空公式退化为另一侧的纯结果。
+pub fn layout_mixed_line(
+    font: &Font,
+    text: &str,
+    params: &TextParams,
+    formula: &MathLayout,
+    gap: f32,
+) -> Layout {
+    let mut text_layout: Layout = layout_text(font, text, params);
+    let text_width: f32 = text_layout.width;
+    let metrics: BaselineMetrics = baseline_metrics(font, params.font_size);
+    // 基线：有文本行 → 第 0 行基线；纯公式 → 字体上伸（与文本单行基线同口径）。
+    let baseline_y: f32 = text_layout.lines.first().map_or(metrics.ascent, |l| l.baseline);
+    let safe_gap: f32 = if gap.is_finite() && gap > 0.0 { gap } else { 0.0 };
+    let dx: f32 = text_width + safe_gap;
+    let index_base: usize = text.chars().count();
+    let has_formula: bool = !formula.is_empty();
+    if has_formula {
+        let glyphs: Vec<GlyphPos> = place_formula_on_baseline(formula, dx, baseline_y, index_base, 0);
+        text_layout.glyphs.extend(glyphs);
+    }
+    let (ext_ascent, ext_descent): (f32, f32) = formula.line_extent(font, params.font_size);
+    let ascent: f32 = metrics.ascent.max(ext_ascent);
+    let descent: f32 = metrics.descent.max(ext_descent);
+    let line_height_px: f32 = ascent + descent;
+    let total_width: f32 = text_width + if has_formula { safe_gap + formula.width } else { 0.0 };
+    if let Some(line) = text_layout.lines.first_mut() {
+        line.width = total_width;
+    } else if has_formula {
+        // 纯公式：补一条行盒（基线口径与文本单行一致，行高按混排盒高）。
+        text_layout.lines.push(LineBox {
+            start: 0,
+            end: index_base,
+            width: total_width,
+            baseline: baseline_y,
+        });
+    }
+    text_layout.width = total_width;
+    text_layout.height = if text_layout.lines.is_empty() { 0.0 } else { line_height_px };
+    text_layout
 }
 
 /// 行首禁则：句读点与闭合符号不得居于行首（GB/T 15834 行首规则）；
@@ -368,5 +485,62 @@ mod tests {
         assert!(l.glyphs.is_empty() && l.lines.is_empty());
         assert_eq!(l.width, 0.0);
         assert_eq!(l.height, 0.0);
+    }
+
+    /// V2-j：公式与普通文本混排时**同一基线**（公式基座字形 y == 文本基线）。
+    #[test]
+    fn formula_shares_text_baseline() {
+        use crate::math_ast::MathExpr;
+        use crate::math_layout::layout_math_sized;
+
+        let f = font_regular();
+        let expr: MathExpr = MathExpr::parse("\\frac{dy}{dx} = 2x").expect("记法可解析");
+        let formula = layout_math_sized(&f, &expr, 24.0);
+        let p: TextParams = params(f32::INFINITY);
+        let mixed: Layout = layout_mixed_line(&f, "导数 ", &p, &formula, 6.0);
+
+        // 文本基线 = 混排行盒基线（文本字形 y 与之相同）。
+        let text_baseline: f32 = mixed.lines[0].baseline;
+        let text_glyph: &GlyphPos = mixed.glyphs.iter().find(|g| g.ch == '数').expect("文本字形");
+        assert!((text_glyph.y - text_baseline).abs() < 1e-4, "文本字形须在行基线上");
+
+        // 公式左缘 = 文本宽 + gap；公式字形不得越过该线。
+        let expected_dx: f32 = layout_text(&f, "导数 ", &p).width + 6.0;
+        let formula_glyphs: Vec<&GlyphPos> =
+            mixed.glyphs.iter().filter(|g| g.index >= 3).collect();
+        assert!(!formula_glyphs.is_empty(), "必须有公式字形（索引接在文本字符之后）");
+        for g in &formula_glyphs {
+            assert!(g.x >= expected_dx - 1e-3, "公式字形不得越过公式左缘：{} < {expected_dx}", g.x);
+        }
+
+        // 基线重合：存在公式基座字形（y == 文本基线）。
+        let on_baseline: usize = formula_glyphs
+            .iter()
+            .filter(|g| (g.y - text_baseline).abs() < 1e-4)
+            .count();
+        assert!(on_baseline >= 2, "公式基座字形须与文本基线重合（'=' / '2' / 'x'）");
+
+        // 分式结构：分子在基线上方、分母在基线下方（设备 y 向下 → 上=更小）。
+        let above: usize = formula_glyphs.iter().filter(|g| g.y < text_baseline - 1.0).count();
+        let below: usize = formula_glyphs.iter().filter(|g| g.y > text_baseline + 1.0).count();
+        assert!(above >= 2, "分子（dy）须在基线之上，实得 {above} 字形");
+        assert!(below >= 2, "分母（dx）须在基线之下，实得 {below} 字形");
+
+        // 行盒：宽含公式，高覆盖公式上下伸。
+        assert!(mixed.width > expected_dx, "行宽须包含公式");
+        assert!(mixed.height > line_height(&f, &p) - 1e-3, "行高须覆盖公式盒");
+    }
+
+    /// V2-j：`baseline_metrics` 与 `GlyphPos::y`（单行基线）同口径。
+    #[test]
+    fn baseline_metrics_matches_single_line_baseline() {
+        let f = font_regular();
+        let p: TextParams = params(f32::INFINITY);
+        let l: Layout = layout_text(&f, "A", &p);
+        let m: BaselineMetrics = baseline_metrics(&f, p.font_size);
+        assert!((l.lines[0].baseline - m.ascent).abs() < 1e-4);
+        assert!(m.descent > 0.0, "descender 为正深度");
+        // 非正字号退化为零度量。
+        assert_eq!(baseline_metrics(&f, 0.0), BaselineMetrics { ascent: 0.0, descent: 0.0 });
     }
 }

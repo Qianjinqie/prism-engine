@@ -9,6 +9,8 @@
 //! - [`vertical`]：竖排 CJK（右起列、标点转向、列首禁则）；
 //! - [`math_symbols`]：希腊/数学符号程序化回退表（cmap 缺失字符的
 //!   合成字形；v3-A 修复「ε/δ 渲染成豆腐块」缺陷）；
+//! - [`math_ast`]：公式 AST（上下标 / 分式 / 根号 / 大型算子 / 矩阵；V2-j）；
+//! - [`math_layout`]：公式排版引擎（AST → 字形 + 规则线布局；V2-j）；
 //! - [`cache`]：确定性字形位图缓存（纯加速，不改输出）；
 //! - [`presets`]：Caption 字幕条与 Kinetic 逐字动画（接 `prism-anim`）；
 //! - [`node`]：`GlyphAdvance` 特解注册（D-27 静态汇入制）。
@@ -39,6 +41,8 @@ pub mod cache;
 pub mod gsub;
 pub mod layout;
 pub mod layout_grid;
+pub mod math_ast;
+pub mod math_layout;
 pub mod math_symbols;
 pub mod multiscript_font;
 pub mod node;

@@ -995,6 +995,8 @@ mod tests {
             packs: Vec::new(),
             theme: None,
             fonts: Vec::new(),
+            // V2-j：公式节点（本测试不声明 formula 块）。
+            formulas: Vec::new(),
         }
     }
 
@@ -1135,6 +1137,8 @@ mod tests {
             packs: Vec::new(),
             theme: None,
             fonts: Vec::new(),
+            // V2-j：公式节点（本测试不声明 formula 块）。
+            formulas: Vec::new(),
         };
         let mut device = prism_gpu::CpuRefBackend;
         let d: Deliverable = render_movie(&compile, &mut device).expect("纯文本场景应可渲染");
@@ -1215,6 +1219,8 @@ mod tests {
             packs: Vec::new(),
             theme: None,
             fonts: Vec::new(),
+            // V2-j：公式节点（本测试不声明 formula 块）。
+            formulas: Vec::new(),
         };
         let mut device = prism_gpu::CpuRefBackend;
         let d: Deliverable = render_movie(&compile, &mut device).expect("通道驱动文本应可渲染");
