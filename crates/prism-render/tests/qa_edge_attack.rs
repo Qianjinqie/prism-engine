@@ -1,4 +1,4 @@
-//! QA 边界反例攻击（验收清单 C-⑤；prism-render 侧）。
+//! QA 边界反例攻击（prism-render 侧）。
 //!
 //! 判定方式：`render_frame_full` 与 `render_frame_tiled` 的输出**逐位比较**
 //! （`Vec<u16>` 位模式直接相等——强于 MD5 指纹，MD5 仅用于报告可读性）。

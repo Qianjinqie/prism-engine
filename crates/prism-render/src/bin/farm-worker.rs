@@ -1,4 +1,4 @@
-//! `farm-worker` —— 渲染农场 worker 进程入口（V2.0-I）。
+//! `farm-worker` —— 渲染农场 worker 进程入口。
 //!
 //! # 干什么
 //!

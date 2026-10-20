@@ -353,14 +353,14 @@ pub struct CompileV2Output {
     pub packs: Vec<PackManifest>,
     /// theme 块美学参数（None = 文档未声明 theme）。
     pub theme: Option<ThemeInfo>,
-    /// 字体回退链构造序列（V1.5-B）：push 顺序 = DSL 声明顺序 = 回退顺序。
+    /// 字体回退链构造序列：push 顺序 = DSL 声明顺序 = 回退顺序。
     /// 空 = 文档未声明 font 指令（消费方按需自行补内嵌字体兜底）。
     pub fonts: Vec<FontSlotSpec>,
     /// 公式节点列表（V2-j `formula` 块；按声明顺序）。
     pub formulas: Vec<FormulaNode>,
 }
 
-/// `FontSet` 构造序列的一项（V1.5-B）。
+/// `FontSet` 构造序列的一项。
 ///
 /// codegen 不直接持有 `prism-text::FontSet`（DSL 层不依赖文本管线，保持
 /// 编译期产物纯数据）：只产出**有序构造序列**，消费方按 `index` 升序逐项
@@ -1153,7 +1153,7 @@ pub(crate) fn codegen_v2(doc: &DocumentV2Ast) -> Result<CompileV2Output, DslErro
         .or_else(|| doc.movie.as_ref().and_then(|m| m.duration).map(|md| time_to_secs(md, fps)))
         .unwrap_or(content_end);
 
-    // ---- 8. 字体回退链构造序列（V1.5-B：声明顺序 = push 顺序） ----
+    // ---- 8. 字体回退链构造序列（声明顺序 = push 顺序） ----
     let fonts: Vec<FontSlotSpec> = codegen_fonts(doc);
 
     // ---- 9. formula 块 → 引擎公式节点（V2-j：记法 + 归一化排版参数） ----
@@ -1189,7 +1189,7 @@ pub(crate) fn codegen_v2(doc: &DocumentV2Ast) -> Result<CompileV2Output, DslErro
     })
 }
 
-/// font 指令序列 → `FontSet` 构造序列（V1.5-B）。
+/// font 指令序列 → `FontSet` 构造序列。
 ///
 /// 顺序纪律：多条 font 指令按出现顺序、每条内首选后 fallback，展平为
 /// **单条**回退链；`index` = 展平后下标 = `FontSet::push_file` 返回的槽位号。
@@ -1346,7 +1346,7 @@ fn build_camera(b: &mut V2Builder, cam: &CameraV2Ast, si: usize) -> Result<Camer
 
 /// sdf 条目 → S12 实体表示节点。
 ///
-/// # kind 支持集（V2.0-W4 曲线图元扩展）
+/// # kind 支持集（曲线图元扩展）
 /// - `sphere`：`radius` 缺省 1、负值 P1015（v1 既有口径不变）；
 /// - `box`：解析接受，render 侧 R5013（求交未接入，保留原错误）；
 /// - `cylinder` / `cone`：`radius` + `half_height`（必填，须 > 0）；
@@ -2672,7 +2672,7 @@ fn build_post(post: &PostAst) -> Result<PostInfo, DslError> {
 }
 
 // ---------------------------------------------------------------------------
-// 组合子注册面（V1.5-D）：name → 展开 fn
+// 组合子注册面：name → 展开 fn
 // ---------------------------------------------------------------------------
 
 pub use crate::combinators::{
@@ -2680,12 +2680,12 @@ pub use crate::combinators::{
     expand_title_card, CombinatorArgs, CombinatorError, NodeGraph,
 };
 
-/// 组合子表：组合子名 → 等价 v2 节点图展开函数（V1.5-D）。
+/// 组合子表：组合子名 → 等价 v2 节点图展开函数。
 ///
 /// # 用途与边界
-/// - **本轮**：DSL v2 语法不加新指令（parser 刚稳定不碰），本表供 Rust 侧
+/// - **当前版本**：DSL v2 语法不加新指令（parser 刚稳定不碰），本表供 Rust 侧
 ///   （`prism-author::combinators`）与文档按名查表展开；
-/// - **后续波次**：DSL 糖化指令（如 `use title_card { ... }`）经本表把语法糖
+/// - **后续版本**：DSL 糖化指令（如 `use title_card { ... }`）经本表把语法糖
 ///   展开为节点图，codegen 主流程零分支改动；
 /// - 展开产物 [`NodeGraph`] 与 [`CompileV2Output`] 的节点图部分同构
 ///   （`NodeGraph::into_compile_output` 补齐空缺字段）。

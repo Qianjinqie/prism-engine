@@ -10,7 +10,7 @@
 //! grain / glitch / vignette / dissolve / plasma / mandelbrot_bg 的图案
 //! 锚定在**窗口局部坐标**；`TileEffect::eval_window` 不携带全局原点（
 //! trait 只读对接，不得私改协议），其整幅求值为规范语义（post 链 CPU
-//! 参考路径）。tile 一致性承载需协议增补全局原点上下文——上报完工汇报。
+//! 参考路径）。tile 一致性承载需协议增补全局原点上下文——需先上报获批。
 
 use prism_core::SampleIndex;
 use prism_io::fbuf::Fbuf16F;

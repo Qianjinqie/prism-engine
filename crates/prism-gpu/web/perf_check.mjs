@@ -1,7 +1,7 @@
 // ===========================================================================
-// perf_check.mjs — D-14 桌面 GPU 性能验收脚本（入库版）。
+// perf_check.mjs — D-14 桌面 GPU 性能测量脚本（入库版）。
 //
-// 用途：在**真实桌面 GPU** 上，测量 Phase 4 两个未验收的性能目标：
+// 用途：在**真实桌面 GPU** 上，测量两个性能目标：
 //   ① 1080p 路径追踪交互帧率（`rt_wavefront` 的 connect/accumulate 链）
 //   ② 百万粒子模拟帧率（`sim_particles` 的 emit/integrate/hash_cells 链）
 //
@@ -20,8 +20,8 @@
 //   若确定性都不成立，性能数字没有意义 —— 脚本**直接失败退出**，不继续测速。
 //
 // 【铁律 3】软件适配器（swiftshader/lavapipe/llvmpipe/software）只作 smoke，
-//   脚本显式警告"此结果不能作为性能验收凭据"，并以**退出码 3**（软件适配器）
-//   与真 GPU 的结论区分开，绝不把软件光栅速度包装成验收结论。
+//   脚本显式警告"此结果不能作为性能结论"，并以**退出码 3**（软件适配器）
+//   与真 GPU 的结论区分开，绝不把软件光栅速度包装成性能结论。
 //
 // 【铁律 4】不伪造数字。测不了就说测不了，外推必须显式标注为外推。
 // ===========================================================================
@@ -33,14 +33,14 @@
 //   node perf_check.mjs --frames 60              # 每项采样帧数（默认 30）
 //   node perf_check.mjs --warmup 5               # 计时前的预热帧数（默认 5）
 //   node perf_check.mjs --require-gpu            # 强制要求真 GPU（软件适配器直接判失败）
-//   node perf_check.mjs --json                   # 机器可读输出（便于归档验收凭据）
+//   node perf_check.mjs --json                   # 机器可读输出（便于归档测量凭据）
 //   node perf_check.mjs --self-check             # 只跑确定性 + adapter，不测速
 //
 // 退出码：
-//   0  = 真 GPU 上测完且确定性成立（结论可用作性能验收）
+//   0  = 真 GPU 上测完且确定性成立（性能结论可用）
 //   1  = 前置检查失败 / 确定性校验失败 / 页面报错
 //   2  = 用法错误（--help）
-//   3  = 环境是**软件适配器**：测完了但结果不可作为性能验收凭据（见警告）
+//   3  = 环境是**软件适配器**：测完了但结果不可作为性能结论（见警告）
 // ===========================================================================
 
 import { createServer } from "node:http";
@@ -66,7 +66,7 @@ const HAS = (name) => argv.includes(`--${name}`);
 
 if (HAS("help")) {
   console.log(
-    "perf_check.mjs — D-14 桌面 GPU 性能验收（1080p 路径追踪 + 百万粒子）\n" +
+    "perf_check.mjs — D-14 桌面 GPU 性能测量（1080p 路径追踪 + 百万粒子）\n" +
     "\n" +
     "用法：\n" +
     "  node perf_check.mjs                        # 自动起静态服务 + 自动找浏览器\n" +
@@ -79,7 +79,7 @@ if (HAS("help")) {
     "  node perf_check.mjs --self-check            # 只跑确定性 + adapter 探测\n" +
     "\n" +
     "退出码：0 = 真 GPU 测完且确定性成立；1 = 前置/确定性/页面失败；\n" +
-    "        2 = 本帮助；3 = 软件适配器（结果不可作性能验收凭据）。\n" +
+    "        2 = 本帮助；3 = 软件适配器（结果不可作性能结论）。\n" +
     "任何环境问题都会非 0 退出，绝不会静默返回“通过”。",
   );
   process.exit(2);
@@ -122,7 +122,7 @@ const PW_ABS = [
   "/usr/local/lib/node_modules/playwright/index.js",
   ...(process.env.NVM_BIN ? [`${process.env.NVM_BIN}/../lib/node_modules/playwright`] : []),
   "/root/.nvm/versions/node/v22.13.1/lib/node_modules/playwright",
-  // 项目本地 node_modules（本仓库实测装在这里）。
+  // 项目本地 node_modules（本项目实测装在这里）。
   resolve(HERE, "../../../node_modules/playwright/index.js"),
 ];
 
@@ -159,7 +159,7 @@ if (!chromium) {
     "Playwright 未安装或不可解析。已尝试：\n" +
       pwTried.map((t) => `     - ${t}\n`).join("") +
       "   安装：npm i -g playwright && npx playwright install chromium\n" +
-      "   或在本仓库根目录：npm i playwright（脚本已含 node_modules 回退路径）。",
+      "   或在 workspace 根目录：npm i playwright（脚本已含 node_modules 回退路径）。",
   );
 }
 info(`==> 前置检查 1/4：Playwright 可用 OK（${pwSpec}）`);
@@ -258,7 +258,7 @@ if (!process.env.DISPLAY || !displayAlive(process.env.DISPLAY)) {
   info(`    Xvfb 就绪：DISPLAY=${dpy}`);
     info(
     "    ⚠️ Xvfb 是虚拟帧缓冲：此环境下即使拿到真 GPU，帧率也可能被虚拟合成器节流，\n" +
-    "       结论仅供参考。桌面 GPU 性能验收请在真实显示会话里跑。",
+    "       结论仅供参考。桌面 GPU 性能测量请在真实显示会话里跑。",
   );
 }
 info(`==> 前置检查 3/4：显示环境 OK（DISPLAY=${process.env.DISPLAY}）`);
@@ -327,7 +327,7 @@ try {
   } catch (e) {
     die(
       `Chromium 启动失败：${e.message}\n` +
-      "   有头模式在容器里常因沙箱/共享内存失败；--no-sandbox 已带上。",
+      "   有头模式在容器里常因浏览器沙箱/共享内存限制失败；--no-sandbox 已带上。",
     );
   }
 
@@ -376,7 +376,7 @@ try {
     if (!JSON_OUT) {
       info(`\n${"=".repeat(70)}`);
       info(`adapter：vendor=${gpu.vendor} arch=${gpu.architecture} device=${gpu.device}`);
-      info(`软件适配器：${software ? "是（!! 不可作性能验收凭据 !!）" : "否"}`);
+      info(`软件适配器：${software ? "是（!! 不可作性能结论 !!）" : "否"}`);
       info(`ABI：v${abi.version}；sim_particles=${abi.simPCount} 粒子（${abi.particlesBytes}B）；` +
                   `rt_wavefront=${abi.wfWidth}×${abi.wfHeight} 像素 × spp=${abi.wfSpp}`);
       info(`${"=".repeat(70)}\n`);
@@ -385,8 +385,8 @@ try {
     if (software) {
       info("⚠️⚠️⚠️  警告：当前是**软件适配器**（SwiftShader/lavapipe/llvmpipe 之类）。");
       info("       它跑在 CPU 上做软件光栅化，帧率与真 GPU 无任何可比性。");
-      info("       本次测量结果**不能作为性能验收凭据**，仅可用于验证脚本与链路本身。");
-      info("       请在真实桌面 GPU 上重跑以获得验收结论。\n");
+      info("       本次测量结果**不能作为性能结论**，仅可用于验证脚本与链路本身。");
+      info("       请在真实桌面 GPU 上重跑以获得性能结论。\n");
     }
     if (REQUIRE_GPU && software) {
       await cleanup();
@@ -487,10 +487,10 @@ try {
       problems.push("确定性前置门禁失败：同输入两遍结果不一致 —— 性能数字无意义");
     }
     if (software) {
-      // 软件适配器：测完了，但结论不构成性能验收凭据。
+      // 软件适配器：测完了，但结果不构成性能结论。
       if (!JSON_OUT) {
         console.error("\n==> perf_check: SOFTWARE-ADAPTER（退出码 3）");
-        console.error("   测得数字仅证明脚本与链路可用；**不可作为性能验收凭据**。");
+        console.error("   测得数字仅证明脚本与链路可用；**不可作为性能结论**。");
       }
       exitCode = 3;
     } else if (problems.length > 0) {
@@ -501,7 +501,7 @@ try {
       exitCode = 1;
     } else {
       if (!JSON_OUT) {
-        console.log("\n==> perf_check: PASS（真 GPU，确定性成立，结论可用作性能验收）");
+        console.log("\n==> perf_check: PASS（真 GPU，确定性成立，性能结论可用）");
       }
       exitCode = 0;
     }

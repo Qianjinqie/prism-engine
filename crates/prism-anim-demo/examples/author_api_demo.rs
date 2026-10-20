@@ -1,6 +1,6 @@
 //! 高层作者 API 概念验证（PoC）——“5 秒短片 = 一次函数调用”。
 //!
-//! 本文件证明“强大版”路线图里「视频即代码」的愿景可落地：作者只写一份
+//! 本文件证明「视频即代码」的愿景可落地：作者只写一份
 //! **声明式 `ClipSpec`**（画幅 / 背景预设 / 若干轨道），再调用一次
 //! `render_short(&spec)`，即可产出一支干净的 5 秒文字片头 MP4。
 //!
@@ -537,7 +537,7 @@ fn main() {
 
     // 5 秒短片 = 一次函数调用。
     let mp4 = render_short(&spec);
-    std::fs::write("/workspace/prism_aurora_v2.mp4", &mp4).expect("写入 MP4 失败");
+    std::fs::write("prism_aurora_v2.mp4", &mp4).expect("写入 MP4 失败");
     eprintln!(
         "prism_author::render_short 完成：{} 字节，{} 帧 @{}×{} {}fps（官方 muxer）",
         mp4.len(),

@@ -991,7 +991,7 @@ function refI0Series(x) {
 /**
  * 解析 WGSL 源码里所有 `fn 名(形参表) -> 返回类型` 的**形参个数**。
  *
- * 【为什么需要】本轮实测发现 `hair_scatter.wgsl` 的 `a_r`/`a_tt`/`a_trt`
+ * 【为什么需要】本次实测发现 `hair_scatter.wgsl` 的 `a_r`/`a_tt`/`a_trt`
  * 声明形参 2/4/4 却按 1/2/2 实参调用——**整个文件无法通过 createShaderModule**。
  * 该文件登记在 `LIBRARIES`（无入口、不参与 kernel 编译），所以这个编译级缺陷
  * 长期绿灯，规则 F2（只查函数名在场）也照样绿。只有"逐函数核对实参个数"才抓得住。
@@ -1188,7 +1188,7 @@ function ruleF(ctx) {
   // =========================================================================
   //
   // 为什么要加这么多条：F1–F6 守的是「公式在不在」，**守不住「公式对不对」**。
-  // 本轮实测在 F1–F6 全绿的情况下抓到三个真缺陷：
+  // 本次实测在 F1–F6 全绿的情况下抓到三个真缺陷：
   //   1. `a_r`/`a_tt`/`a_trt` 声明形参与实参个数不符 → 整个文件编译不过。
   //      因为它在 `LIBRARIES` 里（无入口、不参与 kernel 编译），**长期绿灯**。
   //      F6 甚至把 `mn * a_r(f0)` 这类字面量硬编码进断言，与 Rust 测试
@@ -1238,7 +1238,7 @@ function ruleF(ctx) {
     detail: libmHits.length ? libmHits.join("；") : "",
   });
 
-  // ---- F8 形参/实参个数逐调用点一致（本轮真实编译级缺陷的守门规则）----
+  // ---- F8 形参/实参个数逐调用点一致（真实编译级缺陷的守门规则）----
   //
   // 这条是 F 组里最重要的一条：它把「函数能不能编译」从"真机才知道"变成
   // 静态可查。判据为 `parseWgslFnArity` 声明表 vs `collectWgslCalls` 调用表。
@@ -1252,7 +1252,7 @@ function ruleF(ctx) {
     ok: arityMismatch.length === 0,
     detail: arityMismatch.length ? arityMismatch.join("；") : `${allCalls.length} 个调用点全部一致`,
   });
-  // 反向补充：只对 a_* 三瓣做**逐个点名**断言。这三个函数本轮就是元凶，
+  // 反向补充：只对 a_* 三瓣做**逐个点名**断言。这三个函数正是元凶，
   // 泛化规则（"全部调用点"）若因解析器改动而整体失效，这里仍能独立变红。
   for (const a of ["a_r", "a_tt", "a_trt"]) {
     const d = fnArity.get(a);
@@ -1266,7 +1266,7 @@ function ruleF(ctx) {
 
   // ---- F9 marschner_n 归一化分母必须是 I₀(k/2)²（常数因子守门）----
   //
-  // 【本轮真缺陷】原实现分母是 `I₀(k)²`。正确归一来自
+  // 【真实缺陷】原实现分母是 `I₀(k)²`。正确归一来自
   //   ∫₀^{2π} I₀(k·cos(φ/2)) dφ = 2π·I₀(k/2)²
   // 故分母的自变量是 **k/2**。k=8 时 I₀(k)²/I₀(k/2)² ≈ 1430，发色整体偏差。
   // F3 只查 "2π·I₀² 在场"，抓不到自变量错；本条查**自变量表达式**。
@@ -1403,7 +1403,7 @@ function ruleF(ctx) {
   //
   // 【为什么这条最该有】三瓣各自的方位偏角是 φ_R = φ、φ_TT = φ − π、φ_TRT = φ。
   // **符号写错时小角度下误差极小**（|φ| 小时 φ 与 φ−π 的 N 值都接近峰值），
-  // 极容易漏过——本轮最初就靠 `forward_scatter` 与 `backward_scatter` 两组
+  // 极容易漏过——最初正是靠 `forward_scatter` 与 `backward_scatter` 两组
   // golden vector（φ=0 vs φ=π）的 TT 相差 400 倍（7.6e-3 vs 3.26）才确认符号。
   // 故除源码字面量外，还加一条**数值判据**：φ=π 时 TT 的方位项必须显著小于
   // φ=0 时（判据与具体 k 无关，故门槛取得很松，只抓符号级别的错误）。
@@ -1487,7 +1487,7 @@ function ruleF(ctx) {
 
   // ---- F16 CPU/GPU 跨语言同构锚点（跨仓，只读不改）----
   //
-  // 【为什么必须跨语言断言】本轮 CPU 侧 `m_longitudinal_full` 写的是
+  // 【为什么必须跨语言断言】CPU 侧 `m_longitudinal_full` 写的是
   // `2.0 * beta * beta`（Rust 结合为 `(2β)β`），WGSL 写 `2.0 * bm2`（`2(β²)`）
   // —— f32 下**不是同一个数**（β=0.7 时差 1 ulp）。对拍会被这种实现差异污染，
   // 于是真缺陷与舍入噪声混在一起，无法判定阈值。两侧必须逐位同构。
@@ -2215,11 +2215,11 @@ ${extra}
     },
     {
       rule: "F",
-      desc: "hair_scatter 把 a_r 形参改回 2 个但仍按 1 个实参调用（复现本轮真实编译缺陷）",
+      desc: "hair_scatter 把 a_r 形参改回 2 个但仍按 1 个实参调用（复现真实编译缺陷）",
       expectFail: "F8",
       run: () => {
         const orig = readFileSync(join(SHADER_DIR, "hair_scatter.wgsl"), "utf8");
-        // 这正是本轮在磁盘上发现的原始形态：`fn a_r(f0: f32, extra: f32)` 却
+        // 这正是磁盘上发现的原始形态：`fn a_r(f0: f32, extra: f32)` 却
         // 仍写 `a_r(f0)` —— WGSL 编译期报错，但因该文件不参与 kernel 编译
         // 而长期绿灯。全绿的门禁（F1–F6）对此完全无感。
         const bad = orig.replace("fn a_r(f0: f32) -> f32 {", "fn a_r(f0: f32, absorb_extra: f32) -> f32 {");
@@ -2228,7 +2228,7 @@ ${extra}
     },
     {
       rule: "F",
-      desc: "hair_scatter 的 N 归一化退回 I₀(k)² 而非 I₀(k/2)²（本轮真缺陷，约 1430 倍）",
+      desc: "hair_scatter 的 N 归一化退回 I₀(k)² 而非 I₀(k/2)²（真实缺陷，约 1430 倍）",
       expectFail: "F9",
       run: () => {
         const orig = readFileSync(join(SHADER_DIR, "hair_scatter.wgsl"), "utf8");

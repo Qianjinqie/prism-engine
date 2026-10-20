@@ -270,7 +270,7 @@ jobs:
   # **必须独立 target-dir**：历史上 wasm32 产物混进 native 的 target/，
   # 两套 target 的元数据互相污染，native 侧随后报
   # `can't find crate prism_*`。build.sh 已内置该隔离（target/wasm32/），
-  # 这里再显式声明一次，防止有人日后把 --target-dir 改掉。
+  # 这里再显式声明一次，防止日后把 --target-dir 改掉。
   # ---------------------------------------------------------------------------
   wasm:
     name: wasm32 build + artifact verify

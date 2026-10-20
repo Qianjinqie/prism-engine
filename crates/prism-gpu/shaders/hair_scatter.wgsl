@@ -19,8 +19,8 @@
 // - 门禁 `wgsl_lint.mjs` 规则 **F13** 锁定「不得出现 B 瓣半成品桩」：
 //   既不许出现 `a_b` / `b_lobe` 之类半成品函数体（返回常量/恒等式），
 //   也不许在 CPU 侧出现 `TODO B 瓣` 之类"看起来在写"的占位。
-// - 成本估计：B 瓣实装（系数拟合 + CPU/WGSL 双份 + 门禁 + 对拍）约 2–3 人日，
-//   且**必须先有 CS 方位分布实测数据**，故本轮不做。详见汇报「诚实边界」。
+// - 成本估计：B 瓣实装（系数拟合 + CPU/WGSL 双份 + 门禁 + 对拍）工作量较高，
+//   且**必须先有 CS 方位分布实测数据**，故当前版本不实装（门禁 F13 锁定不得出现半成品桩）。
 //
 // # 确定性设计（全链路确定性铁律）
 // 1. 禁 libm 超越函数（D-29）：本文件不调用任何内建 sin/cos/exp/pow/log/
@@ -395,7 +395,7 @@ fn hair_scatter_s(theta_i: f32, theta_o: f32, phi: f32,
 // F(θ_i) = schlick_fresnel(f0(η), |cosθ_i|)、T_tt/T_trt 由 Beer–Lambert 预算
 // （d_tt = 2r/|cosθ_i|，d_trt = 2·d_tt）。
 // 与简化入口的**关键差异**：每瓣各有自己的 M（α 偏角修正）与 N（φ 偏角），
-// 这正是 Marschner 2003 eq.9 的三瓣分离——CPU 侧早已实装，GPU 侧本轮补齐。
+// 这正是 Marschner 2003 eq.9 的三瓣分离——CPU 侧早已实装，GPU 侧本次补齐。
 // 运算顺序固定：先 M、再乘 N、最后乘 A，避免不同驱动的重结合。
 fn hair_scatter_s_precise(theta_i: f32, phi_i: f32, theta_o: f32, phi_o: f32,
                           beta_m: f32, k: f32, eta: f32,

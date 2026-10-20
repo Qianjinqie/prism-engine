@@ -15,7 +15,7 @@
 // 【铁律】这不是"模拟"。
 //   1. WGSL 是**真编译**（createShaderModule）+ **真 dispatch**（真 compute
 //      pipeline + 真 storage buffer + mapAsync 回读），不是 JS 复刻公式。
-//      因此它能抓住"WGSL 根本编译不过"这类缺陷——事实上本轮就抓到了：
+//      因此它能抓住"WGSL 根本编译不过"这类缺陷——事实上本次就抓到了：
 //      `hair_scatter.wgsl` 的 `a_r`/`a_tt`/`a_trt` 形参个数与调用点不匹配，
 //      该文件**从来无法通过 createShaderModule**；因为它是 `LIBRARIES`
 //      （无入口、不参与 kernel 编译），这个缺陷一直绿灯。
@@ -23,10 +23,10 @@
 //      返回"通过"。绝不允许"跑不了就 SKIP 然后报 PASS"——那等于把环境问题
 //      伪装成代码没问题，是回归脚本最危险的失败模式。
 //
-// # 沙箱路径（与 realgpu_check.mjs 同一套既有机制，不新造）
+// # 无 GPU 环境路径（与 realgpu_check.mjs 同一套既有机制，不新造）
 //
 //   Xvfb（有头虚拟显示）+ Playwright/Chromium + SwiftShader（软件适配器）。
-//   `realgpu_check.mjs` 已验证该路径在本沙箱可跑；本文件复用同样的前置检查
+//   `realgpu_check.mjs` 已验证该路径在无 GPU 环境可跑；本文件复用同样的前置检查
 //   顺序（Playwright → Chromium → Xvfb → 静态服务），故不引入新机制。
 //
 // # 用法

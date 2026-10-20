@@ -438,7 +438,7 @@ pub fn solve_multi_bounce(
     let mut last_delta = 0.0f32;
 
     // 后续弹射：以上一弹的**增量**作为源辐亮度，衰减 + 可见性加权半球平均。
-    // 源 = 本轮新增的辐亮度（末弹增量），保证几何级数求和语义。
+    // 源 = 本次新增的辐亮度（末弹增量），保证几何级数求和语义。
     let mut source = accum;
     let mut k = 1u32;
     while k < b.max_bounces {

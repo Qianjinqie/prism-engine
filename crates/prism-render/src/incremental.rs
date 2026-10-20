@@ -661,7 +661,7 @@ impl ReuseCache {
 }
 
 // ---------------------------------------------------------------------------
-// reuse_ratio 统计（复用率度量；Phase 3 验收 ≥ 0.5）
+// reuse_ratio 统计（复用率度量；验收 ≥ 0.5）
 // ---------------------------------------------------------------------------
 
 /// 复用率度量：以"帧 × 子图"为统计单元。
@@ -715,7 +715,7 @@ impl ReuseStats {
         self.total
     }
 
-    /// 是否达 Phase 3 验收线（≥ 0.5）。
+    /// 是否达验收线（≥ 0.5）。
     pub fn meets_phase3(&self) -> bool {
         self.ratio() >= 0.5
     }
@@ -1131,7 +1131,7 @@ mod tests {
         println!("checkpoint3 reuse_ratio = {}", stats.ratio());
         assert!(
             stats.ratio() >= 0.5,
-            "复用率必须达 Phase 3 验收线 ≥ 0.5，实际 {}",
+            "复用率必须达验收线 ≥ 0.5，实际 {}",
             stats.ratio()
         );
         assert!(stats.meets_phase3());

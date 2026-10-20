@@ -1,4 +1,4 @@
-// rt_wavefront_intersect.wgsl —— V2.0-G compute-first 管线的
+// rt_wavefront_intersect.wgsl —— compute-first 管线的
 // **wavefront 求交一步** kernel（射线批 → 命中批）。
 //
 // 语义权威：crates/prism-gpu/src/compute/mod.rs::wavefront_intersect_step_cpu

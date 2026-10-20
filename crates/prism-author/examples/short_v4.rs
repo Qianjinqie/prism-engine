@@ -1,5 +1,5 @@
 //! 例子（v4）：用**内容增强包**组一支 5 秒片头，封装为标准
-//! MJPEG-in-AVI，输出到 `/workspace/prism_aurora_v4.avi`。
+//! MJPEG-in-AVI，输出到 `prism_aurora_v4.avi`。
 //!
 //! 相对 `short_avi.rs`（v3）新增三件套能力：
 //! 1. 新背景 [`Background::Aurora`]（青绿 / 青蓝流动极光带）；
@@ -108,7 +108,7 @@ fn main() {
     // 新能力：Clip 级片头 0.8s 淡入 + 片尾 0.8s 淡出（纯后处理，
     // 不影响任何既有入口）。
     let avi = render_short_avi_faded(&spec, 0.8, 0.8).expect("AVI 封装失败");
-    std::fs::write("/workspace/prism_aurora_v4.avi", &avi).expect("写入 AVI 失败");
+    std::fs::write("prism_aurora_v4.avi", &avi).expect("写入 AVI 失败");
     eprintln!(
         "prism_author::render_short_avi_faded 完成：{} 字节，{} 帧 @{}×{} {}fps（Aurora + 打字机 + 片头/片尾 0.8s 淡入淡出，标准 MJPEG-in-AVI）",
         avi.len(),

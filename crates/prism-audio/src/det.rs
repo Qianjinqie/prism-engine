@@ -368,7 +368,7 @@ mod tests {
 
     /// **有界性取证**：每次 `exp_f64` 的连乘次数 ≤ `SCALE_POW2_MAX_ITER`。
     ///
-    /// 这是「exp_f64 不可能挂死」的可计数证据——不依赖墙钟超时（CI 上易抖动），
+    /// 这是「exp_f64 不可能挂死」的可计数证据——不依赖墙钟超时（在共享机器上易抖动），
     /// 而是直接读 [`scale_pow2`] 内部的迭代累计计数器。
     #[test]
     fn det_exp_is_bounded_iteration() {

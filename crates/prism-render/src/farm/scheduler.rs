@@ -28,7 +28,7 @@
 //!
 //! # 多机：`plan_dispatch` + `FarmNode`
 //!
-//! 跨机本轮**只做接口与序列化，不真跑**（明确许可）。[`FarmNode`]
+//! 跨机当前版本**只做接口与序列化，不真跑**（明确许可）。[`FarmNode`]
 //! 描述一个节点（id + 容量 + 是否在线），[`plan_dispatch`] 把任务**按确定序**
 //! 分配到节点上：
 //!
@@ -51,7 +51,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
 use std::sync::Mutex;
 
-/// 一个农场节点（机器）的静态描述。本轮只做接口，不做真实传输。
+/// 一个农场节点（机器）的静态描述。当前版本只做接口，不做真实传输。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FarmNode {
     /// 节点 id（内容派生：跨机对齐与日志追踪用）。
@@ -363,7 +363,7 @@ pub fn plan_dispatch(tasks: &[FrameTask], nodes: &[FarmNode]) -> DispatchPlan {
 }
 
 // ---------------------------------------------------------------------------
-// V2.0-I：并行逐帧载荷 + 断点续算 + 本地子进程分发
+// 并行逐帧载荷 + 断点续算 + 本地子进程分发
 // ---------------------------------------------------------------------------
 
 /// 续算版分片结果：分片产物 + 执行统计（复用帧数 / 真算帧数）。
@@ -905,9 +905,9 @@ mod tests {
         let plan: DispatchPlan = plan_dispatch(&tasks, &nodes);
         assert!(!plan.contains_key("small"), "离线节点不得出现在计划里");
         let mid: Vec<FrameTask> = plan.get("mid").cloned().unwrap_or_default();
-        assert_eq!(mid.len(), 1, "只有 4 核需求的任务能装进 mid");
+        assert_eq!(mid.len(), 1, "只有 cpu_cores = 4 的任务能装进 mid");
         assert_eq!(mid.first().map(|t| t.frames.start), Some(0));
-        // 8 核任务装不进任何在线节点 ⇒ 不出现在计划里（调用方可对比任务集检出漏派）。
+        // cpu_cores = 8 的任务装不进任何在线节点 ⇒ 不出现在计划里（调用方可对比任务集检出漏派）。
         assert_eq!(plan.values().flatten().count(), 1, "装不下的任务不被分配，也不静默丢弃到别处");
     }
 
@@ -1018,7 +1018,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
-    // V2.0-I：传输 + worker + 断点续算
+    // 传输 + worker + 断点续算
     // ---------------------------------------------------------------------
 
     /// 唯一临时缓存路径（避免测试间互相踩）。
@@ -1270,7 +1270,7 @@ mod tests {
             "[farm 吞吐实测] 单机顺序 {N} 帧 × cost={COST}: {:?}；4 worker: {:?}；加速比 {speedup:.2}×；MD5 {}",
             serial_time, parallel_time, serial_md5
         );
-        // 硬门槛只有确定性；加速比不设阈值（单核 CI 上并行反而可能更慢）。
+        // 硬门槛只有确定性；加速比不设阈值（单核平台上并行反而可能更慢）。
         assert!(speedup > 0.0, "加速比必须可计算（时间非零）");
     }
 }

@@ -6,7 +6,7 @@
 //! 1. **草稿档位**（[`PreviewQuality`]）：两档分工——
 //!    - `Draft`（保交互）：1/4 内部分辨率 + 1 spp **几何图案**（整数散列 +
 //!      多项式插值，无 libm），快得可以每帧重算；
-//!    - `Final`（Real 档，V1.5-F 起）：**低 spp 真实渲染**——整图经既有渲染
+//!    - `Final`（Real 档）：**低 spp 真实渲染**——整图经既有渲染
 //!      管线（[`prism_render::render_frame`] → `CpuRefBackend` 软光追）出帧，
 //!      每像素 [`FINAL_REAL_SPP`] 个确定性亚像素 tap 整数平均。低采样数保
 //!      速度（记录在案：V1.5 定为 2 = 基准 tap + 一次半像素抖动 tap）。
@@ -107,12 +107,12 @@ pub const MAX_DIM: u32 = 512;
 /// Draft 档位的内部分辨率缩约因子（宽高各缩 1/DRAFT_DOWNSCALE 后求值再最近邻放大）。
 pub const DRAFT_DOWNSCALE: u32 = 4;
 
-/// Real（Final）档的每像素**管线采样数**（低采样保速度，V1.5-F 定为 2：
+/// Real（Final）档的每像素**管线采样数**（低采样保速度，定为 2：
 /// 基准 tap + 一次确定性亚像素抖动 tap，整数域平均）。
 ///
 /// 记录在案：这是"低 spp 真实渲染"的务实取值——管线（`CpuRefBackend`）本身
 /// 是单样本光线投射，多 tap 即超采样；2 tap 在预览尺寸下单帧耗时处于
-/// 几十毫秒量级（见汇报实测），保编辑器交互可接受。
+/// 几十毫秒量级（实测），保编辑器交互可接受。
 pub const FINAL_REAL_SPP: u32 = 2;
 
 /// 预览缓冲键：(节点 id, 缓存键)。
@@ -394,7 +394,7 @@ impl PreviewRenderer {
             }
             _ => {
                 // Chain / Feed / Dual / Csg / Mis：预览一律按"取第 0 输入"处理
-                // （简化点，见汇报"诚实边界"：这些变体在预览中不产生额外视觉效果）。
+                // （简化点，见"诚实边界"说明：这些变体在预览中不产生额外视觉效果）。
                 out.copy_from_slice(in_bufs[0]);
             }
         }
@@ -523,7 +523,7 @@ fn pget(params: &Params, name: &str, default: f32) -> f32 {
 /// 图案族：由结构序号映射到 8 个图案族之一。
 ///
 /// 这是**风格化映射**，不是引擎的物理核算子——预览只需"不同结构看起来不同"
-/// 且确定性可复现。已在汇报"诚实边界"中登记。
+/// 且确定性可复现。已在"诚实边界"说明中登记。
 fn pattern_family(structure: &StructureId) -> u8 {
     match structure.ordinal() {
         Some(1) => 0,  // ScalarField → 场
@@ -726,7 +726,7 @@ fn to_rgba(buf: &[f32], iw: u32, ih: u32, width: u32, height: u32) -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
-// Real（Final）档：图 → 场景 → 既有渲染管线出帧（V1.5-F）
+// Real（Final）档：图 → 场景 → 既有渲染管线出帧
 // ---------------------------------------------------------------------------
 
 /// 图 canonical 字节 → 32 位种子（FNV 式折叠；同图同种子，逐字节敏感）。
@@ -1228,7 +1228,7 @@ mod tests {
 
     #[test]
     fn final_quality_uses_real_pipeline_not_geometric_pattern() {
-        // V1.5-F：Final 档必须走真实渲染管线（低 spp），不再是几何图案。
+        // Final 档必须走真实渲染管线（低 spp），不再是几何图案。
         let g = build_reference_graph();
         let mut r = PreviewRenderer::new();
         let final_ = r.render(&g, &defs(), PreviewQuality::Final, 64, 48, 1, 0).unwrap();

@@ -1,9 +1,9 @@
 // ============================================================================
-// w2d_showcase —— DSL v2 成片直达（render_movie）CLI 黄金示例（V1.5-D）
+// w2d_showcase —— DSL v2 成片直达（render_movie）CLI 黄金示例
 //
-// 覆盖（V1.5-D 任务书 1.4 对示例的要求）：
+// 覆盖（黄金示例要求）：
 // - 已支持节点 4 类：camera(S5) / material(S8) / sphere(S12) / text(S12)；
-// - 组合子展开形态 2 种（DSL v2 本轮不加新指令，形态=同构节点图）：
+// - 组合子展开形态 2 种（DSL v2 当前版本不加新指令，形态=同构节点图）：
 //   ① title_card 形态：文本层 + opacity 淡入淡出轨道（与 expand_title_card
 //      的「S12 文本节点 + opacity 通道绑定」同构）；
 //   ② morph_between 形态：两场景部分重叠 + crossfade 过渡（与

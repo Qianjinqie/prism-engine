@@ -1,10 +1,10 @@
-//! 手写最小 SPIR-V 字节码（V2.0-G：无 glslang 环境的真实二进制供给）。
+//! 手写最小 SPIR-V 字节码（无 glslang 工具链时的真实二进制供给）。
 //!
 //! # 为什么手写（如实记录做法）
 //!
 //! 正常路径是「WGSL → SPIR-V 由自研发射器生成（`crate::metal::msl` 头注的
 //! 定案）」，构建期用 `glslangValidator`/`glslc` 产出 `.spv` 再 `include_bytes!`
-//! 打进二进制。**本仓库构建环境没有 glslang/glslc**（已实测），于是本模块
+//! 打进二进制。构建环境未提供 `glslangValidator`/`glslc` 时，本模块
 //! 走预案：**手写 SPIR-V 指令流**，以 `static` 常量数组形式**编译期入二进制**
 //! （零运行期文件 I/O、零第三方 crate —— D-15）。
 //!
@@ -20,8 +20,8 @@
 //! ```
 //!
 //! （即 [`cpu_reference_mul2`]，parity 由测试断言「二进制宣称的语义 == CPU
-//! 参考」——V2.0-W4 起本仓库环境（lavapipe 软栅）**可真实执行**该 SPIR-V，
-//! 结构 + 语义锚定与真机读回三重校验。）
+//! 参考」——有 lavapipe（llvmpipe）软件 ICD 时**可真实执行**该 SPIR-V，
+//! 结构 + 语义锚定与设备读回三重校验。）
 //!
 //! # 供给边界（不撒谎）
 //!
@@ -81,7 +81,7 @@ const OP_MEMBER_DECORATE: u32 = 72;
 const OP_COMPOSITE_EXTRACT: u32 = 81;
 /// 指令 `OpFMul`（浮点乘）。
 ///
-/// V2.0-W4 lavapipe 实测修正：旧值 128 实为 `OpIAdd`。算术指令段自 128 起
+/// lavapipe 实测修正：旧值 128 实为 `OpIAdd`。算术指令段自 128 起
 /// 按「整/浮」交替编号：128 OpIAdd / 129 OpFAdd / 130 OpISub / 131 OpFSub /
 /// 132 OpIMul / **133 OpFMul**——错位使 `mul2` kernel 语义改变且结果类型
 /// 非法（spirv-val: "Expected int scalar or vector type as Result Type"）。
@@ -173,7 +173,7 @@ pub const STORAGE_CLASS_INPUT: u32 = 1;
 /// 存储类：`Uniform`（UBO 承载类；Vulkan SSBO 不用它，见 `STORAGE_CLASS_STORAGE_BUFFER`）。
 pub const STORAGE_CLASS_UNIFORM: u32 = 2;
 /// 存储类：`StorageBuffer`（Vulkan 存储缓冲（SSBO）承载类；与
-/// `VK_DESCRIPTOR_TYPE_STORAGE_BUFFER` 对应，可读写。V2.0-W4 修正：
+/// `VK_DESCRIPTOR_TYPE_STORAGE_BUFFER` 对应，可读写。修正：
 /// 旧版误用 `Uniform`+`BufferBlock`（OpenGL 口味）导致 lavapipe
 /// `vkCreateComputePipelines` 返回 `VK_ERROR_INVALID_SHADER_NV`）。
 pub const STORAGE_CLASS_STORAGE_BUFFER: u32 = 12;
@@ -192,7 +192,7 @@ pub const DECORATION_OFFSET: u32 = 35;
 pub const DECORATION_ARRAY_STRIDE: u32 = 6;
 /// 装饰：`BuiltIn`（Input 存储类变量在 Vulkan compute 中**必须**以
 /// BuiltIn 注解声明语义，缺此装饰 ⇒ 模块非法，`vkCreateComputePipelines`
-/// 编译期拒绝——V2.0-W4 lavapipe 实测教训）。
+/// 编译期拒绝——lavapipe 实测教训）。
 pub const DECORATION_BUILT_IN: u32 = 11;
 /// BuiltIn 语义：`GlobalInvocationId`。
 pub const BUILTIN_GLOBAL_INVOCATION_ID: u32 = 28;
@@ -216,7 +216,7 @@ pub const BUILTIN_GLOBAL_INVOCATION_ID: u32 = 28;
 //
 // SPIR-V 1.0 / Vulkan 1.0 口径：SSBO = `Uniform` 存储类 + `BufferBlock` 装饰
 // （`Block` 才是 UBO；`StorageBuffer` 存储类是 SPIR-V 1.1+ 口味，本模块
-// 钉 1.0 不用）。V2.0-W4 lavapipe 实测补齐了三处此前缺失的强制件：
+// 钉 1.0 不用）。lavapipe 实测补齐了三处此前缺失的强制件：
 // OpEntryPoint 入口名的 null 终结字、Input 变量的 BuiltIn 注解、
 // BufferBlock 内运行期数组的 ArrayStride。
 static MUL2: &[u32] = &[
@@ -237,7 +237,7 @@ static MUL2: &[u32] = &[
     //    入口名 "mul2\0" 占**两个字**：'m'=0x6d 'u'=0x75 'l'=0x6c '2'=0x32
     //    （小端）压首字，次字全零作 null 终结——少这个零字时入口名会
     //    "越界"吞掉接口表首 id（0x07）的字节，驱动侧查不到 entry point
-    //    （V2.0-W4 lavapipe 实测：VUID-VkPipelineShaderStageCreateInfo-
+    //    （lavapipe 实测：VUID-VkPipelineShaderStageCreateInfo-
     //    pName-00707 "entrypoint not found"）。
     //    操作数：model + entry id + 名 2 字 + 接口 1 id = 5 ⇒ 字长 6。
     inst(6, OP_ENTRY_POINT),

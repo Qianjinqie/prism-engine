@@ -1,4 +1,4 @@
-//! `prism-app preview` 子命令：**预览闭环（宿主壳）**（V1.5-F 任务书 1.3）。
+//! `prism-app preview` 子命令：**预览闭环（宿主壳）**
 //!
 //! 两种模式：
 //!
@@ -11,7 +11,7 @@
 //!      就绪态）；
 //!    - `GET /health`：健康检查（JSON）。
 //!
-//!    整段影片在**后台线程**渲染（`render_movie`，V1.5-D 直达路径），服务
+//!    整段影片在**后台线程**渲染（`render_movie` 直达路径），服务
 //!    先绑定可连、渲染完成后**替换帧缓冲**——拉帧请求有界等待就绪，
 //!    启动不被渲染阻塞（"后台执行 + 缓冲替换"的 CLI 落地）。
 //!
@@ -73,7 +73,7 @@ pub const PREVIEW_USAGE: &str = r#"prism-app preview — 预览闭环（本地 H
 说明:
   服务模式在后台线程渲染整段影片（render_movie 直达路径），服务先绑定
   可连；/frame 有界等待就绪后按 t 取最近采样帧。单帧模式走同一管线，
-  整段求值后取最近帧落盘（逐帧 seek 入口留待后续波次，此处如实登记）。
+  整段求值后取最近帧落盘（逐帧 seek 入口尚未提供，此处如实登记）。
 
 示例:
   prism-app preview demo.prism                        # 起服务于 127.0.0.1:8790
@@ -481,7 +481,7 @@ fn http_listener_bind(addr: &str) -> Result<TcpListener, String> {
     TcpListener::bind(addr).map_err(|e| e.to_string())
 }
 
-/// 就绪驻留位的帧数提示（后台汇报用；未就绪回 0）。
+/// 就绪驻留位的帧数提示（后台状态查询用；未就绪回 0）。
 fn frame_count_hint(pair: &Arc<(Mutex<Option<ReadyFrames>>, Condvar)>) -> usize {
     let (lock, _cv) = &**pair;
     match lock.lock() {

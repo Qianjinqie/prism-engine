@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>Prism GPU Perf — 桌面 GPU 性能验收（D-14）</title>
+<title>Prism GPU Perf — 桌面 GPU 性能测量</title>
 <style>
   :root{
     --bg:#0e1116; --panel:#171b22; --panel2:#1e242e; --fg:#e6e9ef; --dim:#9aa4b2;
@@ -32,7 +32,7 @@
 </style>
 </head>
 <body>
-  <h1>Prism GPU Perf <span class="muted">· 桌面 GPU 性能验收（D-14）</span></h1>
+  <h1>Prism GPU Perf <span class="muted">· 桌面 GPU 性能测量</span></h1>
   <div class="sub">手机 = 正确性测试设备；<b>性能基准以桌面 GPU 为准</b>。本页由
     <code>perf_check.mjs</code> 驱动，也可手动打开查看环境与手动测量。</div>
 
@@ -600,7 +600,7 @@ window.__PERF__ = {
       provenance:
         "每帧耗时 = performance.now() 差，包住一次完整 run→settle→sync-readback；" +
         `预热 ${warmup} 帧后采样 ${frames} 帧；报告 min/median/mean/p95，帧率取 median。` +
-        "**规模非目标规模**（见能力缺口），故帧率不可作 Phase 4 性能验收结论。",
+        "**规模非目标规模**（见能力缺口），故帧率不可作性能结论。",
     };
   },
 };
@@ -615,7 +615,7 @@ function renderEnv(gpu, abi){
     ["adapter vendor", gpu.vendor],
     ["adapter architecture", gpu.architecture],
     ["adapter device", gpu.device],
-    ["软件适配器", gpu.isSoftware ? "⚠️ 是（不可作性能验收凭据）" : "否"],
+    ["软件适配器", gpu.isSoftware ? "⚠️ 是（不可作性能结论）" : "否"],
     ["ABI 版本", `v${abi.version}`],
   ];
   document.getElementById("env").innerHTML =

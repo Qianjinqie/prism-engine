@@ -3,7 +3,7 @@
 
 use prism_aesthetic::secondary::{HslQualifier, LiftGammaGain};
 
-/// P0-1 gamma：p/2^q 量化语义，对照真值 x^(1/gamma)（用 std powf 作参考）。
+/// gamma：p/2^q 量化语义，对照真值 x^(1/gamma)（用 std powf 作参考）。
 #[test]
 fn probe_p0_1_gamma_accuracy() {
     let ref_pow = |x: f32, g: f32| x.powf(1.0 / g);

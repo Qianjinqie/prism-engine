@@ -1,4 +1,4 @@
-//! 组合子库（V1.5-D）：高层语义 → 等价 v2 节点图展开。
+//! 组合子库：高层语义 → 等价 v2 节点图展开。
 //!
 //! # 定位
 //! 每个组合子是一件"视频修辞"（标题卡 /  lower third / 分屏 /  Ken Burns /
@@ -8,14 +8,14 @@
 //!   纯数据、纯函数、无 IO——展开产物与 `codegen_v2` 的 [`CompileV2Output`]
 //!   同构（同一节点图 + 通道 + 场景时间线模型）；
 //! - **注册面**：展开函数登记进 `codegen.rs` 的 [`crate::codegen::COMBINATOR_TABLE`]
-//!   （name → 展开 fn），供后续波次的 DSL 糖化指令与 Rust 侧统一查表。
+//!   （name → 展开 fn），供 DSL 糖化指令与 Rust 侧统一查表。
 //!
 //! # 纪律
-//! - **DSL v2 语法本轮不加新指令**（parser 刚稳定不碰）：本模块只被 Rust 侧
-//!   调用；糖化语法留后续波次；
+//! - **DSL v2 语法当前版本不加新指令**（parser 刚稳定不碰）：本模块只被 Rust 侧
+//!   调用；糖化语法留待后续版本支持；
 //! - 展开只使用既有 v2 节点类型（S5 相机 / S8 材质 / S12 实体），**不发明
 //!   新结构号**——组合子是语法糖，不是新引擎能力；
-//! - 转场混合数学全部复用 `prism-core::sceneseq`（W1-C 下沉件），本模块不
+//! - 转场混合数学全部复用 `prism-core::sceneseq`（已下沉至 core 的共用件），本模块不
 //!   实现任何混合/插值内核，只产出声明数据；
 //! - 所有错误走 [`CombinatorError`] 三段式（在哪 / 什么事 / 怎么改），
 //!   绝不 panic、绝不静默兜底。
@@ -978,7 +978,7 @@ fn easing_kind(name: &str) -> Option<EasingKind> {
 
 /// 展开 `morph_between`：`sources[0]`（前片）与 `sources[1]`（后片）顺序
 /// 拼接，重叠区按 `kind` 形变混合。混合数学（整数 wipe / dissolve / push /
-/// mix）全部复用 `prism-core::sceneseq`（W1-C 下沉件），本模块只产出声明。
+/// mix）全部复用 `prism-core::sceneseq`（已下沉至 core 的共用件），本模块只产出声明。
 ///
 /// 参数：
 /// - `kind`（Str，缺省 "crossfade"）：crossfade / fade / cut / black /

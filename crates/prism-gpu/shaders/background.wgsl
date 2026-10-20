@@ -9,7 +9,7 @@
 //   手写 Maclaurin 正弦逼近 `sin_approx`，全程仅用 +/-/*// 与 floor/clamp 等内建。
 // - 噪声在 shader 内用 hash-based value noise 实现（振幅 ±3%），不再依赖第三方
 //   simplex 库；Rust 侧 `render_background_cpu` 复用同一套 hash 公式，保证两端
-//   公式一致。GPU 实际执行待 WebGPU 运行时——本沙箱 headless，仅做编译/解析校验。
+//   公式一致。GPU 实际执行待 WebGPU 运行时——无 GPU 环境下仅做编译/解析校验。
 //
 // 参数经 uniform 传入：dim=(width,height)、t、seed。
 // 输出写入 storage buffer（每像素一个 u32，RGBA8 little-endian 打包）。

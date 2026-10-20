@@ -28,7 +28,7 @@
 harness 直接取同一份源码编译，杜绝 JS 侧另抄一份导致不同步。
 两者合计 **11 份** WGSL 过结构自检（9 内嵌 + 2 D0 内核，见测试项 #3）。
 
-> **`text.wgsl` 的 `Camera2D` 死代码已删（本轮）**：`Camera2D` struct 与
+> **`text.wgsl` 的 `Camera2D` 死代码已删（此版本）**：`Camera2D` struct 与
 > `@binding(2) var<uniform> cam2d` 从 `text.wgsl` 删除（**70 → 64 行**）。取证结论：
 > 全仓仅 `text.wgsl` 两处出现、`vs_glyph`/`fs_text` 均不引用、宿主从无建缓冲、
 > 该文件无 `@compute` 入口故从未 dispatch ⇒ 判决为**纯死代码**——**不是**"宿主漏建
@@ -174,7 +174,7 @@ JS 调 Rust 的导出定义在 `src/web/abi.rs`（`#[unsafe(no_mangle)] pub exte
 | `prism_kernel_wgsl` / `_len` | `(i) -> ptr / u32` | 导出 D0 内核（`scan_block`/`histogram`）WGSL |
 | `prism_check_wgsl` | `(ptr,len) -> i32` | 结构自检（绑定组/入口/禁 libm） |
 
-**多 bind group 相关导出（本轮扩展，胶水实现见 `index.html` 的 `glue`）**：
+**多 bind group 相关导出（此版本扩展，胶水实现见 `index.html` 的 `glue`）**：
 
 | 导出/胶水 | 新签名 | 用途 |
 |------|------|------|
@@ -196,7 +196,7 @@ JS 调 Rust 的导出定义在 `src/web/abi.rs`（`#[unsafe(no_mangle)] pub exte
 
 清单的**单一真源**是 `src/web/abi.rs` 的 `static TESTS`（`prism_test_count()`
 实测 = 15）。下表第 0–8 项的说明取自该数组各 `TestItem` 的 `name` 字段，
-第 9–14 项为本轮及上一轮新增。
+第 9–14 项为近期新增。
 
 | # | id | 需要 GPU | 说明（对齐 `TestItem::name`） |
 |---|----|---------|--------------------------|
@@ -217,10 +217,10 @@ JS 调 Rust 的导出定义在 `src/web/abi.rs`（`#[unsafe(no_mangle)] pub exte
 | 14 | `gpu.rt_wavefront_multi` | 是 | 真 WebGPU：`rt_wavefront` 多 bind group 的 generate/shade/extend，group 0/1/2/3 逐字段判对 |
 
 其中 9 项标`needs_gpu = true`（0、6、7、8、10、11、12、13、14），6 项为纯 CPU 项。
-**#14（`gpu.rt_wavefront_multi`）是本轮新增**：配合扩展后的多 bind group ABI，把
+**#14（`gpu.rt_wavefront_multi`）是本版本新增**：配合扩展后的多 bind group ABI，把
 `rt_wavefront` 的 `generate` / `shade` / `extend` 三个此前 SKIP 的入口真 dispatch 并
 与 CPU 参考逐字段判对——实测 GPU fingerprint == CPU fingerprint == `0xc8e907af`，
-mismatch 0（64 条路径槽，最大偏差 `5.960e-8`，容差 `2e-6`）。**#9–#13 是上一轮新增**：
+mismatch 0（64 条路径槽，最大偏差 `5.960e-8`，容差 `2e-6`）。**#9–#13 是此前新增**：
 #9 把"哪些 kernel 真的被 dispatch 过"从口头承诺变成可执行台账，#10–#13 把 D3 模拟 /
 D2 wavefront 从"只编译"升级为"真 dispatch + 与 CPU 参考逐元素判对"。
 
@@ -231,7 +231,7 @@ D2 wavefront 从"只编译"升级为"真 dispatch + 与 CPU 参考逐元素判�
 
 ## 静态层 vs 真机层：两层判别力与覆盖台账
 
-本轮最有价值的认识：**静态层全绿 ≠ 真机层全绿**。二者判的是不同的东西，
+最值得记住的认识：**静态层全绿 ≠ 真机层全绿**。二者判的是不同的东西，
 必须显式分开记账，否则"CI 绿了"会被误读成"引擎对了"。
 
 | 层 | 谁在判 | 能判什么 | 判不了什么 |
@@ -239,7 +239,7 @@ D2 wavefront 从"只编译"升级为"真 dispatch + 与 CPU 参考逐元素判�
 | 静态层 | `cargo test` + `wgsl_lint.mjs` + `host_test.mjs` | 结构/符号/对齐/绑定偏移/清单一致性/非恒真性 | 驱动是否接受这份 WGSL、dispatch 结果数值是否对 |
 | 真机层 | `realgpu_check.mjs`（有头 Chromium + WebGPU adapter） | 真 `createShaderModule`、真 dispatch、真读回逐字节比对 | —— |
 
-本轮真机层一次性抓出 4 个静态层漏掉的真缺陷（`pendingErrors` 跨测试项泄漏等），
+真机层曾一次性抓出 4 个静态层漏掉的真缺陷（`pendingErrors` 跨测试项泄漏等），
 详见 §16 的覆盖台账——**这就是"两层必须分开"的直接证据**。
 
 ### 16 个 compute 入口的覆盖台账（`shader.dispatch_census`）
@@ -254,7 +254,7 @@ D2 wavefront 从"只编译"升级为"真 dispatch + 与 CPU 参考逐元素判�
 | `rt_wavefront.wgsl` | 5 | 5（connect / accumulate / **generate / shade / extend**） | 0 |
 | **合计** | **16** | **14** | **2** |
 
-> **本轮台账变化**：`rt_wavefront` 的 `generate` / `shade` / `extend` 随多 bind group
+> **此版本台账变化**：`rt_wavefront` 的 `generate` / `shade` / `extend` 随多 bind group
 > ABI 落地后由 SKIP 转入判对链，`SKIP` 由 6 项中的 5 项降至 **2 项**——即从
 > 「11 个进判对链 / 5 个 SKIP」变成「**14 个进判对链 / 2 个 SKIP**」。
 
@@ -276,7 +276,7 @@ D2 wavefront 从"只编译"升级为"真 dispatch + 与 CPU 参考逐元素判�
 | 类别 | 入口 | 根因 |
 |------|------|------|
 | **纯占位（现存唯一 SKIP 类别）** | `sim_particles::neighbor_scan`、`sim_sph::sph_velocity` | 函数体只有 `_ = i;` / `_ = sp_vel[i];`，**不写任何 storage**。dispatch 只能证明"不崩"，没有输出就没有可比对的东西——**造判据等于自证恒真**，比不测更危险。其语义等价判对由真正消费这些数据的 kernel 覆盖：`sph_density` 自己做了 O(n²) 全邻域扫描（不读 `cell_range`），`cloth_project` 覆盖了 `neighbor_scan` 预留的"邻域连续消费"语义位 |
-| **需多 bind group（历史，已解决）** | `rt_wavefront::generate` / `shade` / `extend` | 曾因宿主胶水只有 `pipe.getBindGroupLayout(0)` + `pass.setBindGroup(0, …)` 而无法 dispatch——这是胶水的表达力缺口。**本轮已扩 ABI**：`prism_create_bind_group` 新增 `group` 索引参数、`prism_dispatch` 接受多 bind group 表，三个入口现由 `gpu.rt_wavefront_multi`（#14）真 dispatch 并判对，**不再 SKIP** |
+| **需多 bind group（历史，已解决）** | `rt_wavefront::generate` / `shade` / `extend` | 曾因宿主胶水只有 `pipe.getBindGroupLayout(0)` + `pass.setBindGroup(0, …)` 而无法 dispatch——这是胶水的表达力缺口。**此版本已扩 ABI**：`prism_create_bind_group` 新增 `group` 索引参数、`prism_dispatch` 接受多 bind group 表，三个入口现由 `gpu.rt_wavefront_multi`（#14）真 dispatch 并判对，**不再 SKIP** |
 
 **必须写清楚**：现存的两个 SKIP **不是"跑不动"，而是"无法判对"**——它们能 dispatch、
 不会崩，只是函数体不写任何 storage，没有任何输出可与 CPU 参考比对，硬造一条判据
@@ -310,7 +310,7 @@ SoA 的 `pos`/`vel`/`inv` 三个独立 binding 会让各 entry 的集合**互不
 | `gpu.rt_wavefront_multi` | generate `g0{0,1} g1{0} g2{0} g3{0}`（4 组）；shade/extend `g0{0,1} g1{0}` + `g2` 各为 5 绑定 `{0..4}`（含 lights）/ 4 绑定 `{0..3}`（不含 lights） |
 
 > **连续前缀对每个 group 独立成立**：多 bind group 只是把「一个前缀」扩成
-> 「每个 group 各一个前缀」，**不改变前缀规则本身**。这正是本轮 `rt_wavefront`
+> 「每个 group 各一个前缀」，**不改变前缀规则本身**。这正是此版本 `rt_wavefront`
 > 调整 binding 布局的原因——camera 从原来的 group 移到 `@group(3)`、`rt_scene`
 > 重排为 `scene_params(0)…lights(4)`，使每个 group 内的绑定集都成为连续前缀
 > `{0..n-1}`。`shade` 引用 `g2{0,1,2,3,4}`（含 lights），`extend` 只引用
@@ -346,7 +346,7 @@ SoA 的 `pos`/`vel`/`inv` 三个独立 binding 会让各 entry 的集合**互不
 ### 真机回归的实测结果（务必连同限制一起读）
 
 Xvfb + SwiftShader（`vendor=google arch=swiftshader`）下 **15/15 全绿**
-（本轮多 bind group 落地后实测 `PASS=15 FAIL=0 SKIP=0`）。
+（多 bind group 落地后实测 `PASS=15 FAIL=0 SKIP=0`）。
 
 > ⚠️ **SwiftShader 是软件适配器，不是真 GPU。** 上述结果只证明"逻辑在 conforming
 > 的软件实现上正确"，**不等于真 GPU 全绿**——真GPU 仍需在真实设备（手机）上复测。
@@ -383,14 +383,14 @@ node crates/prism-gpu/web/host_test.mjs crates/prism-gpu/web/prism_gpu.wasm
 线性内存往返、测试项清单、CPU 参考数值与JS 独立实现
 交叉比对（fingerprint 必须逐位相等）、WGSL 源导出、uniform 布局、**静态门禁
 wgsl_lint 规则 A–E 及其非恒真自证**、无 WebGPU 时不白屏不误报、以及无device
-时 GPU 项返回 SKIP。**用户手机反馈前必须先过这条链。**
+时 GPU 项返回 SKIP。**在手机上验证前必须先过这条链。**
 
 ## 发布到手机
 
 `.wasm` 与 `index.html` 同目录（相对路径 `prism_gpu.wasm`），因此**整个 `web/`
 目录一起发布**。三种方式：
 
-1. **发布为应用**（沙箱）：把 `web/` 目录作为应用根目录发布
+1. **发布为应用**：把 `web/` 目录作为应用根目录发布
 2. **静态托管**：上传 `web/` 下 2 个文件即可（`index.html` + `prism_gpu.wasm`）
 3. **本地起服务调试**：`cd crates/prism-gpu/web && python3 -m http.server 8080`，
    手机与电脑同一局域网访问 `http://<电脑IP>:8080/`
@@ -463,10 +463,10 @@ adapter 拿不到时的排查顺序：① 无 GPU 且未回退软件适配器；
 即 `shaders::LIBRARIES`），脚本按目录实际内容枚举、
 不写死数量，所以"新增一份 shader"不会让 CI 无端变红，而"误删全部"一定会红。
 
-## 桌面 GPU 性能验收（perf_check.mjs + perf.html）
+## 桌面 GPU 性能测量（perf_check.mjs + perf.html）
 
 `realgpu_check.mjs` 判的是**正确性**（跑完测试项、状态对），**不测吞吐**。桌面
-GPU 的**性能验收**由新增的 `perf_check.mjs` + `perf.html` 负责——这是本轮新增的
+GPU 的**性能测量**由 `perf_check.mjs` + `perf.html` 负责——这是新增的
 第三条链路，与正确性回归互补但**不重叠**。
 
 ```bash
@@ -485,8 +485,8 @@ node perf_check.mjs                        # 自动起静态服务 + 自动找�
 `--timeout` 默认 600s（SwiftShader 很慢），`--frames` 默认 30，`--warmup` 默认 5，
 `--require-gpu` 令软件适配器直接判失败，`--self-check` 只跑确定性 + adapter 探测。
 
-**退出码**（无静默通过路径）：**0** = 真 GPU 且确定性成立（可作验收）；**1** =
-前置/确定性/页面失败；**2** = 用法；**3** = **软件适配器（结果不可作验收凭据）**。
+**退出码**（无静默通过路径）：**0** = 真 GPU 且确定性成立（性能结论可用）；**1** =
+前置/确定性/页面失败；**2** = 用法；**3** = **软件适配器（结果不可作性能结论）**。
 
 设计要点：
 
@@ -499,7 +499,7 @@ node perf_check.mjs                        # 自动起静态服务 + 自动找�
 
 ### 能力缺口（当前 ABI 无法表达目标规模，**必读**）
 
-脚本在沙箱只能测**小构型吞吐**，**不可线性外推**——小规模下每帧耗时被固定开销
+脚本在无 GPU 环境只能测**小构型吞吐**，**不可线性外推**——小规模下每帧耗时被固定开销
 （dispatch + 一次同步读回）主导，推不出大规模数字。两个目标规模当前**无法表达**：
 
 | 目标 | 为何无法表达 | 需要的接口 |
@@ -508,9 +508,9 @@ node perf_check.mjs                        # 自动起静态服务 + 自动找�
 | `sim_particles@1e6` | 粒子数写死为编译期常量 `SIM_P_COUNT=32`、`PARTICLES_BYTES=1536`，dispatch 工作组数也按它推出 | 新增导出 `prism_sim_particles_run(count, frames)`；百万粒子还需确认 `maxStorageBufferBindingSize ≥ 1e6×48≈48MB`（超出须分块） |
 
 > ⚠️ **两条必须钉死的结论**：
-> 1. **SwiftShader 全绿 ≠ 真 GPU 全绿**。沙箱只有 SwiftShader（软件适配器），
->    因此 **`perf_check.mjs` 在沙箱跑出的性能数字不构成验收结论**（脚本会以退出码
->    3 自报这一点）。性能验收必须在**真实桌面 GPU** 上跑，退出码 0 才算数。
+> 1. **SwiftShader 全绿 ≠ 真 GPU 全绿**。无 GPU 环境只有 SwiftShader（软件适配器），
+>    因此 **`perf_check.mjs` 在无 GPU 环境跑出的性能数字不构成性能结论**（脚本会以退出码
+>    3 自报这一点）。性能测量必须在**真实桌面 GPU** 上跑，退出码 0 才算数。
 > 2. **小构型吞吐 ≠ 目标帧率**。脚本测得的是固定小构型（2×2×spp2 / 32 粒子）的
 >    吞吐，**不可线性外推**为 1080p 或百万粒子数字。
 
@@ -521,7 +521,7 @@ node perf_check.mjs                        # 自动起静态服务 + 自动找�
 同源教训（静态层全绿却与真机脱节）。
 
 ```bash
-cd /workspace/media-engine
+cd <workspace 根目录>
 cargo test -p prism-gpu --lib 2>&1 | tail -3                  # 85 passed（wasm 侧单测）
 node crates/prism-gpu/web/host_test.mjs 2>&1 | tail -3         # 通过 154 项，失败 0 项
 node crates/prism-gpu/web/wgsl_lint.mjs 2>&1 | tail -3         # 通过 63/63

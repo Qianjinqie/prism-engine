@@ -3,8 +3,8 @@
 //! # 三件事
 //!
 //! 1. **渲染一帧**（[`render_frame_payload`]）：`(配置哈希, 帧号)` 的**纯函数**，
-//!    产出定长 32 字节载荷。这是真实农场的"渲染一帧像素"替身——本轮验的是
-//!    **调度/传输/续算的确定性**，不是成像正确性（见汇报"诚实边界"）。
+//!    产出定长 32 字节载荷。这是真实农场的"渲染一帧像素"替身——当前版本验的是
+//!    **调度/传输/续算的确定性**，不是成像正确性（见"诚实边界"说明）。
 //! 2. **算一个任务**（[`run_task`]）：逐帧产出载荷，长度恒等于帧区间长度
 //!    （不静默补帧，C20）。命中缓存（[`FrameCache`]）的帧**直接复用、不重算**。
 //! 3. **服务一条 stdio 帧流**（[`run_stdio_worker`]）：`farm-worker` 子进程的全部
@@ -484,7 +484,7 @@ pub fn run_worker_stream_with_mode<R: std::io::Read, W: std::io::Write>(
                     let _ = write_frame(output, FrameKind::Error, err.to_string().as_bytes());
                     return Err(err);
                 }
-                let _ = stats; // 统计本轮不落盘（manifest 由主节点持有）
+                let _ = stats; // 统计当前版本不落盘（manifest 由主节点持有）
                 write_frame(output, FrameKind::Shard, &encode_shard(&shard))?;
                 served = served.saturating_add(1);
             }

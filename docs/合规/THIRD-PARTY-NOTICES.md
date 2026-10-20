@@ -43,9 +43,9 @@
 
 | # | 核验项 | 命令 | 结果 |
 |---:|---|---|---|
-| 1 | 全仓 `[dependencies]` 无外部 crate | 逐个审阅 `Cargo.toml` + `crates/*/Cargo.toml` | ✅26 个 crate **全部只有 `path =` 依赖** |
+| 1 | 全仓 `[dependencies]` 无外部 crate | 逐个审阅 `Cargo.toml` + `src/*/Cargo.toml` | ✅26 个 crate **全部只有 `path =` 依赖** |
 | 2 | 无构建期外部代码 | `find . -name build.rs -not -path './target/*'` | ✅ **输出为空**（无 `build.rs` ⇒ 无 `bindgen`/外部代码生成） |
-| 3 | 无外部 C/C++ 库链接 | `grep -rn 'extern "C"\|#\[link' crates/ --include='*.rs'` | ✅ 仅 `ffi` 类型声明，**无 `-lfoo`/pkg-config 外部库链接** |
+| 3 | 无外部 C/C++ 库链接 | `grep -rn 'extern "C"\|#\[link' src/ --include='*.rs'` | ✅ 仅 `ffi` 类型声明，**无 `-lfoo`/pkg-config 外部库链接** |
 | 4 | 依赖锁文件核对 | `Cargo.lock` | ✅ 仅本仓 26 个包 |
 | 5 | 自动化核验 | `node tools/compliance_check.mjs` | ✅ **exit 0** |
 
@@ -81,7 +81,7 @@
 | **归属** | S. Joe & F. Y. Kuo, "Constructing Sobol sequences with better two-dimensional projections", SIAM J. Sci. Comput. 30(5), 2008 |
 | **许可** | **BSD 三条款**（⚠️ 2026-10-02 更正：此前曾误标为"公有领域"） |
 | **来源** | `new-joe-kuo-6.21201`，<https://web.maths.unsw.edu.au/~fkuo/sobol/new-joe-kuo-6.21201> |
-| **归属声明位置** | `crates/prism-rt/src/sampler.rs` 模块头（**原文照录版权声明**） |
+| **归属声明位置** | `src/prism-rt/src/sampler.rs` 模块头（**原文照录版权声明**） |
 | **随包分发** | ✅ 是（表内嵌于源码） |
 | **自研化状态** | ⏳ **待自研**（子项①） |
 
@@ -96,9 +96,9 @@
 | 项 | 内容 |
 |---|---|
 | **归属** | **Noto Sans SC** Regular / Bold，© Google LLC |
-| **许可** | **SIL Open Font License 1.1**（许可全文随包：`crates/prism-text/font_data/LICENSE`） |
+| **许可** | **SIL Open Font License 1.1**（许可全文随包：`src/prism-text/font_data/LICENSE`） |
 | **衍生版** | **Prism Sans SC**（改名以避开 OFL 的 **Reserved Font Name** `Noto`） |
-| **修改说明** | `crates/prism-text/font_data/MODIFICATIONS.md`（OFL 第 1 条要求） |
+| **修改说明** | `src/prism-text/font_data/MODIFICATIONS.md`（OFL 第 1 条要求） |
 | **随包分发** | ✅ 是（3.87 MB；Regular + Bold） |
 | **自研化状态** | ⏳ **待自研**（子项②） |
 

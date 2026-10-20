@@ -1,6 +1,6 @@
-//! 基线 JPEG（sequential DCT / Huffman / 8-bit）解码器 —— V1.5-W1-A / P0-2。
+//! 基线 JPEG（sequential DCT / Huffman / 8-bit）解码器。
 //!
-//! 算法规格：`docs/final-algorithms.md` §2.1（P1 定点 IDCT）。要点：
+//! 算法规格：定点 IDCT（i64 主路径 + 超阈 i128 兜底）。要点：
 //!
 //! * **零第三方 crate**：容器解析、Huffman 解码、IDCT、上采样、色彩变换全部手写；
 //! * **确定性**：IDCT 全程整数（Stage1 i64 + Stage2 阈值内 i64 / 超阈 i128），
@@ -557,7 +557,7 @@ pub fn decode_baseline(data: &[u8]) -> Result<JpegImage, String> {
                         let nf: usize = seg[5] as usize;
                         if precision != 8 {
                             return Err(format!(
-                                "JPEG 精度 {} bit 不在 V1.5-A 支持范围（L2：仅 8-bit 基线）",
+                                "JPEG 精度 {} bit 不在支持范围（L2：仅 8-bit 基线）",
                                 precision
                             ));
                         }
@@ -587,7 +587,7 @@ pub fn decode_baseline(data: &[u8]) -> Result<JpegImage, String> {
                         }
                         if nf == 4 {
                             return Err(
-                                "4 分量（CMYK/YCCK）JPEG 不在 V1.5-A 支持范围（L2）".to_string()
+                                "4 分量（CMYK/YCCK）JPEG 不在支持范围（L2）".to_string()
                             );
                         }
                         saw_sof = true;
@@ -635,7 +635,7 @@ pub fn decode_baseline(data: &[u8]) -> Result<JpegImage, String> {
                     // 渐进式 / 算术编码：明确拒绝
                     0xC2 | 0xC6 | 0xCA | 0xCE => {
                         return Err(format!(
-                            "JPEG 标记 FF{:02X}（渐进式/算术编码）不在 V1.5-A 支持范围\
+                            "JPEG 标记 FF{:02X}（渐进式/算术编码）不在支持范围\
                              （L2：仅基线顺序 DCT）",
                             marker
                         ));
@@ -643,7 +643,7 @@ pub fn decode_baseline(data: &[u8]) -> Result<JpegImage, String> {
                     // 其他 SOFn（无损、层次）
                     0xC3 | 0xC5 | 0xC7 | 0xC9 | 0xCB | 0xCD | 0xCF => {
                         return Err(format!(
-                            "JPEG 标记 FF{:02X}（无损/层次编码）不在 V1.5-A 支持范围（L2）",
+                            "JPEG 标记 FF{:02X}（无损/层次编码）不在支持范围（L2）",
                             marker
                         ));
                     }
@@ -791,7 +791,7 @@ pub fn decode_baseline(data: &[u8]) -> Result<JpegImage, String> {
         }
     } else {
         return Err(format!(
-            "{} 分量 JPEG 不在 V1.5-A 支持范围（L2：仅灰度与三通道）",
+            "{} 分量 JPEG 不在支持范围（L2：仅灰度与三通道）",
             comps.len()
         ));
     }

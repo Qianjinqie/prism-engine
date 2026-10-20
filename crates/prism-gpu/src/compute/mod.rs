@@ -1,12 +1,12 @@
-//! 设备无关的 compute 语义层（V2.0-G GPU compute-first 管线的基础件）。
+//! 设备无关的 compute 语义层（GPU compute-first 管线的基础件）。
 //!
 //! # 为什么要「语义层」先行
 //!
 //! 真机 Vulkan/Metal/WebGPU 三条路径的 **kernel 语义完全相同**，差别只在
 //! 「谁来执行同一组 invocation」。把语义抽成设备无关的纯数据变换之后：
 //!
-//! * 引擎在**无 GPU 的构建机**上也能真跑真测 kernel 正确性（本仓库 CI 沙箱
-//!   只有 loader、无 ICD，见 `crate::vulkan` 的诚实边界）；
+//! * 引擎在**无 GPU 平台**上也能真跑真测 kernel 正确性（无可用 ICD 时按
+//!   不支持处理，见 `crate::vulkan` 的诚实边界）；
 //! * 真机 backend 只负责把 [`DispatchShape`] 三个组数喂给 `vkCmdDispatch`，
 //!   不存在第二份形状/布局口径（工程四律 1/4：「绝不私定第二套口径」）；
 //! * parity 判对（`prism-rt::wavefront` 的 double gate）以本层的
@@ -280,8 +280,8 @@ pub fn wavefront_intersect_dispatch(ray_count: u32) -> DispatchShape {
 
 /// 全部语义 kernel 的描述（顺序即注册序，确定性）。
 ///
-/// 注意：`spv_module` 为**空串**表示「SPIR-V 待真机 glslang 生成」——
-/// 本仓库构建环境没有 `glslangValidator`/`glslc`，故只有
+/// 注意：`spv_module` 为**空串**表示「SPIR-V 待工具链生成」——
+/// 构建环境未提供 `glslangValidator`/`glslc`，故只有
 /// [`KERNEL_SPV_MUL2_PROBE`] 的 SPIR-V 是手写字节码真实嵌入的（见
 /// [`crate::vulkan::spirv`]）。这一区分由 [`kernel_spv_status`] 如实暴露，
 /// **不假装** RT kernel 已有二进制。

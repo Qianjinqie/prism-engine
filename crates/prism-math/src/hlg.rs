@@ -371,7 +371,7 @@ mod tests {
         // PQ 编码到 ≈ 0.9265、HLG 编码到 ≈ 0.8716，即 **PQ > HLG**。
         // 原因是 PQ 的低端提升更陡（10000 nit 量程下 5000 nit 仍属高亮），
         // HLG 则按广播惯例把 0.5 场景线性映射到 ~0.87 的**中高位**信号。
-        // ⚠️ 此前 WIP 断言方向写反（且把 nits 喂进归一化接口），已按实测修正。
+        // ⚠️ 此前开发中的断言方向写反（且把 nits 喂进归一化接口），已按实测修正。
         let x = 0.5f32;
         let p_mid = crate::pq::pq_oetf(x);
         let h_mid = hlg_oetf(x);
@@ -390,9 +390,9 @@ mod tests {
     #[test]
     fn pq_endpoints_and_monotonicity_are_locked() {
         use crate::pq::{pq_eotf, pq_eotf_nits, pq_oetf};
-        // ⚠️ **单位口径**（本轮修正的 WIP 缺陷）：`pq_eotf` / `pq_oetf` 的
+        // ⚠️ **单位口径**（本次修正的缺陷）：`pq_eotf` / `pq_oetf` 的
         // 输入输出都是**归一化** `[0,1]`（1.0 ⇔ 10000 nit），**不是 nits**。
-        // nits 版只有 `pq_eotf_nits` 一个（signal → nits）。此前 WIP 测试
+        // nits 版只有 `pq_eotf_nits` 一个（signal → nits）。此前开发中的测试
         // 把 `nits` 直接喂进 `pq_oetf`，被 `clamp(0,1)` 悄悄截断，
         // 断言「通过」但没测到东西 —— 这里按正确口径重写。
         assert!(pq_eotf(0.0).abs() < 1e-6, "PQ signal 0 应 ≈ 0，实测 {}", pq_eotf(0.0));

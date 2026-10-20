@@ -24,7 +24,7 @@ use prism_render::tile::TileEffect;
 // ---------------------------------------------------------------------------
 
 /// `.cube` 解析错误。错误码延续 PF 段（PF1003–PF1007；段位表单点在
-/// prism-core lib.rs，本 crate 新增条目见完工汇报缺口上报）。
+/// prism-core lib.rs，本 crate 新增条目需先上报获批）。
 ///
 /// `line = 0` 表示文件级问题（如缺少 `LUT_3D_SIZE` 声明，无行可指）。
 #[derive(Debug, Clone, PartialEq)]

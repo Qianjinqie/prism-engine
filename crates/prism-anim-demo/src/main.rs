@@ -395,7 +395,7 @@ fn main() {
     )
     .expect("MP4 封装失败");
 
-    let out_path = "/workspace/prism_aurora.mp4";
+    let out_path = "prism_aurora.mp4";
     std::fs::write(out_path, &mp4).expect("写入失败");
     eprintln!(
         "已生成 {}：{} 字节，{} 帧 @{}×{} {}fps（JPEG q{}，MJPEG 4:4:4，官方 muxer）",

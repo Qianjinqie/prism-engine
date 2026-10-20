@@ -1,5 +1,5 @@
 //! 集成测试：用 `ffmpeg` 解析 `render_short` 产出的 MP4，断言帧数 ==
-//! `spec.frame_count()`（ffmpeg 在本沙箱可用）。
+//! `spec.frame_count()`（运行环境需可用 ffmpeg）。
 
 use prism_author::{
     render_short, render_short_avi_faded, Background, Caption, CaptionStyle, ClipSpec, EasingKind,
@@ -116,7 +116,7 @@ fn ffmpeg_parses_frame_count_matches_spec() {
     assert!(!mp4.is_empty());
     let path = write_temp(&mp4, "prism_author_it.mp4");
     let got = ffmpeg_frame_count(path.to_str().unwrap())
-        .expect("ffmpeg 不可用或解析失败（本沙箱应可用）");
+        .expect("ffmpeg 不可用或解析失败（运行环境需可用 ffmpeg）");
     assert_eq!(got, expected as u64, "ffmpeg 解码帧数 {} != spec.frame_count() {}", got, expected);
     let _ = std::fs::remove_file(&path);
 }
@@ -136,7 +136,7 @@ fn ffmpeg_parses_empty_single_frame_mp4() {
     let mp4 = render_short(&spec);
     let path = write_temp(&mp4, "prism_author_empty.mp4");
     let got = ffmpeg_frame_count(path.to_str().unwrap())
-        .expect("ffmpeg 不可用或解析失败（本沙箱应可用）");
+        .expect("ffmpeg 不可用或解析失败（运行环境需可用 ffmpeg）");
     assert_eq!(got, 1, "空 tracks 的单帧 MP4 应被 ffmpeg 解析为 1 帧");
     let _ = std::fs::remove_file(&path);
 }
@@ -203,7 +203,7 @@ fn ffmpeg_parses_faded_avi_mjpeg_and_frame_count() {
     );
 
     let got = ffmpeg_frame_count(path.to_str().unwrap())
-        .expect("ffmpeg 不可用或解析失败（本沙箱应可用）");
+        .expect("ffmpeg 不可用或解析失败（运行环境需可用 ffmpeg）");
     assert_eq!(got, expected as u64, "解码帧数 {} != spec.frame_count() {}", got, expected);
     let _ = std::fs::remove_file(&path);
 }

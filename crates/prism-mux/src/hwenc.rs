@@ -68,7 +68,7 @@ pub struct HwCapability {
     pub max_height: u32,
 }
 
-/// 硬件编码器探测接口（真机由厂商 API 实现；沙箱返回空集）。
+/// 硬件编码器探测接口（真实设备由厂商 API 实现；无设备平台返回空集）。
 pub trait HwEncoders {
     /// 枚举当前机器可用的硬件编码器能力（确定性序）。
     fn enumerate(&self) -> Vec<HwCapability>;
@@ -76,7 +76,7 @@ pub trait HwEncoders {
 
 /// 骨架探测：**无真机 FFI**，仅返回平台"可能"后端的能力声明（未验证）。
 ///
-/// 真机启用时替换为厂商 API 查询；沙箱/无 FFI 环境返回空集，编码自动降级。
+/// 有设备时替换为厂商 API 查询；无设备或无 FFI 绑定时返回空集，编码自动降级。
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SkeletonProbe;
 
@@ -104,7 +104,7 @@ pub struct EncodeRequest {
 
 /// 编码器适配器接口（厂商无关）；真机实现由各后端提供。
 ///
-/// 当前仅定义契约（骨架），沙箱无实现——`available()` 恒 `false`。
+/// 当前仅定义契约（骨架），无设备平台无实现——`available()` 恒 `false`。
 pub trait EncoderAdapter {
     /// 本适配器是否在当前机器可用（真机探测）。
     fn available(&self) -> bool;

@@ -18,7 +18,7 @@
 //! - 数字/字符串实体：`&lt; &gt; &amp; &quot; &apos; &#NN; &#xHH;`；
 //! - XML 声明 `<?xml version="1.0"?>`（跳过）与处理指令（跳过）。
 //!
-//! **不支持**（本轮**明确**不做，见「诚实边界」）：
+//! **不支持**（当前版本**明确**不做，见「诚实边界」）：
 //! - DTD / 实体声明 `<!DOCTYPE ...>`（只跳过不解释，**不**支持自定义实体）；
 //! - 命名空间处理（`xmlns` 属性原样保留，不做前缀解析）；
 //! - CDATA 之外的实体白名单（只认上列 5 个 + 数字实体，**未知实体报错**
@@ -115,13 +115,13 @@ impl MtlxError {
         )
     }
 
-    /// MX2002：XML 特征本轮不支持（DTD / 未知实体等）。
+    /// MX2002：XML 特征当前版本不支持（DTD / 未知实体等）。
     pub fn unsupported(location: impl Into<String>, problem: impl Into<String>) -> Self {
         Self::new(
             "MX2002",
             location,
             problem,
-            "本轮只支持最小 XML（无 DTD、无自定义实体、无命名空间语义）；\
+            "当前版本只支持最小 XML（无 DTD、无自定义实体、无命名空间语义）；\
              请让导出方关闭 DTD 并只用预定义实体（&lt; &gt; &amp; &quot; &apos;）"
                 .to_string(),
         )
@@ -144,7 +144,7 @@ impl MtlxError {
             "MX2004",
             location,
             problem,
-            "本轮支持的节点类型有限（见 `NodeKind` 文档）；如需该节点，\
+            "当前版本支持的节点类型有限（见 `NodeKind` 文档）；如需该节点，\
              请先在 `materialx.rs` 里加映射，或改用已支持的等价节点组合"
                 .to_string(),
         )
@@ -321,7 +321,7 @@ impl<'a> XmlParser<'a> {
             } else if self.starts_with("<!DOCTYPE") {
                 return Err(MtlxError::unsupported(
                     self.here(),
-                    "遇到 `<!DOCTYPE>`：本轮最小 XML 解析器不支持 DTD / 自定义实体",
+                    "遇到 `<!DOCTYPE>`：当前版本最小 XML 解析器不支持 DTD / 自定义实体",
                 ));
             } else {
                 break;
@@ -493,7 +493,7 @@ impl<'a> XmlParser<'a> {
                     } else if self.starts_with("<!") {
                         return Err(MtlxError::unsupported(
                             self.here(),
-                            "元素内出现声明（`<!...>`）：本轮不支持 DTD / 自定义实体",
+                            "元素内出现声明（`<!...>`）：当前版本不支持 DTD / 自定义实体",
                         ));
                     } else {
                         el.children.push(self.parse_element()?);
@@ -615,8 +615,8 @@ fn decode_entities(s: &str, location: &str) -> Result<String, MtlxError> {
                             return Err(MtlxError::unsupported(
                                 location,
                                 format!(
-                                    "未知实体 `&{other};`：本轮只支持 &lt; &gt; &amp; &quot; &apos; 与数字实体 \
-                                     （自定义实体需 DTD，本轮不支持）"
+                                    "未知实体 `&{other};`：当前版本只支持 &lt; &gt; &amp; &quot; &apos; 与数字实体 \
+                                     （自定义实体需 DTD，当前版本不支持）"
                                 ),
                             ));
                         }
@@ -1172,7 +1172,7 @@ fn compile_material(mat: &XmlElement) -> Result<CompiledMaterial, MtlxError> {
         let cf = out.child("connectfrom").ok_or_else(|| {
             MtlxError::structure(
                 format!("材质 {name} 的 output {oname}"),
-                "<output> 缺少 <connectfrom>（本轮只编译有连线的输出）",
+                "<output> 缺少 <connectfrom>（当前版本只编译有连线的输出）",
             )
         })?;
         let src = cf.attr("node").unwrap_or("").to_string();
@@ -1295,7 +1295,7 @@ fn compile_node(n: &XmlElement, mat: &str) -> Result<CompiledNode, MtlxError> {
         )
     })?;
     // 声明的输出（`<output name="..."/>` 子元素，或 MaterialX 1.5 的
-    // `outputs:name` 形式这里不解析——本轮要求显式 `<output>`）。
+    // `outputs:name` 形式这里不解析——当前版本要求显式 `<output>`）。
     let mut outputs = Vec::new();
     for o in n.children_named("output") {
         let oname = o.attr("name").ok_or_else(|| {
@@ -1328,7 +1328,7 @@ fn compile_node(n: &XmlElement, mat: &str) -> Result<CompiledNode, MtlxError> {
 /// 解析 `interconnect="ND_bsdf.outputs:surface"` → `(节点名, 输出名)`。
 ///
 /// 格式：`<节点名>.<输出名>`（MaterialX 也可能写 `nodename.outputs.name`
-/// 或带节点图前缀 `NG.nodename.output`，本轮取**后两段**）。
+/// 或带节点图前缀 `NG.nodename.output`，当前版本取**后两段**）。
 fn parse_interconnect(
     raw: &str,
     mat: &str,

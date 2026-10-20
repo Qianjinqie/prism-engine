@@ -6,7 +6,7 @@
 本脚本**不**调用任何引擎代码路径：精确 IDCT 参考用 ``math.cos`` 全精度
 f64 实算；引擎侧的浮点路径（D-29 明令禁止）既不作参考也不参与。
 Pillow 仅用于生成**互操固件**（真实 JPEG 字节流 + 期望像素），其 libjpeg
-解码结果与自研解码器的偏差由 P0-2 的 PSNR≥40dB 门禁衡量。
+解码结果与自研解码器的偏差由互操对拍的 PSNR≥40dB 门禁衡量。
 
 产物（写入 ``fixtures/jpeg/``）
 ------------------------------
@@ -317,13 +317,13 @@ def build_idct_fixtures() -> dict:
     # 自然块验收自证：定点镜像 vs f64 参考 max ≤ 1 LSB 且 PSNR ≥ 70 dB。
     for profile in natural_profiles:
         st = stats[profile]
-        # 注（W1-A 校正）：误差界是 (2^-16 + 2^-19)·Σ|D| + 0.5 LSB（§2.1 证 2），
+        # 注（固件口径校正）：误差界是 (2^-16 + 2^-19)·Σ|D| + 0.5 LSB（§2.1 证 2），
         # 不是与 Σ|D| 无关的常数；sparse/extreme 档 q 可达 255、系数可达 300，
         # Σ|D| 上万 ⇒ 界本身给出 2 LSB。遂按「界 + 0.5」落 2 LSB 判据：
         # 它能拦住错标度（2^-46→2^-45 会产生数十 LSB）而不会误杀正确实现。
         assert st["max_abs_diff_vs_exact"] <= 2, f"{profile}: 定点镜像与 f64 参考差 {st['max_abs_diff_vs_exact']} LSB > 2"
         if st["worst_psnr_db_vs_exact"] is not None:
-            # 注（W1-A 校正）：原门槛 70 dB 与「±0.5 LSB 舍入」在数学上不相容——
+            # 注（固件口径校正）：原门槛 70 dB 与「±0.5 LSB 舍入」在数学上不相容——
             # 只要输出是 round-half-up 的整数（MSE≈0.083 → 58.9 dB 上界），且
             # 定点截断误差 ≈1.7e-5·Σ|D| 在 smooth 大 Σ|D| 档再贡献 ~0.4 LSB，
             # 70 dB（RMS≈0.08）根本达不到。真正可判定的判据是上面那条
@@ -333,7 +333,7 @@ def build_idct_fixtures() -> dict:
     for profile in extreme_profiles:
         assert stats[profile]["i64_fast_path_blocks"] == 0, f"{profile}: 存在落入 i64 快路径的块"
     # 自然块中至少各有一些落入两条路径（保证对拍覆盖双路）。
-    # 注（W1-A 校正）：sparse 档 q 取 1..=255 且系数可达 300 ⇒ max|D·W| 恒超阈值，
+    # 注（固件口径校正）：sparse 档 q 取 1..=255 且系数可达 300 ⇒ max|D·W| 恒超阈值，
     # 「每个档位都有快路径样本」不是可满足的分布事实；改为「自然块总体必须有
     # 快路径样本」（双路对拍覆盖），并记录 sparse 的分流计数供审计。
     total_fast = sum(stats[p]["i64_fast_path_blocks"] for p in natural_profiles)
@@ -356,7 +356,7 @@ def build_idct_fixtures() -> dict:
 
 
 def build_interop_fixtures() -> list[dict]:
-    """Pillow 生成的真实 JPEG 固件 + 期望像素（P0-2 互操对拍）。"""
+    """Pillow 生成的真实 JPEG 固件 + 期望像素（互操对拍）。"""
     width, height = 96, 72
     base = Image.new("RGB", (width, height))
     px = base.load()
@@ -453,7 +453,7 @@ def main() -> int:
               f"jpg={len(it['jpg'])}B opts={it['save_options']}")
 
     # 8 个嵌入式 Rust 常量块（自然集序号 0/1/500/1000/1500/2000/2500/2999）。
-    # 注（W1-A 校正）：自然集实为 4 档 × 500 块 = 2000 块（此前假设 3000），
+    # 注（固件口径校正）：自然集实为 4 档 × 500 块 = 2000 块（此前假设 3000），
     # 越界下标会 IndexError，故先按实际长度裁剪。
     pick = [i for i in (0, 1, 500, 1000, 1500, 1999) if i < len(fx["natural_blocks"])]
     embedded = []

@@ -1003,12 +1003,12 @@ fn t_device_init() -> Status {
     //      这一条是被真机数据反复纠正过的，务必别改：
     //      试过"在途就不发请求、只返回 Pending"，结果**稳定更差**
     //      （0/8 次 14 项全过，而会发请求的版本 5/8 次全过）。原因是
-    //      Pending 的语义是"宿主请 await settle() 后再 collect"；若本轮
-    //      没往 `pendingWork` 里登记任何 promise，本轮 settle() 就是空转，
+    //      Pending 的语义是"宿主请 await settle() 后再 collect"；若本次
+    //      没往 `pendingWork` 里登记任何 promise，本次 settle() 就是空转，
     //      collect 立刻执行 → 此时在途票多半还没回填 ⇒ 本项必 FAIL，
     //      并把后续 7 个 GPU 项一起带崩（句柄表停在 1，一个 buffer 都没建）。
     //      **Pending 必须与真实 promise 配对**，否则等于骗宿主"我在等"。
-    //      并发轮多发的那一次请求并非浪费：它让本轮 settle() 有活可等，
+    //      并发轮多发的那一次请求并非浪费：它让本次 settle() 有活可等，
     //      两张票由 `claim_ready_device` 挑就绪者认领。
     let prev = DEVICE.with(|d| d.get());
     if prev != 0 && gpu::device_ready(prev) != 0 {
@@ -2481,7 +2481,7 @@ static COVERAGE: &[(&str, &[(&str, &str, &str)])] = &[
              shader 已嵌入 SHADERS 并过 D-29 结构自检，等待 WebGPU 运行时真 dispatch",
         )],
     ),
-    // ---- V2.0-G compute-first 管线（三个新 kernel） ----
+    // ---- compute-first 管线（三个新 kernel） ----
     //
     // 三个入口都**如实标 SKIP**：本构建环境只有 libvulkan loader、无 ICD，
     // 真机 dispatch 无法执行（`vulkan::compute` 的探针报告为
@@ -2497,10 +2497,10 @@ static COVERAGE: &[(&str, &[(&str, &str, &str)])] = &[
         &[(
             "primary_ray_gen",
             ST_SKIP,
-            "V2.0-G 主射线发射 kernel：SPIR-V 待真机 glslang 生成（本环境无工具链），\
-             本环境无 ICD 故无真机 dispatch。语义由 prism-gpu::compute::primary_ray_gen_cpu \
+            "主射线发射 kernel：SPIR-V 待 glslang 工具链生成（当前平台无该工具链），\
+             当前平台无 ICD 故无设备 dispatch。语义由 prism-gpu::compute::primary_ray_gen_cpu \
              真实测（像素覆盖/几何/确定性）、并由 prism-rt::wavefront 的 parity 网对拍；\
-             真机 smoke 见 vulkan::compute::real_device_compute_dispatch_smoke（无设备自跳过）",
+             设备 smoke 见 vulkan::compute::real_device_compute_dispatch_smoke（无设备自跳过）",
         )],
     ),
     (
@@ -2508,7 +2508,7 @@ static COVERAGE: &[(&str, &[(&str, &str, &str)])] = &[
         &[(
             "wavefront_intersect",
             ST_SKIP,
-            "V2.0-G wavefront 求交一步 kernel：同上（SPIR-V 待工具链 + 本环境无 ICD）。\
+            "wavefront 求交一步 kernel：同上（SPIR-V 待工具链 + 当前平台无 ICD）。\
              语义由 prism-gpu::compute::wavefront_intersect_step_cpu 真实测\
              （最近命中/平局 tie-break/球内出射/批量对齐/确定性）",
         )],
@@ -2518,8 +2518,8 @@ static COVERAGE: &[(&str, &[(&str, &str, &str)])] = &[
         &[(
             "mul2",
             ST_SKIP,
-            "V2.0-G SPIR-V 装配探针（dst=src*2）：手写 SPIR-V 已嵌入二进制并过字级结构校验，\
-             但本环境无 ICD 无法真机派发。真机 smoke 见 \
+            "SPIR-V 装配探针（dst=src*2）：手写 SPIR-V 已嵌入二进制并过字级结构校验，\
+             但当前平台无 ICD 无法设备派发。设备 smoke 见 \
              vulkan::compute::real_device_compute_dispatch_smoke（无设备自跳过）",
         )],
     ),
@@ -6076,7 +6076,7 @@ mod tests {
     ///
     /// 【D-14 真机缺陷 2 的根因门禁】宿主会并发跑本项（`boot()` 自动跑 +
     /// 回归脚本点「全部运行」），两轮 run/collect 交错，而 `test_collect(i)`
-    /// **不带 run 令牌**。若只认全局 `DEVICE`（或只认"自己那张票"），本轮就会
+    /// **不带 run 令牌**。若只认全局 `DEVICE`（或只认"自己那张票"），本次就会
     /// 去校验别人的句柄 ⇒ 误报"预留句柄未绑定"，并把后续 7 个 GPU 项带崩
     /// （真机实测偶发 PASS=6，句柄表停在 1）。
     /// 认领成功后**清空槽位**不得让后续 `collect` 拿不到已就绪的全局句柄。

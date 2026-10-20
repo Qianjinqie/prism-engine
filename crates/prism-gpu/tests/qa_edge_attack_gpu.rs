@@ -592,7 +592,7 @@ fn zero_third_party_dependency_prism_gpu() {
     }
 }
 
-/// 失败含义：workspace 的 Cargo.lock 含非本仓库 crate（第三方混入）——锁文件级零依赖
+/// 失败含义：workspace 的 Cargo.lock 含第三方 crate（混入锁文件）——锁文件级零依赖
 /// 证据被破坏。
 #[test]
 fn zero_third_party_dependency_lockfile() {

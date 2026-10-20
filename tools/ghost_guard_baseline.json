@@ -4,9 +4,9 @@
   "files": [
     {
       "path": "crates/prism-io/src/raw.rs",
-      "md5": "e2d72ded5166cb8c7bff08d17377914c",
-      "lines": 8254,
-      "symbols": 231
+      "md5": "0105731ff4e12803a301e8a5896a3f81",
+      "lines": 8277,
+      "symbols": 233
     },
     {
       "path": "crates/prism-io/src/exr_dwa.rs",

@@ -1,7 +1,7 @@
-//! QA 边界反例攻击（验收清单 C-⑦；prism-core 侧）。
+//! QA 边界反例攻击（边界攻击清单 C-⑦；prism-core 侧）。
 //!
 //! 覆盖：循环图喂 canonical 序列化（应报错不 panic）、自环、Remap 退化与
-//! 倒序区间行为固化，以及验收清单 D 的 core 侧 SHA-256 锚定——
+//! 倒序区间行为固化，以及清单 D 的 core 侧 SHA-256 锚定——
 //! `channel_definition_hash`（走 signature.rs 的**模块私有** SHA-256）与
 //! Python hashlib 基线对拍；与 prism-io 侧 qa_edge_attack 的六向量（同一
 //! 数据模式、同基线族）互为镜像，共同证明双实现同向量一致。

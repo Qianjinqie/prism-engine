@@ -2,10 +2,10 @@
 //!
 //! # ⚠️ 诚实边界（必读）
 //!
-//! Metal 是 Apple 平台的私有图形 API，**只在 macOS/iOS 上存在**；本仓库的
-//! CI/开发沙箱是 Linux，**没有任何路径可以在此验证 Metal 的一切**。本模块的
-//! 收尾标准因此是：*在 Linux/wasm 上编译为零，在 macOS 上编译为结构正确、
-//! 逻辑完备的探测链*。真机渲染路径未实装，[`MetalBackend::is_available`]
+//! Metal 是 Apple 平台的私有图形 API，**只在 macOS/iOS 上存在**；其他平台
+//! （Linux / wasm）上本模块编译为零或仅保留结构面。本模块的
+//! 收尾标准因此是：*在非 macOS 上编译为零，在 macOS 上编译为结构正确、
+//! 逻辑完备的探测链*。渲染路径未实装，[`MetalBackend::is_available`]
 //! 在**所有平台**都刻意返回 `false`（探测到设备 ≠ 能出图，见下）。
 //!
 //! # 零第三方依赖（D-15）
@@ -242,7 +242,7 @@ mod tests {
         }
     }
 
-    /// 非 macOS（本沙箱）：Metal 恒不可用。
+    /// 非 macOS 平台：Metal 恒不可用。
     ///
     /// **非恒真自证**：在 macOS 上，本断言的前半部分**会继续成立**（`is_available`
     /// 仍恒 `false`，因为渲染管线未实装），但 [`MetalBackend::probe`] 的
@@ -300,7 +300,7 @@ mod tests {
 
     /// MSL 首样例存在且非空，入口名与组织约定一致（跨平台可查）。
     ///
-    /// 该断言在本沙箱与 macOS 上均成立且**有意义**：它证明「双份源」的第一个
+    /// 该断言在非 macOS 平台与 macOS 上均成立且**有意义**：它证明「双份源」的第一个
     /// 手写样例已被登记，而非仅有目录约定。
     #[test]
     fn msl_first_sample_is_registered() {

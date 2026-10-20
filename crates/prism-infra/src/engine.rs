@@ -51,7 +51,7 @@ impl Default for RenderRequest {
     }
 }
 
-/// 编译产物摘要（供 MCP/HTTP 汇报，不进图）。
+/// 编译产物摘要（供 MCP/HTTP 输出，不进图）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompileSummary {
     /// 分辨率宽度。
@@ -74,7 +74,7 @@ pub fn compile_source(source: &str) -> Result<prism_dsl::CompileOutput, EngineEr
     prism_dsl::compile(source).map_err(|e| EngineError { line: e.line, message: e.message })
 }
 
-/// 编译并汇总（不进图，供协议出口汇报元信息）。
+/// 编译并汇总（不进图，供协议出口输出元信息）。
 ///
 /// # Errors
 /// 同 [`compile_source`]。

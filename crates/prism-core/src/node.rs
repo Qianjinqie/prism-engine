@@ -235,7 +235,7 @@ pub type SnapshotKey = (Hash256, u64);
 ///
 /// 模拟类节点（S3 约束族）的 apply 语义 = 调度器自快照库装配（上一帧状态，
 /// 当前帧参数）后投影一步。LRU 逐出只影响重算、不影响结果——seek 等价成立。
-/// LRU 上限策略随求值接线轮次（eval.rs 第二轮）落地，本轮定型存取接口。
+/// LRU 上限策略随求值接线（eval.rs）落地，当前版本定型存取接口。
 #[derive(Debug, Clone, Default)]
 pub struct SnapshotStore {
     entries: HashMap<SnapshotKey, Vec<u8>>,

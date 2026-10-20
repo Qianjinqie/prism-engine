@@ -1736,7 +1736,7 @@ impl Parser {
         Ok(ImportPacksAst { name, fields, line: kw_line })
     }
 
-    /// font 指令：`font "首选.ttf" fallback "次级.ttf", "末级.ttf"`（V1.5-B）。
+    /// font 指令：`font "首选.ttf" fallback "次级.ttf", "末级.ttf"`。
     ///
     /// 语法要点：
     /// - 首选路径必填（双引号字符串），`fallback` 子句可省略；

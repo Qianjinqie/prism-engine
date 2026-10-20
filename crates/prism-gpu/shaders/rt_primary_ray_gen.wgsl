@@ -1,4 +1,4 @@
-// rt_primary_ray_gen.wgsl —— V2.0-G compute-first 管线的**主射线发射** kernel。
+// rt_primary_ray_gen.wgsl —— compute-first 管线的**主射线发射** kernel。
 //
 // 语义权威：crates/prism-gpu/src/compute/mod.rs::primary_ray_gen_cpu
 //           （CPU 参考实现，同序 dispatch，逐位一致）

@@ -297,7 +297,7 @@ impl McpServer {
     }
 
     // -----------------------------------------------------------------------
-    // V2.0-M3 EC-2：场景检查 / 渲染提交 / 错误诊断
+    // 场景检查 / 渲染提交 / 错误诊断
     // -----------------------------------------------------------------------
 
     /// **场景检查**（提交前 preflight）：编译 + 首帧试渲 + 帧数预估。
@@ -634,7 +634,7 @@ mod tests {
         let tools: &Json = resp.get("result").unwrap().get("tools").unwrap();
         match tools {
             Json::Array(items) => {
-                assert_eq!(items.len(), 7, "EC-2 后应为 7 个工具");
+                assert_eq!(items.len(), 7, "当前版本应有 7 个工具");
                 let names: Vec<&str> = items.iter().filter_map(|t| t.get("name").and_then(|n| n.as_str())).collect();
                 for expected in [
                     "compile", "render_frame", "render_video", "critique",
@@ -713,7 +713,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // EC-2 round-trip 对拍：三工具各 成功 + 失败 一对（最小充分集）
+    // round-trip 对拍：三工具各 成功 + 失败 一对（最小充分集）
     // -----------------------------------------------------------------------
 
     /// 4fps × 0.4s → 2 帧（摘要链测试需要多帧）。

@@ -3,7 +3,7 @@
 //! 模块一览：
 //!
 //! - [`primitive`] — 解析图元族闭式 SDF（球/盒/平面/圆柱/圆环/胶囊）与 [`primitive::Sdf`] trait。
-//! - [`quartic`] — 四次方程精确求根（Ferrari 闭式，零迭代；V2.0-W4 圆环求交内核）。
+//! - [`quartic`] — 四次方程精确求根（Ferrari 闭式，零迭代；圆环求交内核）。
 //! - [`aabb_bvh`] — AABB-BVH：曲线图元族粗阶段加速（SAH + 回调精阶段，与 [`bvh`] 同确定性口径）。
 //! - [`sdf`] — SDF 域算子（并/交/差/平滑变体）、displace（接 prism-noise）与 sphere tracing。
 //! - [`csg`] — CSG 树：组合方式直接复用 [`sdf`] 域算子函数（D-16 避免双实现）。

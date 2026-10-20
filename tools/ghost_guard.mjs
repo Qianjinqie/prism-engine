@@ -600,7 +600,7 @@ function makeBrokenFixture(clean, blockLines = 254) {
   injected.push('    pub fn new(v: u32) -> Self {');
   injected.push('        Probe { v }');
   injected.push('    }');
-  injected.push('    /// 独占的 slice_compressed（旧版本轮里没有，不算重复）。');
+  injected.push('    /// 独占的 slice_compressed（旧版本里没有，不算重复）。');
   injected.push('    pub fn slice_compressed(&self) -> &[u8] {');
   injected.push('        &[]');
   injected.push('    }');
@@ -708,7 +708,7 @@ function runSelfTest() {
       inj.push('    ) -> Option<()> {');
       inj.push('        None');
       inj.push('    }');
-      inj.push('    /// 独占的 slice_compressed（旧版本轮没有，不算重复）。');
+      inj.push('    /// 独占的 slice_compressed（旧版本没有，不算重复）。');
       inj.push('    pub fn slice_compressed(&self) -> &[u8] {');
       inj.push('        &[]');
       inj.push('    }');

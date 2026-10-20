@@ -138,7 +138,7 @@ pub enum DngLayout {
 /// 真实相机 DNG 的 SubIFD 预览**不总是单 strip**（大尺寸预览会被切成多
 /// strip；部分机型的预览直接用 tile）。若合成器只能写单 strip，读端的
 /// 多 strip / tile 重组路径就永远得不到真实输入——那条路径也就永远没有
-/// 测试守护（这正是本轮 QA 用变异测试挖出的缺口）。
+/// 测试守护（这正是 QA 用变异测试挖出的缺口）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PreviewLayout {
     /// 单 strip（`RowsPerStrip` = 预览高，`StripOffsets` 只有一项）。
@@ -2023,7 +2023,7 @@ mod tests {
 
     /// 拒绝提示与**真实支持集**必须一致——两者互相印证，不允许各说各话。
     ///
-    /// # 为什么这条要重写（上一轮的反假绿返工）
+    /// # 为什么这条要重写（此前的反假绿返工）
     ///
     /// 旧测试 `compression_hint_covers_every_known_code_without_panic`
     /// 声称自己校验「每个 code 要么被真实支持、要么 hint 有准确成因」，

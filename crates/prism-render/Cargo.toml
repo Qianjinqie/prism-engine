@@ -8,16 +8,16 @@ prism-math = { path = "../prism-math" }
 prism-gpu = { path = "../prism-gpu" }
 prism-core = { path = "../prism-core" }
 prism-io = { path = "../prism-io" }
-# v1.5-D：DSL v2 成片直达（movie 模块）读入 prism-dsl 的 CompileV2Output。
+# DSL v2 成片直达（movie 模块）读入 prism-dsl 的 CompileV2Output。
 # 依赖方向合法性：prism-dsl → {prism-math, prism-core, prism-anim}，均不
 # 反向依赖 prism-render（prism-gpu 只依赖 prism-math；prism-io → bytes/gpu），
 # 无环。清单外新增路径依赖（零第三方），已上报。
 prism-dsl = { path = "../prism-dsl" }
-# v1.5-D：文本图层合成复用 prism-text 既有排版 / 光栅化能力（layout_text +
+# 文本图层合成复用 prism-text 既有排版 / 光栅化能力（layout_text +
 # GlyphCache + 内嵌字体），不新写文本渲染器。prism-text → {raster, io, anim,
 # core, math}，无一环回 prism-render。
 prism-text = { path = "../prism-text" }
-# V2.0-W4：DSL stage3d sdf 曲线图元族（cylinder / cone / torus /
+# DSL stage3d sdf 曲线图元族（cylinder / cone / torus /
 # revolution）的帧求值走 prism-rt 的 CPU 波前参考路径（解析求交 +
 # SAH-BVH 在 prism-rt/prism-geometry，GPU 设备请求暂无曲线槽位）。
 # 依赖方向合法性：prism-rt → {prism-core, prism-math, prism-geometry,

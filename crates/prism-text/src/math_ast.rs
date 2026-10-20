@@ -1,13 +1,13 @@
 //! 公式 AST（V2-j「公式排版引擎化」第一步）：数学结构的**纯数据**模型。
 //!
-//! 支撑五类结构（验收口径）：
+//! 支撑五类结构（覆盖要求）：
 //! 1. **上下标**：[`MathExpr::Sup`] / [`MathExpr::Sub`] / [`MathExpr::SubSup`]；
 //! 2. **分式**：[`MathExpr::Frac`]（分子 / 分母）；
 //! 3. **根号**：[`MathExpr::Sqrt`]（`index` = 可选根指数，`body` = 被开方体）；
 //! 4. **大型算子**：[`MathExpr::BigOp`]（∑ / ∏ / ∫ + 上下限，限位堆叠语义）；
 //! 5. **矩阵**：[`MathExpr::Matrix`]（rows × cols，行主序 `cells`）。
 //!
-//! # 两种构造入口（任务书「从符号名/字面解析到 AST 的构造器」）
+//! # 两种构造入口（从符号名/字面解析到 AST 的构造器）
 //! - **符号名**：[`MathExpr::symbol`]（`"alpha"` → `α`、`"infty"` → `∞`）与
 //!   [`MathExpr::from_char`]；符号字形解析复用 [`crate::math_symbols`] 的
 //!   程序化符号表（[`crate::math_symbols::fallback_gid`] 可判定是否可渲染）；

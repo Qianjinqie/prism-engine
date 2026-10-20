@@ -1,5 +1,5 @@
 //! 例子：用新 API 渲染同款 5 秒文字片头，但封装为**标准 MJPEG-in-AVI**
-//! （`render_short_avi`），输出到 `/workspace/prism_aurora_v3.avi`。
+//! （`render_short_avi`），输出到 `prism_aurora_v3.avi`。
 //!
 //! 与 `short.rs`（MP4）同款 `ClipSpec`——证明作者 API 同时打通 MP4 与零依赖
 //! 标准 AVI 两条封装链路；AVI 可被 VLC / 浏览器 / QuickTime 直接双击播放。
@@ -98,7 +98,7 @@ fn main() {
 
     // 5 秒短片 = 一次函数调用，产出标准 MJPEG-in-AVI。
     let avi = render_short_avi(&spec).expect("AVI 封装失败");
-    std::fs::write("/workspace/prism_aurora_v3.avi", &avi).expect("写入 AVI 失败");
+    std::fs::write("prism_aurora_v3.avi", &avi).expect("写入 AVI 失败");
     eprintln!(
         "prism_author::render_short_avi 完成：{} 字节，{} 帧 @{}×{} {}fps（标准 MJPEG-in-AVI）",
         avi.len(),

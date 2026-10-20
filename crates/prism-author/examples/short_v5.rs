@@ -1,6 +1,6 @@
 //! 例子（v5）：**多场景 + 转场拼接**——把三支 2 秒子片按
 //! `Transition::Wipe{Right}` 与 `Transition::Fade` 拼接为一支约 4.8 秒的
-//! 短片，封装为标准 MJPEG-in-AVI，输出到 `/workspace/prism_aurora_v5.avi`。
+//! 短片，封装为标准 MJPEG-in-AVI，输出到 `prism_aurora_v5.avi`。
 //!
 //! 实现方式为**纯后处理**：复用已验证的 `render_rgba_frames` 逐支渲染，
 //! 再在帧序列层做转场混合（交叉溶解 / 线性擦除）——不重构渲染核心、
@@ -149,7 +149,7 @@ fn main() {
     let trans_sec = 0.6;
 
     let avi = render_short_concat_avi(&specs, &transitions, trans_sec).expect("AVI 封装失败");
-    std::fs::write("/workspace/prism_aurora_v5.avi", &avi).expect("写入 AVI 失败");
+    std::fs::write("prism_aurora_v5.avi", &avi).expect("写入 AVI 失败");
 
     // 预期帧数：48 + 48 + 48 - round(0.6*24)=14 - 14 = 116（约 4.83s）。
     let mut total = specs[0].frame_count();

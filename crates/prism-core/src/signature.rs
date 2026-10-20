@@ -155,7 +155,7 @@ const SNAPSHOT_TAG: &[u8; 14] = b"PRISM-SNAPSHOT";
 /// "属性通道变化特征 = 通道定义（规格/AST）哈希，非瞬时值"：
 /// 瞬时值相同而定义不同的通道必须不同签名，否则模拟快照误复用。枚举本体
 /// （Const/Track/Spring/Expr/Wiggle/Remap/Loop …）与判别值归 property.rs
-/// （并行轮次）；本轮只按 `tag + def_bytes` 消费字节，不 import property.rs。
+/// （并行签名）；当前版本只按 `tag + def_bytes` 消费字节，不 import property.rs。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelDef {
     /// 通道种类枚举 tag（通道枚举的判别值；u16 大端进哈希）。

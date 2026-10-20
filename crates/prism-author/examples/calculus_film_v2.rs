@@ -21,7 +21,7 @@
 //! 不驻留全片裸帧——90s 960×540 全片 RGBA8 ≈5.6GB 超出容器内存上限）
 //! → `synth_bgm(90.0, 44100)`（长度 / 峰值 / 首尾 0.05s 淡变断言）→
 //! [`prism_mux::write_avi_mjpeg_audio_frames`]（预编码 JPEG 帧 + PCM
-//! 双流 AVI）→ 落盘 `/workspace/prism_calculus_90s.avi`。
+//! 双流 AVI）→ 落盘 `prism_calculus_90s.avi`。
 //!
 //! # 帧网格（架构 §7.6 / PRD §4.0）
 //!
@@ -101,7 +101,7 @@ const CLIP_FADE_OUT: f32 = 1.5;
 /// BGM 采样率（立体声 44100——44100 是帧率 30 的整数倍：1470 帧/秒）。
 const BGM_SR: u32 = 44_100;
 /// 成片落盘路径（T05 验收项 1）。
-const OUT_PATH: &str = "/workspace/prism_calculus_90s.avi";
+const OUT_PATH: &str = "prism_calculus_90s.avi";
 /// 预览帧输出目录（v3-B 交付物；`PRISM_PREVIEW_S2=N` 时启用）。
 const PREVIEW_DIR: &str = "/tmp/v3_preview";
 /// 预览截断的 S2 帧数（内容窗 [0.5s, 8.4s] 全cover + 转场安全边）。
@@ -185,7 +185,7 @@ fn main() {
 
     // ---- 3) 流式渲染 + 转场拼接 + Clip 级淡变 → 逐帧 JPEG 编码 ----
     // 走 render_short_concat_faded_frames_each 流式回调而非一次性驻留
-    // 2700 帧裸 RGBA8（≈5.6GB，超出容器 8GB cgroup 上限会 OOM）：
+    // 2700 帧裸 RGBA8（≈5.6GB）一次性驻留会 OOM：
     // 峰值仅为「单段帧序列 + 转场驻留尾 15 帧 + JPEG 帧序列 ≈0.4GB」。
     // 编码参数（quality 82 / grayscale=false）与 prism-mux
     // write_avi_mjpeg_audio 内部路径逐字节同参，保证成片与批式管线一致。
@@ -1260,7 +1260,7 @@ mod tests {
         check_bgm();
     }
 
-    /// 任务书截断边界用例：打字机逐字显示**只产整字**（无半字）、超宽
+    /// 截断边界用例：打字机逐字显示**只产整字**（无半字）、超宽
     /// 文本不 panic。
     ///
     /// 行为断言（经公开批式入口实测，非公式复述）：

@@ -1,4 +1,4 @@
-//! EC-3 示例节点端到端：`examples/sdk-nodes/cinematic-basic`。
+//! 示例节点端到端：`examples/sdk-nodes/cinematic-basic`。
 //!
 //! 验收四步（缺一不可，对应"可编译 / 可加载 / 版本协商"三判据）：
 //! 1. manifest 解析 + 静态校验 + 资产清单校验（契约完整）；

@@ -131,7 +131,7 @@ fn secondary_golden_fingerprint() {
 
 /// secondary golden 指纹（FNV-1a 64）。
 ///
-/// 本指纹由 **P0-1 修复后（先开方后连乘，规避 `x^p` 下溢）的正确实现**
+/// 本指纹由 **修复后（先开方后连乘，规避 `x^p` 下溢）的正确实现**
 /// 重新生成——此前 `0xfe21_2aef_9cbf_36ee` 是冻结在错误下溢输出上的
 /// 错误 golden（fixture 用 `gamma: 1.4` 恰为缺陷值），已废弃。
 const SECONDARY_GOLDEN: u64 = 0x4d30_1ec1_f803_8ed6;

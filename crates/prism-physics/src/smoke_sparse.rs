@@ -37,7 +37,7 @@
 //!   拦截「乘积不溢 `usize` 却触发 `capacity overflow` panic」的路径
 //!   （`zeroed` / `from_dense` / `to_dense` / `compute_vorticity` /
 //!   `apply_vorticity_confinement`）。此缺陷由「接手验证」轮的对抗性探针
-//!   发现（`probe_huge_block_size_no_panic`），是本轮修复的核心。
+//!   发现（`probe_huge_block_size_no_panic`），是本次修复的核心。
 //! - 仅依赖 `std`（含 `std::collections::BTreeMap`）与 workspace 内
 //!   [`prism_math::Vec3`]，无任何第三方 crate。
 
@@ -1446,7 +1446,7 @@ mod tests {
         assert_eq!(a.linearized_velocity_bits(), b.linearized_velocity_bits());
     }
 
-    // ---- D. 本轮「接手验证」新增：C18 分配上限 / 更强确定性 / 更强物理 ----
+    // ---- D. 本次新增：C18 分配上限 / 更强确定性 / 更强物理 ----
 
     /// C18 回归：`block_size` 使元素数乘积不溢 `usize`、但**分配字节数**超
     /// `isize::MAX` 时，`VoxelBlock::zeroed` 必须返回结构化错误而非 panic
@@ -1481,7 +1481,7 @@ mod tests {
 
     /// 非均匀分辨率（block_size 不整除各维）的稀疏↔稠密往返逐位一致。
     ///
-    /// 覆盖上一轮仅用 16×16×12（各维多可整除）未覆盖的「边缘块部分填充」情形。
+    /// 覆盖此前仅用 16×16×12（各维多可整除）未覆盖的「边缘块部分填充」情形。
     #[test]
     fn test_roundtrip_bitwise_nonuniform_res() {
         let res = (5usize, 7usize, 3usize);

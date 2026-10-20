@@ -1,8 +1,7 @@
-//! 相机 RAW 读入深度（U7）——DNG/IFD 解析 + Bayer 去马塞克 + 白平衡 + 色彩矩阵。
+//! 相机 RAW 读入深度——DNG/IFD 解析 + Bayer 去马塞克 + 白平衡 + 色彩矩阵。
 //!
-//! 语义权威：《算法白皮书》§4（相机 RAW / EXR 深度）与「RAW =
-//! 白平衡 + 去马赛克卷积（S2）」。数学路径的次序由本模块固定并论证（见
-//! [`DngFile::develop`]）。
+//! 数学路径的次序由本模块固定并论证（见 [`DngFile::develop`]）：
+//! RAW = 白平衡 + 去马赛克卷积（S2 数学结构）。
 //!
 //! # 铁律
 //!
@@ -2615,6 +2614,15 @@ pub struct DngFile {
 }
 
 impl DngFile {
+    /// 原始字节的只读视图（生命周期挂在 `self` 上）。
+    ///
+    /// 供**子 IFD** 解析用：SubIFD 的载荷偏移是**文件绝对偏移**，
+    /// 必须回到整份字节流上取，而不能只看 `ifd0` 已解析出的条目。
+    /// 见 [`crate::raw_sub_ifd`]。
+    pub fn data_slice(&self) -> &[u8] {
+        self.data.as_slice()
+    }
+
     /// 解析 DNG 字节流（先做 [`probe_format`]，非 DNG 一律结构化拒绝）。
     pub fn parse(data: &[u8]) -> RawResult<Self> {
         const LOC: &str = "raw::DngFile::parse";
@@ -2874,6 +2882,24 @@ impl DngFile {
     pub fn compression(&self) -> u16 {
         self.ifd0
             .first_number(tags::COMPRESSION, self.order)
+            .map(|v| v as u16)
+            .unwrap_or(1)
+    }
+
+    /// `Predictor`（0x013D）标签的**原始取值**（缺省 **1** = Null）。
+    ///
+    /// **只在 `Compression` 为 8 / 32946（Deflate）时有意义**——DNG 规范把
+    /// `Predictor` 定义在 Deflate 的章节下；其余压缩方式读到它也没有规范效力。
+    ///
+    /// 缺省返回 `1`（不预测）而非报错：TIFF 规定缺省即 1，按缺省解释
+    /// 比让整幅图不可读更贴近工程意图（与 [`DngFile::fill_order`] 的回退一致）。
+    ///
+    /// 标签值非有限 / 越界（`< 0` 或 `> u16::MAX`）时同样回退 `1`，
+    /// 并由 [`DeflatePredictor::from_code`] 之外的调用点按需报「未支持」。
+    pub fn deflate_predictor_code(&self) -> u16 {
+        self.ifd0
+            .first_number(tags::PREDICTOR, self.order)
+            .filter(|v| v.is_finite() && *v >= 0.0 && *v <= u16::MAX as f32)
             .map(|v| v as u16)
             .unwrap_or(1)
     }
@@ -3577,18 +3603,15 @@ impl DngFile {
         let bits = self.bits_per_sample();
         let fill = self.fill_order();
 
-        // ---- 预测器（缺省 1 = Null，与 TIFF 一致）----
-        let predictor_code = self
-            .ifd0
-            .first_number(tags::PREDICTOR, self.order)
-            .filter(|v| v.is_finite() && *v >= 0.0)
-            .map(|v| v as u32)
-            .unwrap_or(1);
-        let predictor_code = u16::try_from(predictor_code).unwrap_or(1);
+        // ---- 预测器（缺省 1 = Null，与 TIFF 一致；取值校验见 DeflatePredictor）----
+        let predictor_code = self.deflate_predictor_code();
         let predictor = DeflatePredictor::from_code(predictor_code).ok_or_else(|| {
             unsupported_err(
                 LOC,
-                format!("Predictor = {predictor_code}：{}", DeflatePredictor::reject_reason(predictor_code)),
+                format!(
+                    "Predictor = {predictor_code}，本模块只实现 1 / 2 / 34892 / 34893：{}",
+                    DeflatePredictor::reject_reason(predictor_code)
+                ),
                 "请用 Adobe DNG Converter 转存为「未压缩」或「lossless JPEG」DNG 后再读入；\
                  DNG 1.4 为 Compression=8 只定义了 7 个预测器取值",
             )
@@ -4101,7 +4124,7 @@ impl DngFile {
     /// - **④ 内部 相机→XYZ→sRGB 串联**：色彩矩阵的输出是 CIE XYZ，
     ///   而本模块的交付面是 RGB 帧缓冲，故再乘 IEC 61966-2-1 的 XYZ→sRGB。
     ///   两级矩阵都在 f32 计算域一次求和完成（不拆成两次数值舍入）；
-    /// - **⑤ 量化只发生在交付边界**（§2.2 铁律）：内部全程 f32，仅写入
+    /// - **⑤ 量化只发生在交付边界**（铁律）：内部全程 f32，仅写入
     ///   `Fbuf16F` 时 round-to-nearest-even 量化一次。
     ///
     /// # 位深
@@ -4669,7 +4692,7 @@ mod tests {
     ///
     /// 这是 [`unpack_bits`] 的**参考编码器**（测试侧独立实现，不复用被测
     /// 代码路径），用于构造「已知答案」的输入。`pad_high` 控制**填充位是否
-    /// 非零**——这是本轮最关键的断言维度：填充位非零时解包结果必须不变。
+    /// 非零**——这是本测试最关键的断言维度：填充位非零时解包结果必须不变。
     ///
     /// 溢出防护：位累加器用 `u64`，且**只在字节内移位**——绝不把
     /// `stream_pos / 8 * 8`（可达数千）直接移进 `u32`（那是上一版的 bug：
@@ -5572,7 +5595,7 @@ mod tests {
             .develop(&[0u16; 15], &DevelopOptions::default())
             .unwrap_err();
         assert_eq!(err.code, "RAW3001", "{}", err);
-        // 14 位**现在必须被接受**（本轮的核心新增能力）——用越界位深替代
+        // 14 位**现在必须被接受**（本实现的核心新增能力）——用越界位深替代
         // 「非 16 位即拒绝」的旧断言：显影链接受 1..=16 位，超过即结构化拒绝。
         let b14 = build_dng(true, [0, 1, 1, 2], 14);
         let d14 = DngFile::parse(&b14).unwrap_or_else(|e| panic!("{e}"));
@@ -5788,7 +5811,7 @@ mod tests {
     /// **填充位非零**的对拍核心：同一组样本，用「填充位全 0」与
     /// 「末字节填充位全 1」两种字节流打包，解包结果必须**逐样本完全相同**。
     ///
-    /// 这条断言是本轮最重要的防错闸门：12 位时若忘记 mask，每个样本会
+    /// 这条断言是本测试最重要的防错闸门：12 位时若忘记 mask，每个样本会
     /// 凭空多出最多 15（`0xABC` 被读成 `0xABCF`）。
     fn assert_unpack_exact(bits: u16, count: usize) {
         let values = sample_series(bits, count);
@@ -6015,7 +6038,7 @@ mod tests {
         let sixteen: Vec<u16> = twelve.iter().map(|&v| v * 16).collect();
 
         // 先在 16 位路径上验证「颜色常量块 ⇒ 三通道各自还原为常数」这条
-        // 最强可预测性（本轮 12 位断言与它对拍）。
+        // 最强可预测性（本测试 12 位断言与它对拍）。
         let plane16 = demosaic_bilinear(
             &sixteen.iter().map(|&v| v as f32).collect::<Vec<f32>>(),
             w,

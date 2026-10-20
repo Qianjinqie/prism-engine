@@ -1,4 +1,4 @@
-//! 农场传输层：**长度前缀帧协议 + SHA-256 校验 + 本地子进程优先**（V2.0-I）。
+//! 农场传输层：**长度前缀帧协议 + SHA-256 校验 + 本地子进程优先**。
 //!
 //! # 线格式（本模块唯一权威）
 //!
@@ -33,12 +33,12 @@
 //! |---|---|---|
 //! | [`InProcessTransport`] | **已实装** | 同进程内跑 [`crate::farm::worker`]，零 OS 进程开销，供单测与回退路径 |
 //! | [`LocalProcessTransport`] | **已实装** | **本地子进程优先**：`spawn` 自身 `farm-worker` 子命令，走 stdin/stdout 管道跑同一套帧协议 |
-//! | [`TcpTransport`] | **仅接口** | 跨机 TCP **本轮未实装**，所有方法返回 [`FarmError::TransportUnavailable`]（如实声明，不做假成功） |
+//! | [`TcpTransport`] | **仅接口** | 跨机 TCP **当前版本未实装**，所有方法返回 [`FarmError::TransportUnavailable`]（如实声明，不做假成功） |
 //!
 //! 为什么"本地子进程"是优先路径：农场要验的是**跨进程**语义（序列化、校验、
 //! 断点、进程边界），而本地子进程用**同一条**线格式、**同一套** worker 代码、
 //! 真实 OS 进程边界覆盖它，无需网络即可回归。TCP 只是把同一条帧流塞进 socket，
-//! 属于传输介质替换而非协议变更——所以本轮先钉协议，再留接口。
+//! 属于传输介质替换而非协议变更——所以当前版本先钉协议，再留接口。
 //!
 //! # 为什么 worker 只回"逐帧载荷"
 //!
@@ -91,14 +91,14 @@ pub const WORKER_BIN_NAME: &str = "farm-worker";
 /// `decide_task` 定长载荷字节数：`start(8)+end(8)+cfg(8)+prio(4)+cpu(4)+mem(4)+vram(4)`。
 const TASK_BYTES: usize = 40;
 
-/// 传输实现种类（日志与汇报用）。
+/// 传输实现种类（日志与状态输出用）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportKind {
     /// 同进程内直接跑 worker（无 OS 进程边界）。
     InProcess,
     /// 本地子进程（`spawn` 自身 `farm-worker`）。
     LocalProcess,
-    /// 跨机 TCP（**本轮未实装**，仅接口）。
+    /// 跨机 TCP（**当前版本未实装**，仅接口）。
     Tcp,
 }
 
@@ -187,7 +187,7 @@ pub fn encode_frame(kind: FrameKind, payload: &[u8]) -> Vec<u8> {
     out.extend_from_slice(&FRAME_MAGIC);
     out.extend_from_slice(&TRANSPORT_VERSION.to_be_bytes());
     out.push(kind.code());
-    out.push(0); // flags：本轮保留，必须为 0
+    out.push(0); // flags：当前版本保留，必须为 0
     out.extend_from_slice(&len.to_be_bytes());
     out.extend_from_slice(payload);
     let sum: [u8; 32] = checksum_of(&out[..HEADER_BYTES], payload);
@@ -856,10 +856,10 @@ impl Drop for LocalProcessTransport {
     }
 }
 
-/// 跨机 TCP 传输——**本轮仅接口，未实装**。
+/// 跨机 TCP 传输——**当前版本仅接口，未实装**。
 ///
 /// 刻意**不假装成功**：所有方法返回 [`FarmError::TransportUnavailable`]，并在
-/// 建议段如实写明"本轮未实装、本地子进程已覆盖同一帧协议"。这样调用方在
+/// 建议段如实写明"当前版本未实装、本地子进程已覆盖同一帧协议"。这样调用方在
 /// 误用时看到的是明确的三段式错误，而不是一个静默挂住的 socket。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TcpTransport {
@@ -868,7 +868,7 @@ pub struct TcpTransport {
 }
 
 impl TcpTransport {
-    /// 构造（不连接；本轮不实装连接）。
+    /// 构造（不连接；当前版本不实装连接）。
     pub fn new(endpoint: impl Into<String>) -> TcpTransport {
         TcpTransport { endpoint: endpoint.into() }
     }
@@ -886,14 +886,14 @@ impl ShardTransport for TcpTransport {
     fn send_task(&mut self, _task: &FrameTask) -> Result<(), FarmError> {
         Err(FarmError::TransportUnavailable {
             location: format!("farm::transport::TcpTransport::send_task({})", self.endpoint),
-            detail: "跨机 TCP 传输本轮未实装（仅保留接口）".to_string(),
+            detail: "跨机 TCP 传输当前版本未实装（仅保留接口）".to_string(),
         })
     }
 
     fn recv_shard(&mut self) -> Result<FramePayloadShard, FarmError> {
         Err(FarmError::TransportUnavailable {
             location: format!("farm::transport::TcpTransport::recv_shard({})", self.endpoint),
-            detail: "跨机 TCP 传输本轮未实装（仅保留接口）".to_string(),
+            detail: "跨机 TCP 传输当前版本未实装（仅保留接口）".to_string(),
         })
     }
 

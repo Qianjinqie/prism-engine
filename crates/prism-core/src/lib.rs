@@ -5,7 +5,7 @@
 //! 请求”编译（原 `build_render_request`）已下沉到 `prism-render`，见下方“依赖
 //! 解耦”说明。
 //!
-//! # 依赖解耦（本轮变更）
+//! # 依赖解耦（本次变更）
 //!
 //! 历史上本 crate 直接依赖 `prism-gpu`，仅为构造其 5 个纯数据 DTO
 //! （`CameraReq` / `LightReq` / `SphereReq` / `AestheticReq` / `SceneRenderRequest`）。

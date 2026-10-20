@@ -43,7 +43,7 @@ mod codegen;
 mod lexer;
 mod packs;
 mod parser;
-// V1.5-D：组合子库（高层语义 → 等价 v2 节点图展开）。公开模块：展开函数经
+// 组合子库（高层语义 → 等价 v2 节点图展开）。公开模块：展开函数经
 // `codegen::COMBINATOR_TABLE` 注册面查表，Rust 侧构造入口在 prism-author。
 pub mod combinators;
 
@@ -237,7 +237,7 @@ pub use crate::codegen::{
     NamedChannel, NoteInfo, PostInfo, SceneV2, SimInfo, ThemeInfo, TransitionV2,
 };
 pub use crate::packs::{PackManifest, SemVer};
-// V1.5-D：组合子库公开面（展开函数 / 入参 / 产物 / 注册表）。
+// 组合子库公开面（展开函数 / 入参 / 产物 / 注册表）。
 pub use crate::combinators::{
     sphere_fragment,
     expand_ken_burns, expand_lower_third, expand_morph_between, expand_split_screen,
@@ -1388,7 +1388,7 @@ mod tests {
         assert_eq!(o.get(ids[2]), Some(Payload::Scalar(0.5)), "material（S8 常量特解）");
     }
 
-    /// V2.0-W4 曲线图元 DSL：四族 kind 编译落盘 + 字段序无关 + 错误码对拍。
+    /// 曲线图元 DSL：四族 kind 编译落盘 + 字段序无关 + 错误码对拍。
     ///
     /// 覆盖：cylinder / cone / torus / revolution 的参数落盘（kind /
     /// center / radius / half_height / major / minor / profile_*）；
@@ -1913,7 +1913,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // V1.5-B：font 指令（外部字体回退链声明）
+    // font 指令（外部字体回退链声明）
     // -----------------------------------------------------------------------
 
     /// font 指令往返：parse → codegen 产出 FontSet 构造序列，顺序 = 声明顺序。

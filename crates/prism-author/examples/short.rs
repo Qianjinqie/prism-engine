@@ -1,5 +1,5 @@
 //! 例子：用新 API 重新渲染同款 5 秒文字片头，输出到
-//! `/workspace/prism_author_demo.mp4`。
+//! `prism_author_demo.mp4`。
 //!
 //! "强大版" = 声明一份 spec + 一次 `render_short`——与 PoC 行为一致，但用
 //! 正式 crate 的公开 API（含自研 `EasingKind`，不依赖 `prism-anim`）。
@@ -98,7 +98,7 @@ fn main() {
 
     // 5 秒短片 = 一次函数调用。
     let mp4 = render_short(&spec);
-    std::fs::write("/workspace/prism_author_demo.mp4", &mp4).expect("写入 MP4 失败");
+    std::fs::write("prism_author_demo.mp4", &mp4).expect("写入 MP4 失败");
     eprintln!(
         "prism_author::render_short 完成：{} 字节，{} 帧 @{}×{} {}fps（官方 muxer）",
         mp4.len(),

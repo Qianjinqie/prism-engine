@@ -421,7 +421,7 @@ pub(crate) struct FormulaAst {
 /// font 指令：`font "首选.ttf" fallback "次级.ttf", "末级.ttf"`。
 ///
 /// 顶层**资产声明**（与 import packs 同层）：一条指令声明一个字体的回退链，
-/// 多条指令按**出现顺序**串成完整回退链（V1.5-B）。`fallbacks` 可空
+/// 多条指令按**出现顺序**串成完整回退链。`fallbacks` 可空
 /// （= 一条只有一个槽位的链）；链末端恒由 `prism-text` 的程序化符号表兜底。
 pub(crate) struct FontDecl {
     /// 首选字体文件路径（DSL 中声明的原文，相对路径按渲染进程工作目录解析）。

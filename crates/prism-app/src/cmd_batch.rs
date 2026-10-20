@@ -1,4 +1,4 @@
-//! `prism-app batch` 子命令：读任务清单 → 笛卡尔积展开 → 并行渲染 → 进度汇报。
+//! `prism-app batch` 子命令：读任务清单 → 笛卡尔积展开 → 并行渲染 → 进度报告。
 //!
 //! 语义权威：CLI `batch`、C6（"crism-app/cmd_batch.rs"、
 //! "batch matrix"）。核心逻辑在 [`prism_infra::batch`]，本文件只做 CLI 适配：

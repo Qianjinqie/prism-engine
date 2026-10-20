@@ -9,7 +9,7 @@
 //!   → 900 帧裸 RGBA8 序列
 //! synth_bgm（prism-audio 实时合成：pad/arp/bass/drums 四声部 + 母带淡入淡出）
 //!   → write_avi_mjpeg_audio（视频帧 + 音频按帧切 chunk，双流交错 + idx1 双索引）
-//!   → /workspace/prism_calculus_60s.avi
+//!   → prism_calculus_60s.avi
 //! ```
 //!
 //! 全链路**零第三方依赖**：画面由 `prism-author` 声明式轨道程序化绘制，
@@ -58,7 +58,7 @@ const FPS: u32 = 15;
 /// AVI JPEG 质量（1..=100）。
 const JPEG_QUALITY: u8 = 82;
 /// 输出文件路径。
-const OUT_PATH: &str = "/workspace/prism_calculus_60s.avi";
+const OUT_PATH: &str = "prism_calculus_60s.avi";
 
 /// 场景间转场时长（秒）：相邻场景一律 `Transition::Fade`（由
 /// `render_short_concat_faded_frames` 内部固定，此处仅用于帧数推演）。

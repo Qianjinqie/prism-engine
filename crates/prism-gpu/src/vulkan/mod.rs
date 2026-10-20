@@ -24,19 +24,19 @@
 //!
 //! 本模块**不链接** `libvulkan`（无 `#[link(name = "vulkan")]`）。loader 库
 //! 在**运行期**经 `dlopen` 探测；拿不到 `libvulkan.so.1` / `libvulkan.so`
-//! 就判定不可用。故即便构建机没有 Vulkan（如未装 mesa 的裸容器），本 crate
+//! 就判定不可用。故即便当前平台没有 Vulkan（如未装 mesa 的系统），本 crate
 //! 仍可正常编译、链接、测试。
 //!
-//! # 运行环境（V2.0-W4 起如实更正）
+//! # 运行环境说明
 //!
-//! 本仓库开发/CI 环境经 `apt install mesa-vulkan-drivers` 提供
+//! 安装 `mesa-vulkan-drivers` 后可获得
 //! **lavapipe（llvmpipe）软件 ICD**（`lvp_icd.json` →
 //! `/usr/share/vulkan/icd.d/`），无需 X/Wayland 即可枚举到物理设备
-//! （Vulkan 1.4.318，`VK_PHYSICAL_DEVICE_TYPE_CPU`）。真机 compute 派发
-//! （SPIR-V → pipeline → dispatch → 读回）在本环境**真跑**，由
+//! （`VK_PHYSICAL_DEVICE_TYPE_CPU`）。设备可用时 compute 派发
+//! （SPIR-V → pipeline → dispatch → 读回）真实执行，由
 //! `compute::tests::real_device_compute_dispatch_smoke` 运行期自门控
-//! 验证。llvmpipe 是 CPU 软栅：只证明 GPU 代码路径功能正确，
-//! **不构成硬件加速比证据**（真硬件性能/硬编仍缺硬件）。
+//! 验证；当前平台无可用设备时按不支持处理并如实报告。llvmpipe 是 CPU 软栅：
+//! 只证明 GPU 代码路径功能正确，**不构成硬件加速比证据**。
 //!
 //! # 平台门禁
 //!
@@ -55,7 +55,7 @@ use crate::{Framebuffer, GpuDevice, SceneRenderRequest};
 pub mod loader;
 
 // ---------------------------------------------------------------------------
-// compute 管线（V2.0-G）：SPIR-V 供给 + dispatch / queue 提交
+// compute 管线：SPIR-V 供给 + dispatch / queue 提交
 // ---------------------------------------------------------------------------
 //
 // `spirv` 是纯数据（手写 SPIR-V 字流），**所有平台**都编译——wasm 侧也要能
@@ -349,10 +349,10 @@ impl VulkanBackend {
             .filter(|&p| p != 0)
     }
 
-    /// **compute 派发入口**（V2.0-G）。
+    /// **compute 派发入口**。
     ///
-    /// 走 [`compute::dispatch`]：有设备上下文则在真机上装配 SPIR-V → compute
-    /// pipeline → 命令缓冲 → 队列提交 → 读回；无上下文（本仓库构建环境无
+    /// 走 [`compute::dispatch`]：有设备上下文则在设备上装配 SPIR-V → compute
+    /// pipeline → 命令缓冲 → 队列提交 → 读回；无上下文（当前平台无
     /// ICD）则如实返回 [`compute::DispatchStatus::DeviceUnavailable`]，
     /// **不 panic、不返回假输出**。
     ///
@@ -767,8 +767,8 @@ mod tests {
             let be = VulkanBackend::new();
             // 恒不可用（渲染未实装），且诊断量与之一致。
             assert!(!be.is_available());
-            // 在无 ICD 的沙箱里，probed_device 应为 false；在有可用 Vulkan 的
-            // 机器上可能为 true。此处不写死断言，避免环境恒真/恒假。
+            // 当前平台无可用 ICD 时，probed_device 应为 false；有可用 Vulkan 的
+            // 平台上可能为 true。此处不写死断言，避免恒真/恒假。
         }
     }
 
@@ -803,8 +803,8 @@ mod tests {
 
     /// `probe()` 报告的字段必须自洽（后续阶段为真 ⇒ 前序阶段为真）。
     ///
-    /// **本测试在沙箱（枚举到 0 设备）与真机（有 GPU）上均成立且有区分度**：
-    /// 沙箱走 `device_count == 0` 分支，真机走 `device_created == true` 分支。
+    /// **本测试在无可用设备的平台与有 GPU 的平台上均成立且有区分度**：
+    /// 前者走 `device_count == 0` 分支，后者走 `device_created == true` 分支。
     #[test]
     fn probe_report_fields_are_monotonic() {
         let report = VulkanBackend::probe();
@@ -849,8 +849,8 @@ mod tests {
     ///
     /// 通过间接证据刻画：`VulkanLoader` 的 `open` 只可能返回「有效句柄」或
     /// `None`。此处断言「若 open 成功，则必然能取到 `vkGetInstanceProcAddr`」
-    /// ——这是 loader 库的固有契约；而若沙箱根本无 `libvulkan`，`open` 返回
-    /// `None`，分支被跳过。两种环境都有意义。
+    /// ——这是 loader 库的固有契约；而若当前平台无 `libvulkan`，`open` 返回
+    /// `None`，分支被跳过。两种情形都有意义。
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn loader_open_contract_holds_or_is_absent() {
@@ -865,7 +865,7 @@ mod tests {
                 // l 在此 drop → dlclose，验证析构不 panic。
             }
             None => {
-                // 沙箱无 loader：跳过（不写 `assert!(false)` 之类恒真式）。
+                // 当前平台无 loader：跳过（不写 `assert!(false)` 之类恒真式）。
             }
         }
     }

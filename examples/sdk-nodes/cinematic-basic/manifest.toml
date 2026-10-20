@@ -1,5 +1,5 @@
 # ============================================================================
-# cinematic-basic —— SDK 示例数据包（V2.0-M3 EC-3 端到端凭证）
+# cinematic-basic —— SDK 示例数据包（端到端凭证）
 #
 # 覆盖 pack 契约全字段：
 #   name(kebab-case) / version(semver 严格 x.y.z) / license(白名单) /

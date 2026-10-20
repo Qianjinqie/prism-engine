@@ -26,9 +26,9 @@
 
 | # | 核验项 | 命令 | 结果 |
 |---:|---|---|:---:|
-| 1 | 全仓依赖无外部 crate | 审阅根 `Cargo.toml` + 29 个 `crates/*/Cargo.toml`（共 30 份 manifest） | ✅ 全部只有 `path =` 依赖 |
+| 1 | 全仓依赖无外部 crate | 审阅根 `Cargo.toml` + 29 个 `src/*/Cargo.toml`（共 30 份 manifest） | ✅ 全部只有 `path =` 依赖 |
 | 2 | 无构建期外部代码 | `find . -name build.rs -not -path './target/*'` | ✅ **输出为空** |
-| 3 | 无外部 C/C++ 库链接 | `grep -rn 'extern "C"\|\#\[link' crates/ --include='*.rs'` | ✅ 仅 ffi 声明，**无外部库链接** |
+| 3 | 无外部 C/C++ 库链接 | `grep -rn 'extern "C"\|\#\[link' src/ --include='*.rs'` | ✅ 仅 ffi 声明，**无外部库链接** |
 | 4 | 锁文件核对 | `Cargo.lock` | ✅ 仅本仓 29 个包 |
 | 5 | 自动化核验 | `node tools/compliance_check.mjs` | ✅ **exit 0** |
 
@@ -46,12 +46,17 @@ $ grep -c '^\[\[package\]\]' Cargo.lock
 $ find . -name build.rs -not -path './target/*' -not -path './node_modules/*'
 
 # 3) 无外部库链接（应无输出）
-$ grep -rn '#\[link' crates/ --include='*.rs'
+$ grep -rn '#\[link' src/ --include='*.rs'
 
 # 4) 自动化核验 + 反向自证
 $ node tools/compliance_check.mjs               # 须 exit 0
 $ node tools/compliance_check.mjs --self-test   # 须判红
 ```
+
+> **双布局说明**：以上路径按**分发包布局**写（源码根为 `src/`）。
+> 在 git 仓库里执行时，把 `src/` 换成 `crates/` 即可——两种布局的 crate
+> 集合与依赖关系完全等价（演示 crate `prism-anim-demo` 不进分发包，
+> 故包内 28 个、仓内 29 个 crate；详见《开发者指南》§1.7）。
 
 ### 1.2 靠什么做到
 
@@ -103,7 +108,7 @@ $ node tools/compliance_check.mjs --self-test   # 须判红
 | 5 | 内置合成器音色库（piano / violin / drum，见下方注） | 随引擎许可 | ✅ | ✅ **已自研**（程序化合成） |
 
 > **注**：登记表中出现的 `B12` 是本引擎早期给合成器起的内部名字，
-> 读作"引擎内置合成器"即可；它出现在 `crates/prism-audio/src/` 的源码注释里，
+> 读作"引擎内置合成器"即可；它出现在 `src/prism-audio/src/` 的源码注释里，
 > 只是个旧代号，没有外部含义。
 
 **⚠️ 两处如实更正（不粉饰）**：
@@ -206,11 +211,11 @@ SELF-TEST OK: 违规必红、良好必绿——判据具备双向判别力
 5. **本章不含任何"已完全合规"的打包票**——
    四项待自研是**公开登记的待自研项**；
 6. **⚠️ 一处实测发现的登记漂移（如实登记，未擅自修改）**——
-   `crates/prism-text/assets/README.md` 记录 `prism_multiscript.ttf` 为
+   `src/prism-text/assets/README.md` 记录 `prism_multiscript.ttf` 为
    **4,224 B / sha256 `110e2be3…c3b34`**，而**实测为 23,244 B / sha256 `0eece481…b76c7`**。
-   **测试断言（`tests/multiscript_asset.rs` 的 `EXPECTED_SHA`）是对的**，
+   **测试断言（`src/prism-text/tests/multiscript_asset.rs` 的 `EXPECTED_SHA`）是对的**，
    旧 README 未同步。这正是"资产是确定性产物、字节漂移必须被看见"的机制在工作。
-   **`crates/` 只读，故未擅自修改**——上报在此，由维护者决定是否同步。
+   **`src/` 只读，故未擅自修改**——上报在此，由维护者决定是否同步。
    本章所有指纹均以**实测值**为准，不用过时 README 的数字；
 7. **字体来源链有一处易误判处**：`font_data/README.md` 记上游为 `notofonts/noto-cjk`，
    而 `font_data/LICENSE` 首行版权是 **Adobe**（Source Han Sans）。
@@ -226,4 +231,4 @@ SELF-TEST OK: 违规必红、良好必绿——判据具备双向判别力
 | `README.md` | **本文件** —— 合规专章入口（零依赖核验 / 资产现状 / 数据资产自研化现状） |
 | [`assets/资产登记.md`](assets/资产登记.md) | 逐项资产登记（含 sha256 指纹、出处、合规动作、自研化状态） |
 | [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) | 归属声明（**数据资产 ≠ 代码依赖**） |
-| `../../tools/compliance_check.mjs` | 可执行自检（含 `--self-test` 反向自证，CI 接线） |
+| `../tools/compliance_check.mjs` | 可执行自检（含 `--self-test` 反向自证，CI 接线；git 仓里路径为 `tools/compliance_check.mjs`） |

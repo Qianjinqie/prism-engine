@@ -1078,13 +1078,13 @@ mod tests {
 }
 
 // ===========================================================================
-// V2.0-G：GPU kernel 插槽 + double gate parity 网
+// GPU kernel 插槽 + double gate parity 网
 // ===========================================================================
 //
 // # 为什么「CPU 递归序 vs CPU 模拟 GPU 数组序」
 //
-// GPU 侧代码路径（SPIR-V → pipeline → dispatch → 读回）在本仓库环境
-// （lavapipe 软栅，V2.0-W4 起可用）真跑；但 GPU **执行组织方式**的差异
+// GPU 侧代码路径（SPIR-V → pipeline → dispatch → 读回）在装有 lavapipe（软件光栅）ICD 的平台上
+// 真跑；但 GPU **执行组织方式**的差异
 // 可以在 CPU 上精确复现：真机把「逐路径递归游走」重排为
 // 「扁平路径数组 + 逐 bounce 层同步推进 + workgroup 分块归约」。这一重排会
 // 改变**浮点结合序**（分块求和 vs 树形归约），于是判对必须从「逐位相等」
@@ -1542,7 +1542,7 @@ pub fn judge(report: &ParityReport, gate: &ParityGate) -> ParityVerdict {
 }
 
 // ===========================================================================
-// V2.0-G 测试：GPU 插槽 + double gate parity 网
+// 测试：GPU 插槽 + double gate parity 网
 // ===========================================================================
 
 #[cfg(test)]
@@ -1550,7 +1550,7 @@ mod v2g_parity_tests {
     use super::*;
     use crate::integrator::{Sphere, render_pixel as ref_render_pixel};
 
-    /// V2.0-G parity 场景：两个漫反射球 + 金属球 + 发光球（带 NEE/MIS 路径）。
+    /// parity 场景：两个漫反射球 + 金属球 + 发光球（带 NEE/MIS 路径）。
     fn v2g_scene() -> Scene {
         let center = Vec3::new(0.0, 2.0, 0.0);
         let radiance = Vec3::new(12.0, 11.0, 9.0);
@@ -1655,7 +1655,7 @@ mod v2g_parity_tests {
             assert_eq!(probe.status, "ok");
             assert!(probe.detail.contains("与 CPU 参考 一致"));
         } else {
-            // 本沙箱分支：如实报 device-unavailable。
+            // 无设备分支：如实报 device-unavailable。
             assert_eq!(probe.status, "device-unavailable");
             assert!(
                 probe.detail.contains("no-vulkan-icd") || probe.detail.contains("ICD"),

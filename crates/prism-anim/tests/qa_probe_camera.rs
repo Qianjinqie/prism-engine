@@ -2,7 +2,7 @@
 use prism_anim::camera_presets::{CameraPose, DollyZoom, LensSpec};
 use prism_math::Vec3;
 
-/// P0-2 atan：全域 [0,∞) f32 vs f64 参考；边界 x=0/1/0.414；极大 x。
+/// atan：全域 [0,∞) f32 vs f64 参考；边界 x=0/1/0.414；极大 x。
 #[test]
 fn probe_p0_2_atan_full_domain() {
     let h = 24.288f32;

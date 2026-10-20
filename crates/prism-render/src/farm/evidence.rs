@@ -60,8 +60,8 @@ fn manifest_config() -> ConfigHash {
 
 /// 第 `frame` 帧的确定性载荷（splitmix64 派生，**纯整数**、零依赖）。
 ///
-/// 这是本模块的"渲染"替身：真实农场里这里是"渲染一帧像素"，本轮验的是
-/// **调度与归约的确定性**，不是渲染正确性（见汇报"诚实边界"）。
+/// 这是本模块的"渲染"替身：真实农场里这里是"渲染一帧像素"，当前版本验的是
+/// **调度与归约的确定性**，不是渲染正确性（见"诚实边界"说明）。
 pub fn frame_payload(frame: u64) -> Vec<u8> {
     let mut state: u64 = frame.wrapping_mul(0x9e37_79b9_7f4a_7c15).wrapping_add(0x1234_5678);
     let mut out: Vec<u8> = Vec::with_capacity(FRAME_BYTES);

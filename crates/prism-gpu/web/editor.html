@@ -694,7 +694,7 @@ function buildParam(p, live) {
     lab.appendChild(el("span", null, box.checked ? "开" : "关"));
     ctl.appendChild(lab);
   } else if (p.value.t === "str") {
-    // 字符串参数：schema 未给范围，只读展示（诚实边界，见汇报）
+    // 字符串参数：schema 未给范围，只读展示（诚实边界说明）
     const inp = document.createElement("input");
     inp.type = "text"; inp.value = String(p.value.v); inp.readOnly = true;
     ctl.appendChild(inp);

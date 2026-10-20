@@ -43,7 +43,7 @@
 //      编译级缺陷**（形参/实参个数不匹配、builtin 实参个数错），并断言真编译器
 //      **必须**报错。任何一份注入后仍然编译通过 = 这条链路对它无效 = 判红。
 //
-// # 沙箱路径（复用 hair_parity_gpu.mjs 已验证的机制，不新造）
+// # 无 GPU 环境路径（复用 hair_parity_gpu.mjs 已验证的机制，不新造）
 //
 //   Xvfb（有头虚拟显示）+ Playwright/Chromium + SwiftShader（软件适配器）。
 //   WebGPU 只存在于浏览器上下文且需安全上下文，故走本地 `createServer` 静态服务

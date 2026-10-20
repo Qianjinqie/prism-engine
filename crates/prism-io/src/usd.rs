@@ -28,12 +28,12 @@
 //!   （`xformOp:transform` / `:translate` / `:scale` / `:rotateXYZ`），
 //!   按**世界 = 父 ∘ 子**递归累加，最终**烘焙**到顶点。
 //!
-//! # 诚实边界（本轮明确**不做**，勿高估）
+//! # 诚实边界（当前版本明确**不做**，勿高估）
 //! - **`.usdc`（crate 二进制）完全不支持**：识别 magic `PXR-USDC` 后
 //!   **结构化拒绝**（[`UsdError::BinaryNotSupported`]），不做任何部分解析
 //!   ——半解析的二进制比明确拒绝危险得多；
 //! - **时间采样不支持**：`timeSamples` 块被跳过并记入
-//!   [`LayerReport::skipped_time_samples`]，本轮**只取默认帧**
+//!   [`LayerReport::skipped_time_samples`]，当前版本**只取默认帧**
 //!   （`default` 属性的静态值）。属性上的 `timeSamples` 非空时，
 //!   若该属性同时有默认值则用默认值，否则报 [`UsdError::MissingTimeSampleValue`]；
 //! - **不做引用/载荷/payload 解析**：`prepend references = @x.usda@`、
@@ -168,7 +168,7 @@ impl UsdError {
         }
     }
 
-    /// PU1001：`.usdc` 等二进制 crate 格式（本轮不支持）。
+    /// PU1001：`.usdc` 等二进制 crate 格式（当前版本不支持）。
     ///
     /// **结构化拒绝**（而非部分解析）：`.usdc` 的 crate 容器含压缩的
     /// token/字段表与 LZ4 压缩块，半解析会产出**看似合理实则错误**的
@@ -189,10 +189,10 @@ impl UsdError {
             "PU1001",
             "usd::parse_bytes",
             format!(
-                "检测到 USD 二进制 crate 格式（magic = \"{shown}\"），本轮只支持 `.usda` 文本格式"
+                "检测到 USD 二进制 crate 格式（magic = \"{shown}\"），当前版本只支持 `.usda` 文本格式"
             ),
             "用 `usdcat`（或任何 DCC / `pxr` 工具）把资产导出为 `.usda` 文本后再导入；\
-             若需直接支持 `.usdc`，须另行实现 crate 容器 + LZ4 解压（超出本轮范围）"
+             若需直接支持 `.usdc`，须另行实现 crate 容器 + LZ4 解压（超出当前版本范围）"
                 .to_string(),
         )
     }
@@ -255,7 +255,7 @@ impl UsdError {
         )
     }
 
-    /// PU1007：属性只有 `timeSamples`、无默认值（本轮只取默认帧）。
+    /// PU1007：属性只有 `timeSamples`、无默认值（当前版本只取默认帧）。
     pub fn missing_time_sample_value(
         location: impl Into<String>,
         problem: impl Into<String>,
@@ -264,8 +264,8 @@ impl UsdError {
             "PU1007",
             location,
             problem,
-            "本轮只取默认帧：给该属性补一个静态默认值，或在资产侧烘焙为默认帧（\
-             `timeSamples` 求值需完整的时间码求值器，超出本轮范围）"
+            "当前版本只取默认帧：给该属性补一个静态默认值，或在资产侧烘焙为默认帧（\
+             `timeSamples` 求值需完整的时间码求值器，超出当前版本范围）"
                 .to_string(),
         )
     }
@@ -441,9 +441,9 @@ pub struct Attribute {
     pub uniform: bool,
     /// 限定词 `custom`（用户自定义属性）。
     pub custom: bool,
-    /// 插值提示（`interpolation = "vertex"` 等）；本轮只记录不参与计算。
+    /// 插值提示（`interpolation = "vertex"` 等）；当前版本只记录不参与计算。
     pub interpolation: Option<String>,
-    /// 是否声明了非空 `timeSamples`（本轮跳过，只取默认帧）。
+    /// 是否声明了非空 `timeSamples`（当前版本跳过，只取默认帧）。
     pub has_time_samples: bool,
 }
 
@@ -461,7 +461,7 @@ pub struct Relationship {
 pub enum PrimKind {
     /// `def`：定义新的 prim。
     Def,
-    /// `over`：在已有层上覆盖（本轮不与其它层合并，只作记录）。
+    /// `over`：在已有层上覆盖（当前版本不与其它层合并，只作记录）。
     Over,
     /// `class`：抽象类（不参与渲染实例化）。
     Class,
@@ -554,7 +554,7 @@ pub struct LayerReport {
     pub skipped_variants: Vec<String>,
     /// 遇到但未解析的 `prepend references` / `payload` 资产（升序）。
     pub unresolved_asset_paths: Vec<String>,
-    /// 非 `Mesh` 的 prim 数量（本轮只把 `Mesh` 转成网格）。
+    /// 非 `Mesh` 的 prim 数量（当前版本只把 `Mesh` 转成网格）。
     pub non_mesh_prims: usize,
     /// 法线在**非等比缩放**下未做逆转置的 prim（升序，元素含缩放描述）。
     pub non_uniform_normals: Vec<String>,
@@ -1681,7 +1681,7 @@ fn prim_path_hint(p: &Prim) -> String {
 
 /// 把引号内的字符串按其内容归类（USD 允许把数组/元组写成字符串）。
 ///
-/// **本轮一律返回 [`AttrValue::Str`]**：USD 里 `"[...]"` 字符串化的数组是
+/// **当前版本一律返回 [`AttrValue::Str`]**：USD 里 `"[...]"` 字符串化的数组是
 /// 合法但罕见的写法，若按内容二次解析，遇到 `"(1, 2)"` 这类**并非**数组的
 /// 字符串就会误分类。类型名原文保留在 `Attribute::type_name` 供审计，
 /// 需要结构化数值时由渲染侧显式再解析。
@@ -1991,7 +1991,7 @@ impl Mesh {
     /// **凹**多边形（L 形 / U 形 / 被切出的凹面，USD 网格极常见）会产出
     /// **自交或翻面**三角形——扇形三角 `[v0, v_k, v_{k+1}]` 用的对角线
     /// `v0→v_k` 在凹多边形里可能落在多边形**外部**。这是渲染正确性问题，
-    /// 不是性能优化，故本轮换成耳切法。
+    /// 不是性能优化，故当前版本换成耳切法。
     ///
     /// # 签名保留
     /// 保留 `triangulated() -> Vec<[u32;3]>` 原签名（`Scene::triangle_count`
@@ -2714,7 +2714,7 @@ fn matrix_from_attr(attr: &Attribute, prim_path: &str) -> Result<Mat4, UsdError>
 /// 探测 `Mat4` 的线性部分是否**非等比缩放**。
 ///
 /// 法线在非等比缩放下必须乘逆转置 `transpose(inverse(upper3x3))` 才正确；
-/// 本轮只按旋转部分变换，故此处返回一行缩放描述供 [`LayerReport`] 记账，
+/// 当前版本只按旋转部分变换，故此处返回一行缩放描述供 [`LayerReport`] 记账，
 /// 让调用方能看见"这里的法线只是近似"。等比（含纯旋转/刚体）返回 `None`。
 ///
 /// 判据：取线性部分三个基向量的长度，若两两相对差超 `1e-9` 即为非等比。
@@ -2820,7 +2820,7 @@ fn build_mesh(prim: &Prim, world: Mat4, report: &mut LayerReport) -> Result<Mesh
     // 法线。
     let mut normals = Vec::new();
     if let Some(a) = prim.attribute("normals") {
-        // 法线只按**旋转部分**变换（非等比缩放下需逆转置，本轮不做——
+        // 法线只按**旋转部分**变换（非等比缩放下需逆转置，当前版本不做——
         // 见模块头「诚实边界」，此处记账到报告里而非静默近似）。
         if let Some(d) = non_uniform_scale(&world) {
             report
@@ -3254,7 +3254,7 @@ def Mesh "quad"
         // 三重断言：无自交 + 面积覆盖 + 法线同向（细节在 helper 内）。
         assert_ear_clip_valid(&pts, &face, &tris, "凹四边形 L 形");
 
-        // 显式复核面积数字（汇报用）：两三角形各 1.5，和 3.0。
+        // 显式复核面积数字（诊断用）：两三角形各 1.5，和 3.0。
         let want = poly_area(&pts);
         let sum: f64 = tris
             .iter()
@@ -3336,7 +3336,7 @@ def Mesh "quad"
 
     #[test]
     fn ear_clip_area_coverage_measurement_table() {
-        // 汇报用面积覆盖表：多边形 / 三角形数 / 面积和 / 多边形面积 / 相对误差。
+        // 诊断用面积覆盖表：多边形 / 三角形数 / 面积和 / 多边形面积 / 相对误差。
         // 每个多边形都过 `assert_ear_clip_valid`（含无自交 + 法线同向）。
         struct Case {
             label: &'static str,

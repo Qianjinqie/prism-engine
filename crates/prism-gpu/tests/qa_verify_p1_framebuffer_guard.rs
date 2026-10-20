@@ -293,7 +293,7 @@ fn g8_out_of_range_coords_dropped_never_row_wrap() {
     for &y in COORDS.iter() {
         for &x in COORDS.iter() {
             // 每组都用**全新且有效**的缓冲：排除"被拒空缓冲恒真"的伪通过
-            // （上一轮教训：删掉 checked_mul 后探针仍"存活"）。
+            // （此前教训：删掉 checked_mul 后探针仍"存活"）。
             let mut fb = Framebuffer::new(SIDE, SIDE);
             assert!(
                 fb.is_valid() && fb.pixels.len() == (SIDE * SIDE * 4) as usize,

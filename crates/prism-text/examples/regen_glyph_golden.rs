@@ -14,7 +14,7 @@
 //! # 用法
 //!
 //! ```bash
-//! # 默认：只比对当前实现与 tests/golden/ 是否一致（CI 友好，退出码非零即不一致）
+//! # 默认：只比对当前实现与 tests/golden/ 是否一致（退出码非零即不一致）
 //! cargo run -p prism-text --example regen_glyph_golden
 //!
 //! # 显式确认：仍然只比对，不写盘

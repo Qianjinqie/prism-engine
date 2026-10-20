@@ -1,4 +1,4 @@
-//! `prism-app render` 子命令端到端测试（V1.5-D 任务书测试要求 ④）。
+//! `prism-app render` 子命令端到端测试。
 //!
 //! 用 `CARGO_BIN_EXE_prism-app` 起真实二进制进程，验证：
 //! 1. 合法 v2 示例 → 退出码 0 + 输出 MP4 文件非空（内置 MJPEG 出口，
@@ -72,9 +72,9 @@ fn render_cli_exits_zero_and_writes_nonempty_mp4() {
         "输出应是 MP4 容器（ftyp box），实际头部: {:?}",
         &bytes[..bytes.len().min(16)]
     );
-    // stdout 应汇报帧数（8 帧 = 1s @ 8fps）。
+    // stdout 应输出帧数（8 帧 = 1s @ 8fps）。
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("帧数      : 8 帧"), "stdout 应含帧数汇报: {stdout}");
+    assert!(stdout.contains("帧数      : 8 帧"), "stdout 应含帧数输出: {stdout}");
 }
 
 #[test]

@@ -1,4 +1,4 @@
-//! `prism-app preview` 子命令端到端测试（V1.5-F 任务书测试要求 ②③④）。
+//! `prism-app preview` 子命令端到端测试。
 //!
 //! 用 `CARGO_BIN_EXE_prism-app` 起真实二进制进程，验证：
 //! 1. **单帧模式**：退出码 0 + 输出 PNG 文件非空（PNG magic）；

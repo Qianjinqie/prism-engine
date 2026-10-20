@@ -17,7 +17,7 @@
 pub const WIDTH: u32 = 960;
 /// 画幅高（像素；PRD §4.0）。
 pub const HEIGHT: u32 = 540;
-/// 帧率（帧/秒；主理人裁定①30fps）。
+/// 帧率（帧/秒；成片规格 30fps）。
 pub const FPS: u32 = 30;
 
 /// 各场景帧数（S1–S7，PRD §4.0 / 架构 §7.6）：

@@ -1,4 +1,4 @@
-//! PNG 解码器（非交错，8/16-bit，色型 0/2/3/4/6）—— V1.5-W1-A / P0-1。
+//! PNG 解码器（非交错，8/16-bit，色型 0/2/3/4/6）。
 //!
 //! # 能力矩阵
 //!
@@ -346,7 +346,7 @@ pub fn decode_png(bytes: &[u8]) -> Result<PngImage, String> {
                 }
                 if bit_depth != 8 && bit_depth != 16 {
                     return Err(format!(
-                        "PNG 位深 {} 不在 V1.5-A 支持范围（仅 8/16；1/2/4-bit 属 L2）",
+                        "PNG 位深 {} 不在支持范围（仅 8/16；1/2/4-bit 属 L2）",
                         bit_depth
                     ));
                 }

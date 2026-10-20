@@ -1,9 +1,9 @@
 //! 背景渲染：CPU 参考实现（GPU 管线兜底）。
 //!
-//! 本模块把 demo 的逐像素 `paint_background` 热点迁移为可在本沙箱真实运行的
+//! 本模块把 demo 的逐像素 `paint_background` 热点迁移为无 GPU 平台完整可运行的
 //! CPU 后端，并作为 GPU shader（`shaders/background.wgsl`）的数值判对基准。
 //! **两端公式严格一致**（hash value noise + 手写 smoothstep + 手写正弦逼近），
-//! 保证「同输入同输出」；GPU 实际执行待 WebGPU 运行时（本沙箱 headless，仅校验
+//! 保证「同输入同输出」；GPU 实际执行待 WebGPU 运行时（无 GPU 环境下仅校验
 //! shader 编译/解析，不实际 GPU 渲染）。
 //!
 //! 接口：
@@ -163,10 +163,10 @@ pub fn render_background_cpu(w: u32, h: u32, t: f32, seed: u64) -> Vec<u8> {
 
 /// 引擎背景渲染入口。
 ///
-/// 当前直接调用 [`render_background_cpu`]（无 GPU 环境时的真实可运行后端）。
+/// 当前直接调用 [`render_background_cpu`]（无 GPU 平台上的真实可运行后端）。
 /// GPU 路径随 `shaders/background.wgsl` 构建就绪后接入——届时按 seed/时间上传
-/// uniform、dispatch compute，再把 storage buffer 回读为 RGBA8。**注意**：本沙箱
-/// headless 无 GPU，shader 仅做编译/解析校验，不实际 GPU 渲染；此处返回的是 CPU
+/// uniform、dispatch compute，再把 storage buffer 回读为 RGBA8。**注意**：无 GPU
+/// 环境下 shader 仅做编译/解析校验，不实际 GPU 渲染；此处返回的是 CPU
 /// 参考结果，可放心用于生产兜底。
 pub fn render_background(w: u32, h: u32, t: f32, seed: u64) -> Vec<u8> {
     render_background_cpu(w, h, t, seed)

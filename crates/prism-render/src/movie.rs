@@ -1,4 +1,4 @@
-//! DSL v2 成片直达（V1.5-D）：[`CompileV2Output`] → 帧序列 [`Deliverable`]。
+//! DSL v2 成片直达：[`CompileV2Output`] → 帧序列 [`Deliverable`]。
 //!
 //! # 定位
 //! 本模块是 prism-dsl v2 编译产物在 render 侧的消费入口：读入一次
@@ -6,16 +6,16 @@
 //! 采样求值整段影片。3D 帧求值**复用本 crate 既有求值器**
 //! （[`crate::render_frame`] → `CpuRefBackend` 软光追），不另写渲染器；
 //! 文本图层合成复用 `prism-text` 既有排版 / 光栅化能力；转场混合复用
-//! `prism-core::sceneseq`（W1-C 下沉的 u8 整数混合家族）。
+//! `prism-core::sceneseq`（u8 整数混合家族）。
 //!
 //! # 覆盖纪律（宪章：绝不静默糊弄近似）
-//! render 侧只宣称**已支持子集**（详见 `docs/v2-node-coverage.md`）：
+//! render 侧只宣称**已支持子集**：
 //! - S5 相机（stage3d camera）→ 场景相机轨道；
 //! - S8 材质（stage3d material）→ 场景材质；
 //! - S12 实体 `kind sphere`（stage3d sdf）→ 球体半径；
 //! - S12 曲线图元族 `kind ∈ {cylinder, cone, torus, revolution}`
-//!   （stage3d sdf，V2.0-W4）→ rt CPU 波前路径（BVH 加速、逐位确定性；
-//!   GPU 曲线槽位留待后续波次——不假装已支持）；
+//!   （stage3d sdf）→ rt CPU 波前路径（BVH 加速、逐位确定性；
+//!   GPU 曲线槽位尚未接入——不假装已支持）；
 //! - S12 文本图层（layer text）→ 帧上文本合成；
 //! - 场景时间线：顺序播放 / 过渡重叠混合 / 同程多场景左右分屏。
 //!
@@ -301,7 +301,7 @@ pub fn render_movie(
                     "R5020",
                     format!("movie '{}' 的时间线（t = {t:.3}s）", compile.title),
                     format!("{} 个场景同时活跃（{}），超出已支持的时间线语义", active.len(), names.join("、")),
-                    "已支持：单场景 / 两场景过渡重叠 / 两场景同程分屏；更多同时活跃画面请拆分为多个 movie 或等待后续波次",
+                    "已支持：单场景 / 两场景过渡重叠 / 两场景同程分屏；更多同时活跃画面请拆分为多个 movie（尚未支持）",
                 ));
             }
         };
@@ -415,7 +415,7 @@ fn classify_node(
             if node.params.get("kind").is_some() {
                 let kind: &str = p_str(&node.params, "kind").unwrap_or("");
                 match kind {
-                    // V2.0-W4 曲线图元族：入 curves 槽位，帧求值走 rt 波前路径。
+                    // 曲线图元族：入 curves 槽位，帧求值走 rt 波前路径。
                     "cylinder" | "cone" | "torus" | "revolution" => {
                         model.curves.push(node_ref);
                         Ok(())
@@ -439,7 +439,7 @@ fn classify_node(
                             format!(
                                 "render 侧已支持的实体只有 sphere / cylinder / cone / torus / revolution；'{other}' 缺少求交实现"
                             ),
-                            "把 sdf kind 写成 sphere / cylinder / cone / torus / revolution；box 等基元待几何求交模块接入（后续波次）",
+                            "把 sdf kind 写成 sphere / cylinder / cone / torus / revolution；box 等基元待几何求交模块接入（尚未支持）",
                         ));
                     }
                 }
@@ -451,7 +451,7 @@ fn classify_node(
                             "R5014",
                             format!("场景 '{}' 的文本节点 {}（rotation = {r} rad）", scene.name, node.id),
                             "render 侧文本合成暂不支持旋转（缺任意角字形光栅化）".to_string(),
-                            "删掉 layer text 的 rotation 字段；旋转文本待矢量图层波次接入",
+                            "删掉 layer text 的 rotation 字段；旋转文本待矢量图层接入（尚未支持）",
                         ));
                     }
                 }
@@ -471,14 +471,14 @@ fn classify_node(
             "R5010",
             format!("场景 '{}' 的粒子节点 {}（S4）", scene.name, node.id),
             "layer particles 暂不支持：render 侧缺粒子域求值器（样本 → 像素的映射管线）".to_string(),
-            "移除 layer particles 块，或等待粒子求值器接入（后续波次）；当前已支持：camera / material / sdf sphere / layer text",
+            "移除 layer particles 块，或等待粒子求值器接入（尚未支持）；当前已支持：camera / material / sdf sphere / layer text",
         )),
         // S3 约束梯度流：sim。
         StructureId::ConstraintFlow => Err(RenderError::new(
             "R5010",
             format!("场景 '{}' 的模拟节点 {}（S3，kind = '{}'）", scene.name, node.id, p_str(&node.params, "kind").unwrap_or("")),
             "sim 暂不支持：render 侧缺约束梯度流求解器（XPBD 步进）".to_string(),
-            "移除 sim 块，或等待模拟求解器接入（后续波次）；当前已支持：camera / material / sdf sphere / layer text",
+            "移除 sim 块，或等待模拟求解器接入（尚未支持）；当前已支持：camera / material / sdf sphere / layer text",
         )),
         // S2 卷积：compose 汇点。
         StructureId::Convolution => Err(RenderError::new(
@@ -606,7 +606,7 @@ fn render_scene_frame(
     let mut fb: Framebuffer = if model.curves.is_empty() {
         render_frame(device, &scene, t_local, dur_local, w, h)
     } else {
-        // V2.0-W4 曲线图元族：走 prism-rt CPU 波前路径（设备仅占位不用）。
+        // 曲线图元族：走 prism-rt CPU 波前路径（设备仅占位不用）。
         render_curve_frame(model, &scene, channels, t_local, dur_local, frame, w, h)?
     };
 
@@ -626,13 +626,13 @@ fn render_scene_frame(
     Ok(fb)
 }
 
-/// 曲线图元帧渲染（V2.0-W4）：prism-rt CPU 波前路径 + clamp tone-map 到 u8。
+/// 曲线图元帧渲染：prism-rt CPU 波前路径 + clamp tone-map 到 u8。
 ///
 /// # 为什么走 CPU（诚实口径）
 /// curve 四族的解析求交在 prism-rt（CPU 参考实现，配 SAH-BVH 与逐位
 /// 确定性测试）；GPU 设备请求契约（`SphereReq`）暂无曲线基元槽位。
-/// 本波次以 CPU 路径交付端到端能力（先真跑、不假装），GPU 曲线槽位
-/// 留待后续波次——与 G 轨激活同口径。
+/// 当前版本以 CPU 路径交付端到端能力（先真跑、不假装），GPU 曲线槽位
+/// 尚未接入。
 ///
 /// # 确定性
 /// 种子恒 0（与参数解算一致）、spp/弹射深度为固定常量 ⇒ 同输入逐位
@@ -660,7 +660,7 @@ fn render_curve_frame(
 
     let mut rt: RtScene = RtScene::default();
     // 材质映射：DSL material → Lambert 反照率（Pbr 的 metalness/roughness
-    // 映射留待后续波次；反照率是最影响识别的通道，先真跑）。
+    // 映射尚未接入；反照率是最影响识别的通道，先真跑）。
     let mat: MaterialKind = MaterialKind::Lambert { albedo: scene.material.albedo };
     for c in &model.curves {
         let p = resolve_params(c, channels, t, frame);
@@ -723,7 +723,7 @@ fn render_curve_frame(
         }
     }
     // 光源：与 GPU 球体路径同款固定暖色方向光（确定性常量，DSL light 块
-    // 的运行时接入留待后续波次——两路同口径，不静默双标）。
+    // 的运行时接入尚未实装——两路同口径，不静默双标）。
     rt.lights = vec![prism_rt::integrator::Light::Directional {
         direction: Vec3::new(1.0, -1.0, -0.5).normalize(),
         radiance: Vec3::new(1.0, 244.0 / 255.0, 230.0 / 255.0) * 3.0,
@@ -805,7 +805,7 @@ fn overlay_text(fb: &mut Framebuffer, params: &prism_core::Params, w: u32, h: u3
     ];
     let align: &str = p_str(params, "align").unwrap_or("left");
 
-    // 内嵌粗体（确定性：同字节同字形；DSL font 回退链消费随字体管线波次接入）。
+    // 内嵌粗体（确定性：同字节同字形；DSL font 回退链消费随字体管线接入）。
     let font = font_bold();
     let tp = TextParams {
         font_size: size,
@@ -934,7 +934,7 @@ fn black_frame(w: u32, h: u32) -> Framebuffer {
     fb
 }
 
-/// 按过渡种类把两帧混合为一帧（整数路径，复用 W1-C 下沉 core 家族）。
+/// 按过渡种类把两帧混合为一帧（整数路径，复用 core 的 u8 混合家族）。
 ///
 /// 种类 → 语义（与 `prism-author` 既有 `mix_frame` 逐位同口径）：
 /// - `crossfade` / `fade`：全局线性权重 `mix_u8(a, b, kw)`；
@@ -1200,10 +1200,10 @@ mod tests {
         assert_ne!(a.frames[0].pixels, a.frames[a.frames.len() - 1].pixels);
     }
 
-    /// V2.0-W4 RQ-3 端到端：`.prism` 四族曲线 kind 同场 → `compile_v2`
+    /// 端到端：`.prism` 四族曲线 kind 同场 → `compile_v2`
     /// → `render_movie` → 帧序列 + 逐位确定性 + 非空渲染。
     ///
-    /// 验收口径（任务书）：DSL 端到端 ≥2 种曲线 kind 经编译产出帧；本用例
+    /// 覆盖要求：DSL 端到端 ≥2 种曲线 kind 经编译产出帧；本用例
     /// 四种齐上（cylinder / cone / torus / revolution），并顺带覆盖规格
     /// 推导（fps / resolution / duration）、节点分流与两跑 MD5 一致。
     #[test]

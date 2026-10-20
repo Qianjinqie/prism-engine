@@ -158,7 +158,7 @@ try {
 } catch (e) {
   die(`无法定位 Chromium 可执行文件：${e.message}`);
 }
-// playwright 自带版本可能未下载（如 CI 精简镜像 / 离线沙箱），此时回退到系统
+// playwright 自带版本可能未下载（如精简镜像 / 无网络环境），此时回退到系统
 // Chromium。**只在 playwright 的路径确实不存在时**才回退，不静默换版本——
 // 系统 Chromium 的 WebGPU 支持度必须由前置 4 实测确认，不能假设。
 if (!execPath || !existsSync(execPath)) {
@@ -310,7 +310,7 @@ try {
   } catch (e) {
     die(
       `Chromium 启动失败：${e.message}\n` +
-      "   有头模式在容器里常因沙箱/共享内存失败；BASH 里的 --no-sandbox 已带上。\n" +
+      "   有头模式在容器里常因浏览器沙箱/共享内存限制失败；启动参数里的 --no-sandbox 已带上。\n" +
       "   若在极简容器里，可试 --disable-software-rasterizer 之外的组合。",
     );
   }

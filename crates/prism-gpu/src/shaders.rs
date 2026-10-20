@@ -37,7 +37,7 @@ pub static SHADERS: &[(&str, &str)] = &[
     ("gi_compute.wgsl", include_str!("../shaders/gi_compute.wgsl")),
     // 背景渲染 GPU compute shader（demo `paint_background` 热点的 GPU 管线兜底）。
     ("background.wgsl", include_str!("../shaders/background.wgsl")),
-    // V2.0-G compute-first 管线的两个真实 kernel（语义权威在
+    // compute-first 管线的两个真实 kernel（语义权威在
     // `crate::compute`，判对基准是它们的 CPU 参考实现）+ SPIR-V 装配探针。
     (
         "rt_primary_ray_gen.wgsl",
@@ -433,8 +433,8 @@ fn call_targets(src: &str) -> Vec<String> {
 /// [`unresolved_symbols`] 同口径）。原因：数学/出处注释里天然会出现
 /// `sin(`/`cos(`/`exp(` 等**记号**（如「M(θ_i,θ_o) 的高斯核含 sin(θ_o)−sin(θ_i)」
 /// 或「本文件写作 det_exp(x)」），它们不是被禁的 libm **调用**。若在原始
-/// 源码上直接扫子串，会把带公式注释的合法 shader 误判为 D-29 违规（本轮
-/// `hair_scatter.wgsl` 的真机回归即此假阳性）。去注释后只留可执行代码，
+/// 源码上直接扫子串，会把带公式注释的合法 shader 误判为 D-29 违规（如
+/// `hair_scatter.wgsl` 的设备回归即此假阳性）。去注释后只留可执行代码，
 /// 判据才与「是否真的调用了 libm 超越函数」一致。
 pub fn check_shader(name: &'static str, src: &str) -> ShaderCheck {
     let include_only = INCLUDE_ONLY.contains(&name);
@@ -516,10 +516,10 @@ fn contains_word(src: &str, word: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// V2.0-G：三目标源宿主（WGSL / MSL / SPIR-V）
+// 三目标源宿主（WGSL / MSL / SPIR-V）
 // ---------------------------------------------------------------------------
 //
-// V2.0-G 的 compute-first 管线让同一个 kernel 有**三种宿主形态**：
+// compute-first 管线让同一个 kernel 有**三种宿主形态**：
 //
 // | 目标 | 形态 | 供给方式 | 消费方 |
 // |---|---|---|---|
@@ -562,7 +562,7 @@ impl ShaderTarget {
 /// MSL 双份源注册表：入口名 → 源码。
 ///
 /// 入口名与 WGSL `fn`、SPIR-V `OpEntryPoint` 同名（三目标唯一口径）。
-/// 目前两份：`cloth_predict`（既有）与 `primary_ray_gen`（V2.0-G）。
+/// 目前两份：`cloth_predict`（既有）与 `primary_ray_gen`。
 pub static MSL_KERNELS: &[(&str, &str)] = &[
     ("cloth_predict", crate::metal::msl::CLOTH_PREDICT_MSL),
     ("primary_ray_gen", crate::metal::msl::PRIMARY_RAY_GEN_MSL),
@@ -992,7 +992,7 @@ mod tests {
     #[test]
     fn libm_detection_ignores_comments_but_catches_real_calls() {
         // 去注释口径的**双向**验证：
-        //   正向：注释里的 `sin(`/`cos(`/`exp(` 不得被判为 D-29 违规（本轮真机假阳性）。
+        //   正向：注释里的 `sin(`/`cos(`/`exp(` 不得被判为 D-29 违规（设备回归假阳性）。
         let commented = "// sin(θ_i) 与 cos(φ/2) 的记号 + exp 记号\n\
                          fn f() -> f32 { return 1.0; }";
         assert!(!check_shader("comment_only.wgsl", commented).has_libm,
@@ -1007,7 +1007,7 @@ mod tests {
     }
 
     // =======================================================================
-    // V2.0-G：三目标源宿主（WGSL / MSL / SPIR-V）
+    // 三目标源宿主（WGSL / MSL / SPIR-V）
     // =======================================================================
 
     /// 宿主清单齐备：三目标各有条目，且 WGSL 计数与 `SHADERS` 一致。

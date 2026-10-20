@@ -36,7 +36,7 @@
 //!
 //! # 错误码
 //!
-//! 沿用宪章 C18 三段式（在哪 / 什么事 / 建议）。P5xxx 段 = 农场调度（本轮新
+//! 沿用宪章 C18 三段式（在哪 / 什么事 / 建议）。P5xxx 段 = 农场调度（当前版本新
 //! 段，见 [`FarmError`]）。
 
 use std::fmt;
@@ -91,7 +91,7 @@ pub use worker::{
 /// 农场调度错误。
 ///
 /// 三段式：**在哪**（`location`）/ **什么事**（检测到的事实）/ **建议**
-/// （可行动修复）。错误码取 P5xxx 段（农场调度，本轮新段——C18 已定义的
+/// （可行动修复）。错误码取 P5xxx 段（农场调度，当前版本新段——C18 已定义的
 /// P1xxx 防呆参数 / P2xxx 类型语法 / P3xxx 图结构 / P4xxx 资产 IO 都不覆盖
 /// 调度域，故新开 P5xxx；待裁决）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -173,7 +173,7 @@ pub enum FarmError {
         /// 帧里携带的摘要（小写十六进制）。
         actual: String,
     },
-    /// 传输不可用：进程起不来 / 管道断裂 / 该变体本轮未实装。
+    /// 传输不可用：进程起不来 / 管道断裂 / 该变体当前版本未实装。
     TransportUnavailable {
         /// 三段式一【在哪】。
         location: String,
@@ -236,7 +236,7 @@ impl fmt::Display for FarmError {
                 "error[P5007] {location}\n  \
                  什么事：线格式畸形——{detail}\n  \
                  建议：核对字段是否齐全（FrameTask 需 frames/config_hash/priority/resources；\
-                 FrameShard 需 frames/values）；本轮线格式由 prism-infra 的 farm_wire 编解码"
+                 FrameShard 需 frames/values）；当前版本线格式由 prism-infra 的 farm_wire 编解码"
             ),
             FarmError::ChecksumMismatch { location, expected, actual } => write!(
                 f,
@@ -250,7 +250,7 @@ impl fmt::Display for FarmError {
                 "error[P5009] {location}\n  \
                  什么事：传输不可用——{detail}\n  \
                  建议：本地子进程路径请先 `cargo build -p prism-render --bin farm-worker`，\
-                 或设环境变量 PRISM_FARM_WORKER 指向该可执行文件；跨机 TCP 变体本轮未实装，\
+                 或设环境变量 PRISM_FARM_WORKER 指向该可执行文件；跨机 TCP 变体当前版本未实装，\
                  请改用本地子进程（同一条帧协议，仅介质不同）"
             ),
             FarmError::CacheIo { location, detail } => write!(

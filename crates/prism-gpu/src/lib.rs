@@ -29,9 +29,9 @@ pub mod shaders;
 // 背景渲染（GPU 管线兜底）：CPU 参考 + 引擎入口
 // ----------------------------------------------------------------------------
 //
-// `background` 把 demo 的逐像素 `paint_background` 热点迁移为可在本沙箱真实运行的
+// `background` 把 demo 的逐像素 `paint_background` 热点迁移为无 GPU 平台完整可运行的
 // CPU 后端，并作为 GPU shader（`shaders/background.wgsl`）的数值判对基准。GPU 实际
-// 执行待 WebGPU 运行时（本沙箱 headless，仅校验 shader 编译/解析）。
+// 执行待 WebGPU 运行时（无 GPU 环境下仅校验 shader 编译/解析）。
 
 pub mod background;
 
@@ -99,7 +99,7 @@ pub mod scan;
 pub mod sort;
 pub mod sync;
 
-// **compute 语义层**（V2.0-G，GPU compute-first 管线的基础件）：
+// **compute 语义层**（GPU compute-first 管线的基础件）：
 // 设备无关的 kernel 描述 / dispatch 形状 / buffer 布局 + 真实 kernel 语义的
 // CPU 参考实现（主射线发射、wavefront 求交一步）。真机执行经
 // [`vulkan::compute`] 的装配路径；本层保证「语义与设备无关」这一条硬约束。

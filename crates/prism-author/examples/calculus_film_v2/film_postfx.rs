@@ -7,20 +7,20 @@
 //!
 //! # 本模块职责
 //! 1. [`post_chain`]：2D 场景帧（RGBA8，显示域）在 JPEG 编码前过
-//!    **bloom → grade → vignette** 三级链（任务书点名三件套）；
+//!    **bloom → grade → vignette** 三级链（点名三件套）；
 //! 2. [`encode_png_rgba8`]：预览交付的本地 PNG 编码器（存储型 deflate，
 //!    零新依赖——`prism-io::encode_png` 需 `prism-gpu::Framebuffer`，
 //!    而 prism-gpu 非 prism-author 依赖，example 不可直调）；
 //! 3. 预览帧落盘（`PRISM_PREVIEW_S2` 机制见主入口）。
 //!
-//! # 硬约束（任务书字面）
+//! # 硬约束（按规格字面）
 //! - **纯函数确定性**：`(输入帧, 参数) → (输出帧)`，无随机、无内部状态
 //!   ⇒ 全片重渲染 MD5 可复现；
 //! - **不改变帧尺寸**：输出与输入同为 `w×h×4`；
 //! - **alpha 恒 255**：链末强制回写（bloom 的亮部提取对 A 通道同样生效，
 //!   叠加后可能越界，故出口统一钉死 255）；
 //! - **显示域执行**：2D 帧是 sRGB 编码值（0..1）；bloom 阈值/强度按
-//!   显示域口径取值（任务书初值 0.55 / 0.35），与 S7 `post_process` 内
+//!   显示域口径取值（初值 0.55 / 0.35），与 S7 `post_process` 内
 //!   补的 bloom 同域同参（scene3d.rs 复用本模块常量）。
 //!
 //! # 级联不变式
@@ -36,11 +36,11 @@ use prism_render::tile::TileEffect;
 // 链参数（成片管线唯一真值；scene3d.rs 的 S7 bloom 复用同值）
 // ---------------------------------------------------------------------------
 
-/// bloom 亮部阈值（显示域；任务书初值 0.55）。
+/// bloom 亮部阈值（显示域；初值 0.55）。
 pub const BLOOM_THRESHOLD: f32 = 0.55;
 /// bloom 扩散半径（全分辨率 box blur，像素）。
 pub const BLOOM_RADIUS: u32 = 4;
-/// bloom 泛光注入强度（线性域加算系数；任务书初值 0.35）。
+/// bloom 泛光注入强度（线性域加算系数；初值 0.35）。
 pub const BLOOM_INTENSITY: f32 = 0.35;
 /// grade 通道增益（轻度冷蓝：抑红提蓝——「电影感不塑料」的底色）。
 pub const GRADE_SLOPE: [f32; 3] = [0.97, 1.00, 1.05];
@@ -297,7 +297,7 @@ mod tests {
         f
     }
 
-    /// 尺寸与 alpha 不变式（任务书硬约束）。
+    /// 尺寸与 alpha 不变式（硬约束）。
     #[test]
     fn chain_preserves_dimensions_and_forces_alpha_255() {
         let (w, h) = (64u32, 36u32);
@@ -326,7 +326,7 @@ mod tests {
         assert_eq!(frame, before, "输入帧不得被改动");
     }
 
-    /// bloom 辉光：亮曲线邻域像素必须比无 bloom 时更亮（任务书验收
+    /// bloom 辉光：亮曲线邻域像素必须比无 bloom 时更亮（规格验收
     /// 「bloom 在亮曲线邻域产生辉光」）。
     #[test]
     fn bloom_glows_around_bright_curve() {

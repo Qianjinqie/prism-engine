@@ -1,26 +1,26 @@
-//! `prism-ffi-hwenc` — 硬件视频编码器的 **FFI 探测链**（V2.0-M3）。
+//! `prism-ffi-hwenc` — 硬件视频编码器的 **FFI 探测链**。
 //!
-//! # 本波次交付边界（诚实口径，四条腿缺一不可）
+//! # 本版本交付边界（诚实口径，四条腿缺一不可）
 //!
 //! | 腿 | 落地形态 |
 //! |---|---|
-//! | 探测链真探测 | [`crate::env_probe`]：VideoToolbox 平台判定 / NVENC 驱动文件+设备节点 / VAAPI `/dev/dri` 渲染节点，全部**真读本机** |
-//! | feature gate 编译矩阵 | `videotoolbox` / `nvenc` / `vaapi` 三 feature 各自 `cargo check -p prism-ffi-hwenc --features <name>` 通过（验证记录见 `docs/v2-m3-ec1-hwenc-capability.md`） |
+//! | 探测链真探测 | [`crate::env_probe`]：VideoToolbox 平台判定 / NVENC 驱动文件+设备节点 / VAAPI `/dev/dri` 渲染节点，全部**真读当前平台** |
+//! | feature gate 编译矩阵 | `videotoolbox` / `nvenc` / `vaapi` 三 feature 各自 `cargo check -p prism-ffi-hwenc --features <name>` 通过（已验证） |
 //! | 降级路径 | 无硬件/无绑定时**明确报错**（[`HwEncoderProbe::probe`] 返回带真实证据的 `Unsupported`；[`require_available`] 直接给 Err），绝不静默失败 |
-//! | 文档 | `docs/v2-m3-ec1-hwenc-capability.md` 能力矩阵（哪平台什么状态）+ 环境受限项如实标注 |
+//! | 文档 | 能力矩阵（哪平台什么状态）+ 环境受限项如实标注 |
 //!
 //! # 仍不做的（环境受限，如实声明）
 //!
 //! - **不 link 任何平台库、不声明任何 extern 函数**：`VTCompressionSessionCreate` /
-//!   `cuNVENC*` / `vaInitialize` 一概没有——真机 FFI 绑定需要目标平台头文件与真机，
-//!   本机（Linux 沙箱）缺 macOS、缺 `/dev/dri`、缺 NVIDIA 设备（证据见
-//!   [`crate::env_probe::probe_environment`]）；
+//!   `cuNVENC*` / `vaInitialize` 一概没有——FFI 绑定需要目标平台头文件与真实设备；
+//!   当前平台若缺 macOS、缺 `/dev/dri`、缺 NVIDIA 设备（证据见
+//!   [`crate::env_probe::probe_environment`]），按不支持处理；
 //! - 因此**没有任何编码会话被真正建立**：探测结论最好只到"环境证据在/不在"，
-//!   "硬件可用且能编码"需要真机，缺硬件不伪装成已做（见文档"环境受限项"）。
+//!   "硬件可用且能编码"需要真实设备，环境受限不伪装成已做（见文档"环境受限项"）。
 //!
 //! # feature 语义
 //!
-//! | feature | 含义 | 本机（Linux 沙箱）行为 |
+//! | feature | 含义 | 当前平台行为 |
 //! |---|---|---|
 //! | （默认，全关） | 不引入任何后端 | [`enabled_backends`] 空，[`probe_all`] 空 |
 //! | `videotoolbox` | 编入 Apple VideoToolbox 探测 | 平台不符 ⇒ `Unsupported`（理由带真实平台串） |
@@ -126,7 +126,7 @@ pub enum ProbeStatus {
     /// 不可用：**平台不符**、**无硬件证据**、**无 FFI 绑定**或**驱动拒绝**之一。
     /// 具体原因见 [`HwProbe::reason`]（本 trait 契约要求理由非空）。
     Unsupported,
-    /// 探测到可用的硬件会话（需要真机 + FFI 绑定；本机不可达）。
+    /// 探测到可用的硬件会话（需要真实设备与 FFI 绑定）。
     ///
     /// `device` 是后端自报的设备标识（如 `"Apple M2 / hw"`、`"NVIDIA A10G / nvenc"`）。
     Available { device: String },
@@ -200,7 +200,7 @@ pub trait HwEncoderProbe {
 /// 通用"无绑定"探测实现：如实返回 [`ProbeStatus::Unsupported`]。
 ///
 /// 用途：feature 未开时的占位探测与"环境证据在、但绑定未落地"的后端默认形态。
-/// 理由可由调用方给定（默认点明本机探测结论与绑定缺口）。
+/// 理由可由调用方给定（默认点明当前平台探测结论与绑定缺口）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnsupportedProbe {
     backend: HwBackend,
@@ -250,7 +250,7 @@ impl HwEncoderProbe for UnsupportedProbe {
 
 /// Apple VideoToolbox 后端（feature `videotoolbox`）。
 ///
-/// 真探测：平台判定。非 macOS/iOS ⇒ 明确报"平台不符"；平台相符但本波次无
+/// 真探测：平台判定。非 macOS/iOS ⇒ 明确报"平台不符"；平台相符但当前版本无
 /// FFI 绑定 ⇒ 明确报"绑定未落地"。
 #[cfg(feature = "videotoolbox")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -272,7 +272,7 @@ impl HwEncoderProbe for VideoToolboxProbe {
         } else {
             format!(
                 "videotoolbox: 平台不符——当前 OS = {}，VideoToolbox 仅 macOS/iOS；\
-                 本机无该平台硬件",
+                 当前平台无该平台硬件",
                 env_probe::host_os()
             )
         };
@@ -393,7 +393,7 @@ pub fn probe_all() -> Vec<HwProbe> {
     out
 }
 
-/// 是否存在任一可用硬件编码器（本机恒为 `false`，见模块文档的诚实边界）。
+/// 是否存在任一可用硬件编码器（当前平台恒为 `false`，见模块文档的诚实边界）。
 pub fn any_available() -> bool {
     probe_all().iter().any(|p| p.status.is_available())
 }
@@ -409,15 +409,15 @@ pub struct MatrixRow {
     pub backend: HwBackend,
     /// 本构建是否编入（feature 开/关）。
     pub feature_enabled: bool,
-    /// 本机环境证据摘要（真探测结论，与 feature 无关）。
+    /// 当前平台环境证据摘要（真探测结论，与 feature 无关）。
     pub environment: String,
     /// 本构建的探测结论（feature 未开 = "未编入"）。
     pub status: String,
 }
 
-/// 本机 × 本构建的能力矩阵（三后端全覆盖，含未编入的）。
+/// 当前平台 × 本构建的能力矩阵（三后端全覆盖，含未编入的）。
 ///
-/// 这是文档《EC-1 能力矩阵》的数据源：文档表格由本函数渲染，杜绝"文档手写、
+/// 这是能力矩阵文档的数据源：文档表格由本函数渲染，杜绝"文档手写、
 /// 代码另一套"的双源漂移。
 pub fn capability_matrix() -> Vec<MatrixRow> {
     let report: EnvironmentReport = probe_environment();
@@ -484,7 +484,7 @@ impl fmt::Display for HwUnavailableError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "硬件编码器不可用：本机未探测到可用后端（共 {} 条探测结论）",
+            "硬件编码器不可用：当前平台未探测到可用后端（共 {} 条探测结论）",
             self.rows.len()
         )?;
         for row in &self.rows {
@@ -510,7 +510,7 @@ impl std::error::Error for HwUnavailableError {}
 /// 取第一个可用后端；没有则带全部证据显式报错（见 [`HwUnavailableError`]）。
 ///
 /// # Errors
-/// 本机构建内无可用硬件编码器 ⇒ [`HwUnavailableError`]（含逐后端的真实理由）。
+/// 当前平台构建内无可用硬件编码器 ⇒ [`HwUnavailableError`]（含逐后端的真实理由）。
 pub fn require_available() -> Result<HwProbe, HwUnavailableError> {
     if let Some(p) = probe_all().into_iter().find(|p| p.is_available()) {
         return Ok(p);
@@ -541,14 +541,14 @@ mod tests {
 
     #[test]
     fn every_enabled_probe_carries_real_environment_evidence() {
-        // 本轮无 FFI 绑定 ⇒ 所有编入的后端都必须如实返回 Unsupported，且理由
+        // 当前版本无 FFI 绑定 ⇒ 所有编入的后端都必须如实返回 Unsupported，且理由
         // 非空、带**真实探测证据**（平台串 / 驱动文件 / 设备节点二选一）。
         let report: EnvironmentReport = probe_environment();
         for probe in probe_all() {
             assert_eq!(
                 probe.status,
                 ProbeStatus::Unsupported,
-                "{} 的 {} 不应报告可用（本机构建无 FFI 编码绑定）",
+                "{} 的 {} 不应报告可用（当前平台构建无 FFI 编码绑定）",
                 probe.backend,
                 probe.codec
             );
@@ -571,7 +571,7 @@ mod tests {
                 probe.backend, probe.reason
             );
         }
-        assert!(!any_available(), "本机 any_available() 必须为 false（缺硬件+绑定）");
+        assert!(!any_available(), "当前平台 any_available() 必须为 false（无硬件或绑定）");
     }
 
     #[test]
@@ -642,10 +642,10 @@ mod tests {
 
     #[test]
     fn require_available_errors_explicitly_without_silent_success() {
-        // 本机（Linux 沙箱，无 VT/NVENC/VAAPI 硬件与绑定）必须显式报错，
+        // 当前平台（无 VT/NVENC/VAAPI 硬件与绑定）必须显式报错，
         // 且错误文本列出全部真实证据 + 建议段（C19）。
         match require_available() {
-            Ok(p) => panic!("本机不应有可用硬件编码器，实得 {p:?}"),
+            Ok(p) => panic!("当前平台不应有可用硬件编码器，实得 {p:?}"),
             Err(e) => {
                 let text: String = e.to_string();
                 assert!(text.contains("硬件编码器不可用"), "首段须说清结论：{text}");

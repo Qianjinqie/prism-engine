@@ -46,7 +46,7 @@ pub fn render_frame(
 
 /// 把“某时刻的场景”编译为底层 [`prism_gpu::SceneRenderRequest`]。
 ///
-/// # 迁移说明（依赖解耦，本轮变更）
+/// # 迁移说明（依赖解耦，本次变更）
 ///
 /// 本函数原位于 `prism-core`。为解除 `prism-core → prism-gpu` 的硬依赖
 /// （使 GPU 侧编辑不再打断 `prism-physics` / `prism-rt` 等 core 下游编译），
@@ -158,7 +158,7 @@ pub fn render_video(
 /// 3. **异步队列（Async Queue）**：将独立 Pass 分发到不同硬件队列并行执行。
 ///
 /// 当前为 PoC（概念验证）实现，采用**单 Pass 直渲**：`execute` 直接调用
-/// [`render_video`] 逐帧提交，不做任何多 Pass / 屏障逻辑（沙箱环境无真实 GPU）。
+/// [`render_video`] 逐帧提交，不做任何多 Pass / 屏障逻辑（无 GPU 平台下完整可运行）。
 /// 但代码结构已预留出"帧图即渲染调度中枢"的清晰边界，便于后续替换为完整后端。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FrameGraph {
@@ -222,7 +222,7 @@ pub use tile::{BoxBlur3, Tile, TileEffect, TileGrid};
 pub use orchestrator::{PixelSource, TileOrchestrator};
 
 // ---------------------------------------------------------------------------
-// V1.5-D：DSL v2 成片直达——CompileV2Output → 帧序列 Deliverable
+// DSL v2 成片直达——CompileV2Output → 帧序列 Deliverable
 // ---------------------------------------------------------------------------
 
 pub mod movie;
@@ -266,7 +266,7 @@ pub use farm::{
 };
 
 // ---------------------------------------------------------------------------
-// V2.0-K：EXR 序列交付路径（逐帧 `.exr`；复用 prism-io 的 exr_write，不重写编解码）
+// EXR 序列交付路径（逐帧 `.exr`；复用 prism-io 的 exr_write，不重写编解码）
 //
 // 交付矩阵（`docs/delivery-matrix.md`）的 `EXR-seq` 一列由本模块承载：
 // 无损、逐帧独立、浮点通道，面向合成/调色/后期。

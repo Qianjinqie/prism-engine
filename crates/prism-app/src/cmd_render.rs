@@ -1,6 +1,6 @@
-//! `prism-app render` 子命令：DSL v2 成片直达路径（V1.5-D）。
+//! `prism-app render` 子命令：DSL v2 成片直达路径。
 //!
-//! 语义权威：V1.5-D 任务书 1.4。与 v1 的 `prism-app <file.prism>`（帧序列 /
+//! 语义权威：DSL v2 成片直达路径规格。与 v1 的 `prism-app <file.prism>`（帧序列 /
 //! 单帧 PNG）不同，本子命令走 **render_movie 直达路径**：
 //!
 //! ```text
@@ -206,7 +206,7 @@ pub fn run(args: &[String]) -> i32 {
         }
     }
 
-    // ---- 6. 汇报 ---------------------------------------------------------------
+    // ---- 6. 结果输出 ---------------------------------------------------------------
     let elapsed: std::time::Duration = started.elapsed();
     println!("prism-app render 完成");
     println!("  源文件    : {file_display}");

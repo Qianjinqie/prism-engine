@@ -173,7 +173,7 @@ impl Plane {
     }
 }
 
-/// 有限圆柱（轴向 +Y，带上下端盖；V2.0-W4 曲线图元族）。
+/// 有限圆柱（轴向 +Y，带上下端盖；曲线图元族）。
 ///
 /// 求交口径：侧面（x²+z²=R² 二次方程，|y|<=H 裁剪）+ 上下端盖圆盘
 /// （y=±H 线性根，x²+z²<=R² 裁剪）；闭合实体语义（内外两侧命中都记录，
@@ -189,7 +189,7 @@ pub struct Cylinder {
     pub half_height: f32,
 }
 
-/// 有限圆锥（轴向 +Y；V2.0-W4 曲线图元族）。
+/// 有限圆锥（轴向 +Y；曲线图元族）。
 ///
 /// 底面位于 `center.y - half_height`（半径 `radius`），顶点位于
 /// `center.y + half_height`（半径 0）。求交口径：斜锥侧面（二次方程，
@@ -205,11 +205,11 @@ pub struct Cone {
     pub half_height: f32,
 }
 
-/// 圆环（主环位于 XZ 平面，轴向 +Y；V2.0-W4 曲线图元族）。
+/// 圆环（主环位于 XZ 平面，轴向 +Y；曲线图元族）。
 ///
 /// 隐式方程 `(ρ-R)² + y² = r²`（ρ = √(x²+z²)，局部坐标）。射线代入得
 /// **四次方程**，精确求根走 [`prism_geometry::quartic::solve_quartic`]
-/// （Ferrari 闭式、零迭代；任务书钉死禁止牛顿迭代）。闭合实体语义：
+/// （Ferrari 闭式、零迭代；规格钉死禁止牛顿迭代）。闭合实体语义：
 /// 四个实根（前外 / 前内 / 后内 / 后外）都记录，取最近 t>0。
 /// `major <= 0` / `minor <= 0` / 非有限 ⇒ 永不命中。
 #[derive(Debug, Clone, Copy)]
@@ -222,7 +222,7 @@ pub struct Torus {
     pub minor: f32,
 }
 
-/// 旋转曲面（轮廓绕 +Y 轴旋转；V2.0-W4 曲线图元族）。
+/// 旋转曲面（轮廓绕 +Y 轴旋转；曲线图元族）。
 ///
 /// # 轮廓与段序列（钉死口径）
 /// `profile` 为 (r, y) 点列（r >= 0），相邻两点定义一个**斜锥环带段**；
@@ -528,13 +528,13 @@ pub struct Scene {
     pub planes: Vec<(Plane, MaterialKind)>,
     /// 三角几何（网格或 soup；每项内建 SAH-BVH，见 [`Mesh`]）。
     pub meshes: Vec<(Mesh, MaterialKind)>,
-    /// 有限圆柱族（V2.0-W4 曲线图元；全局曲线 id 段 1）。
+    /// 有限圆柱族（曲线图元；全局曲线 id 段 1）。
     pub cylinders: Vec<(Cylinder, MaterialKind)>,
-    /// 有限圆锥族（V2.0-W4 曲线图元；全局曲线 id 段 2）。
+    /// 有限圆锥族（曲线图元；全局曲线 id 段 2）。
     pub cones: Vec<(Cone, MaterialKind)>,
-    /// 圆环族（V2.0-W4 曲线图元；全局曲线 id 段 3）。
+    /// 圆环族（曲线图元；全局曲线 id 段 3）。
     pub toruses: Vec<(Torus, MaterialKind)>,
-    /// 旋转曲面族（V2.0-W4 曲线图元；全局曲线 id 段 4）。
+    /// 旋转曲面族（曲线图元；全局曲线 id 段 4）。
     pub revolutions: Vec<(Revolution, MaterialKind)>,
     /// 光源列表（NEE 采样对象）。
     pub lights: Vec<Light>,
@@ -600,7 +600,7 @@ impl Scene {
     }
 
     // -----------------------------------------------------------------------
-    // 曲线图元族构造入口（V2.0-W4；add_* 维护曲线 BVH）
+    // 曲线图元族构造入口（add_* 维护曲线 BVH）
     // -----------------------------------------------------------------------
 
     /// 注册有限圆柱，返回圆柱下标（[`ShapeRef::Cylinder`] 索引空间）。
@@ -722,13 +722,13 @@ pub(crate) enum ShapeRef {
     Mesh(usize),
     /// 独立 BVH（soup）整体（材质 / 豁免的容器级引用；命中细化为 `Triangle`）。
     Bvh(usize),
-    /// 有限圆柱（V2.0-W4；下标见 [`Scene::cylinders`]）。
+    /// 有限圆柱（下标见 [`Scene::cylinders`]）。
     Cylinder(usize),
-    /// 有限圆锥（V2.0-W4；下标见 [`Scene::cones`]）。
+    /// 有限圆锥（下标见 [`Scene::cones`]）。
     Cone(usize),
-    /// 圆环（V2.0-W4；下标见 [`Scene::toruses`]）。
+    /// 圆环（下标见 [`Scene::toruses`]）。
     Torus(usize),
-    /// 旋转曲面（V2.0-W4；下标见 [`Scene::revolutions`]）。
+    /// 旋转曲面（下标见 [`Scene::revolutions`]）。
     Revolution(usize),
 }
 
@@ -781,7 +781,7 @@ impl Scene {
             ShapeRef::Box(i) => &self.boxes[i].1,
             ShapeRef::Paraboloid(i) => &self.paraboloids[i].1,
             ShapeRef::Plane(i) => &self.planes[i].1,
-            // 曲线图元族（V2.0-W4）：各取所属条目材质。
+            // 曲线图元族（本族）：各取所属条目材质。
             ShapeRef::Cylinder(i) => &self.cylinders[i].1,
             ShapeRef::Cone(i) => &self.cones[i].1,
             ShapeRef::Torus(i) => &self.toruses[i].1,
@@ -828,7 +828,7 @@ impl Scene {
                 // 玻璃透射材质下由积分器 from_inside 翻转）。
                 self.planes[i].0.normal
             }
-            // ---- 曲线图元族（V2.0-W4）：由命中点 p 纯函数重判表面归属 ----
+            // ---- 曲线图元族（本族）：由命中点 p 纯函数重判表面归属 ----
             // 口径：法线只依赖命中点与图元参数（与 `*_t` 的候选验证同源），
             // 故 integrator / wavefront 双路径天然一致；棱掠点（侧/盖残差
             // 并列）按固定优先级取侧面（测度零，纯函数保证确定性）。
@@ -839,7 +839,7 @@ impl Scene {
                 let dc = pl.y.abs() - c.half_height; // 端盖残差（端盖表面处 = 0）
                 // 侧/盖归属按**残差绝对值**近者：纯侧面点（dr=0、端盖内
                 // dc<0）必须判侧面——早年签名比较会把侧面点误判成端盖
-                // （V2.0-W4 对拍修复：dr<=dc 在 dc<0<dr 时恒假）。
+                // （对拍修复：dr<=dc 在 dc<0<dr 时恒假）。
                 if dr.abs() <= dc.abs() {
                     // 侧面外法线（轴向 +Y 圆柱侧面法线即径向）。
                     Vec3::new(pl.x, 0.0, pl.z) * (1.0 / c.radius)
@@ -1141,7 +1141,7 @@ impl Scene {
     }
 
     // -----------------------------------------------------------------------
-    // 曲线图元族求交（V2.0-W4；闭式解析，口径与 sphere_t 家族一致：
+    // 曲线图元族求交（闭式解析，口径与 sphere_t 家族一致：
     // `t >= T_MIN && t < t_max`，候选并列先达者优先，闭合实体内外都记录）
     // -----------------------------------------------------------------------
 
@@ -1496,7 +1496,7 @@ impl Scene {
                 limit = t;
             }
         }
-        // ---- 曲线图元族（V2.0-W4；测尾，既有族行为不变）----------------
+        // ---- 曲线图元族（测尾，既有族行为不变）----------------
         // 快路径：曲线 BVH 粗阶段 + 回调精阶段；线性兜底：四族按全局
         // 曲线 id 序逐图元 `*_t`（与既有族同款 running limit 口径）。
         // 两路结果一致：min t 优先、t 并列取最小全局 id（BVH 的
@@ -1577,7 +1577,7 @@ impl Scene {
             ShapeRef::Sphere(i) => i,
             // 盒 / 抛物面 / 平面均非球光源几何：无立体角 pdf（与 Box 臂同语义）。
             ShapeRef::Box(_) | ShapeRef::Paraboloid(_) | ShapeRef::Plane(_) => return None,
-            // 曲线图元族（V2.0-W4）：非球光源几何，未注册 NEE ⇒ 命中权重 1。
+            // 曲线图元族（本族）：非球光源几何，未注册 NEE ⇒ 命中权重 1。
             ShapeRef::Cylinder(_)
             | ShapeRef::Cone(_)
             | ShapeRef::Torus(_)
@@ -3251,9 +3251,9 @@ mod tests {
 
     /// 100k 三角形程序化网格：三角形数 ≥ 100k + BVH 构建耗时实测。
     ///
-    /// 阈值说明：验收口径 "BVH 构建 < 1s" 以 **release** 为准（此处断言
+    /// 阈值说明：构建耗时上限 "BVH 构建 < 1 s" 以 **release** 为准（此处断言
     /// `cfg!(debug_assertions)` 时放宽到 20 s——debug 下 SAH 构建有 ~10×
-    /// 常数惩罚，把 release 口径写死在 debug 里只会得到一条假的回归线）。
+    /// 常数惩罚，把 release 上限写死在 debug 里只会得到一条假的回归线）。
     /// 实测值无论哪个 profile 都打印，便于对账。
     #[test]
     fn mesh_100k_triangles_bvh_build_timing() {
@@ -3377,9 +3377,9 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // V2.0-W4 曲线图元族：圆柱 / 圆锥 / 圆环 / 旋转曲面
+    // 曲线图元族：圆柱 / 圆锥 / 圆环 / 旋转曲面
     //
-    // 验收口径（任务书钉死）：每类 ≥1 条已知值解析对拍（手算参考值写进
+    // 覆盖要求（规格钉死）：每类 ≥1 条已知值解析对拍（手算参考值写进
     // 注释）+ 1 条边界语义测试；另加全族确定性、BVH≡线性兜底、
     // wavefront 双路径对拍。全部为正向断言 + 变异自证（边界用例同时是
     // 变异杀器：闭边界改开、残差比较改签名比较都会红）。

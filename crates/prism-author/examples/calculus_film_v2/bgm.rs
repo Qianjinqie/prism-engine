@@ -589,7 +589,7 @@ fn widen_to_stereo(mono: &[f32], sample_rate: u32) -> Vec<f32> {
 /// （s=380，s%4==0）保持网格。
 /// 注：网格鼓点全部落在偶数 16 分步上，字面「偶数 16 分步 +6%」会整体
 /// 后移全部鼓点（无 swing 听感）——故按经典 shuffle 落地为反拍八分
-/// 后移；主理人如坚持字面语义可改为 `s % 2 == 0`。
+/// 后移；如需坚持字面语义可改为 `s % 2 == 0`。
 fn swing_shift_frames(step: usize, step_frames: usize) -> usize {
     if step % 4 == 2 {
         (SWING_SHIFT_RATIO * step_frames as f32).round() as usize

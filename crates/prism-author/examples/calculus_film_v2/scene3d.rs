@@ -20,9 +20,9 @@
 //!    `k=(f-120+1)/15` 在显示域（RGBA8）交叉混合；帧 ≥135 恒全平面。
 //!    帧号换算与分派逻辑见 [`glass_gate`]。
 //!
-//! # 相对任务书字面的偏差（均已确认无意图损失）
+//! # 相对规格字面的偏差（均已确认无意图损失）
 //! - **`EvalCtx::new` 实参序**：prism-core `node.rs` 实比为
-//!   `new(global_seed, node_id, frame)`；任务书字面
+//!   `new(global_seed, node_id, frame)`；规格字面
 //!   `EvalCtx::new(frame_idx, NODE_3D, SEED_3D)` 会把帧号写进种子槽、
 //!   常量写进帧槽，违背架构 §2.6「帧号入采样流 ⇒ 轨道运动有时间维噪声」
 //!   的意图。故按意图落实为 `EvalCtx::new(SEED_3D, NODE_3D, frame_idx)`。
@@ -31,7 +31,7 @@
 //!   位于内容区 z∈[0,1.44] 与面光 z=3.4 之间的经典四分之三俯视带）。
 //! - **`prism-author` dev-dependencies 增补** `prism-core` / `prism-math`：
 //!   `EvalCtx` / `Vec3` 无转导导出，example 必须直名（路径依赖，零第三方）。
-//! - **v3 画质提升（spp 8→48 / bounces 3→6）**：任务书「S7 画质」项。
+//! - **v3 画质提升（spp 8→48 / bounces 3→6）**：S7 画质项。
 //!   integrator.rs 既有对拍同值为 spp8/bounces3（cornell 参考渲染
 //!   `RenderParams::new(4096, 3)` 及多数单测同款）——那是对拍基准不是
 //!   画质上限；bounces 6 使玻璃透射（ior 1.5）+ 金属二次弹射有完整
@@ -894,7 +894,7 @@ mod tests {
     /// 对齐 PRD 4.0s（源帧 120）与 0.5s 淡入（15 源帧），与全局帧表一致。
     #[test]
     fn glass_door_timing_at_30fps() {
-        assert_eq!(SRC_FPS, 30, "S7 源帧率须为 30fps（任务书 15→30）");
+        assert_eq!(SRC_FPS, 30, "S7 源帧率须为 30fps（规格 15→30）");
         // 入场起点 4.0s ⇒ 源帧 120（120/30 = 4.0）。
         assert!((GLASS_START_FRAME as f32 / SRC_FPS as f32 - 4.0).abs() < 1e-6);
         // 淡入 0.5s ⇒ 15 源帧（0.5 × 30 = 15）。
@@ -1006,7 +1006,7 @@ mod v3_tests {
         assert!(lit.iter().any(|&b| b != 0 && b != 255), "未渐黑帧应有中间调");
     }
 
-    /// v3-C 常量：spp 48 / bounces 6（任务书画质项；对拍基准同值的历史
+    /// v3-C 常量：spp 48 / bounces 6（规格画质项；对拍基准同值的历史
     /// 已在模块头偏差记录备案）。
     #[test]
     fn v3_quality_constants() {

@@ -323,7 +323,7 @@ let devicePromise = null;
  * 记忆化：同一时刻只有**一条**申领链，两轮共享它。
  *
  * 【关键：不破坏 D-14 的"Pending 必须伴随真实 promise"契约】Rust 侧
- * `t_device_init` 要求本run 往 `pendingWork` 登记过 promise，否则本轮 settle()
+ * `t_device_init` 要求本run 往 `pendingWork` 登记过 promise，否则本次 settle()
  * 是空转、collect 立刻执行 → 必 FAIL。这里每张票都把**共享 promise 本身**
  * 登记进 pendingWork，故无论第几轮、也无论是否已有在途请求，settle() 都
  * 等得到真实工作。

@@ -10,7 +10,7 @@
 //! # 编译期不依赖 `libvulkan`
 //!
 //! **本模块编译期不链接任何 Vulkan 库**：所有 Vulkan 符号都在运行期经
-//! `dlopen("libvulkan.so.1")` + `dlsym` 取得。因此即便构建机上完全没有
+//! `dlopen("libvulkan.so.1")` + `dlsym` 取得。因此即便当前平台上完全没有
 //! `libvulkan.so`，本 crate 依旧可以正常编译、链接、测试。
 //!
 //! # 平台门禁
@@ -877,15 +877,14 @@ mod tests {
 
 // ---------------------------------------------------------------------------
 // compute 管线扩展：SPIR-V 模块 / compute pipeline / 描述符 / 命令缓冲 /
-// 队列提交（V2.0-G）
+// 队列提交
 // ---------------------------------------------------------------------------
 //
 // 这一段的每个 `struct` 都与 `<vulkan/vulkan_core.h>` **逐字段对齐**
 // （字段顺序、`size_t`/`uint64_t` 宽度、指针对齐），并有编译期尺寸断言
 // （见本文件 `tests::v2g_struct_layouts`）。不加任何第三方 crate（D-15）。
 //
-// 诚实边界（V2.0-W4 起如实更正）：本仓库构建环境经
-// `apt install mesa-vulkan-drivers` 提供 lavapipe 软件 ICD，真机派发路径
+// 诚实边界：安装 mesa-vulkan-drivers 可获得 lavapipe 软件 ICD，设备派发路径
 // **真跑**（`crate::vulkan::compute::tests::real_device_compute_dispatch_smoke`
 // 运行期自门控：有设备真断言、无设备如实报 skip，不用 `#[ignore]`）；
 // llvmpipe 是 CPU 软栅，只证明代码路径功能正确，不构成硬件加速比证据。
@@ -923,7 +922,7 @@ pub const VK_STRUCTURE_TYPE_FENCE_CREATE_INFO: i32 = 8;
 pub const VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO: i32 = 12;
 /// `VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO`。
 ///
-/// V2.0-W4 lavapipe 实测修正：旧值 15 实为 `PIPELINE_CACHE_CREATE_INFO`，
+/// lavapipe 实测修正：旧值 15 实为 `PIPELINE_CACHE_CREATE_INFO`，
 /// 错误 sType 使 `vkCreateShaderModule` 行为未定义（验证层报
 /// VUID-VkShaderModuleCreateInfo-sType-sType）。
 pub const VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO: i32 = 16;
@@ -931,17 +930,17 @@ pub const VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO: i32 = 16;
 pub const VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO: i32 = 18;
 /// `VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO`。
 ///
-/// V2.0-W4 lavapipe 实测修正：旧值 20 实为
+/// lavapipe 实测修正：旧值 20 实为
 /// `PIPELINE_VIEWPORT_STATE_CREATE_INFO`。
 pub const VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO: i32 = 32;
 /// `VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO`。
 ///
-/// V2.0-W4 lavapipe 实测修正：旧值 22 实为
+/// lavapipe 实测修正：旧值 22 实为
 /// `PIPELINE_MULTISAMPLE_STATE_CREATE_INFO`。
 pub const VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO: i32 = 33;
 /// `VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO`。
 ///
-/// V2.0-W4 lavapipe 实测修正：旧值 23 实为
+/// lavapipe 实测修正：旧值 23 实为
 /// `PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO`。
 pub const VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO: i32 = 34;
 /// `VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO`。

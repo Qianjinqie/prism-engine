@@ -798,7 +798,7 @@ export function selfTest() {
       "全部标 matrix_covers_it=false（矩阵 COMPRESSIONS 仅 dwaa/dwab）"
     );
     add(
-      "编码器缺陷登记簿: 每条都必须写明为何不在本轮修（不许含糊成「未实装」）",
+      "编码器缺陷登记簿: 每条都必须写明为何不在当前版本修（不许含糊成「未实装」）",
       ENCODER_DEFECTS.every(
         (k) =>
           String(k.why_not_fixed_here || "").length > 20 &&
@@ -808,7 +808,7 @@ export function selfTest() {
     );
   }
 
-  // ---- 6. P0-2 纪律：Rust 编译错误必须能被识别为「代码坏了」而非环境缺失 ----
+  // ---- 6. 编译错误纪律：Rust 编译错误必须能被识别为「代码坏了」而非环境缺失 ----
   // 这是反向自证：若extractRustErrors 抓不到 E0308，门禁就退回到
   // 「编译失败 → SKIP」的老写法（本仓代码坏了被当成环境不具备）。
   {
@@ -819,13 +819,13 @@ export function selfTest() {
     ].join("\n");
     const got = extractRustErrors(cargoErr);
     add(
-      "P0-2: cargo 的 E#### 编译错误必须被抽取出来（供 FAIL 路径使用）",
+      "编译错误纪律: cargo 的 E#### 编译错误必须被抽取出来（供 FAIL 路径使用）",
       got.includes("E0308"),
       got.split("\n")[0]
     );
     // 判据常量：SKIP=3 / FAIL=1，两者绝不可混同
     add(
-      "P0-2: 退出码 FAIL(1) 与 SKIP(3) 必须不同（编译失败不得报 SKIP）",
+      "退出码纪律: 退出码 FAIL(1) 与 SKIP(3) 必须不同（编译失败不得报 SKIP）",
       FAIL === 1 && SKIP === 3 && FAIL !== SKIP,
       `FAIL=${FAIL} SKIP=${SKIP}`
     );

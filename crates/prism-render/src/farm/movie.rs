@@ -24,9 +24,9 @@
 //! 配置哈希一致，不一致 ⇒ 结构化错误（绝不渲染"手头恰好有的"另一部影片——C20）。
 //!
 //! # 环境受限声明（方法论降级，如实）
-//! 本机沙箱无多机环境：N 进程 = 本机多进程真跑（协议 / 编解码 / 合并与跨机
-//! 同一份代码，仅介质从 socket 换管道——[`TcpTransport`] 已留接口、本轮未实装，
-//! 见 `FarmError::TransportUnavailable`）。加速比实测反映本机多进程视角，
+//! 单机无多机环境：N 进程 = 单机多进程真跑（协议 / 编解码 / 合并与跨机
+//! 同一份代码，仅介质从 socket 换管道——[`TcpTransport`] 已留接口、当前版本未实装，
+//! 见 `FarmError::TransportUnavailable`）。加速比实测反映单机多进程视角，
 //! **不代表**跨机集群数字。
 
 use crate::farm::evidence::manifest_digest;
@@ -481,7 +481,7 @@ mod tests {
         assert_eq!(cached_all, total, "第二轮后缓存应收敛到全部帧");
 
         // 缓存里帧的载荷 == 参考渲染（续算复用不得改变内容）。
-        // 本轮两轮分发都是 1 个 worker，全部帧在 farm-worker-0.cache 里。
+        // 当前版本两轮分发都是 1 个 worker，全部帧在 farm-worker-0.cache 里。
         let cache: crate::farm::worker::FrameCache =
             crate::farm::worker::FrameCache::open(&cache_file).expect("缓存应可读");
         for f in 0..total as u64 {
@@ -508,8 +508,8 @@ mod tests {
         //
         // 两档负载的意义：固定成本（spawn + 每 worker 一次 DSL 编译 + 协议
         // 往返）不随负载变，渲染成本随负载变 ⇒ 加速比随帧成本上升。这正是
-        // "农场收益来自帧成本 >> 传输成本"的实证形态（Amdahl），也是本机
-        // cgroup CPU 配额（4 核）下加速比上限的诚实解释。
+        // "农场收益来自帧成本 >> 传输成本"的实证形态（Amdahl）；在 CPU 配额
+        // 受限的平台上，加速比还受该配额上限约束。
         for (label, src) in [("轻载", BENCH_SRC), ("重载", HEAVY_SRC)] {
             let j: MovieJob = MovieJob::new(src).expect("基准 DSL 应可编译");
             let total: usize = j.frame_count();

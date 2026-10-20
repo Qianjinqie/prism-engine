@@ -10,7 +10,7 @@ prism-noise = { path = "../prism-noise" }
 # 实时 GI：复用 prism-geometry 的 SDF 场（Csg/图元）与 sphere tracing
 # （D-16 单实现，免重复造轮子）。prism-geometry 不依赖 prism-rt，无循环。
 prism-geometry = { path = "../prism-geometry" }
-# V2.0-G：GPU kernel 插槽 / parity 网需要 compute 语义层（kernel 描述 +
+# GPU kernel 插槽 / parity 网需要 compute 语义层（kernel 描述 +
 # dispatch 形状 + SPIR-V 供给状态）。prism-gpu 只依赖 prism-math，无循环。
 prism-gpu = { path = "../prism-gpu" }
 

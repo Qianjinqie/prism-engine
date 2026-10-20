@@ -3,7 +3,7 @@
 //! 覆盖"硬性验收"四条：
 //!
 //! * **确定断言**：编辑序列重放后图状态**字节级一致**（`replay_is_byte_identical`、
-//!   `undo_then_redo_field_by_field_identical`）；debug + release 双端一致由 CI 双跑保证。
+//!   `undo_then_redo_field_by_field_identical`）；debug + release 双端一致由双 profile 测试保证。
 //! * **增量失效精确**：dirty 集合**恰好**是下游子图（`incremental_dirty_is_exact_downstream`、
 //!   `incremental_recompute_set_equals_dirty_set`）。
 //! * **撤销/重做多步任意位置正确**（`multi_step_undo_redo_arbitrary_positions`）。

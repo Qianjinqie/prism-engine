@@ -385,7 +385,7 @@ fn mcp_tools_list_schema_complete() {
     let tools = resp.get("result").unwrap().get("tools").unwrap();
     match tools {
         Json::Array(items) => {
-            assert_eq!(items.len(), 7, "V2.0-M3 EC-2 后应有 7 个工具");
+            assert_eq!(items.len(), 7, "当前版本应有 7 个工具");
             for t in items {
                 assert!(t.get("name").and_then(|n| n.as_str()).is_some(), "工具须有 name");
                 assert!(t.get("description").and_then(|d| d.as_str()).is_some(), "须有 description");
@@ -409,7 +409,7 @@ fn mcp_tools_list_schema_complete() {
     }
 }
 
-/// EC-2 三工具 round-trip 对拍（最小集）：scene_check / render_submit / diagnose
+/// 三工具 round-trip 对拍（最小集）：scene_check / render_submit / diagnose
 /// 各一条 请求→响应。失败代表：新工具面未按文档契约回包。
 #[test]
 fn mcp_ec2_tools_roundtrip() {
