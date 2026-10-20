@@ -107,7 +107,7 @@ $ node tools/compliance_check.mjs --self-test   # 须判红
 | 4 | 论文逼近系数（Disney/GGX/Schlick） | 数学公式**不受版权保护** | ✅ | ⏳ **待自研**（子项④） |
 | 5 | 内置合成器音色库（piano / violin / drum，见下方注） | 随引擎许可 | ✅ | ✅ **已自研**（程序化合成） |
 
-> **注**：登记表中出现的 `B12` 是本引擎早期给合成器起的内部名字，
+> **注**：登记表中出现的 `B12` 是本引擎早期给合成器起的旧名字，
 > 读作"引擎内置合成器"即可；它出现在 `src/prism-audio/src/` 的源码注释里，
 > 只是个旧代号，没有外部含义。
 
@@ -215,7 +215,7 @@ SELF-TEST OK: 违规必红、良好必绿——判据具备双向判别力
    **4,224 B / sha256 `110e2be3…c3b34`**，而**实测为 23,244 B / sha256 `0eece481…b76c7`**。
    **测试断言（`src/prism-text/tests/multiscript_asset.rs` 的 `EXPECTED_SHA`）是对的**，
    旧 README 未同步。这正是"资产是确定性产物、字节漂移必须被看见"的机制在工作。
-   **`src/` 只读，故未擅自修改**——上报在此，由维护者决定是否同步。
+   **`src/` 只读，故未擅自修改**——在此记录，由维护者决定是否同步。
    本章所有指纹均以**实测值**为准，不用过时 README 的数字；
 7. **字体来源链有一处易误判处**：`font_data/README.md` 记上游为 `notofonts/noto-cjk`，
    而 `font_data/LICENSE` 首行版权是 **Adobe**（Source Han Sans）。
