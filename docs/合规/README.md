@@ -64,7 +64,7 @@ $ node tools/compliance_check.mjs --self-test   # 须判红
 | 字体 | **OpenType 解析**（glyf/hmtx/name/GSUB…） | `prism-text/src/opentype.rs` |
 | 图像 | PNG / JPEG / GIF / APNG / EXR / DNG / CR3 | `prism-io/` |
 | 场景 | **USD `.usda` 解析** + MaterialX → 特解参数包 | `prism-io/src/usd.rs`、`materialx.rs` |
-| 数学 | 超越函数自研区间逼近（**禁 libm**，D-29） | `prism-math/` |
+| 数学 | 超越函数自研区间逼近（**禁 libm**——不用系统数学库，避免跨平台末位差） | `prism-math/` |
 | GPU | WebGPU / Vulkan / Metal **手写绑定**（架构成规：不用第三方 GPU 封装库如 wgpu） | `prism-gpu/` |
 | 序列化 | 自研（**无 serde**） | `prism-io/src/distribution.rs` |
 | Unicode | 手写整形状态机（**零 Unicode 依赖**） | `prism-text/src/shaping.rs` |
@@ -122,7 +122,7 @@ $ node tools/compliance_check.mjs --self-test   # 须判红
 | 子项 | 资产 | 自研路径 | 当前状态 |
 |---|---|---|:---:|
 | ① | Joe–Kuo 方向数表 | component-by-component 构造算法自跑搜索 + t 值验证 | ⏳ 待自研 |
-| ② | 中文字体子集 | 矢量字形自造（S9 贝塞尔域）+ hinting + 排版度量 | ⏳ 待自研 |
+| ② | 中文字体子集 | 矢量字形自造（分段多项式结构 + 贝塞尔曲线）+ hinting + 排版度量 | ⏳ 待自研 |
 | ③ | 分词词典 | 自建语料词频统计 + 新词发现 | ⏳ 待自研（**尚未入仓**） |
 | ④ | 逼近系数 | Remez / Chebyshev 自行拟合重推 | ⏳ 待自研 |
 
