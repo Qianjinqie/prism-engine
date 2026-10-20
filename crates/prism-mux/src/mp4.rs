@@ -9,7 +9,7 @@
 //! 因此 `stco` chunk offset 可在写完 `mdat` 之后据实回填——无需两遍扫描。
 //! `ftyp` 尺寸固定，`mdat` 为大盒（64 位），偏移解析确定。
 //!
-//! # 验收
+//! # 判据
 //!
 //! 结构合法性：自写 [`crate::boxes::inspect_top_level`] 递归回读 + 盒字段断言。
 

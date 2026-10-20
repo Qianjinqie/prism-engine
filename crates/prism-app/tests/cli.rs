@@ -200,7 +200,7 @@ fn cli_help_exits_0_with_usage_keywords() {
 #[test]
 fn cli_duration_zero_with_frame_mode_does_not_panic() {
     // 探查点：DSL 当前不校验 `duration 0s`。单帧模式下 t 被钳制为 duration=0，
-    // `eval_camera_orbit` 内 0/0 → NaN 相机。验收：进程正常退出（0/1），
+    // `eval_camera_orbit` 内 0/0 → NaN 相机。判据：进程正常退出（0/1），
     // 绝不因 signal 崩溃，也不出现 Rust panic。
     let dir: PathBuf = temp_subdir("dur_zero_frame");
     let src: PathBuf = dir.join("dur0.prism");
@@ -235,7 +235,7 @@ fn cli_duration_zero_with_frame_mode_does_not_panic() {
 #[test]
 fn cli_fps_zero_full_mode_exits_1_without_panic() {
     // 探查点：`fps 0` + 整段模式。DSL 语义校验直接拒绝（fps ≥ 1），
-    // 验收：退出码 1、stderr 非空、无 panic。
+    // 判据：退出码 1、stderr 非空、无 panic。
     let dir: PathBuf = temp_subdir("fps_zero");
     let src: PathBuf = dir.join("fps0.prism");
     fs::write(&src, "scene \"x\" {\n}\ntimeline {\n  duration 1s\n  fps 0\n}\n")
@@ -253,7 +253,7 @@ fn cli_fps_zero_full_mode_exits_1_without_panic() {
 fn cli_duration_zero_is_rejected_at_dsl_compile() {
     // 行为变更（M1 收口）：DSL 层现已校验 duration > 0（见 prism-dsl parse_timeline），
     // `duration 0s` 在编译期即被拒绝，不再走到渲染阶段的空帧路径。
-    // 验收：退出码 1、stderr 含行号化 DSL 报错、无 panic。
+    // 判据：退出码 1、stderr 含行号化 DSL 报错、无 panic。
     let dir: PathBuf = temp_subdir("dur_zero_full");
     let src: PathBuf = dir.join("dur0_full.prism");
     fs::write(&src, "scene \"x\" {\n}\ntimeline {\n  duration 0s\n  fps 4\n}\n")

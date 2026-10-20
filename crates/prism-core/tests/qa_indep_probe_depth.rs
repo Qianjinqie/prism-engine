@@ -1,4 +1,4 @@
-//! 第 2 轮独立复核探针——P1 逐像素深度合成。
+//! 独立复核探针——逐像素深度合成。
 //! 只读探针，不改源码。
 
 use prism_core::depth::{DepthComposite, DepthLayer};

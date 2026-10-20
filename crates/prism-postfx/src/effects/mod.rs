@@ -14,8 +14,8 @@
 //!   `TileEffect::eval_window` 不携带全局原点（trait 只读对接，本 crate
 //!   不得改动 prism-render），故此类效果的整幅求值即规范语义（post 链的
 //!   CPU 参考路径），其 halo 只对"输入读"部分申报（如 glitch 的位移读带）。
-//!   tile 协议要承载它们需要 `eval_window` 增全局原点上下文——缺口上报
-//!   已如实上报，不在本 crate 私改协议。
+//!   tile 协议要承载它们需要 `eval_window` 增全局原点上下文——缺口在册
+//!   已如实记录，协议变更由协议方统一进行。
 
 pub mod blur;
 pub mod bloom;

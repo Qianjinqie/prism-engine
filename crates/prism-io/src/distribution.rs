@@ -14,9 +14,9 @@
 //!   **索引序确定**（包名升序 + 版本降序，见 [`PackageIndex`]）；
 //! - **依赖图**：循环依赖检测 + 拓扑序（确定性）。
 //!
-//! # 签名树复用点（与的依赖红线）
+//! # 签名树复用点（与的依赖约束）
 //!  规定依赖方向 `io∈L4 → core∈L2`（io **不得**依赖 core），
-//! `prism-core/src/signature.rs` 的模块头亦明确记载了这条红线（并因此在 core
+//! `prism-core/src/signature.rs` 的模块头亦明确记载了这条约束（并因此在 core
 //! 内部自带一份 SHA-256）。故本模块**不 import core**，而是复用其**结构语义**：
 //!
 //! | `prism-core::signature` | 本模块 `distribution` 对应物 |

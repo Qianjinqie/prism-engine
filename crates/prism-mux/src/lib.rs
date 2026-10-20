@@ -5,7 +5,7 @@
 //!
 //! `Framebuffer(RGBA8)` → `JPEG`（灰度最小基线）→ `AVI(MJPEG)` 或 `MP4(MJPEG)+PCM`。
 //!
-//! H.264/HEVC **不自研编码器**（红线）；由 [`extprobe`] 运行时探测外部 ffmpeg 或
+//! H.264/HEVC **不自研编码器**（设计约束）；由 [`extprobe`] 运行时探测外部 ffmpeg 或
 //! [`hwenc`] 硬件编码器 API 协作，可用则交付 h264、不可用自动降级 MJPEG。
 //!
 //! # 内容
@@ -27,7 +27,7 @@
 //!
 //! # 边界
 //!
-//! H.264/HEVC 编码维持 D-10 不自研（红线）；[`extprobe`]/[`hwenc`] 只做探测与
+//! H.264/HEVC 编码维持 D-10 不自研（设计约束）；[`extprobe`]/[`hwenc`] 只做探测与
 //! 适配骨架，真机编码由外部可执行文件或厂商 API 执行，超本 crate 范围。
 
 pub mod avi;

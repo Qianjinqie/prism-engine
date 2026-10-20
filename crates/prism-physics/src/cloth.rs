@@ -22,11 +22,11 @@
 //! （单点悬挂，锥形垂落）。角点固定 = 对应粒子 `inv_mass = 0`，能量单调降的
 //! 自然边界（固定点不注入能量）。
 //!
-//! # 能量单调降（验收项）
+//! # 能量单调降（检查项）
 //!
 //! 无外力（重力 = 0）且无初速的布料，从拉伸初态出发，总能量 E = Σ½m|v|² + Σ½kC²
 //! 应在每个时间步上**单调非增**（XPBD 投影是压缩映射，；速度阻尼
-//! 进一步耗散）。本模块暴露 [`Cloth::energy`] 供验收断言，并用
+//! 进一步耗散）。本模块暴露 [`Cloth::energy`] 供判据断言，并用
 //! [`Cloth::step_with_energy`] 返回每步能量序列。
 
 use prism_math::Vec3;
@@ -328,7 +328,7 @@ impl Cloth {
     ///
     /// 势能 = ½·k·C²：Σ 结构 + 弯曲约束（布料的物理弹性势能， 的
     /// compliance 即 1/k）。这是可比的物理量：无阻尼时近守恒、有阻尼时单调耗散
-    /// （验收项"能量单调降"）。
+    /// （检查项"能量单调降"）。
     pub fn energy(&self) -> f32 {
         let ps = self.world.particles();
         let mut e = 0.0f32;
@@ -409,7 +409,7 @@ impl Cloth {
         }
     }
 
-    /// 角点是否固定于其初位（验收：角点固定）。
+    /// 角点是否固定于其初位（判据：角点固定）。
     pub fn pin_is_fixed(&self, dt: f32, substeps: u32, iterations: u32) -> bool {
         let pins = Self::pin_indices(&self.spec);
         let before: Vec<Vec3> = pins.iter().map(|&i| self.world.particles()[i].position).collect();
@@ -536,7 +536,7 @@ mod tests {
         }
     }
 
-    /// 能量单调降（验收项）：无重力、无初速、拉伸初态 → 每帧能量非增。
+    /// 能量单调降（检查项）：无重力、无初速、拉伸初态 → 每帧能量非增。
     #[test]
     fn energy_monotonically_decreases() {
         // 拉伸初态：把内部粒子沿 +x 拉出（制造约束残余）。用有限柔度（软布）

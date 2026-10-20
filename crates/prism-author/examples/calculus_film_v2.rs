@@ -12,7 +12,7 @@
 //! - 本文件：S1 标题符号阵 / S2 坐标系亮相 + 相机缓推 / S7 序列装配与
 //!   落版，七场景拼接 + BGM + mux + 落盘的完整主入口。
 //!
-//! # main 流程（架构 §7.5 装配期断言）
+//! # main 流程（装配期断言）
 //!
 //! 资产层自检 → S7 预渲染（310 源帧 @30fps）→ 组装 7×`ClipSpec`
 //! （帧表 / 画幅 / S7 时长断言）→
@@ -23,14 +23,14 @@
 //! [`prism_mux::write_avi_mjpeg_audio_frames`]（预编码 JPEG 帧 + PCM
 //! 双流 AVI）→ 落盘 `prism_calculus_90s.avi`。
 //!
-//! # 帧网格（架构 §7.6 / PRD §4.0）
+//! # 帧网格
 //!
 //! 场景帧数 248 / 308 / 496 / 496 / 496 / 436 / 310（Σ2790），减 6 次
 //! Fade 0.5s（各 15 帧）得 **2700 帧 = 90.000s @30fps**；BGM 90.000s
 //! = 3,969,000 帧 @44100 立体声（1470 帧/秒整除；母带展宽：L/R 微偏移
 //! + 混响抽头）。
 //!
-//! # 分镜实现要点（与 PRD 的偏差均就地注释备案）
+//! # 分镜实现要点（与规格的偏差均就地注释备案）
 //!
 //! - S1：三符号（lim / dy/dx / ∫）每**轮廓**一条 `DynPath`——
 //!   `draw_sec` 描画入场（1.5–4.7s）、5.0–6.0 呼吸缩放 + 上浮
@@ -45,10 +45,10 @@
 //!   屏位由 [`project_world`] 按 `camera_at(4.5)` 精确解算（与渲染器
 //!   `Camera::pixel_dir` 逆映射同参）。
 
-// 模块目录布局（架构 §3.3）：根文件 `examples/calculus_film_v2.rs` +
+// 模块目录布局：根文件 `examples/calculus_film_v2.rs` +
 // 同源目录 `examples/calculus_film_v2/`。rustc 对**crate 根**的 `mod`
 // 声明按根文件所在目录解析（而非 `<根文件名>/` 子目录），故此处以
-// `#[path]` 显式指向架构文件清单中的模块路径——文件落点与 §3.3 逐项一致。
+// `#[path]` 显式指向各模块路径——文件落点与模块清单逐项一致。
 #[path = "calculus_film_v2/axes.rs"]
 mod axes;
 #[path = "calculus_film_v2/bgm.rs"]
@@ -94,15 +94,15 @@ const HEIGHT: u32 = 540;
 const FPS: u32 = 30;
 /// MJPEG 质量（1..=100；v1 先例 82）。
 const JPEG_QUALITY: u8 = 82;
-/// 片头 Clip 淡入（秒；PRD §4.0「黑场淡入」）。
+/// 片头 Clip 淡入（秒；黑场淡入）。
 const CLIP_FADE_IN: f32 = 1.0;
 /// 片尾 Clip 淡出（秒；落版后全局渐黑）。
 const CLIP_FADE_OUT: f32 = 1.5;
 /// BGM 采样率（立体声 44100——44100 是帧率 30 的整数倍：1470 帧/秒）。
 const BGM_SR: u32 = 44_100;
-/// 成片落盘路径（T05 验收项 1）。
+/// 成片落盘路径（T05 检查项 1）。
 const OUT_PATH: &str = "prism_calculus_90s.avi";
-/// 预览帧输出目录（v3-B 交付物；`PRISM_PREVIEW_S2=N` 时启用）。
+/// 预览帧输出目录（交付物；`PRISM_PREVIEW_S2=N` 时启用）。
 const PREVIEW_DIR: &str = "/tmp/v3_preview";
 /// 预览截断的 S2 帧数（内容窗 [0.5s, 8.4s] 全cover + 转场安全边）。
 const PREVIEW_S2_FRAMES: u32 = 271;
@@ -122,7 +122,7 @@ fn ctx(color: [f32; 4]) -> [f32; 4] {
 }
 
 fn main() {
-    // ---- 预览模式（v3-B 交付项）：PRISM_PREVIEW_S2=N ⇒ 只渲染 S2 内容
+    // ---- 预览模式（交付项）：PRISM_PREVIEW_S2=N ⇒ 只渲染 S2 内容
     // 窗内均匀 N 帧，过任务 B 后处理链（bloom → grade → vignette）后
     // 直接写 PNG 到 /tmp/v3_preview/ 并退出。早于正式流程返回，不影响
     // 正式渲染的确定性与输出（后处理链本身是纯函数，两路同参）。----
@@ -161,12 +161,12 @@ fn main() {
         scenes_math::scene_s6(),       // S6 基本定理·双链合流 14.53s
         scene_s7(seq),                 // S7 片尾 flex·3D 光追 10.33s
     ];
-    // 装配期灾难性错误快速失败（架构 §7.5）：帧表 / 画幅 / 帧率 / S7 时长。
+    // 装配期灾难性错误快速失败：帧表 / 画幅 / 帧率 / S7 时长。
     let frame_table: Vec<u32> = specs.iter().map(|s| s.frame_count() as u32).collect();
     assert_eq!(
         frame_table,
         common::SCENE_FRAMES.to_vec(),
-        "七场景帧表必须逐项等于架构 §7.6"
+        "七场景帧表必须逐项等于既定帧表"
     );
     for (i, s) in specs.iter().enumerate() {
         assert_eq!((s.width, s.height, s.fps), (WIDTH, HEIGHT, FPS), "场景 {i} 画幅/帧率不一致");
@@ -190,7 +190,7 @@ fn main() {
     // 编码参数（quality 82 / grayscale=false）与 prism-mux
     // write_avi_mjpeg_audio 内部路径逐字节同参，保证成片与批式管线一致。
     let mut jpegs: Vec<Vec<u8>> = Vec::with_capacity(common::TOTAL_FRAMES);
-    // v3-B 后处理链接线：2D 场景帧（S1–S6 及其间转场，输出帧索引 <
+    // 后处理链接线：2D 场景帧（S1–S6 及其间转场，输出帧索引 <
     // [`film_postfx::s7_body_start_frame`]）在 JPEG 编码前过
     // 「bloom → grade → vignette」链（显示域、纯函数、不改变帧尺寸，
     // alpha 恒 255）——「画质三件套」之美术加工落地。
@@ -284,7 +284,7 @@ fn main() {
 }
 
 // ---------------------------------------------------------------------------
-// 预览模式（v3-B 交付项：PRISM_PREVIEW_S2=N）
+// 预览模式（交付项：PRISM_PREVIEW_S2=N）
 // ---------------------------------------------------------------------------
 
 /// 预览：只渲染 S2 内容窗内均匀 N 帧，过后处理链写 PNG 后退出。
@@ -354,7 +354,7 @@ fn preview_dummy_spec() -> ClipSpec {
 // S1 标题·公式符号矢量入场（248 帧 = 8.267s，DarkGlow）
 // ---------------------------------------------------------------------------
 
-/// S1 三符号规格（PRD §4-S1）：(种类, 目标高度 px, 锚点中心, 颜色,
+/// S1 三符号规格：(种类, 目标高度 px, 锚点中心, 颜色,
 /// 入场秒, 描画秒)。高度经 [`symbol_contours`] 两遍法机械归一化。
 const S1_SYMBOLS: [(SymbolKind, f32, [f32; 2], [f32; 4], f32, f32); 3] = [
     // lim（金，stroke 7px，draw 1.0s，中心 (330,210)）。
@@ -365,7 +365,7 @@ const S1_SYMBOLS: [(SymbolKind, f32, [f32; 2], [f32; 4], f32, f32); 3] = [
     (SymbolKind::Integral, 130.0, [790.0, 220.0], WHITE_RGBA, 3.5, 1.2),
 ];
 
-/// S1 呼吸变换（5.0–6.0，CubicInOut；PRD「三符号同步呼吸 + 缓慢上浮
+/// S1 呼吸变换（5.0–6.0，CubicInOut；三符号同步呼吸 + 缓慢上浮
 /// 8px」）：scale 1.00→1.05→1.00（三角形）、上浮 0→8px（单向，终点
 /// 高 8px）。区间外恒等变换（1.0, 0.0）。
 fn s1_breathe(t: f32) -> (f32, f32) {
@@ -488,7 +488,7 @@ pub fn scene_s1() -> ClipSpec {
 // S2 坐标系亮相 + 相机缓推（308 帧 = 10.267s，Aurora）
 // ---------------------------------------------------------------------------
 
-/// S2 基准视口（PRD §4-S2 布局）：x∈[−4,4]、y∈[−2.4,2.4]、85px/unit、
+/// S2 基准视口：x∈[−4,4]、y∈[−2.4,2.4]、85px/unit、
 /// 绘图区 140–820 × 66–474（半区 340×204 关于 (480,270)）。
 fn s2_base_viewport() -> common::Viewport {
     common::Viewport::fit_plot(-4.0, 4.0, -2.4, 2.4, 480.0, 270.0, 340.0, 204.0)
@@ -496,7 +496,7 @@ fn s2_base_viewport() -> common::Viewport {
 
 /// S2 相机缓推视口（**逐帧**解算）：scale 1.00→1.08（CubicInOut，
 /// [4.5, 6.5]）关于绘图区中心。数学域随缩放收窄、px_per_unit 同步
-/// 放大——全部几何经本视口 `to_px` 每帧重算（PRD「全部网格/曲线经
+/// 放大——全部几何经本视口 `to_px` 每帧重算（全部网格/曲线经
 /// DynPath 的 viewport 缩放实现；不依赖 postfx::Warp」）。
 fn s2_viewport_at(t: f32) -> common::Viewport {
     let u = ((t - 4.5) / 2.0).clamp(0.0, 1.0);
@@ -538,8 +538,8 @@ pub fn scene_s2() -> ClipSpec {
     let mut tracks: Vec<Track> = Vec::new();
 
     // ---- 网格：域内 0.5 步长满线（17 竖 + 9 横）----
-    // PRD beat 表「13 竖 + 9 横」与其布局域 [−4,4]/0.5 不自洽（17 竖）；
-    // 取布局域自洽值。stagger 0.06s（PRD 0.08s 按 22 线设计）保证
+    // beat 表「13 竖 + 9 横」与其布局域 [−4,4]/0.5 不自洽（17 竖）；
+    // 取布局域自洽值。stagger 0.06s（0.08s 按 22 线设计）保证
     // 2.5s 前完成淡入。每条一 DynPath：端点取**当帧**视口域边——相机
     // 缓推时网格始终铺满绘图区。
     let mut grid_idx = 0usize;
@@ -1019,7 +1019,7 @@ fn typewriter(
 }
 
 /// 取符号 `kind` 的笔画轮廓（设备像素）：**两遍法**按目标高度归一化
-/// （PRD「∫ 高 130px」等尺寸机械保证）、bbox 中心对齐到锚点。
+/// （「∫ 高 130px」等尺寸机械保证）、bbox 中心对齐到锚点。
 ///
 /// 第一遍以参考尺寸 `S1_SYM_REF` 测量局部 bbox（y 向上），解出精确
 /// 尺寸 `REF·target_h/h` 后第二遍重建；局部 → 设备经
@@ -1092,7 +1092,7 @@ fn project_world(cam: &Camera, p: Vec3, res: (u32, u32)) -> Option<[f32; 2]> {
 }
 
 // ---------------------------------------------------------------------------
-// T04 资产层装配期自检（架构 §7.5：example 装配期灾难性错误快速失败；
+// T04 资产层装配期自检（example 装配期灾难性错误快速失败；
 // 同时保证全部 pub 资产入口在非测试构建中被消费，无 dead_code）
 // ---------------------------------------------------------------------------
 
@@ -1242,7 +1242,7 @@ fn check_bgm() {
 }
 
 // ---------------------------------------------------------------------------
-// v3-A/B 测试（文本截断语义 + 后处理链接线集成）
+// 测试（文本截断语义 + 后处理链接线集成）
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -1251,8 +1251,8 @@ mod tests {
     use prism_author::render_short_concat_faded_frames;
     use prism_text::layout::{layout_text, Align, TextParams};
 
-    /// v3-E 任务 0 回归：`check_bgm` 不是 `#[test]`（cargo test 平时跑不到），
-    /// 而 v3-D 立体声母带定稿后其旧断言 `channels() == 1` 会在正式渲染
+    /// 任务 0 回归：`check_bgm` 不是 `#[test]`（cargo test 平时跑不到），
+    /// 而 立体声母带定稿后其旧断言 `channels() == 1` 会在正式渲染
     /// 启动时 panic（哑雷）。本测试把该自检拉进 CI：立体声（母带展宽：
     /// L/R 微偏移 + 混响抽头）+ 长度 / 峰值 / 淡变端点全量断言。
     #[test]

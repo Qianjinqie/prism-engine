@@ -282,7 +282,7 @@ fn aces_fitted_matches_reference_within_tolerance() {
     assert!(worst < 1e-4, "ACES 与参考实现最大误差 {worst} 超限");
 }
 
-/// 缺陷面：ACES 准确档对公开经验锚点在 ±0.01 内（验收）。
+/// 缺陷面：ACES 准确档对公开经验锚点在 ±0.01 内（对拍）。
 #[test]
 fn aces_fitted_empirical_anchors() {
     let out = aces_fitted;

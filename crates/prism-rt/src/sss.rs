@@ -3,7 +3,7 @@
 //! 路径：Fresnel 折射进入介质 → σ̄ 自由程随机游走（RGB 平均自由程
 //! `radius` 参数）→ HG 相函数改向（复用 [`crate::media`]）→ 表面事件按
 //! Fresnel 概率逃逸/内反射 → 逃逸点作为新着色点（Lambert 漫反 + NEE，
-//! 由 integrator 处理）。**红线：逃逸点禁二次 SSS 入射**（防路径树爆炸，
+//! 由 integrator 处理）。**约束：逃逸点禁二次 SSS 入射**（防路径树爆炸，
 //! ）——integrator 挂接时以 `from_sss` 标志保证。
 //!
 //! # 出处（数据资产清单 #4 注释义务）

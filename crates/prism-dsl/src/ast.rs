@@ -285,7 +285,7 @@ pub(crate) struct MorphRefAst {
 }
 
 /// sim 块：`sim <种类> [名] { 字段* force 块? noise 块? }`
-/// （种类：cloth / fluid / rigid 等，语义最小可用，深语义留 Phase 2/3）。
+/// （种类：cloth / fluid / rigid 等，语义最小可用，深语义留 后续版本）。
 pub(crate) struct SimAst {
     pub(crate) kind: String,
     pub(crate) name: String,
@@ -379,7 +379,7 @@ pub(crate) struct KeyAst {
 
 /// anim 块：`anim "目标路径" { key ... loop direct }`（命名动画，登记到产物）。
 pub(crate) struct AnimAst {
-    /// 动画目标（如 `ball.x`；Phase 2/3 接入属性绑定）。
+    /// 动画目标（如 `ball.x`；后续版本 接入属性绑定）。
     pub(crate) target: String,
     pub(crate) keys: Vec<KeyAst>,
     /// 循环模式（direct / loop / pingpong；缺省 direct）。

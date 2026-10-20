@@ -80,7 +80,7 @@ pub use background::{render_background, render_background_cpu};
 // D0 GPU 基础设施（设备无关算法层）
 // ----------------------------------------------------------------------------
 //
-// 承接 A5 骨架（本 crate 既有的 `GpuDevice` / `Framebuffer` / 后端占位）：
+// 承接既有骨架（本 crate 既有的 `GpuDevice` / `Framebuffer` / 后端占位）：
 //
 // * **设备无关算法**（本层纯数据变换，CPU 可跑可测，真机 backend 只需提供
 //   层内并行 dispatch）：

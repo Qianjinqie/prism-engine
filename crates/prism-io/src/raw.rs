@@ -4083,7 +4083,7 @@ impl DngFile {
                 pipe_err(
                     LOC,
                     "Bradford D50→D65 锥体响应退化（常数或输入非有限）",
-                    "这是代码常量被破坏的信号，请上报；勿静默跳过白点适配",
+                    "这是代码常量被破坏的信号，请检查；勿静默跳过白点适配",
                 )
             })?;
             mat3_mul_matrix(&adapt, &calibrated)
@@ -6455,7 +6455,7 @@ mod tests {
 
     #[test]
     fn develop_matrix_choice_forward2_and_colormatrix1_differ() {
-        // **核心验收**：显式切换 MatrixChoice 时两条路结果**不同**，
+        // **核心一致性**：显式切换 MatrixChoice 时两条路结果**不同**，
         // 证明 ForwardMatrix2 与 ColorMatrix1 真的分开了（没走到同一处）。
         //
         // 构造的 ForwardMatrix2 明显不同于 ColorMatrix1，且带 CameraCalibration1

@@ -451,7 +451,7 @@ struct Scratch {
     // ---- D-14 补测：以下为 7 个新 shader 测试项的输入/输出工作区 ----
     //
     // 全部为**字节数组**（`[u8; N]`）而非类型化数组：storage buffer 的实际布局
-    // （vec3 的 16 字节步长、struct 的对齐填充）是本批测试要验证的对象，用
+    // （vec3 的 16 字节步长、struct 的对齐填充）是本测试要验证的对象，用
     // `Vec3`/`f32` 数组表达会**丢掉填充字节**，让「布局算错」这类缺陷无法暴露。
     // 读写一律走 `pack_f32` / `pack_u32` / `unpack_f32` / `unpack_u32`。
     /// `sim_particles` 粒子 storage buffer（输入 + 读回落点同址，原地判对）。
@@ -1812,7 +1812,7 @@ fn c_gpu_histogram() -> Status {
 // 判对基准是各 crate 的 CpuRef，实现权威是本文件的**独立重写**（公式逐条
 // 对齐，见每处注释的出处行号）。之所以重写而不直接 `use` 那些 crate：
 // `prism-gpu/Cargo.toml` 的依赖只有 `prism-math`，而 `Cargo.toml` 不在本
-// 工程师的改动范围内。三条铁律仍成立：
+// 文件改动范围内。三条铁律仍成立：
 // * 公式与 CpuRef **同式**（`poly6_2d` / `xpbd_distance_project` / `cell_key`
 //   的多项式系数、运算次序都与 WGSL 逐条对齐，含 WGSL 侧 `(PI*h)*h*…` 的
 //   左结合展开——浮点乘法不满足结合律，次序变了末位就变）。
@@ -3866,7 +3866,7 @@ fn c_gpu_rt_wavefront() -> Status {
 //
 // # CPU 参考的权威来源（与既有测试项同一纪律）
 // 判对基准 = `crates/prism-rt` 的对应实现（camera.rs / sampler.rs / rt_scene 语义）。
-// 因 `prism-gpu/Cargo.toml` 只依赖 `prism-math`（不在本工程师改动范围），本文件的
+// 因 `prism-gpu/Cargo.toml` 只依赖 `prism-math`（不在本文件改动范围），本文件的
 // CPU 参考是**逐条对齐 prism-rt 的独立重写**：
 //   * Sobol 方向数表 = Joe–Kuo 表 + Bratley–Fox 递推（同 `sampler.rs::direction_table`，
 //     数据资产复用，行数据逐值搬运）。
@@ -5051,7 +5051,7 @@ fn c_gpu_rt_wavefront_multi() -> Status {
 // 在 abi.rs 里以**独立重写**落地（逐式对齐，见每处注释的出处），并在
 // `host_test.mjs` 用**第三份 JS 实现**交叉核对。之所以重写而不直接 `use`
 // `prism-rt`（其 `sdf_gi`/`sh` 是 pub）：`prism-gpu/Cargo.toml` 的依赖只有
-// `prism-math`，而 `Cargo.toml` 不在本工程师的改动范围内（避免与并行改动冲突）。
+// `prism-math`，而 `Cargo.toml` 不在本文件改动范围内（避免与并行改动冲突）。
 //
 // # SH 契约（跨文件，必须一致；见 gi_compute.wgsl 文件头）
 //   投影原始辐亮度 `L_lm = ∫L·Y_lm dΩ`；重建加余弦瓣 `Â_0=π, Â_1=2π/3, Â_2=π/4`；

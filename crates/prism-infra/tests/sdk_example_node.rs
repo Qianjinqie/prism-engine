@@ -1,6 +1,6 @@
 //! 示例节点端到端：`examples/sdk-nodes/cinematic-basic`。
 //!
-//! 验收四步（缺一不可，对应"可编译 / 可加载 / 版本协商"三判据）：
+//! 四个步骤（缺一不可，对应"可编译 / 可加载 / 版本协商"三判据）：
 //! 1. manifest 解析 + 静态校验 + 资产清单校验（契约完整）；
 //! 2. 版本协商：当前 [`prism_infra::sdk::ENGINE_VERSION`] 满足包声明约束；
 //! 3. `presets/*` 与 `subgraphs/*` 全部过 `prism_dsl::compile`（**可编译**）；

@@ -1,4 +1,4 @@
-//! 第 2 轮独立复核探针—— ParticlePool capacity==0。
+//! 独立复核探针—— ParticlePool capacity==0。
 //! 验证 P1 修复未遗漏路径：spawn 之外还有 view_at / views / slots 等只读入口。
 
 use prism_math::Vec3;

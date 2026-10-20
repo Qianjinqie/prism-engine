@@ -1,8 +1,7 @@
 //! 共享约定唯一事实源（T04 common.rs）：画幅 / 帧率 / 场景帧表 /
 //! `scene_duration` / 视觉系统颜色 / `Viewport` 坐标映射。
 //!
-//! 本文件是 `calculus_film_v2` 全 example 的**唯一定义处**（架构 §7.1 /
-//! §7.2 / §7.6）：
+//! 本文件是 `calculus_film_v2` 全 example 的**唯一定义处**：
 //!
 //! - **帧网格**：场景帧数 `SCENE_FRAMES` 与 `scene_duration(n) = n/30 - 0.002`
 //!   （v1 同式），保证 `ClipSpec::frame_count = ceil(fps·duration) = n` 且
@@ -13,14 +12,14 @@
 //! - **颜色**：`hex_to_display`（÷255）是一切 2D 轨道颜色的唯一入口；
 //!   `hex_to_linear`（sRGB 逆 EOTF）仅供 S7 3D 场景原料，2D 管线禁用。
 
-/// 画幅宽（像素；PRD §4.0）。
+/// 画幅宽（像素）。
 pub const WIDTH: u32 = 960;
-/// 画幅高（像素；PRD §4.0）。
+/// 画幅高（像素）。
 pub const HEIGHT: u32 = 540;
 /// 帧率（帧/秒；成片规格 30fps）。
 pub const FPS: u32 = 30;
 
-/// 各场景帧数（S1–S7，PRD §4.0 / 架构 §7.6）：
+/// 各场景帧数（S1–S7）：
 /// 248+308+496+496+496+436+310 = 2790。
 pub const SCENE_FRAMES: [u32; 7] = [248, 308, 496, 496, 496, 436, 310];
 
@@ -33,7 +32,7 @@ pub const CONCAT_FADED_TRANS_SEC: f32 = 0.5;
 pub const TRANS_FRAMES: usize = 15;
 /// 转场次数：场景数 − 1。
 pub const TRANS_COUNT: usize = SCENE_FRAMES.len() - 1;
-/// 全片总帧数：Σ2790 − 6×15 = **2700 = 90.000s**（架构 §7.6）。
+/// 全片总帧数：Σ2790 − 6×15 = **2700 = 90.000s**。
 pub const TOTAL_FRAMES: usize = {
     let mut sum: usize = 0;
     let mut i = 0;
@@ -56,9 +55,9 @@ pub fn scene_duration(frames: u32) -> f32 {
     frames as f32 / FPS as f32 - 0.002
 }
 
-// ---- 颜色（架构 §7.2：两个换算函数的职责边界） ----
+// ---- 颜色（两个换算函数的职责边界） ----
 
-/// PRD 视觉 hex → 2D 轨道显示值（÷255）——**所有 2D Track 颜色**（曲线 /
+/// 视觉 hex → 2D 轨道显示值（÷255）——**所有 2D Track 颜色**（曲线 /
 /// 切线 / 网格 / 文案 / 面积填充 / HUD）的唯一入口。
 ///
 /// 显示参照直传：2D 管线的 track 颜色即显示参照值（与 v1 先例逐位一致），
@@ -89,9 +88,9 @@ pub fn hex_to_linear(rgb: [u8; 3]) -> [f32; 3] {
     [channel(rgb[0]), channel(rgb[1]), channel(rgb[2])]
 }
 
-// ---- 调色板（PRD §4.0 / 架构 §7.2 单一事实源） ----
+// ---- 调色板（单一事实源） ----
 
-/// 主曲线青 `#35D9F2`（PRD §4.0）。
+/// 主曲线青 `#35D9F2`。
 pub const HEX_CURVE: [u8; 3] = [0x35, 0xD9, 0xF2];
 /// 切线与强调金 `#FFD24A`。
 pub const HEX_GOLD: [u8; 3] = [0xFF, 0xD2, 0x4A];
@@ -123,14 +122,14 @@ pub const TEXT_RGBA: [f32; 4] = {
 /// 纯白（网格 / 坐标轴 / 刻度基色）。
 pub const WHITE_RGBA: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 
-/// 坐标网格白 alpha 0.10（PRD §4.0）。
+/// 坐标网格白 alpha 0.10。
 pub const GRID_RGBA: [f32; 4] = [1.0, 1.0, 1.0, 0.10];
 /// 坐标主轴白 alpha 0.90（网格之上的强调轴线）。
 pub const AXIS_RGBA: [f32; 4] = [1.0, 1.0, 1.0, 0.90];
 /// 刻度线白 alpha 0.75。
 pub const TICK_RGBA: [f32; 4] = [1.0, 1.0, 1.0, 0.75];
 
-/// 面积填充半透明青 alpha 0.18（PRD §4.0 区间下端）。
+/// 面积填充半透明青 alpha 0.18（区间下端）。
 pub const AREA_A18_RGBA: [f32; 4] = {
     let c = hex_to_display(HEX_CURVE);
     [c[0], c[1], c[2], 0.18]
@@ -140,7 +139,7 @@ pub const AREA_A26_RGBA: [f32; 4] = {
     let c = hex_to_display(HEX_CURVE);
     [c[0], c[1], c[2], 0.26]
 };
-/// 面积填充半透明青 alpha 0.38（PRD §4.0 区间上端）。
+/// 面积填充半透明青 alpha 0.38（区间上端）。
 pub const AREA_A38_RGBA: [f32; 4] = {
     let c = hex_to_display(HEX_CURVE);
     [c[0], c[1], c[2], 0.38]
@@ -161,8 +160,8 @@ pub const PALETTE_2D: [[f32; 4]; 11] = [
     AREA_A38_RGBA,
 ];
 
-/// S3 深蓝黑渐变（top / bottom；PRD §4.0「深蓝黑渐变区分场景情绪」，
-/// 具体 hex 值 PRD 未钉死，取贴近 v1 先例 `calculus_film.rs:322` 的值）。
+/// S3 深蓝黑渐变（top / bottom；「深蓝黑渐变区分场景情绪」，具体 hex
+/// 值未钉死，取贴近既有先例 `calculus_film.rs:322` 的值）。
 pub const BG_DEEP_BLUE: ([f32; 3], [f32; 3]) = (
     hex_to_display([0x0A, 0x12, 0x28]),
     hex_to_display([0x02, 0x04, 0x0C]),
@@ -194,7 +193,7 @@ pub fn clamp_domain(v: f32, lo: f32, hi: f32) -> f32 {
     }
 }
 
-// ---- Viewport：数学坐标 ↔ 设备像素的唯一映射（架构 §7.1） ----
+// ---- Viewport：数学坐标 ↔ 设备像素的唯一映射 ----
 
 /// 视口：数学域 `[x0, x1] × [y0, y1]` 到绘图区（设备像素）的仿射映射。
 ///
@@ -382,7 +381,7 @@ mod tests {
 
     #[test]
     fn hex_to_display_matches_manual_computation() {
-        // #35D9F2 = (53, 217, 242)/255 = (0.208, 0.851, 0.949)（验收手算值）。
+        // #35D9F2 = (53, 217, 242)/255 = (0.208, 0.851, 0.949)（手算值）。
         let c = hex_to_display(HEX_CURVE);
         assert!((c[0] - 0.208).abs() < 1e-3, "R {}", c[0]);
         assert!((c[1] - 0.851).abs() < 1e-3, "G {}", c[1]);
@@ -425,7 +424,7 @@ mod tests {
                 assert!(ch.is_finite() && (0.0..=1.0).contains(ch), "PALETTE_2D[{i}] 越界: {ch}");
             }
         }
-        // 曲线青与 PRD 一致；网格 alpha 0.10；面积填充 alpha ∈ [0.18, 0.38]。
+        // 曲线青与调色板一致；网格 alpha 0.10；面积填充 alpha ∈ [0.18, 0.38]。
         assert!((CURVE_RGBA[0] - 0.208).abs() < 1e-3 && (CURVE_RGBA[3] - 1.0).abs() < 1e-6);
         assert!((GRID_RGBA[3] - 0.10).abs() < 1e-6);
         for area in [AREA_A18_RGBA, AREA_A26_RGBA, AREA_A38_RGBA] {

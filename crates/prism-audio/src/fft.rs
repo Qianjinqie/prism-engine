@@ -122,7 +122,7 @@ mod tests {
     use super::*;
 
     /// 解析解对拍：n=1024、恰落 bin 17 的正弦，能量应集中于 |X[17]| = n/2
-    /// （及共轭 bin），其余 bin 泄漏可忽略（验收正条）。
+    /// （及共轭 bin），其余 bin 泄漏可忽略（判据）。
     #[test]
     fn single_tone_energy_concentrates_in_correct_bin() {
         let (n, bin) = (1024_usize, 17_usize);

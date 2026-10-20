@@ -44,7 +44,7 @@ pub enum PreviewQuality {
 }
 
 impl PreviewQuality {
-    /// 每像素样本数（草稿 < 成片，硬性验收项）。
+    /// 每像素样本数（草稿 < 成片，硬性检查项）。
     pub fn spp(self) -> u32 {
         match self {
             PreviewQuality::Draft => DRAFT_SPP,

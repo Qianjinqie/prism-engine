@@ -1,6 +1,6 @@
 //! F4：全片 BGM 实时合成——`prism-audio` 旧 API 四声部，120BPM × 45 小节。
 //!
-//! 情绪曲线按 PRD §7（神秘开场 → 冷静建立 → 紧张推进 → 明亮高潮 →
+//! 情绪曲线（神秘开场 → 冷静建立 → 紧张推进 → 明亮高潮 →
 //! 累积溶解 → 亲密沉静 → 辉煌收尾），以**平滑段落增益包络**落地：
 //! 每个声部的增益由 [`voice_gain_at`] 纯函数按时刻给出（相邻小节
 //! smoothstep 过渡、音符内逐样本连续，无阶梯 click），全链无时钟 /
@@ -16,7 +16,7 @@
 //! - **drums**：高潮段进入的四四拍 kick + 反拍 hat，60.0s 骤停；
 //!   47.5s（S4 重音时刻）加 snare + hat 重击。
 //!
-//! 场景音乐提示（PRD §7「场景切换音乐提示」）以**一次性事件**落位：
+//! 场景音乐提示以**一次性事件**落位：
 //! 1.0 / 2.0 / 3.0s 稀疏 arp 单音、61.0s F 大调和弦、84.0 / 84.75s
 //! 清脆泛音——全部由 (小节, 步) 纯函数推导。
 //!
@@ -47,7 +47,7 @@
 //!
 //! 本文件与 T02 / T03 引擎改动**零依赖**（仅依赖 `prism-audio` 旧
 //! API：`drums` / `mixer` / `synth` / `presets` / `theory` /
-//! `PcmBuffer`）——架构 §6.4-2 为此设有机械证明门禁：对本文件做引擎
+//! `PcmBuffer`）——为此设有机械证明门禁：对本文件做引擎
 //! 原语名的 grep 计数必须恒为 0（即本文件不得出现任何引擎新增原语
 //! 字样）；所有丰富度均在文件内基于旧 API 手工实现。
 //!
@@ -132,7 +132,7 @@ const CHORDS: [Chord; 4] = [
     Chord { notes: [43, 59, 62, 67] },
 ];
 
-/// 小节级四声部增益（PRD §7 情绪曲线的工程落地）。
+/// 小节级四声部增益（情绪曲线的工程落地）。
 struct SectionGains {
     /// pad 声部增益。
     pad: f32,
@@ -225,7 +225,7 @@ fn voice_gain_at(t_sec: f32, voice: Voice) -> f32 {
     }
 }
 
-/// arp 声部的小节节奏型（PRD §7 段落编排）。
+/// arp 声部的小节节奏型（段落编排）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ArpMode {
     /// 开场：无常规 arp（稀疏单音另作一次性事件）。
@@ -877,7 +877,7 @@ pub fn synth_bgm(duration_sec: f32, sample_rate: u32) -> PcmBuffer {
         place(&mut bass_buf, at, &note, sr);
     }
 
-    // ---- 一次性音乐提示（PRD §7 场景切换提示；落在 pad 层）----
+    // ---- 一次性音乐提示（场景切换提示；落在 pad 层）----
     // 61.0s F 大调和弦点亮（S5 答案时刻）。
     let chord_env = Adsr { attack: 0.01, decay: 0.35, sustain: 0.55, release: 0.45 };
     let chord_frames = (1.5 * sr as f32).round() as usize;

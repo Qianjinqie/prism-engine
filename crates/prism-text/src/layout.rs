@@ -260,7 +260,7 @@ pub fn layout_text(font: &Font, text: &str, params: &TextParams) -> Layout {
     let n = chars.len();
     let scale = params.font_size / font.units_per_em() as f32;
     // gid 解析：字体 cmap 优先；查不到（希腊/数学符号区段缺失）时回退到
-    // `math_symbols` 程序化符号表（v3-A：修复「ε/δ 渲染成 .notdef 豆腐块」）。
+    // `math_symbols` 程序化符号表（修复「ε/δ 渲染成 .notdef 豆腐块」）。
     // 已覆盖字符行为逐位不变（真实字形永不走合成 gid）。
     let gids: Vec<u16> = chars
         .iter()

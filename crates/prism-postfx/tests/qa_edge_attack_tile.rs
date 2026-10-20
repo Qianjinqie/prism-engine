@@ -583,7 +583,7 @@ fn q(v: f32) -> f32 {
     prism_io::f16_to_f32(prism_io::f32_to_f16(v))
 }
 
-/// 保留 Point 引用（PathMask 契约占位；本文件不深测 path，另有验收文件覆盖）。
+/// 保留 Point 引用（PathMask 契约占位；本文件不深测 path，另有测试文件覆盖）。
 #[allow(dead_code)]
 fn _path_point() -> Point {
     Point::new(0.0, 0.0)

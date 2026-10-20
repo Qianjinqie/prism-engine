@@ -3,8 +3,8 @@
 //! # 最小可用语义
 //! - DSL 内联清单：`import packs "名" { engine ">=0.4, <0.5" provides { ... } }`；
 //! - TOML 清单骨架：`PackManifest::parse_toml` 支持最小子集
-//!   （`key = "value"` 行 + `[provides]` 段），包文件加载留 Phase 2/3；
-//! - engine 范围校验（兼容性宪章 C12 / 验收 V9）：清单约束与当前引擎版本
+//!   （`key = "value"` 行 + `[provides]` 段），包文件加载留 后续版本；
+//! - engine 范围校验（兼容性宪章 C12 / ）：清单约束与当前引擎版本
 //!   （`env!("CARGO_PKG_VERSION")`）比对，不满足 → P4001；格式非法 → P4002。
 
 use crate::ast::{FieldValue, NamedField};
@@ -103,14 +103,14 @@ pub(crate) fn parse_version_reqs(range: &str) -> Result<Vec<VersionReq>, String>
 // ---------------------------------------------------------------------------
 
 /// import packs 装包清单（最小可用语义：解析 + 校验 + 登记到编译产物；
-/// 包文件加载与组件实例化留 Phase 2/3）。
+/// 包文件加载与组件实例化留 后续版本）。
 #[derive(Debug, Clone)]
 pub struct PackManifest {
     /// 包名（`import packs "名"`）。
     pub name: String,
     /// engine 版本约束（C12：形如 `">=0.4, <0.5"`）；None = 无约束。
     pub engine: Option<String>,
-    /// 声明提供的组件名（占位；Phase 2/3 接入组件实例化）。
+    /// 声明提供的组件名（占位；后续版本 接入组件实例化）。
     pub provides: Vec<String>,
     /// import 声明在 DSL 中的行号（TOML 路径下为 TOML 内行号）。
     pub line: usize,
@@ -119,7 +119,7 @@ pub struct PackManifest {
 impl PackManifest {
     /// 从 DSL `import packs` 块的字段列表构建清单。
     /// 识别 `engine`（字符串）与 `provides`（子块，字段名为组件名）；
-    /// 其余字段登记忽略（宽容读取，Phase 2/3 扩展）。
+    /// 其余字段登记忽略（宽容读取，后续版本 扩展）。
     pub(crate) fn from_fields(
         name: &str,
         fields: &[NamedField],

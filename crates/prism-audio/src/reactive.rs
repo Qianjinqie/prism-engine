@@ -257,7 +257,7 @@ mod tests {
         assert!(bake.band(2, 0) < 0.01 && bake.band(2, 2) < 0.01);
     }
 
-    /// seek 等价（验收正条）：第 N 帧独立重算（把窗抽成独立缓冲、hop=win
+    /// seek 等价（判据）：第 N 帧独立重算（把窗抽成独立缓冲、hop=win
     /// 单帧再烘焙）== 顺序烘焙的表行，逐位一致。
     #[test]
     fn frame_n_independent_recompute_equals_sequential() {

@@ -1,6 +1,6 @@
 //! QA 独立复核——Attractor 边界修复终验。
 //!
-//! 不信"绿了"：本文件独立构造探针，直击工程师声称修复的边界，
+//! 不信"绿了"：本文件独立构造探针，直击声称修复的边界，
 //! 每条断言注明"失败代表什么缺陷"。
 //!
 //! 不修改任何源码，仅新增测试。
@@ -105,7 +105,7 @@ fn probe_normal_magnitude_bitwise_equals_unclamped_analytic() {
 ///
 /// 本探针锁定事实：accel() 对病态 strength 不报错，只返回被钳值。
 /// 记录的期望：若团队判定"病态 strength 应结构化拒绝"，则此测试失败代表
-/// 「accel 静默掩盖病态输入」缺陷——路由 Engineer 增加 accel 级守卫。
+/// 「accel 静默掩盖病态输入」缺陷——路由增加 accel 级守卫。
 #[test]
 fn probe_clamp_silently_masks_pathological_strength() {
     // strength=1e30 远超任何"强风/爆炸"（1000 = 102·g₀）。此处 |d|=1e-8，

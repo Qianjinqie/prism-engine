@@ -701,7 +701,7 @@ impl LocalProcessTransport {
     /// 启动一个 worker 子进程（`exe` 为 `farm-worker` 可执行文件路径）。
     ///
     /// 首个动作是收 `Hello` 帧——拿不到就说明起不来，立刻报错（不让半死进程
-    /// 在后续轮次里制造"神秘的超时"）。
+    /// 在后续重试中制造"神秘的超时"）。
     pub fn spawn(exe: &Path, cache_path: Option<PathBuf>) -> Result<LocalProcessTransport, FarmError> {
         let location: &str = "farm::transport::LocalProcessTransport::spawn";
         let mut command: Command = Command::new(exe);

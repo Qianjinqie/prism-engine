@@ -2712,7 +2712,7 @@ mod tests {
         }
     }
 
-    /// E5-1 轴向射线 `a == 0` 退化线性单根：o=(0,0,-1), d=(0,0,1), k=1 ⇒ t=1.0
+    /// 轴向射线 `a == 0` 退化线性单根：o=(0,0,-1), d=(0,0,1), k=1 ⇒ t=1.0
     /// （精确：a=−1·0=−0.0，IEEE `−0.0 == 0.0` 为真走线性分支，t=−c/b=1）。
     #[test]
     fn paraboloid_axial_linear_root() {
@@ -2727,7 +2727,7 @@ mod tests {
         assert_eq!(h.shape, ShapeRef::Paraboloid(0));
     }
 
-    /// E5-2 轴向平行且不在轴上（`a == 0 && b == 0`）：None 不 panic
+    /// 轴向平行且不在轴上（`a == 0 && b == 0`）：None 不 panic
     /// （零方向射线 d=(0,0,0)：`-c/b` 除零前被 `b == 0` 分支拦截）。
     #[test]
     fn paraboloid_axial_parallel_off_axis_none() {
@@ -2738,7 +2738,7 @@ mod tests {
         );
     }
 
-    /// E5-3 离轴双根都有效 ⇒ 取最小有效 t（a < 0 时勿假设根序）：
+    /// 离轴双根都有效 ⇒ 取最小有效 t（a < 0 时勿假设根序）：
     /// o=(-2,0,0.5), d=(1,0,0) ⇒ t = 1.29289 / 2.70711（r² 均 0.5 ≤ 1.5²）。
     #[test]
     fn paraboloid_offaxis_two_valid_roots_takes_min() {
@@ -2752,7 +2752,7 @@ mod tests {
         assert!((0.5 - x * x).abs() < 1e-4, "F={}", 0.5 - x * x);
     }
 
-    /// E5-4 r_max 边界：界外 miss / 界内 hit / 闭边界 `r² == r_max²` 算命中。
+    /// r_max 边界：界外 miss / 界内 hit / 闭边界 `r² == r_max²` 算命中。
     /// 射线 o=(1,0,-1), d=(0,0,1) 恒命中 (1,0,0)（r²=1, t=2）。
     #[test]
     fn paraboloid_r_max_boundary_inside_outside() {
@@ -2775,7 +2775,7 @@ mod tests {
         );
     }
 
-    /// E5-5 `disc == 0` 精确相切（单重根正常命中）：o=(1,-2,1), d=(0,1,0)
+    /// `disc == 0` 精确相切（单重根正常命中）：o=(1,-2,1), d=(0,1,0)
     /// ⇒ a=-1, b=4, c=-4，disc=16-16=0，t=2.0（全整数运算，逐位精确）。
     #[test]
     fn paraboloid_disc_zero_tangent_exact() {
@@ -2784,11 +2784,11 @@ mod tests {
         assert_eq!(t, Some(2.0));
     }
 
-    /// E5-6 PRD §6 切平面配置钉死：P=(0.8,0.8,1.28) 在 z=x²+y² 上
+    /// 切平面配置钉死：P=(0.8,0.8,1.28) 在 z=x²+y² 上
     /// （0.64+0.64=1.28 ✓），n=(-1.6,-1.6,1) 即 P 点 ∇F；自 P+s·n̂ 沿 −n̂
     /// 入射必命中 t=s±1e-4（s 取 0.5 / 1.0 / 2.0 三档）。
     /// 注：法向入射 disc≠0——唯一正根 t=s，第二根在起点反方向（负）被
-    /// T_MIN 排除；真相切（disc==0）用例见 E5-5。
+    /// T_MIN 排除；真相切（disc==0）用例见上一项。
     #[test]
     fn paraboloid_prd_tangent_plane_normal_incidence() {
         let sc = paraboloid_scene(1.0, 2.0); // r_max=2：r²(P)=1.28 界内
@@ -2805,7 +2805,7 @@ mod tests {
         }
     }
 
-    /// E5-7 图元自身参数非法 ⇒ 永不命中（不 panic）：k<=0 / r_max<=0 / 非有限。
+    /// 图元自身参数非法 ⇒ 永不命中（不 panic）：k<=0 / r_max<=0 / 非有限。
     #[test]
     fn paraboloid_degenerate_params_never_hit() {
         let ro = Vec3::new(0.0, 0.0, -1.0);
@@ -2829,7 +2829,7 @@ mod tests {
         }
     }
 
-    /// E5-8 射线非有限 ⇒ None（NaN 比较天然排除；Inf 由入口 finite 检查拦截）。
+    /// 射线非有限 ⇒ None（NaN 比较天然排除；Inf 由入口 finite 检查拦截）。
     #[test]
     fn paraboloid_nonfinite_ray_none() {
         let sc = paraboloid_scene(1.0, 1.5);
@@ -2847,7 +2847,7 @@ mod tests {
         );
     }
 
-    /// E5-9 `normal_at` 解析对照：命中点法线 ≡ normalize(-2k·x, -2k·y, 1)，
+    /// `normal_at` 解析对照：命中点法线 ≡ normalize(-2k·x, -2k·y, 1)，
     /// 且恒朝上（n.z > 0）。
     #[test]
     fn paraboloid_normal_at_matches_analytic() {
@@ -2862,7 +2862,7 @@ mod tests {
         assert!(n.z > 0.0, "抛物面外法线恒朝上");
     }
 
-    /// E5-10 `t_max` 语义与 sphere_t/box_t 同口径：`t >= t_max` 即排除
+    /// `t_max` 语义与 sphere_t/box_t 同口径：`t >= t_max` 即排除
     /// （边界等于即排除；Infinity 远平面正常命中）。
     #[test]
     fn paraboloid_t_max_semantics() {
@@ -2875,7 +2875,7 @@ mod tests {
         assert_eq!(sc.paraboloid_t(0, ro, rd, f32::INFINITY), Some(1.0));
     }
 
-    /// E5-11 平面：轴向命中（t 精确）+ 平行（denom==0）⇒ None；
+    /// 平面：轴向命中（t 精确）+ 平行（denom==0）⇒ None；
     /// 双面约定（背面入射同样命中，法线朝向由积分器 from_inside 处理）。
     #[test]
     fn plane_axial_hit_and_parallel_none() {
@@ -2898,7 +2898,7 @@ mod tests {
         );
     }
 
-    /// E5-12 有限切片裁剪：`|u|>h` 或 `|v|>h` ⇒ None；闭边界 `|u|==h` 算命中；
+    /// 有限切片裁剪：`|u|>h` 或 `|v|>h` ⇒ None；闭边界 `|u|==h` 算命中；
     /// 无限平面（half_extent=None）任意位置命中。
     #[test]
     fn plane_half_extent_clip_and_infinite() {
@@ -2926,7 +2926,7 @@ mod tests {
         assert_eq!(inf.plane_t(0, Vec3::new(50.0, 30.0, 5.0), down, 1.0e30), Some(5.0));
     }
 
-    /// E5-13 `Plane::new` 单位化法线；零长/非有限法线永不命中（不 panic）；
+    /// `Plane::new` 单位化法线；零长/非有限法线永不命中（不 panic）；
     /// t 对方向缩放不变。
     #[test]
     fn plane_normal_normalized_zero_and_scale_invariance() {
@@ -2975,7 +2975,7 @@ mod tests {
         assert!((t7 - t1 / 7.0).abs() < 1e-6, "t7={t7}");
     }
 
-    /// E5-14 `light_pdf_sa`：抛物面/平面均非球光源几何 ⇒ None（与 Box 臂同语义）。
+    /// `light_pdf_sa`：抛物面/平面均非球光源几何 ⇒ None（与 Box 臂同语义）。
     #[test]
     fn new_shapes_light_pdf_sa_none() {
         let sc = Scene {
@@ -3000,7 +3000,7 @@ mod tests {
         assert_eq!(sc.light_pdf_sa(from, ShapeRef::Plane(0)), None);
     }
 
-    /// E5-15 `Scene::intersect` 跨图元取最近 + skip 豁免（阴影射线语义）：
+    /// `Scene::intersect` 跨图元取最近 + skip 豁免（阴影射线语义）：
     /// 球(miss)/盒(后墙)/抛物面/平面混合，抛物面 t≈4.91 最近；skip 抛物面
     /// ⇒ 平面 t=5.0 接上；skip 平面 ⇒ 抛物面仍胜盒（t=6.5）。
     #[test]
@@ -3192,7 +3192,7 @@ mod tests {
 
     /// 小网格出图：12 三角形立方体 + 矩形面光（无环境光 ⇒ 背景恒 0）。
     ///
-    /// 验收：图像全有限、立方体覆盖区有能量、四角（逃逸）恰为 0。
+    /// 判据：图像全有限、立方体覆盖区有能量、四角（逃逸）恰为 0。
     #[test]
     fn mesh_cube_12_triangles_renders() {
         let (pts, ids) = cube_mesh(Vec3::new(0.0, 0.0, 0.0), 0.8);

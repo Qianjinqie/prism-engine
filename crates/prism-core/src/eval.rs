@@ -7,8 +7,8 @@
 //!
 //! 求值契约：`eval` 无隐藏状态——同 (图, 注册表, 采样面, 子图签名, EvalCtx)
 //! 两遍求值，全帧输出逐字节一致（关卡 1）；求值顺序 = 拓扑序
-//! + 按 node_id 稳定 tie-break。签名缓存本批只落 eval 侧键类型
-//! （`SnapshotKey`，缓存存储归 A6）。
+//! + 按 node_id 稳定 tie-break。签名缓存当前只落 eval 侧键类型
+//! （`SnapshotKey`，缓存存储归签名模块）。
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -65,7 +65,7 @@ impl From<GraphError> for EvalError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SamplePlane {
     /// 像素坐标。样本流经 `SampleIndex.pixel` 派生——同节点不同像素必不同
-    /// 流（防网格伪影，D-28；tile 编排接入后坐标换算归 A5）。
+    /// 流（防网格伪影，D-28；tile 编排接入后坐标换算归位）。
     pub pixel: (u32, u32),
     /// 每像素样本数（≥1）。样本合并走固定形状归约（归约点）。
     pub spp: u32,
@@ -115,7 +115,7 @@ impl EvalOutput {
 ///
 /// 签名口径：`sig` 必须来自 snapshot_signature()（签名计算），与 session.rs 口径一致。
 ///
-/// 调度语义（本批域）：
+/// 调度语义（当前范围）：
 /// - 组合归约：`Feed` 单进单出；`Merge(Plus | Multiply)` 在标量/向量域按
 ///  [`reduction_shape`] 固定形状归约（任何归约点不得私定结合
 ///   序）。其余组合方式需要图像/几何域 Payload，结构化报错不静默（C20）。
@@ -205,7 +205,7 @@ pub fn eval(
 // 组合归约（归约点唯一形状入口）
 // ---------------------------------------------------------------------------
 
-/// 组合方式的图输入归约。本批域：标量/向量代数子集。
+/// 组合方式的图输入归约。当前范围：标量/向量代数子集。
 fn reduce_by_composition(
     composition: &Composition,
     inputs: Vec<Payload>,
@@ -235,7 +235,7 @@ fn reduce_by_composition(
         other => Err(EvalError {
             code: "P3010",
             location: format!("eval（组合方式 {other:?}）"),
-            problem: "该组合方式的归约语义需要图像/几何域 Payload（本批仅标量/向量代数域）"
+            problem: "该组合方式的归约语义需要图像/几何域 Payload（当前仅标量/向量代数域）"
                 .to_string(),
             fix: "标量/向量域请用 Merge(Plus) 或 Merge(Multiply)；图像域合成（over/screen/\
                   mask）、链式（Chain）、CSG、MIS、表示切换（Dual）随对应宿主 crate 接入"
@@ -346,8 +346,7 @@ fn sample_mean(
 
 /// 快照读：按 (子图签名, 帧) 读一帧状态并解码为 [`Payload`]。
 ///
-/// 字节不被识别时返回 `None`（绝不猜测，宪章 C20）；LRU 逐出策略随 A6
-/// 存储轮次落地——逐出只影响重算、不影响结果（seek 等价）。
+/// 字节不被识别时返回 `None`（绝不猜测，宪章 C20）；LRU 逐出策略随后续存储工作落地——逐出只影响重算、不影响结果（seek 等价）。
 pub fn snapshot_read(ctx: &EvalCtx, sig: Hash256, frame: u64) -> Option<Payload> {
     let key: SnapshotKey = (sig, frame);
     ctx.snapshots.get(&key).and_then(|bytes| payload_from_bytes(bytes))
@@ -434,7 +433,7 @@ mod tests {
     // —— 测试特解 ——
 
     /// 常量源：apply(Empty) → 标量 MILLI/1000（特解常量按类型编码——resolve
-    /// 缺 SolvedParams 参数位，缺口已上报，参数装配随 A2 属性通道轮次落）。
+    /// 缺 SolvedParams 参数位，缺口在册，参数装配随属性通道落地）。
     #[derive(Debug)]
     struct ConstSourceSpec<const MILLI: u32> {
         meta: StructureMeta,
@@ -770,7 +769,7 @@ mod tests {
             0xeb86d391,
         ];
 
-        /// RFC 1321 MD5 摘要（测试内嵌指纹件；签名哈希本体归 A6 SHA-256）。
+        /// RFC 1321 MD5 摘要（测试内嵌指纹件；签名哈希本体归 SHA-256）。
         pub fn digest(data: &[u8]) -> [u8; 16] {
             let bit_len = (data.len() as u64).wrapping_mul(8);
             let mut msg = data.to_vec();

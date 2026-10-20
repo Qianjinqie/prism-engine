@@ -24,7 +24,7 @@
 //! two-dimensional projections" (SIAM J. Sci. Comput. 30(5), 2008)，
 //! 表文件 `new-joe-kuo-6.21201`，下载锚点
 //! <https://web.maths.unsw.edu.au/~fkuo/sobol/new-joe-kuo-6.21201>
-//! （本批取维度 2–64，维内最高次数 s ≤ 9）。维度 1 不在表中（平凡：
+//! （当前取维度 2–64，维内最高次数 s ≤ 9）。维度 1 不在表中（平凡：
 //! 所有 m_i = 1，即 van der Corput 序列，按定义构造）。
 //! 超出 64 维的请求走 PCG 纯函数流兜底（lib.rs 模块文档"超表兜底"）。
 //!

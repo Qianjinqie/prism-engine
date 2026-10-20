@@ -32,7 +32,7 @@ pub type EffectFactory = fn() -> Box<dyn TileEffect>;
 
 /// 注册表错误（宪章 C18 三段式：在哪 / 什么事 / 怎么改；C19：必含建议段）。
 /// 错误码取 PF 段（postfx 命名空间；段位表单点在 prism-core lib.rs，PF 段
-/// 为本 crate 新增段——增补条目需先上报获批）。
+/// 为本 crate 新增段——增补条目需先经协议方批准）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct EffectError {
     /// 错误码（PF1xxx 段）。

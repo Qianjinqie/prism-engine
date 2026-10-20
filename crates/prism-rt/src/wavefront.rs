@@ -7,7 +7,7 @@
 //! BSDF/灯光语义与 [`crate::integrator`] 的 `trace_one` **逐位一致**——
 //! 因而 `wavefront::render_pixel` ≡ `integrator::render_pixel`（同器判对基准）。
 //!
-//! # 判对契约（验收）
+//! # 判对契约（判据）
 //! - 逐像素统计 diff ≤ 视觉等价阈值（本模块测试断言逐位相等，强于阈值）；
 //! - 确定性模式 md5：同 `EvalCtx` 两遍逐位一致。
 //!
@@ -832,9 +832,9 @@ mod tests {
         out
     }
 
-    // ==================== E5 解析图元 wavefront ↔ integrator parity ====================
+    // ==================== 解析图元 wavefront ↔ integrator parity ====================
 
-    /// E5 parity 场景 A（PRD §6 / 架构 §6.3 S7 配置复刻）：金属抛物面
+    /// parity 场景 A（配置复刻）：金属抛物面
     /// （z=x²+y²，r_max=1.2）+ 有限切片玻璃平面（切点 P=(0.8,0.8,1.28)、
     /// 法线 normalize(-1.6,-1.6,1)、half_extent=0.85）+ 无限地面 +
     /// 矩形面光 + 环境光。
@@ -948,13 +948,13 @@ mod tests {
     /// 判对 4（E5）：抛物面 + 玻璃切片 + 地面（Rect + Ambient）逐位对拍。
     #[test]
     fn wavefront_equals_integrator_bitwise_analytic_shapes() {
-        assert_parity_bitwise(&e5_scene_a(), "E5-A 抛物面/玻璃/地面");
+        assert_parity_bitwise(&e5_scene_a(), "抛物面/玻璃/地面");
     }
 
     /// 判对 5（E5）：球光源（NEE/MIS）+ 金属抛物面逐位对拍。
     #[test]
     fn wavefront_equals_integrator_bitwise_sphere_light_paraboloid() {
-        assert_parity_bitwise(&e5_scene_b(), "E5-B 球光源/抛物面");
+        assert_parity_bitwise(&e5_scene_b(), "球光源/抛物面");
     }
 
     // ============== V2-h：三角几何（Mesh / BVH）双路径 parity ==============

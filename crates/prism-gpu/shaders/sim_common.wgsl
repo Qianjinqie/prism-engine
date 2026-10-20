@@ -30,7 +30,7 @@ fn cell_key(p: vec3<f32>, h: f32) -> u32 {
 }
 
 // ---- 2D/3D 核（对齐 sph.rs；只用 ±×÷√，禁 libm）----
-// 2D Poly6（GPU-only 3D 常数：315/(64πh⁹)——本批实装 2D）。
+// 2D Poly6（GPU-only 3D 常数：315/(64πh⁹)——当前实装 2D）。
 fn poly6_2d(r: f32, h: f32) -> f32 {
   if (r >= h) { return 0.0; }
   let h2 = h * h;
@@ -43,7 +43,7 @@ fn spiky_grad_scale(r: f32, h: f32) -> f32 {
   let hmr = h - r;
   return -30.0 / (PI * h*h*h*h*h) * hmr * hmr;
 }
-// 3D Poly6（迁移位；GPU-only 标注：本批不实装，常数公开数学常量）。
+// 3D Poly6（迁移位；GPU-only 标注：当前不实装，常数公开数学常量）。
 const POLY6_3D_COEF: f32 = 315.0 / (64.0 * 3.141592653589793);
 fn poly6_3d(r: f32, h: f32) -> f32 {
   if (r >= h) { return 0.0; }

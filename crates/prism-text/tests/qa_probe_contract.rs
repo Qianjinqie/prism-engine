@@ -1,7 +1,7 @@
 //! QA 独立探针 —— N4 契约修复的**结构性**验证（守卫独立性 / 边界连续性 /
 //! 注释一致性），并对`layout.rs` 累加链的 f32 溢出传播做独立复核。
 //!
-//! 本文件**不复用**工程师的 `fix_boundary.rs`，全部断言由QA 独立推导。
+//! 本文件**不复用 `fix_boundary.rs`，全部断言由QA 独立推导。
 //!
 //! 方法论：两个守卫（坐标幅度 `MAX_COORD_EDGE` / 边长 `MAX_WINDOW_EDGE`）
 //! 都是私有常量，无法直接读出。QA 用**黑盒差分**证明二者独立生效：
@@ -304,7 +304,7 @@ fn n4_e_documented_area_bound_holds_literally() {
 /// N4-F：极大字号下`layout_text` 累加链溢出为 `inf`/`NaN` 时，
 /// 产出的 `GlyphPos` 不得把 `NaN` 笔位**写进位图**（否则是静默错图）。
 ///
-/// 工程师称"layout 全是 f32 所以安全"。QA 独立判断：f32 溢出确实不panic
+/// 曾有"layout 全是 f32 所以安全"的说法。QA 独立判断：f32 溢出确实不panic
 /// （无整数算术），但**会静默产生 `inf`/`NaN` 笔位**。安全性取决于下游
 /// `blit_glyph` 是否把 `NaN` 归一化。`NaN.floor() as i64` 在 Rust 中饱和为
 /// **0**（`as` 转换对 NaN 返回 0）⇒ 若layout 产出 `NaN` 笔位，字形会被

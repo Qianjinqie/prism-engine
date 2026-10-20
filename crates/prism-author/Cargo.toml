@@ -6,7 +6,7 @@ edition = "2021"
 # 高层"视频即代码"作者 API：一份声明式 `ClipSpec` + 一次 `render_short`
 # 即可产出 MP4。仅复用既有引擎能力，不引入任何新第三方 crate。
 # 注意：本 crate 自研 `easing`，**不**直接依赖 `prism-anim`，避免与其他
-# 工程师对该 crate 的改动耦合。
+# 并行改动对该 crate 的耦合。
 
 [dependencies]
 prism-io = { path = "../prism-io" }
@@ -17,7 +17,7 @@ prism-text = { path = "../prism-text" }
 # v1.5-C（ADR-18）：转场 / 场景序列 / Morph 几何已下沉 prism-core
 # （`core::sceneseq`）——author 的 `mix_frame` 改走 core 的 u8 整数混合器
 # （`mix_u8`）与整数 Wipe / Dissolve / Push 权重。清单外新增依赖（工作区内
-# 路径依赖、零第三方），已上报。
+# 路径依赖、零第三方）。
 prism-core = { path = "../prism-core" }
 # 组合子库（`combinators` 模块）经 prism-dsl 的组合子注册面
 # （`COMBINATOR_TABLE`）展开节点图。依赖方向合法：prism-dsl 仅依赖

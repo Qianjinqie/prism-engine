@@ -3,7 +3,7 @@
 //! v1（M0/M1）路径逐字保留：`codegen(&DocumentAst) -> CompileOutput`；
 //! v2 路径：`codegen_v2(&DocumentV2Ast) -> CompileV2Output`，落点为
 //! prism-core 节点图（`Graph` + `Node.params` + `Node.bindings`）与属性通道
-//! （`PropertyChannel`），深语义（渲染 / 模拟步进 / 音频）留 Phase 2/3。
+//! （`PropertyChannel`），深语义（渲染 / 模拟步进 / 音频）留 后续版本。
 //!
 //! # v2 语义决策（文档化）
 //! - **节点映射**（友好名 → 结构表）：layer text → S12 实体表示；
@@ -19,7 +19,7 @@
 //!   过渡重叠；总时长 = timeline.duration → movie.duration → 末场景结束。
 //! - **fps 次序**：timeline.fps → movie.fps → 缺省 12（与 v1 缺省一致）。
 //! - **环检测**：compose 引用图 DFS，三色标记，环路径带每个块的**定义行号**
-//!   （验收点名项）；错误码与 prism-core 图错误码对齐（P3005 环 / P3006 悬空）。
+//!   （点名项）；错误码与 prism-core 图错误码对齐（P3005 环 / P3006 悬空）。
 
 use std::collections::BTreeMap;
 
@@ -1234,7 +1234,7 @@ fn build_stage3d(b: &mut V2Builder, st: &Stage3dAst, si: usize) -> Result<Camera
     for mat in &st.materials {
         build_material(b, mat, si)?;
     }
-    // light：参数白名单校验（direction / color / intensity），产物登记忽略（Phase 2/3 接入光源求解）。
+    // light：参数白名单校验（direction / color / intensity），产物登记忽略（后续版本 接入光源求解）。
     for light in &st.lights {
         validate_light(light)?;
     }

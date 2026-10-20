@@ -7,7 +7,7 @@
 //! 每帧按 cue 的确定性哈希挑一个调色板色做整帧填充——纯函数、无网络、无随机
 //! （色由 `hash(seed, cue.text)` 派生），因此草稿逐帧可复现。
 //!
-//! # journal resume（Phase 2 验收第 6 条）
+//! # journal resume
 //!
 //! [`DraftPipeline::run`] 接受一份可选的入口 [`Journal`]：已完成阶段被**跳过**
 //! （不重复调用 Provider/切分/渲染），只从 `resume_from` 起执行。产出新
@@ -92,7 +92,7 @@ impl DraftPipeline {
     ) -> Result<DraftOutput, crate::AiError> {
         let mut journal = prev.cloned().unwrap_or_else(|| Journal::new(&req.prompt));
 
-        // 已完成阶段集合（resume 跳过判据；Phase 2 验收第 6 条）。
+        // 已完成阶段集合（resume 跳过判据）。
         let done = |j: &Journal, s: Stage| j.is_done(s);
 
         // ---- Stage::Text / Stage::Timings：一次 Provider 调用同时产出两者 ----

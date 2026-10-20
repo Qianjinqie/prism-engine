@@ -63,14 +63,14 @@ impl Track {
     ///
     /// 非有限时间语义（文档化）：NaN 时间 → NaN 值（值语义传播；NaN 不
     /// 满足任何 IEEE 比较、不落入任何段，若放行到段查找会因 `partition_point`
-    /// 谓词恒 false 得到 `0 − 1` 的 usize 下溢，QA-02）；−∞ → 首帧值、
+    /// 谓词恒 false 得到 `0 − 1` 的 usize 下溢）；−∞ → 首帧值、
     /// +∞ → 末帧值（走钳制分支早退）。
     pub fn sample(&self, t: f32) -> f32 {
         let k = &self.keyframes;
         if k.is_empty() {
             return 0.0;
         }
-        // NaN 早退（QA-02 修复）：NaN 时间按值语义传播 NaN，不进入段查找
+        // NaN 早退：NaN 时间按值语义传播 NaN，不进入段查找
         // （NaN 谓词恒 false 会导致索引下溢 panic，报错不 panic 精神）。
         if t.is_nan() {
             return f32::NAN;
@@ -262,7 +262,7 @@ mod tests {
         }
     }
 
-    /// QA-02：NaN 时间返回 NaN（值语义传播）而非 panic；空轨道恒 0 的
+    /// NaN 时间返回 NaN（值语义传播）而非 panic；空轨道恒 0 的
     /// 文档化退化不受影响（空轨道无值可传播，恒 0 优先）。
     #[test]
     fn track_nan_time_returns_nan_without_panic() {

@@ -719,7 +719,7 @@ mod tests {
         assert_eq!(mix_u8(0, 255, 256), 255);
     }
 
-    // ---- A2：四转场端点逐位 ----
+    // ---- 四转场端点逐位 ----
 
     fn probe_pixels(w: u32, h: u32) -> Vec<PixelCtx> {
         let mut ps: Vec<PixelCtx> = Vec::new();

@@ -93,7 +93,7 @@ pub fn mix_seeds(channel_seed: u64, global_seed: u64, node_id: u64) -> u64 {
 ///
 /// 为什么自含：D-29 规定超越函数一律"区间逼近多项式 + 固定系数"自研、禁
 /// libm（跨平台差 1–2 ulp 击穿逐位一致）；`prism-math` 的确定性数学件尚未
-/// 落地且不在本批文件清单内，故先在 crate 内自含，待其落地后收编替换。
+/// 落地且不在当前文件清单内，故先在 crate 内自含，待其落地后收编替换。
 ///
 /// 全部只用 `+ - × ÷`、`floor`/`round`（IEEE 精确取整运算）与位构造——
 /// IEEE 754 对每个基本运算的结果都有唯一定义，因此**跨平台逐位一致**。
@@ -242,7 +242,7 @@ pub(crate) mod det {
 mod tests {
     use super::*;
 
-    /// det_sin 对照 std f64 sin（**仅测试内**用 libm 参考做精度验收）。
+    /// det_sin 对照 std f64 sin（**仅测试内**用 libm 参考做精度对拍）。
     #[test]
     fn det_sin_matches_reference() {
         // 常规幅度：覆盖正负、跨象限、大参数。

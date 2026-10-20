@@ -1,5 +1,5 @@
 //! S7 片尾 3D 光追序列：场景组装 + 相机轨道 + 行分带并行预渲染 + 后处理链
-//! （架构 §2.6 / PRD §4-S7「片尾 flex·3D 光追收尾」）。
+//! （片尾 flex·3D 光追收尾）。
 //!
 //! 本模块是全片唯一的重计算段：310 帧 @960×540 spp48 路径追踪，产出
 //! RGBA8 帧序列，由主入口经 [`prism_author::Track::Sequence`]（src_fps=30）
@@ -9,12 +9,12 @@
 //!    为纯函数，行分带 `std::thread::scope` 并行不改变任一像素的采样流
 //!    ⇒ 并行与串行逐位一致（首帧双跑校验 [`VERIFY_PARALLEL`]，失败 panic）。
 //! 2. **后处理显式化**：`Fbuf16F::to_framebuffer` 仅 clamp01×255 量化、
-//!    无色调映射（架构 §2.6 明令禁止直接用于 HDR，否则高光死白）⇒
+//!    无色调映射（直接用于 HDR 会高光死白，故明令禁止）⇒
 //!    Reinhard `x/(1+x)` + 精确 sRGB OETF 必须在本模块内显式完成；
-//!    v3-B 追加显示域 bloom（与 2D 主链同域同参，见 [`post_process`]）。
-//! 3. **预算门禁**（§8-R2 / 裁定②）：第 0 帧整帧计时 × 帧数外推 > 45min
+//!    追加显示域 bloom（与 2D 主链同域同参，见 [`post_process`]）。
+//! 3. **预算门禁**：第 0 帧整帧计时 × 帧数外推 > 45min
 //!    时按预授权限降级（先 640×360，仍超再 spp4），决策打印到运行日志。
-//! 4. **玻璃切平面 Create 入场**（PRD §4-S7「4.0–5.0【Create】玻璃切平面
+//! 4. **玻璃切平面 Create 入场**（4.0–5.0【Create】玻璃切平面
 //!    淡入 0.5s」）：30fps 源帧 120 = 4.0s，此帧之前场景**不含**切平面；
 //!    帧 120..135 为淡入段（0.5s = 15 源帧），两套场景各渲一帧后按
 //!    `k=(f-120+1)/15` 在显示域（RGBA8）交叉混合；帧 ≥135 恒全平面。
@@ -24,9 +24,9 @@
 //! - **`EvalCtx::new` 实参序**：prism-core `node.rs` 实比为
 //!   `new(global_seed, node_id, frame)`；规格字面
 //!   `EvalCtx::new(frame_idx, NODE_3D, SEED_3D)` 会把帧号写进种子槽、
-//!   常量写进帧槽，违背架构 §2.6「帧号入采样流 ⇒ 轨道运动有时间维噪声」
+//!   常量写进帧槽，违背「帧号入采样流 ⇒ 轨道运动有时间维噪声」
 //!   的意图。故按意图落实为 `EvalCtx::new(SEED_3D, NODE_3D, frame_idx)`。
-//! - **相机 `height` 语义**：架构 §2.6 未指定相对/绝对，按 PRD「高度
+//! - **相机 `height` 语义**：规格未指定相对/绝对，按「高度
 //!   2.2→3.0」的字面读法取**世界绝对高度** `eye.z = height`（视点始终
 //!   位于内容区 z∈[0,1.44] 与面光 z=3.4 之间的经典四分之三俯视带）。
 //! - **`prism-author` dev-dependencies 增补** `prism-core` / `prism-math`：
@@ -61,29 +61,29 @@ pub const NODE_3D: u64 = 0x5337_0007;
 /// 采样流全局种子（本模块自定义常量；入 `EvalCtx.global_seed`）。
 pub const SEED_3D: u64 = 0x5C17_3D17_2024;
 
-/// 序列输出分辨率宽（架构 §2.6：960×540）。
+/// 序列输出分辨率宽（960×540）。
 pub const S7_WIDTH: u32 = 960;
 /// 序列输出分辨率高。
 pub const S7_HEIGHT: u32 = 540;
 /// 序列源帧率（310 帧铺满 10.333s @30fps；与画布同帧率逐帧对应）。
 pub const SRC_FPS: u32 = 30;
-/// 每像素样本数（v3-C：架构 §2.6 原值 8 ⇒ 48，焦散/玻璃细节信噪比 ×6）。
+/// 每像素样本数（原值 8 ⇒ 48，焦散/玻璃细节信噪比 ×6）。
 pub const SPP: u32 = 48;
-/// 最大弹射深度（v3-C：3 ⇒ 6，玻璃透射 + 金属二次弹射完整光路）。
+/// 最大弹射深度（3 ⇒ 6，玻璃透射 + 金属二次弹射完整光路）。
 pub const MAX_BOUNCES: u32 = 6;
 /// Reinhard 曝光试值（面光辐亮度 14 量级：高光 ≈0.93 不死白、暗部保层次）。
 pub const EXPOSURE: f32 = 1.0;
-/// 竖直视场角（度；架构 §2.6 / PRD §4-S7）。
+/// 竖直视场角（度）。
 pub const FOV_DEG: f32 = 40.0;
-/// 并行线程上限（架构 §2.6：`available_parallelism()` 上限 32）。
+/// 并行线程上限（`available_parallelism()` 上限 32）。
 pub const MAX_THREADS: usize = 32;
-/// 首帧并行 vs 串行逐位校验开关（架构 §2.6；失败即 panic）。
+/// 首帧并行 vs 串行逐位校验开关（失败即 panic）。
 pub const VERIFY_PARALLEL: bool = true;
-/// 渐黑起始帧（240/30 = 8.0s；PRD「8.0–8.3 淡出至黑」由预渲染帧承担）。
+/// 渐黑起始帧（240/30 = 8.0s；8.0–8.3 淡出至黑由预渲染帧承担）。
 const FADE_START_FRAME: u32 = 240;
 /// 全黑帧（264/30 = 8.8s；264..309 纯黑，落版文字由 2D 轨叠加在黑底上）。
 const FADE_END_FRAME: u32 = 264;
-/// 玻璃切平面 Create 入场起始帧（PRD §4-S7「4.0–5.0【Create】玻璃切平面
+/// 玻璃切平面 Create 入场起始帧（4.0–5.0【Create】玻璃切平面
 /// 淡入 0.5s」：源帧 120 = 120/30 = 4.0s，此帧之前切平面不可见）。
 const GLASS_START_FRAME: u32 = 120;
 /// 玻璃切平面淡入时长（源帧数：0.5s × 30fps = 15 帧）。
@@ -91,17 +91,17 @@ const GLASS_FADE_FRAMES: u32 = 15;
 /// 淡入完成（全平面）起始帧 = [`GLASS_START_FRAME`] + [`GLASS_FADE_FRAMES`]
 /// = 135（135/30 = 4.5s；此帧起切平面完全可见）。
 const GLASS_FULL_FRAME: u32 = GLASS_START_FRAME + GLASS_FADE_FRAMES;
-/// 预算上限（秒 = 45 分钟 = 2700s；裁定② / 架构 §8-R2；v3 升级 S7 源帧
+/// 预算上限（秒 = 45 分钟 = 2700s；S7 源帧
 /// 率 15→30fps 使源帧数 155→310，渲染总量同比翻倍，故上限同步放宽到
 /// 45 分钟以保住 §8-R2 降级纪律不变）。
 const BUDGET_SEC: f32 = 45.0 * 60.0;
-/// à-trous 空域降噪迭代趟数（架构 §2.6）。
+/// à-trous 空域降噪迭代趟数。
 const DENOISE_ITERATIONS: u32 = 3;
-/// à-trous 色差边缘停止带宽 σ（架构 §2.6）。
+/// à-trous 色差边缘停止带宽 σ。
 const DENOISE_SIGMA_COLOR: f32 = 0.1;
 
 /// 相机轨道关键帧（时刻 s, azimuth°, radius, height）；8.0s 后定格
-/// （架构 §2.6 / PRD §4-S7「相机拉远升高后展示全貌」）。
+/// （相机拉远升高后展示全貌）。
 const CAMERA_KEYS: [(f32, f32, f32, f32); 4] = [
     (0.0, 30.0, 4.2, 2.2),
     (4.0, 42.0, 4.2, 2.2),
@@ -109,13 +109,13 @@ const CAMERA_KEYS: [(f32, f32, f32, f32); 4] = [
     (8.0, 55.0, 4.6, 3.0),
 ];
 
-/// 相机注视目标（架构 §2.6：碗心偏上，兼顾抛物面与切平面）。
+/// 相机注视目标（碗心偏上，兼顾抛物面与切平面）。
 const CAMERA_TARGET_XY: (f32, f32) = (0.0, 0.35);
 /// 相机注视目标高度（世界 z）。
 const CAMERA_TARGET_Z: f32 = 0.5;
 
 // ---------------------------------------------------------------------------
-// 场景组装（架构 §2.6）
+// 场景组装
 // ---------------------------------------------------------------------------
 
 /// 组装 S7 场景（z 向上）：金属抛物面（焦散碗）+ 无限地面 [+ 玻璃切平面]
@@ -125,7 +125,7 @@ const CAMERA_TARGET_Z: f32 = 0.5;
 /// 帧号换算见 [`glass_gate`]）；其余元素（碗 / 地面 / 灯光）与开关无关，
 /// 两套场景仅差这一个平面 ⇒ 淡入段可对两套产物直接做显示域交叉混合。
 ///
-/// 场景叙事（PRD §4-S7）：S5 的曲线 `z=x²` 旋转成面 `z=x²+y²`（抛物面
+/// 场景叙事：S5 的曲线 `z=x²` 旋转成面 `z=x²+y²`（抛物面
 /// 碗），S4 的切线推广为过切点 `P=(0.8,0.8,1.28)` 的玻璃切平面；面光经
 /// 金属碗 spec 瓣聚焦 + 玻璃透射在地面投出焦散光池。
 pub fn build_s7_scene(with_glass: bool) -> Scene {
@@ -285,7 +285,7 @@ struct RenderPlan {
     estimated_sec: f32,
 }
 
-/// 预渲染 `n` 帧 S7 序列（架构 §2.6）：
+/// 预渲染 `n` 帧 S7 序列：
 /// 1. 预算探测（两个代表帧整帧计时取慢者 × n 外推；超 45min 按 §8-R2 降级）；
 /// 2. 逐帧经 [`render_sequence_frame`] 出图（含玻璃切平面 Create 入场调度：
 ///    4.0s 前无切平面、帧 120..135 显示域淡入、帧 ≥135 全平面）；
@@ -413,8 +413,8 @@ fn plan_budget(scene_bare: &Scene, scene_glass: &Scene, n: usize) -> RenderPlan 
 
 /// 玻璃切平面入场调度（纯函数）：帧号 ⇒ 该帧切平面的可见状态。
 ///
-/// 帧号换算（30fps 源帧 ↔ 片上时刻）：源帧 120 = 120/30 = 4.0s，即 PRD
-/// §4-S7「4.0–5.0【Create】玻璃切平面淡入 0.5s」的起点；淡入 0.5s ≈
+/// 帧号换算（30fps 源帧 ↔ 片上时刻）：源帧 120 = 120/30 = 4.0s，即
+/// 「4.0–5.0【Create】玻璃切平面淡入 0.5s」的起点；淡入 0.5s ≈
 /// 0.5 × 30 = 15 源帧 ⇒ 帧 120..135 为淡入段，`k=(f-120+1)/15`（帧 120 已
 /// 1/15 可见、帧 134 全可见）；帧 ≥135 恒全平面。
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -557,16 +557,16 @@ fn bits_eq(a: &[[f32; 4]], b: &[[f32; 4]]) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// 后处理链（架构 §2.6：tonemap + OETF 必须显式）
+// 后处理链（tonemap + OETF 必须显式）
 // ---------------------------------------------------------------------------
 
 /// 后处理：线性 HDR → [`Fbuf16F`] → à-trous 空域降噪 → Reinhard 色调映射
-/// → 精确 sRGB OETF → **显示域 bloom**（v3-B）→ u8 RGBA8；并按帧号施加
+/// → 精确 sRGB OETF → **显示域 bloom**→ u8 RGBA8；并按帧号施加
 /// 淡黑尾（落版由 2D 轨叠加）。
 ///
 /// 禁直通 `Fbuf16F::to_framebuffer`（仅 clamp01×255、无 tonemap ⇒ HDR 死白）。
 ///
-/// v3-B 的 bloom 落在**显示域**（OETF 之后、fade 之前）：与 2D 主链
+/// 的 bloom 落在**显示域**（OETF 之后、fade 之前）：与 2D 主链
 /// （`film_postfx::post_chain`）同域同参。S7 是**预渲染成品位图**
 /// （Sequence 轨注入，届时线性 HDR 已不存在），其泛光只能在内含链里
 /// 自含；主入口据此按 `film_postfx::s7_body_start_frame()`（= 2405）
@@ -607,7 +607,7 @@ fn post_process(hdr: &[[f32; 4]], res: (u32, u32), frame_idx: u32) -> Vec<u8> {
         }
     }
 
-    // 显示域 bloom（v3-B：S7 补镜头泛光；与 2D 主链同域同参的纯函数）。
+    // 显示域 bloom（S7 补镜头泛光；与 2D 主链同域同参的纯函数）。
     let bloomed = Bloom {
         threshold: crate::film_postfx::BLOOM_THRESHOLD,
         radius: crate::film_postfx::BLOOM_RADIUS,
@@ -634,7 +634,7 @@ fn post_process(hdr: &[[f32; 4]], res: (u32, u32), frame_idx: u32) -> Vec<u8> {
 }
 
 /// 精确 sRGB OETF（IEC 61966-2-1）：线性 → 显示编码，分段连续。
-/// 命名保留规范术语「OETF」全大写（架构 §2.6 同款写法）。
+/// 命名保留规范术语「OETF」全大写（同款写法）。
 #[allow(non_snake_case)]
 fn srgb_oETF(x: f32) -> f32 {
     if x <= 0.0031308 {
@@ -659,7 +659,7 @@ fn fade_factor(frame_idx: u32) -> f32 {
 mod tests {
     use super::*;
 
-    /// 相机关键帧字面值（架构 §2.6）：t=0/4/6.5/8.0 及定格段取值。
+    /// 相机关键帧字面值：t=0/4/6.5/8.0 及定格段取值。
     #[test]
     fn camera_at_matches_keyframes() {
         let c0 = camera_at(0.0);
@@ -709,7 +709,7 @@ mod tests {
         assert!((smoothstep(0.5) - 0.5).abs() < 1e-6);
     }
 
-    /// 场景结构与材质契约（架构 §2.6 字面值；含 Create 入场前后两变体）。
+    /// 场景结构与材质契约（字面值；含 Create 入场前后两变体）。
     #[test]
     fn scene_structure_matches_spec() {
         let scene = build_s7_scene(true);
@@ -829,7 +829,7 @@ mod tests {
         assert!(!bits_eq(&a, &a[..1]), "长度不同必须不一致");
     }
 
-    /// 玻璃切平面 Create 入场调度（PRD §4-S7「4.0–5.0【Create】玻璃切平面
+    /// 玻璃切平面 Create 入场调度（4.0–5.0【Create】玻璃切平面
     /// 淡入 0.5s」）：帧号换算 + 三段分派 + k 公式 + 单调性。
     #[test]
     fn glass_gate_follows_create_beat() {
@@ -891,10 +891,10 @@ mod tests {
     }
 
     /// [任务 4] 30fps 玻璃门时间换算：源帧率翻倍 15→30，Create 入场时刻仍须
-    /// 对齐 PRD 4.0s（源帧 120）与 0.5s 淡入（15 源帧），与全局帧表一致。
+    /// 对齐规格 4.0s（源帧 120）与 0.5s 淡入（15 源帧），与全局帧表一致。
     #[test]
     fn glass_door_timing_at_30fps() {
-        assert_eq!(SRC_FPS, 30, "S7 源帧率须为 30fps（规格 15→30）");
+        assert_eq!(SRC_FPS, 30, "源帧率须为 30fps（规格 15→30）");
         // 入场起点 4.0s ⇒ 源帧 120（120/30 = 4.0）。
         assert!((GLASS_START_FRAME as f32 / SRC_FPS as f32 - 4.0).abs() < 1e-6);
         // 淡入 0.5s ⇒ 15 源帧（0.5 × 30 = 15）。
@@ -946,7 +946,7 @@ mod tests {
 }
 
 // ---------------------------------------------------------------------------
-// v3-B/C 测试（post_process 显示域 bloom；不触发光追渲染）
+// 测试（post_process 显示域 bloom；不触发光追渲染）
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -1006,7 +1006,7 @@ mod v3_tests {
         assert!(lit.iter().any(|&b| b != 0 && b != 255), "未渐黑帧应有中间调");
     }
 
-    /// v3-C 常量：spp 48 / bounces 6（规格画质项；对拍基准同值的历史
+    /// 常量：spp 48 / bounces 6（规格画质项；对拍基准同值的历史
     /// 已在模块头偏差记录备案）。
     #[test]
     fn v3_quality_constants() {

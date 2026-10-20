@@ -115,7 +115,7 @@ fn qa_remap_forward_endpoints_and_monotonic() {
 /// Remap 倒序 in 区间（in_hi < in_lo）：固化**当前实现行为**——映射为线性
 /// 递减、端点仍严格对齐（t=out_lo → inner(in_lo)，t=out_hi → inner(in_hi)）。
 /// 注：模块文档称"线性映射保序（单调）"，倒序下为递减方向——文档措辞与
-/// 实现的出入已列为观察项 QA-04 上报；本测试固化事实行为防无声漂移。
+/// 实现的出入已列为观察项；本测试固化事实行为防无声漂移。
 #[test]
 fn qa_remap_reversed_in_interval_endpoints_align() {
     let ch = PropertyChannel::Remap {
@@ -160,7 +160,7 @@ fn hex(digest: &[u8; 32]) -> String {
 
 /// D 项（core 侧）：`channel_definition_hash(tag=0)` = sha256(00 00 ++ data)，
 /// 走 signature.rs 模块私有 SHA-256，与 Python hashlib 基线对拍（块边界六
-/// 长度顺带覆盖）。与 prism-io 侧六向量测试共同构成双实现同向量验收。
+/// 长度顺带覆盖）。与 prism-io 侧六向量测试共同构成双实现同向量对拍。
 #[test]
 fn qa_core_sha256_matches_hashlib_via_channel_definition_hash() {
     let cases: [(usize, &str); 6] = [

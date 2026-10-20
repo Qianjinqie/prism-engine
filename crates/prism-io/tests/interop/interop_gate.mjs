@@ -3,7 +3,7 @@
 // interop_gate.mjs — prism-io DWA(DWAA/DWAB) 与官方 OpenEXR 的互通门禁
 //
 // ===========================================================================
-// 【零污染纪律（红线）】
+// 【零污染纪律（设计约束）】
 // 官方 OpenEXR 是**验证工具**，不是项目依赖：
 //   * 本目录下的 `.cpp` 只是 harness **源码**，由本脚本在 /tmp 里现场编译；
 //   * `crates/` 下**任何** Cargo.toml 都不得出现 OpenEXR / C++ 链接 /
@@ -149,7 +149,7 @@ export const THRESHOLDS = {
  * 已知问题登记簿（**不是**豁免清单 —— 命中的格依然计入失败、门禁依然判红）。
  *
  * 【为什么必须显式登记】收紧 `c_max_ratio` 到 10 后，`dwaa-half-scan-1-noise`
- * 稳定判红。若不登记，工程师的理性反应就是把阈值调回去 —— 阈值随即退化成
+ * 稳定判红。若不登记，惯性反应就是把阈值调回去 —— 阈值随即退化成
  * 「随实测漂移的橡皮章」。登记簿把这个决定**钉在文本里**：
  * 谁想放宽阈值，必须先来改这条记录、给出新的实测数据。
  *
@@ -945,7 +945,7 @@ function main() {
   console.log(
     `阈值纪律        : 实测×10 = ${x10(worstAbs).toExponential(3)}（ABS）/ ${x10(worstRel).toExponential(3)}（REL），阈值必须 ≤ 它`
   );
-  // SKIP 数与实际一致性自检（QA 指出工程师曾自报"24 格"，实测 36 格）。
+  // SKIP 数与实际一致性自检（曾有自报"24 格"，实测 36 格）。
   const skipB = cells.filter((c) => c.B && c.B.skipped).length;
   const skipC = cells.filter((c) => c.C && c.C.skipped).length;
   const skipD = cells.filter((c) => c.D && c.D.skipped).length;

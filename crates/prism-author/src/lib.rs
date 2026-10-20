@@ -13,8 +13,7 @@
 //! 调用方（[`examples::short`]）不碰 `Fbuf16F`、帧循环与编码器。
 //!
 //! # 新增 / 扩展能力（相对 PoC）
-//! - 自研 [`easing::EasingKind`]：**不**依赖 `prism-anim`，避免与其他工程师
-//!   改动耦合；
+//! - 自研 [`easing::EasingKind`]：**不**依赖 `prism-anim`，避免并行改动耦合；
 //! - [`Track::Image`]：RGBA 缓冲 / 纯色 / 渐变面板叠加层，支持淡入淡出与位移；
 //! - 各轨道通用 [`crate::spec::KineticText::in_sec`] / `out_sec` 淡入淡出字段；
 //! - [`Track::Shape`]：用 `prism-raster` 画圆角矩形 / 椭圆等图元。
@@ -1182,7 +1181,7 @@ mod tests {
     // ---- 微积分短片 v2 原语（E1 DynPath / E2 Counter / E3 center_x / E4 Sequence）----
 
     /// E1：同几何的 DynPath 与静态 PathTrack 必须走逐位相同的光栅核心
-    /// （架构 §4.3：`paint_polyline` 共用，`dynpath_shares_path_core`）。
+    /// （`paint_polyline` 共用，`dynpath_shares_path_core`）。
     #[test]
     fn dynpath_shares_path_core() {
         let pts = vec![[12.0, 32.0], [48.0, 32.0], [84.0, 40.0]];
@@ -1296,7 +1295,7 @@ mod tests {
         );
     }
 
-    /// E2 读数恒等（架构 §7.3）：Counter 的 `(from, to, dur_sec, easing)`
+    /// 读数恒等：Counter 的 `(from, to, dur_sec, easing)`
     /// 与 DynPath 几何派生自**同一纯函数**——值级（位模式相等）+ 渲染级
     /// （Counter 帧与预格式化 Static 帧逐字节一致）。
     #[test]

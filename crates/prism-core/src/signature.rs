@@ -1,4 +1,4 @@
-//! 子图签名树（S10 内容↔摘要，A6）。
+//! 子图签名树（S10 内容↔摘要）。
 //!
 //! 语义权威：（节点签名 = hash(StructureId, 特解参数
 //! 序列化, 各子签名, 属性通道变化特征)；"属性通道变化特征" = 通道定义哈希，
@@ -7,16 +7,16 @@
 //! 自底向上：改一个节点只影响其自身到根的祖先链）、宪章 C13（缓存键含
 //! schema_version 与 engine_version，旧版本缓存只失效重建、永不误复用）。
 //!
-//! # 本批实现
+//! # 当前实现
 //! - **canonical 序列化**：图 → 规范字节序列（节点按 id 升序、字段定长/长度
 //!   前缀、大端位模式——与 [`crate::node::Params::to_canonical_bytes`] 同风格）；
 //! - **子树哈希**：自底向上，处理序 = [`Graph::topo_order`]（id 稳定 tie-break，
 //!   环图结构化报错不静默）。叶子 = hash(StructureId, params canonical, 通道
 //!   定义哈希)；内部节点在此基础上追加各子签名（槽位升序）——**改一个节点只
 //!   影响其自身到根的祖先链，兄弟子树签名逐位不变**（C3 增量渲染的根基）；
-//! - **通道定义哈希**：本批定义输入接口 [`ChannelDef`]（枚举 tag + 定义
-//!   canonical 字节），property.rs（并行轮次）落地后由其通道枚举直接产出；
-//!   本批不 import property.rs（任务红线）；
+//! - **通道定义哈希**：当前定义输入接口 [`ChannelDef`]（枚举 tag + 定义
+//!   canonical 字节），property.rs 落地后由其通道枚举直接产出；
+//!   当前不 import property.rs；
 //! - **缓存键**：hash(schema_version, engine_version, 子图签名, 分辨率, spp 档,
 //!  tile)（五元组 + tile；C13 版本入键）；
 //! - **快照咬合**：签名类型即 [`crate::node::Hash256`]（[u8; 32]），直接充当
@@ -28,12 +28,12 @@
 //! 漏项将破坏"同签名 ⇒ 逐字节可复用"公理，故按公理补全。补全不影响
 //! 增量性：id 与组合方式在参数编辑期间不变，祖先链影响域不变。
 //!
-//! # SHA-256 双实现说明（规范缺口，上报项）
+//! # SHA-256 双实现说明（规范缺口，在册项）
 //!  将 SHA-256 安放在 prism-io，而依赖方向（io∈L4 → core∈L2）
 //! 禁止 prism-core 依赖 prism-io。故本文件内置模块私有的同一 FIPS 180-4 实现
-//! （整数运算，零依赖；与 prism-io::sha256 以同一组 FIPS 官方向量分别验收）。
-//! 后续轮次建议把 SHA-256 下沉 prism-core（或 prism-math）单一实现，prism-io
-//! 改为依赖复用——涉及 Cargo.toml，超出本批文件红线，仅上报不私改。
+//! （整数运算，零依赖；与 prism-io::sha256 以同一组 FIPS 官方向量分别对拍）。
+//! 建议把 SHA-256 下沉 prism-core（或 prism-math）单一实现，prism-io
+//! 改为依赖复用——涉及 Cargo.toml，超出本文件改动范围，仅记录不擅自改动。
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -160,7 +160,7 @@ const SNAPSHOT_TAG: &[u8; 14] = b"PRISM-SNAPSHOT";
 pub struct ChannelDef {
     /// 通道种类枚举 tag（通道枚举的判别值；u16 大端进哈希）。
     pub tag: u16,
-    /// 通道定义参数的 canonical 字节（枚举 tag 之后的部分，由 A2 侧按其
+    /// 通道定义参数的 canonical 字节（枚举 tag 之后的部分，由 prism-anim 侧按其
     /// canonical 风格产出；内容变更 → 哈希变更 → 祖先链签名失效）。
     pub def_bytes: Vec<u8>,
 }
@@ -536,7 +536,7 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // 关卡 1：SHA-256 FIPS 官方向量（prism-core 私有实现同向量验收）
+    // 关卡 1：SHA-256 FIPS 官方向量（prism-core 私有实现同向量对拍）
     // ------------------------------------------------------------------
 
     #[test]

@@ -11,14 +11,14 @@
 
 ## 1. 目标与定位
 
-| 项 | CPU 先行（本批已落） | GPU compute（本文设计） |
+| 项 | CPU 先行（当前已落） | GPU compute（本文设计） |
 |---|---|---|
 | 规模 | 千–万粒子（交互调试） | 百万粒子（目标） |
 | SPH | 2D 先行（`sph.rs`） | **3D**（结构同构，核常数换 3D 归一化） |
 | 求解器 | XPBD 单栈（`xpbd.rs`） | **同一套 XPBD**，线程化粒子并行 |
 | 确定性 | 逐位一致（CPU 序） | **同 CPU 逐位**（见 §5 归约纪律） |
 
-**红线不变**：GPU 路径必须满足与 CPU 相同的确定性契约（seek 等价、
+**约束不变**：GPU 路径必须满足与 CPU 相同的确定性契约（seek 等价、
 宪章 C24 平台中立）——GPU 不是"另一套物理"，是同一 XPBD 的并行执行后端。
 **GPU-only 标注**：SPH 3D 与百万级 compute 仅 GPU 可用，CPU 侧不提供等价路径
 （诚实边界，非降级项）。
@@ -99,7 +99,7 @@ PBF 密度约束的 GPU 版本 = **两遍 gather/scatter**：
 
 **归约树形状 = n 的纯函数**（D-26）：GPU 的 warp/shared 归约必须
 复现 `reduction_shape(n)` 的固定形状，使 GPU 结果与 CPU 串行参考**逐位一致**
-（验收：并行 md5 ≡ 串行参考，Phase 1 验收第 6 条同款方法论）。
+（判据：并行 md5 ≡ 串行参考，同款方法论）。
 
 ---
 
@@ -124,7 +124,7 @@ PBF 密度约束的 GPU 版本 = **两遍 gather/scatter**：
 | `prism-gpu/shaders/sim_hash.wgsl` | 空间哈希（counting sort） | §4 |
 | `prism-gpu/shaders/sim_density.wgsl` | PBF 密度（gather + CSR 归约） | §4/§5 |
 | `prism-gpu/src/sim.rs` | 主机侧装配 + 与 `prism-physics` SoA 互转 | B7/B8 |
-| 验收 | 并行 md5 ≡ 串行参考逐位一致；百万粒子 60fps（桌面 GPU 真机） | D-26 |
+| 判据 | 并行 md5 ≡ 串行参考逐位一致；百万粒子 60fps（桌面 GPU 真机） | D-26 |
 
-> 本批交付的是 **CPU 先行实现的正确性锚**（`prism-physics`：关节/布料/SPH2D/
+> 当前交付的是 **CPU 先行实现的正确性锚**（`prism-physics`：关节/布料/SPH2D/
 > 破碎/耦合 + 全模拟 seek 等价测试）——GPU 移植以此为判对基准（CpuRef 哲学）。

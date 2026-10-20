@@ -2016,7 +2016,7 @@ mod tests {
     #[test]
     fn bt2020_oetf_and_eotf_roundtrip_consistently() {
         let tf = TransferFunction::Bt2020;
-        // 验收项：往返容差 1e-6。实测最坏 ~3.3e-16（f64 解析式），
+        // 判据：往返容差 1e-6。实测最坏 ~3.3e-16（f64 解析式），
         // 经 D-29 f32 det_pow 后放大到 ~1e-7 量级，仍远低于阈值。
         let mut worst = 0.0f64;
         let mut worst_at = 0.0f64;
@@ -2227,7 +2227,7 @@ mod tests {
 
     #[test]
     fn rec2020_convert_is_same_source_as_the_hand_assembled_matrix() {
-        // 验收项：`convert` 与手工装配矩阵同源（1e-9）。
+        // 判据：`convert` 与手工装配矩阵同源（1e-9）。
         // 同白点（D65 → D65）⇒ 无 Bradford，路径最短、最容易定位差异。
         let rec = by_name("rec2020").unwrap_or_else(|e| panic!("{e}"));
         let lin = by_name("lineargb709").unwrap_or_else(|e| panic!("{e}"));
@@ -2261,7 +2261,7 @@ mod tests {
 
     #[test]
     fn rec2020_preserves_black_and_white_through_the_transfer_function() {
-        // 验收项：黑白点保持。
+        // 判据：黑白点保持。
         let def = by_name("rec2020").unwrap_or_else(|e| panic!("{e}"));
         let black = def.to_xyz([0.0, 0.0, 0.0]).unwrap_or_else(|e| panic!("{e}"));
         for v in black.iter() {

@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn hlg_roundtrip_consistent() {
-        // 往返一致性（场景线性 → 编码 → 线性），误差 < 1e-4（验收项）。
+        // 往返一致性（场景线性 → 编码 → 线性），误差 < 1e-4（一致性判据）。
         for i in 0..=1000u32 {
             let e = i as f32 / 1000.0;
             let back = hlg_oetf_inverse(hlg_oetf(e));

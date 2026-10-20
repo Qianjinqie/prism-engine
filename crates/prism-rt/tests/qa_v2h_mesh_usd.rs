@@ -1,4 +1,4 @@
-//! V2-h 验收（rt 侧）：USD 网格 → `prism_rt::integrator::Scene` 加载 roundtrip
+//! USD 网格 → `prism_rt::integrator::Scene` 加载 roundtrip
 //! + 双路径 parity（integrator ≡ wavefront）。
 //!
 //! # 为什么这个测试放在 rt 的 tests/ 里
@@ -7,7 +7,7 @@
 //! 一行：[`prism_rt::integrator::Mesh::from_flat`]（f32 顶点 + u32 索引流
 //! → 内建 BVH 的网格），io 侧由 `usd::Scene::render_meshes()` 给出中性数据。
 //!
-//! # 验收项
+//! # 检查项
 //! - USD 三角化（6 四边形 → 12 三角形）经 `to_render_mesh` 无损落到 rt 网格；
 //! - Xform 世界变换已烘焙（包围盒 / 命中距离对账）；
 //! - 加载后的场景可出图（非平凡、全有限）；

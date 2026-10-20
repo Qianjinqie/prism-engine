@@ -9,7 +9,7 @@
 //! - 可选 `Content-Length` 定长正文（不支持 chunked / 多段）；
 //! - 响应：状态行 + `Content-Type` / `Content-Length` / `Connection` + 正文。
 //! - 路由：`GET /health`、`GET /tools`、`POST /render_frame`（JSON 入参 → PNG）、
-//!   `POST /compile`（JSON → 元信息）。**默认绑 `127.0.0.1`（安全红线：不暴露
+//!   `POST /compile`（JSON → 元信息）。**默认绑 `127.0.0.1`（安全约束：不暴露
 //!   公网）**。
 //!
 //! # 安全

@@ -1,4 +1,4 @@
-//! QA 攻击性测试 — Phase 4 GPU 三路 D0/D1/D2-D4（`prism-gpu`）。
+//! QA 攻击性测试 — 后续 GPU 三路 D0/D1/D2-D4（`prism-gpu`）。
 //!
 //! 铁律：零第三方依赖（D-15）+ 全链路确定性 + 禁 libm（D-29）。
 //!
@@ -549,11 +549,11 @@ fn libm_scan_gpu_rust_production_sources() {
 }
 
 // ===========================================================================
-// 零第三方依赖核查（D-15 硬红线）
+// 零第三方依赖核查（设计约束 D-15）
 // ===========================================================================
 
 /// 失败含义：GPU crate 的 Cargo.toml 出现**任何**第三方 crate（wgpu/wasm-bindgen/
-/// web-sys 等）——D-15 硬红线破裂。
+/// web-sys 等）——违反设计约束 D-15。
 #[test]
 fn zero_third_party_dependency_prism_gpu() {
     let manifest = include_str!("../Cargo.toml");

@@ -5,7 +5,7 @@
 //! | 关注点 | 归属 |
 //! | --- | --- |
 //! | SFNT 容器 / 表目录 / **逐表校验和** | 本模块 |
-//! | `head` `maxp` `hhea` `hmtx` `cmap` `loca` `glyf` **取值** | [`crate::ttf::Font`]（已验收的唯一实现） |
+//! | `head` `maxp` `hhea` `hmtx` `cmap` `loca` `glyf` **取值** | [`crate::ttf::Font`]（已验证的唯一实现） |
 //! | `GSUB` / `GPOS` 布局表结构与施加 | [`crate::gsub`] |
 //! | `name` 字符串表 | 本模块 |
 //!

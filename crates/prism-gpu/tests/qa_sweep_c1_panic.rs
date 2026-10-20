@@ -10,7 +10,7 @@ use prism_gpu::{CpuRefBackend, Framebuffer, GpuDevice, SceneRenderRequest};
 use prism_math::Vec3;
 
 // ---------------------------------------------------------------------------
-// P1-A: Framebuffer::new 尺寸乘法溢出 / 巨额分配
+// Framebuffer::new 尺寸乘法溢出 / 巨额分配
 // ---------------------------------------------------------------------------
 
 /// `Framebuffer::new(w, h)` 内部算 `(w as usize) * (h as usize) * 4`。
@@ -49,12 +49,11 @@ fn a02_framebuffer_new_no_panic_via_catch_unwind() {
 }
 
 // ---------------------------------------------------------------------------
-// P0-A: VulkanBackend::render_scene 的 unimplemented!()
+// VulkanBackend::render_scene 的 unimplemented!()
 // ---------------------------------------------------------------------------
 
 /// `vulkan::VulkanBackend` 是 `pub` 且实现 `pub trait GpuDevice`，
-/// `render_scene` 现返回空帧（原为 `unimplemented!()`，已修）。Engineer 的
-/// D1 实装使该类型带探测上下文，构造走 `VulkanBackend::new()`（仍无参、仍
+/// `render_scene` 现返回空帧（原为 `unimplemented!()`，已修）。D1 实装使该类型带探测上下文，构造走 `VulkanBackend::new()`（仍无参、仍
 /// 可经公开 API 触达）。
 #[test]
 fn a03_vulkan_backend_render_scene_does_not_panic() {
@@ -87,7 +86,7 @@ fn a03_vulkan_backend_render_scene_does_not_panic() {
 }
 
 // ---------------------------------------------------------------------------
-// P1-B: set_pixel 越界索引
+// set_pixel 越界索引
 // ---------------------------------------------------------------------------
 
 /// `set_pixel` 内部 `(y*width + x)*4` 为 usize 运算；`x/y` 为任意 u32。
@@ -139,7 +138,7 @@ fn a05_channel_to_u8_nan_inf_via_set_pixel_no_panic() {
 }
 
 // ---------------------------------------------------------------------------
-// P1-C: CpuRefBackend 在极端请求下的不变量
+// CpuRefBackend 在极端请求下的不变量
 // ---------------------------------------------------------------------------
 
 fn base_req(w: u32, h: u32) -> SceneRenderRequest {

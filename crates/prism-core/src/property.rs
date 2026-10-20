@@ -1,6 +1,6 @@
-//! 属性通道 PropertyChannel（工作流 A2）。
+//! 属性通道 PropertyChannel。
 //!
-//! 语义权威：v2.0 Phase 1 表 A2 行、
+//! 语义权威：
 //!  类图 `PropertyChannel`（`eval(t) → SolvedParams`）、D-7（Spring 解析
 //! 解 + 自研受限表达式求值器，纯函数契约）。
 //!
@@ -36,7 +36,7 @@ pub enum PropertyChannel {
     Track(Track),
     /// 阻尼弹簧闭式解（S7 闭式线性响应；：O(1) 无迭代、seek 零成本）。
     Spring(Spring),
-    /// 受限表达式通道（本批最小算术 + 变量 t/p/w/h；完整语法随 A4 DSL 落地）。
+    /// 受限表达式通道（最小算术 + 变量 t/p/w/h；完整语法随 DSL 落地）。
     Expr(Expr),
     /// 噪声驱动抖动（接 `prism-noise` 的 PCG/value-noise/fbm）。
     Wiggle(Wiggle),
@@ -114,8 +114,8 @@ fn remap_time(t: f32, in_lo: f32, in_hi: f32, out_lo: f32, out_hi: f32) -> f32 {
 /// 通道 → Params 的喂给路径：按 t 解算绑定的通道，把结果以
 /// `ParamValue::F32` 写入 `params[param]`。
 ///
-/// 名字引用（`node.rs::ChannelRef`）到通道实例的解析属 A4（anim/expr 块
-/// codegen）；本批通道随绑定显式携带。
+/// 名字引用（`node.rs::ChannelRef`）到通道实例的解析属 prism-anim（anim/expr 块
+/// codegen）；当前通道随绑定显式携带。
 pub fn sample_binding(
     binding: &NodeBinding,
     channel: &PropertyChannel,

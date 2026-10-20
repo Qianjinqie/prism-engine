@@ -4,7 +4,7 @@
 //! 词对齐跳过。编码格式：位深 16/24 用整数 PCM（format tag 1），位深 32 用
 //! IEEE float（format tag 3，WAV 规范对 32bit 的标准载体，也是引擎原生格式）。
 //!
-//! # 往返一致性（验收：逐字节）
+//! # 往返一致性（判据：逐字节）
 //!
 //! - **16/24 bit**：编码 `i = round(clamp(x) · 2^(bits−1))`（IEEE 定义整数
 //!   舍入，确定性）；解码 `x = i / 2^(bits−1)`——除以 2 的幂在 IEEE 中**精确**，
@@ -198,7 +198,7 @@ pub fn decode_wav(bytes: &[u8]) -> AudioResult<PcmBuffer> {
 mod tests {
     use super::*;
 
-    /// 三种位深：写 → 读 → 写逐字节一致（验收正条）。
+    /// 三种位深：写 → 读 → 写逐字节一致（判据）。
     #[test]
     fn roundtrip_is_byte_exact_for_16_24_32() {
         for depth in [BitDepth::B16, BitDepth::B24, BitDepth::B32] {

@@ -402,7 +402,7 @@ impl MorphSpec {
 ///   `#[derive(Debug, Clone)]` 不破。
 pub type GeomFn = Arc<dyn Fn(f32) -> Vec<[f32; 2]> + Send + Sync>;
 
-/// 计数器读数的时间函数（v3-E「f∘ease 复合」）：场景绝对时间 `t`（秒）
+/// 计数器读数的时间函数（「f∘ease 复合」）：场景绝对时间 `t`（秒）
 /// → 读数标量。
 ///
 /// 与 [`GeomFn`] 同纪律：纯函数（禁内部可变状态 / 时钟 / 随机源）、
@@ -412,7 +412,7 @@ pub type GeomFn = Arc<dyn Fn(f32) -> Vec<[f32; 2]> + Send + Sync>;
 /// 函数；而动点沿曲线运动需要 `y = f(x(t))` 的**复合**追踪（x 走缓动、
 /// y 由 x 经 f 得出）。把该复合显式化为时间函数后，HUD 读数与
 /// [`DynPathTrack`] 几何可派生自**同一个纯函数**（同参同时钟），「读数
-/// 恒等」铁律（架构 §7.3）从「近似恒等」升级为「逐位恒等」。
+/// 恒等」铁律从「近似恒等」升级为「逐位恒等」。
 pub type ValueFn = Arc<dyn Fn(f32) -> f32 + Send + Sync>;
 
 /// 时间参数化折线轨道（E1）：每帧求值 `geom(t)` 后进入与 [`PathTrack`]
@@ -476,11 +476,11 @@ impl std::fmt::Debug for DynPathTrack {
 /// 读数只含拉丁字母 / 数字 / `.` / `-` / 空格（PrismSansSC 字体内齐全），
 /// **不使用科学计数法**（`{:.N}` 定点格式）；`decimals > 6` 钳 6。
 ///
-/// 「读数恒等」工程约定（架构 §7.3）：`(from, to, dur_sec, easing)` 必须与
+/// 「读数恒等」工程约定：`(from, to, dur_sec, easing)` 必须与
 /// 对应 [`DynPathTrack`] 的几何参数派生自**同一个纯函数**，禁止两处各写
 /// 常数——这是「HUD 读数与画面恒等」的工程保证。
 ///
-/// # v3-E：`value_at` 输出映射（f∘ease）
+/// # `value_at` 输出映射（f∘ease）
 ///
 /// [`CounterText::value_at`] 为 `Some(f)` 时，读数改写为 `f(t)`（场景绝对
 /// 秒，与 [`DynPathTrack::geom`] 同一时钟）——动点沿曲线 `f(x(t))` 运动时，
@@ -523,7 +523,7 @@ pub struct CounterText {
     /// （同一位置多条顺序轨轮流显现）；`None` = 缺省锚定片尾
     /// （`duration - out_sec`）。非有限值按 `None` 处理；早于 `at` 时钳到 `at`。
     pub out_at: Option<f32>,
-    /// 读数时间函数（v3-E f∘ease；`None` = 沿用 `from`/`to`/`easing` 单缓动）。
+    /// 读数时间函数（f∘ease；`None` = 沿用 `from`/`to`/`easing` 单缓动）。
     ///
     /// `Some(f)` ⇒ 读数 = `f(t)`（场景绝对秒，与 [`DynPathTrack::geom`] 同
     /// 时钟；`f` 须为纯函数且返回有限值，`-0.0` 由渲染层归一）。此时
@@ -686,7 +686,7 @@ pub enum Transition {
         /// 擦除方向。
         dir: WipeDir,
     },
-    /// 随机像素溶解（v3-E；语义对齐 `prism-postfx` 的 `Dissolve`——
+    /// 随机像素溶解（语义对齐 `prism-postfx` 的 `Dissolve`——
     /// 宪章 C4 对照 #4「剪映 / iMovie Dissolve」）：逐像素以
     /// `hash2(seed, x, y) < k` 决定显影新片段 `b`，否则保留旧片段 `a`。
     ///
@@ -702,7 +702,7 @@ pub enum Transition {
         /// 显影种子（决定哪些像素先显影的确定性图案；同 seed 同图案）。
         seed: u64,
     },
-    /// 推移（v3-E）：两帧作为**同一画面**整体平移——`a` 退出一侧、
+    /// 推移：两帧作为**同一画面**整体平移——`a` 退出一侧、
     /// `b` 从对侧入场（硬接缝，无平滑带，保端点逐位精确）。
     ///
     /// 语义与 [`WipeDir`] 对齐（描述 `b` 的入场侧）：`b` 自 `dir` 侧

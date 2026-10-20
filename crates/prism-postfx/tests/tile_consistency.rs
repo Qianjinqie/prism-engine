@@ -1,4 +1,4 @@
-//! 验收关卡 1：tile 化渲染与整幅渲染**逐字节一致**（复用
+//! 关卡 1：tile 化渲染与整幅渲染**逐字节一致**（复用
 //! `TileOrchestrator`；MD5 位模式指纹判定，RFC 1321 官方向量锚定）。
 //!
 //! # 验证集（可平移不变 = halo 型协议效果）
@@ -9,8 +9,8 @@
 //! # 排除集（位置键控效果——协议缺口，非缺陷）
 //! grain / glitch / vignette / dissolve / plasma / mandelbrot_bg 的图案
 //! 锚定在**窗口局部坐标**；`TileEffect::eval_window` 不携带全局原点（
-//! trait 只读对接，不得私改协议），其整幅求值为规范语义（post 链 CPU
-//! 参考路径）。tile 一致性承载需协议增补全局原点上下文——需先上报获批。
+//! trait 只读对接，不得擅自变更协议），其整幅求值为规范语义（post 链 CPU
+//! 参考路径）。tile 一致性承载需协议增补全局原点上下文——需先经协议方批准。
 
 use prism_core::SampleIndex;
 use prism_io::fbuf::Fbuf16F;

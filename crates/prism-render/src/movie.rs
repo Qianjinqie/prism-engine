@@ -580,7 +580,7 @@ fn render_scene_frame(
         None => Aesthetic::new(false, 1.0, false),
     };
 
-    // ---- 光源：DSL 的 light 块登记后忽略（Phase 2/3 接入），render 侧用
+    // ---- 光源：DSL 的 light 块登记后忽略（后续接入），render 侧用
     //      固定缺省灯（与内置演示同款：暖色方向光，确定性常量）-------------
     let lights: Vec<Light> = vec![Light::new(
         Vec3::new(1.0, -1.0, -0.5).normalize(),

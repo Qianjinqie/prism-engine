@@ -1,6 +1,6 @@
 //! AudioReactive 通道（B8；复用 B6 [`prism_audio::reactive`] 烘焙表，禁重复实现）。
 //!
-//! # 复用声明（红线：勿重复造）
+//! # 复用声明（约束：勿重复造）
 //!
 //! 频段能量表由 B6 [`prism_audio::reactive::bake_reactive`] 烘焙（FFT 加窗谱
 //! 分析 → 频段能量），本模块**只做粒子侧映射**：

@@ -204,7 +204,7 @@ pub fn render_glyph(font: &Font, gid: u16, px_size: f32) -> GlyphBitmap {
         return GlyphBitmap::empty();
     }
     // 字体轮廓优先（真实字形逐位不变）；空/越界 gid 时回退到
-    // `math_symbols` 程序化符号表（v3-A：cmap 缺失的希腊/数学符号）。
+    // `math_symbols` 程序化符号表（cmap 缺失的希腊/数学符号）。
     let outline = match font.outline(gid) {
         Ok(o) if !o.contours.is_empty() => o,
         _ => match outline_for_gid(gid) {

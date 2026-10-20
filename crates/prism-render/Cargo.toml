@@ -11,7 +11,7 @@ prism-io = { path = "../prism-io" }
 # DSL v2 成片直达（movie 模块）读入 prism-dsl 的 CompileV2Output。
 # 依赖方向合法性：prism-dsl → {prism-math, prism-core, prism-anim}，均不
 # 反向依赖 prism-render（prism-gpu 只依赖 prism-math；prism-io → bytes/gpu），
-# 无环。清单外新增路径依赖（零第三方），已上报。
+# 无环。清单外新增路径依赖（零第三方）。
 prism-dsl = { path = "../prism-dsl" }
 # 文本图层合成复用 prism-text 既有排版 / 光栅化能力（layout_text +
 # GlyphCache + 内嵌字体），不新写文本渲染器。prism-text → {raster, io, anim,

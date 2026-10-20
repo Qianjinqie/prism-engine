@@ -111,7 +111,7 @@ mod tests {
 
     #[test]
     fn pq_roundtrip_signal_to_linear_and_back() {
-        // 往返一致性：编码 → 线性 → 编码（往返误差 < 1e-4，验收项）。
+        // 往返一致性：编码 → 线性 → 编码（往返误差 < 1e-4（一致性判据）。
         for i in 0..=1000u32 {
             let s = i as f32 / 1000.0;
             let back = pq_oetf(pq_eotf(s));

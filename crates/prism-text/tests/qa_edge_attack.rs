@@ -160,7 +160,7 @@ fn vertical_rotation_markers_and_bitmap_swap() {
 ///
 /// **生成器已移出测试**：原先这里的 `regenerate_glyph_golden`
 /// 是一条 `#[ignore]`，但它不是待修缺陷而是**写文件的生成器**——挂在
-/// `--ignored` 列表里会让「待办」与「缺陷」混淆，且让全仓验收长期挂着
+/// `--ignored` 列表里会让「待办」与「缺陷」混淆，且让全仓测试长期挂着
 /// `ignored` 计数（与"注释掉测试"同类假绿）。现形态：
 /// `cargo run -p prism-text --example regen_glyph_golden [-- --check|--write]`。
 #[test]

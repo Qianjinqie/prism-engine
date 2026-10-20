@@ -14,8 +14,8 @@ use std::fmt;
 
 use prism_math::Vec3;
 
-/// 256 位哈希值（S10 层次签名的摘要类型）。哈希算法本体（SHA-256，A6）在
-/// `signature.rs` 落地；本批仅定型类型供快照键使用。
+/// 256 位哈希值（S10 层次签名的摘要类型）。哈希算法本体（SHA-256）在
+/// `signature.rs` 落地；当前仅定型类型供快照键使用。
 pub type Hash256 = [u8; 32];
 
 /// 节点唯一标识。节点 id 生活在格 Zᵏ 上，直接用整数。
@@ -228,7 +228,7 @@ impl Default for LatticeCtx {
     }
 }
 
-/// 模拟快照键 = (子图签名, 帧)（D-28；签名含通道定义哈希的语义在 A6 落地）。
+/// 模拟快照键 = (子图签名, 帧)（D-28；签名含通道定义哈希的语义在签名模块落地）。
 pub type SnapshotKey = (Hash256, u64);
 
 /// 快照库：有状态模拟的纯数据状态仓（D-28）。
@@ -365,7 +365,7 @@ pub enum PortDirection {
 }
 
 /// 节点端口：组合算子的输入槽位或输出（图连线语义项在 graph.rs 第二批落地，
-/// 本批仅定端口标识类型）。
+/// 当前仅定端口标识类型）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Port {
     /// 端口方向。
@@ -423,7 +423,7 @@ pub enum Composition {
     Dual,
 }
 
-/// 属性通道引用：按名记录（存档语义，D-23；通道求值语义属 A2 / prism-anim）。
+/// 属性通道引用：按名记录（存档语义，D-23；通道求值语义属 prism-anim）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelRef {
     /// 通道定义名（anim/expr 块命名通道）。
@@ -441,7 +441,7 @@ pub struct NodeBinding {
 }
 
 /// 特解参数值：schema 化参数的最小值集（类型/范围/默认值的 schema 本体随
-/// A4 校验件落地；本批承接类图 `Node.params` 槽位的值形态）。
+/// 校验件落地；当前承接类图 `Node.params` 槽位的值形态）。
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParamValue {
     /// 浮点参数。
@@ -533,7 +533,7 @@ impl Params {
 
 /// 图节点（类图 `Node`）：节点三元组的实例形态。
 ///
-/// `signature()` 方法属签名树（signature.rs，第二批），本批不落。
+/// `signature()` 方法属签名树（signature.rs），当前不落。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Node {
     /// 节点唯一标识。

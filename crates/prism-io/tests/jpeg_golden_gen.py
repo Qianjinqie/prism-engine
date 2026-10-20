@@ -24,7 +24,7 @@ Pillow 仅用于生成**互操固件**（真实 JPEG 字节流 + 期望像素）
 ----------------------------------
 脚本内置**定点算法的 Python 精确镜像**（C/W 表同款舍入、Stage1/Stage2
 同序、同阈值分流），对 3000 自然块断言「定点 vs f64 参考 max ≤ 1 LSB
-且 PSNR ≥ 70 dB」——这正是在 Rust 侧要复现的验收判据，先在独立语言里
+且 PSNR ≥ 70 dB」——这正是在 Rust 侧要复现的判据，先在独立语言里
 跑通再落 Rust 代码。同时对极端块记录 Stage2 量级与分流计数。
 
 确定性：splitmix64（常量与 Rust 测试镜像一致），每块恰好消耗 128 次
@@ -314,7 +314,7 @@ def build_idct_fixtures() -> dict:
         coef[0] = mag
         a3_blocks.append((f"a3_{tag}", coef, q))
 
-    # 自然块验收自证：定点镜像 vs f64 参考 max ≤ 1 LSB 且 PSNR ≥ 70 dB。
+    # 自然块自证：定点镜像 vs f64 参考 max ≤ 1 LSB 且 PSNR ≥ 70 dB。
     for profile in natural_profiles:
         st = stats[profile]
         # 注（固件口径校正）：误差界是 (2^-16 + 2^-19)·Σ|D| + 0.5 LSB（§2.1 证 2），
@@ -502,7 +502,7 @@ def main() -> int:
         json.dump(manifest, fh, indent=2, ensure_ascii=False, sort_keys=True)
         fh.write("\n")
 
-    print("\n--- 定点镜像 vs f64 参考（Rust 验收预演） ---")
+    print("\n--- 定点镜像 vs f64 参考（Rust 预演） ---")
     for profile, st in fx["stats"].items():
         if "max_abs_diff_vs_exact" in st:
             print(f"  {profile:12s} maxLSB={st['max_abs_diff_vs_exact']} "

@@ -8,7 +8,7 @@
 //! - [`layout`]：度量/贪心断行/行首行末禁则/对齐（GB/T 15834）；
 //! - [`vertical`]：竖排 CJK（右起列、标点转向、列首禁则）；
 //! - [`math_symbols`]：希腊/数学符号程序化回退表（cmap 缺失字符的
-//!   合成字形；v3-A 修复「ε/δ 渲染成豆腐块」缺陷）；
+//!   合成字形；修复「ε/δ 渲染成豆腐块」缺陷）；
 //! - [`math_ast`]：公式 AST（上下标 / 分式 / 根号 / 大型算子 / 矩阵；V2-j）；
 //! - [`math_layout`]：公式排版引擎（AST → 字形 + 规则线布局；V2-j）；
 //! - [`cache`]：确定性字形位图缓存（纯加速，不改输出）；
@@ -140,7 +140,7 @@ pub enum GlyphOrigin {
     /// 来自回退链第 `index` 个字体（0 = 首选；逐级下移即回退深度）。
     Chain(usize),
     /// 程序化符号表（[`math_symbols`]；链末端，缩放基准 = 内嵌 Regular
-    /// 的 upem=1000，与 v3-A 内嵌管线行为逐位一致）。
+    /// 的 upem=1000，与 内嵌管线行为逐位一致）。
     Synthetic,
 }
 
@@ -379,7 +379,7 @@ impl FontSet {
     /// 渲染解析结果为覆盖率位图（接入既有 [`raster`] 管线）。
     ///
     /// 合成字形以内嵌 Regular 为单位/轮廓基准：符号表按 upem=1000
-    /// 定义，与 v3-A 内嵌管线逐位一致（外部链混排希腊/数学符号时
+    /// 定义，与 内嵌管线逐位一致（外部链混排希腊/数学符号时
     /// 尺寸不随链上其他字体的 upem 漂移）。
     pub fn render(&self, rg: &ResolvedGlyph, px_size: f32) -> Result<GlyphBitmap, FontError> {
         match rg.origin {
@@ -473,7 +473,7 @@ mod tests {
         assert_eq!(set.covering_slot('A'), Some(i_ms));
         assert_eq!(set.covering_slot('中'), Some(i_sc));
         assert_eq!(set.covering_slot('ε'), None, "符号表不在链内覆盖判定里");
-        // 合成字形渲染与 v3-A 内嵌管线逐位一致（同 gid 同 px）。
+        // 合成字形渲染与 内嵌管线逐位一致（同 gid 同 px）。
         let via_set = set.render(&eps, 48.0).expect("渲染");
         let via_embedded = render_glyph(&font_regular(), eps.gid, 48.0);
         assert_eq!(via_set.alpha, via_embedded.alpha, "合成字形须逐位一致");
@@ -618,7 +618,7 @@ mod tests {
         assert_eq!(zh.gid, font_regular().glyph_index('中').unwrap());
         assert_eq!(a, 0);
         // U+03B5 ε：A、B 均不含（内嵌子集只收 ASCII + GB2312 汉字区），
-        // 故落到链末端程序化符号表（v3-A 合成字形），不走 tofu。
+        // 故落到链末端程序化符号表（合成字形），不走 tofu。
         assert_eq!(set.covering_slot('ε'), None);
         assert_eq!(set.resolve_glyph('ε').unwrap().origin, GlyphOrigin::Synthetic);
         // 全链 + 符号表均缺失 → Err 含缺失码位清单（诚实边界，不静默 tofu）。

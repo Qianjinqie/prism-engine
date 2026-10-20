@@ -1,6 +1,6 @@
-//! 交互式编辑器 —— 集成测试（硬性验收项集中在此）。
+//! 交互式编辑器 —— 集成测试（硬性检查项集中在此）。
 //!
-//! 覆盖"硬性验收"四条：
+//! 覆盖"硬性判据"四条：
 //!
 //! * **确定断言**：编辑序列重放后图状态**字节级一致**（`replay_is_byte_identical`、
 //!   `undo_then_redo_field_by_field_identical`）；debug + release 双端一致由双 profile 测试保证。
@@ -121,7 +121,7 @@ fn incremental_recompute_set_equals_dirty_set() {
 
 #[test]
 fn empty_undo_stack_is_structured_error() {
-    // 硬性验收：撤销栈空返回**结构化错误**，绝不 panic。
+    // 硬性判据：撤销栈空返回**结构化错误**，绝不 panic。
     let mut st = EditorState::with_reference_graph();
     assert!(!st.can_undo());
     assert_eq!(st.undo_depth(), 0);
@@ -204,7 +204,7 @@ fn multi_step_undo_redo_arbitrary_positions() {
 
 #[test]
 fn undo_then_redo_field_by_field_identical() {
-    // 硬性验收：撤销后重做与撤销前**逐字段**一致（含组合方式）。
+    // 硬性判据：撤销后重做与撤销前**逐字段**一致（含组合方式）。
     let mut st = EditorState::with_reference_graph();
     st.apply_edit(1, "scale", ParamValue::F32(0.77)).unwrap();
     st.apply_edit(1, "octaves", ParamValue::U32(7)).unwrap();
@@ -268,7 +268,7 @@ fn composition_edit_rejects_cross_variant() {
 
 #[test]
 fn draft_spp_strictly_lower_than_final() {
-    // 硬性验收：Draft 采样数低于 Final。
+    // 硬性判据：Draft 采样数低于 Final。
     assert!(DRAFT_SPP < FINAL_SPP, "DRAFT_SPP({DRAFT_SPP}) 必须 < FINAL_SPP({FINAL_SPP})");
     assert!(PreviewQuality::Draft.spp() < PreviewQuality::Final.spp());
     // 档号也不同 → 缓存键不同 → 切档自然失效旧缓存（C13）。
@@ -296,7 +296,7 @@ fn quality_switch_does_not_touch_history() {
 
 #[test]
 fn replay_is_byte_identical() {
-    // 硬性验收：编辑序列重放后图状态**字节级**一致。
+    // 硬性判据：编辑序列重放后图状态**字节级**一致。
     let commands = vec![
         EditCommand::SetParam {
             node: 1,

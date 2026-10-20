@@ -1,11 +1,11 @@
 //! 硬件编码器适配层（C7； 三层策略 ②）。
 //!
-//! **设计 + 骨架，真机启用**（Phase 4）：VideoToolbox（macOS）/ MediaFoundation
+//! **设计 + 骨架，真机启用**（后续）：VideoToolbox（macOS）/ MediaFoundation
 //! （Windows）/ NVENC（Linux + N 卡）/ VAAPI（Linux 通用）。本模块只定义**厂商无关
 //! 的统一接口与能力声明**；实际编码调用厂商 API（超出零依赖 crate 范围，由
 //! `ffi` 绑定层在真机启用）。
 //!
-//! # 边界（红线）
+//! # 边界（设计约束）
 //!
 //! **不自研 H.264/HEVC 编码器**（D-10）。硬件编码器是"原始厂商 API"边界内，
 //! 本层只做适配骨架与降级编排：真机不可用时，编码回退到 [`crate::extprobe`] 的
@@ -82,7 +82,7 @@ pub struct SkeletonProbe;
 
 impl HwEncoders for SkeletonProbe {
     fn enumerate(&self) -> Vec<HwCapability> {
-        // 无 FFI 绑定 → 保守返回空集（真机启用由 Phase 4 的绑定层实现）。
+        // 无 FFI 绑定 → 保守返回空集（真机启用由 后续 的绑定层实现）。
         Vec::new()
     }
 }
@@ -188,7 +188,7 @@ fn find_in_path(name: &str) -> Option<String> {
 /// - **VideoToolbox / MediaFoundation**：非本平台 → 不可用（平台判定由
 ///   [`HwBackend::platform_possible`] 完成）。
 ///
-/// 该判定是"可能可用"的保守下界：真正编码仍需厂商 API 绑定（Phase 4）。
+/// 该判定是"可能可用"的保守下界：真正编码仍需厂商 API 绑定（后续）。
 pub fn probe_backends() -> Vec<(HwBackend, BackendStatus)> {
     let mut out: Vec<(HwBackend, BackendStatus)> = Vec::new();
     for b in HwBackend::for_platform() {

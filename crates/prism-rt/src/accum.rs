@@ -5,7 +5,7 @@
 //!   ——逐位可复现），供 progressive 预览。
 //! - [`AccumBuffer::canonical_mean`] / [`mean_samples`]：prism-core `reduce`
 //!  固定形状树（串行参考语义），**md5 锚定的规范输出**。
-//! 同一数据两条通道结合序不同、结果可差舍入，但各自逐位可复现；验收关卡
+//! 同一数据两条通道结合序不同、结果可差舍入，但各自逐位可复现；关卡
 //! "累计一致性"：push 8 个单样本 pass 的 canonical 均值 ≡ 一次 spp=8 渲染
 //! （逐位一致）。
 //!

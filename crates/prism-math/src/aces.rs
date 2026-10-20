@@ -9,7 +9,7 @@
 //! # 两档
 //! - [`aces_fitted`]（**准确档 / 默认**）：Stephen Hill 官方拟合——ACEScg
 //!   (AP1) → sRGB 输入矩阵 → `RRTAndODTFit` 有理函数 → sRGB 输出矩阵。
-//!  与公开参考值对拍误差典型 ~1e-3（验收线 ±0.01）；
+//!  与公开参考值对拍误差典型 ~1e-3（容差 ±0.01）；
 //! - [`aces_fast`]（**风格档**）：Narkowicz 单曲线 `(x(a·x+b))/(x(c·x+d)+e)`
 //!   ——草稿迭代预设，[`crate::aces::AcesFit`] 选择档位。
 //!
@@ -111,7 +111,7 @@ mod tests {
     use super::*;
     use crate::colorspace::{acescg_to_srgb, srgb_to_acescg};
 
-    /// ACES 准确档对拍（公开参考值锚点，误差 < 0.01，验收）。
+    /// ACES 准确档对拍（公开参考值锚点，误差 < 0.01）。
     ///
     /// 参考值来自 Stephen Hill 官方拟合在代表性样本上的期望输出（与
     /// `ACESFitted` 参考实现比对）。归一化线性 sRGB 输入。

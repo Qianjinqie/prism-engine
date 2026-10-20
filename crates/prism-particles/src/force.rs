@@ -1,6 +1,6 @@
 //! 力场接入（B8；复用 B7 [`prism_physics::coupling`] 力场族，禁重复实现）。
 //!
-//! # 复用声明（红线：勿重复造）
+//! # 复用声明（约束：勿重复造）
 //!
 //! 本模块**不定义任何新力场**——力场族（重力 [`Gravity`] / 风 [`Wind`] /
 //! 吸引子 [`Attractor`] / 湍流 [`Turbulence`]，均实现 [`ForceField`] trait）

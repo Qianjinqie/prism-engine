@@ -7,5 +7,5 @@ edition = "2021"
 prism-math = { path = "../prism-math" }
 prism-core = { path = "../prism-core" }
 # v2 codegen 需要 prism-anim 的 Track / Keyframe / EasingKind / Expr / LoopMode
-# （anim / expr 块与关键帧字段的属性通道装配）。清单外新增依赖，已上报。
+# （anim / expr 块与关键帧字段的属性通道装配）。清单外新增依赖。
 prism-anim = { path = "../prism-anim" }

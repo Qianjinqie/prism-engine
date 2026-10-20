@@ -1,7 +1,7 @@
 //! critic 闭环的**增量重渲**与**质量回升/收敛判定**（C5；接 C3 增量渲染）。
 //!
 //! 语义权威：critic 判定 → 触发局部重渲，接 C3
-//! 增量渲染、critic 内建为引擎命令且接增量渲染、Phase 3 验收第 5
+//! 增量渲染、critic 内建为引擎命令且接增量渲染
 //! 条（`--autofix` 2 轮评分回升）；D-28（快照键 = (子图签名, 帧)；LRU 逐出只
 //! 影响重算不影响结果）；D-16（Mini Code）。
 //!
@@ -334,7 +334,7 @@ impl CriticLoop {
     /// 运行 `--autofix` 闭环：**贪心爬山**——每轮从当前最佳画面尝试施加建议，
     /// 仅当评分**回升**才接纳该轮结果，否则停（不无谓加轮，也不接受劣化）。
     ///
-    /// 返回（最终收敛态，最终评分）。轮次上限 `max_rounds`（默认 2，对齐验收
+    /// 返回（最终收敛态，最终评分）。轮次上限 `max_rounds`（默认 2，对齐判据
     /// "2 轮评分回升"）。贪心保证"接纳即回升"：每轮结果要么 Improving（接纳），
     /// 要么 Converged/Diverging（回退到上一最佳并停）。
     ///
@@ -598,7 +598,7 @@ mod tests {
                 out
             },
         );
-        assert_eq!(conv, Convergence::Improving, "2 轮评分应回升（Phase 3 验收）");
+        assert_eq!(conv, Convergence::Improving, "2 轮评分应回升");
         assert!(score.unwrap() > 0.0);
         // 轨迹：至少首轮 + 一次接纳轮。
         assert!(lp.rounds().len() >= 2, "应有首轮 + 回升轮：{}", lp.rounds().len());

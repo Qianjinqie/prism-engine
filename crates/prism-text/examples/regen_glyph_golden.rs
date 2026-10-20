@@ -4,7 +4,7 @@
 //!
 //! 本文件原先是 `tests/qa_edge_attack.rs` 里一条 `#[ignore]` 的
 //! `regenerate_glyph_golden`。它**不是待修缺陷**，而是一个**写文件的生成器**：
-//! 把它挂在 `--ignored` 列表里，等于让"待办"与"缺陷"混淆，且让全仓验收
+//! 把它挂在 `--ignored` 列表里，等于让"待办"与"缺陷"混淆，且让全仓测试
 //! 长期挂着 `ignored` 计数——这与"注释掉测试"是同一类假绿手段。
 //! 故改为 `cargo run --example regen_glyph_golden` 的独立入口：
 //! - **不进 `cargo test`**，不产生 `ignored` 计数；

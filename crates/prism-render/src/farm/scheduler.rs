@@ -1039,7 +1039,7 @@ mod tests {
 
     #[test]
     fn parallel_payloads_equal_serial_bitwise_and_md5_identical() {
-        // 验收线：N worker 并行渲染的帧集合与单机顺序渲染 **MD5 一致**。
+        // 判据：N worker 并行渲染的帧集合与单机顺序渲染 **MD5 一致**。
         let cfg: ConfigHash = ConfigHash::of_bytes(b"parallel-md5");
         for n in [1u64, 2, 3, 7, 8, 33, 100, 1000, 1024] {
             let serial: Vec<Vec<u8>> = (0..n).map(|f| render_frame_payload(cfg, f)).collect();

@@ -12,7 +12,7 @@
 //! - **快照库读写**：把 `prism-core::SnapshotStore`（内存态）与磁盘 manifest
 //!   咬合，供跨会话复用（D-28：状态是纯数据资产，读档等价 seek）；
 //! - 本模块**不 import prism-core**（依赖方向：io∈L4 不得依赖 core∈L2，
-//!   与 `signature.rs` 的 SHA-256 双实现说明同一红线），故清单的键/条目以
+//!   与 `signature.rs` 的 SHA-256 双实现说明同一约束），故清单的键/条目以
 //!   纯字节（`[u8; 32]`）表达，core 侧 [`Hash256`] 与之位模式同一。
 
 use std::collections::BTreeMap;
@@ -99,7 +99,7 @@ impl CacheManifest {
 
     /// 导出为确定性字节（宪章 C8 版本头；键升序、长度前缀、大端）。
     ///
-    /// 同内容清单两次导出逐字节一致（缓存确定性验收）。
+    /// 同内容清单两次导出逐字节一致（缓存确定性判据）。
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(MANIFEST_MAGIC);
@@ -183,7 +183,7 @@ impl CacheManifest {
         Ok(CacheManifest { entries })
     }
 
-    /// 清单内容指纹（用于验收：两次导出 md5/哈希一致）。
+    /// 清单内容指纹（用于判据：两次导出 md5/哈希一致）。
     pub fn content_hash(&self) -> [u8; 32] {
         sha256(&self.to_bytes())
     }

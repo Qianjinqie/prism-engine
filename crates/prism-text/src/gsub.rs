@@ -1613,7 +1613,7 @@ mod tests {
         let _ = b2;
     }
 
-    // ---- G4..G7：SingleSubst 四态（核心验收）----
+    // ---- G4..G7：SingleSubst 四态（核心一致性）----
 
     /// 施加单个 SingleSubst 特征（fmt2 路径）。
     fn apply_one(tag: [u8; 4], gid: u16) -> u16 {
@@ -1625,7 +1625,7 @@ mod tests {
         glyphs.first().map(|g| g.gid).unwrap_or(0)
     }
 
-    /// G4：四态映射 —— **同一字符在不同上下文产生 4 个不同 gid**（核心验收）。
+    /// G4：四态映射 —— **同一字符在不同上下文产生 4 个不同 gid**（核心一致性）。
     #[test]
     fn g4_single_subst_four_states() {
         let beh = sf::G_BEH;
@@ -1659,7 +1659,7 @@ mod tests {
         assert_eq!(apply_one(*b"fina", 0), 0);
     }
 
-    /// G6：lam-alef 连字 —— **两字符序列 → 1 个连字 gid**（核心验收）。
+    /// G6：lam-alef 连字 —— **两字符序列 → 1 个连字 gid**（核心一致性）。
     #[test]
     fn g6_ligature_lam_alef() {
         let (gsub, _) = synth_tables();
@@ -1948,7 +1948,7 @@ mod tests {
     // =======================================================================
     //  G21..G26：端到端 —— GSUB 结果交给既有 raster.rs **实际栅格化**
     //
-    //  硬性验收：「阿拉伯词形/连字被实际栅格化（产出非空像素、连通性
+    //  硬性判据：「阿拉伯词形/连字被实际栅格化（产出非空像素、连通性
     //  合理），不只是 gid 非 0」。此处复用 raster::{render_glyph, blit_glyph}
     //  与 prism_io::Fbuf16F，**不改 raster.rs / layout.rs 一行**。
     // =======================================================================
@@ -2001,7 +2001,7 @@ mod tests {
     fn g21_four_states_rasterize_to_distinct_ink() {
         // 同一字符 U+0628 BEH 在四种连接上下文里 → isol / init / medi / fina。
         // 合成字体的四态矩形尺寸两两不同 ⇒ 像素必然不同。
-        // 上下文取自真实阿拉伯连写规则（整形层已验收）：
+        // 上下文取自真实阿拉伯连写规则（整形层已验证）：
         //   孤立  "ب"          独自成簇
         //   词首  "بب"         首字母只连右侧 → Initial
         //   中介  "ببب"        中间字母双连 → Medial

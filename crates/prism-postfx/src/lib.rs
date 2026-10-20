@@ -1,4 +1,4 @@
-//! `prism-postfx` — 后处理链（工作流 B4；Phase 2 B4 行；架构 v2.4
+//! `prism-postfx` — 后处理链（工作流 B4；后续 B4 行；架构 v2.4
 //!  S2 卷积 / S11 扩散 / S5 重参数化的特解宿主 crate）。
 //!
 //! 语义权威：blur/bloom/vignette/grain/dissolve/glitch/
@@ -30,7 +30,7 @@
 //!   denoise/warp）在 tile 化与整幅求值下逐字节一致（`TileOrchestrator`
 //!   复验，md5 贴出）；位置键控效果（grain/glitch/vignette/dissolve/
 //!   plasma/Mandelbrot_bg）的空间图案锚在窗口局部坐标——见 `effects::mod`
-//!   的"位置键控与 tile 协议"说明与缺口上报。
+//!   的"位置键控与 tile 协议"说明与缺口记录。
 
 pub mod denoise;
 pub mod effects;

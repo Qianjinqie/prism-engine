@@ -4,7 +4,7 @@
 //! 子图签名 × 分辨率 × spp 档 × tile × engine 版本 × schema 版本；[T] 红利：
 //! 签名不变即累积续用）；缓存键五元组 + tile、
 //!  / D-28（快照键 = (子图签名, 帧)；LRU 逐出只影响重算不影响结果）；
-//! 验收：改一节点 → 未涉区间帧 md5 一致且
+//! 判据：改一节点 → 未涉区间帧 md5 一致且
 //! reuse_ratio ≥ 0.5、D-16（Mini Code）、D-27（registry! 静态汇入制）。
 //!
 //! # 三维复用模型
@@ -19,7 +19,7 @@
 //!
 //! # 确定性铁律（第一优先）
 //! 复用**绝不能改变输出**：命中缓存 = 直接取回上帧字节；未命中 = 全量重算。
-//! 两者产出经 [`ReuseVerdict`] 保证**逐字节一致**（验收关卡 2）。LRU 逐出
+//! 两者产出经 [`ReuseVerdict`] 保证**逐字节一致**（关卡 2）。LRU 逐出
 //! 只影响"是否重算"，不影响"算出什么"——seek 等价成立（D-28）。
 
 use std::collections::BTreeMap;
@@ -405,7 +405,7 @@ impl DirtyDetector {
     /// 与变更帧区间。返回脏集合并把基线更新为当前签名。
     ///
     /// # 关键不变式
-    /// - 改叶 1 参数 → 仅 {1, 3, 4}（叶到根链）脏，兄弟子树 {2} 不脏（验收 1）；
+    /// - 改叶 1 参数 → 仅 {1, 3, 4}（叶到根链）脏，兄弟子树 {2} 不脏（判据 1）；
     /// - 帧维：`channel` 有界且 [`ChannelIntervals`] 给出恒定区间时，脏帧区间
     ///   收窄为 `changed_frames`；否则保守全帧。
     ///
@@ -521,7 +521,7 @@ pub enum ReuseVerdict {
 /// 判定**只**看缓存键是否相等（键含子图签名 + 分辨率 + spp 档 + tile +
 /// 版本）。键相等 ⇒ 输入逐字节相同 ⇒ 输出逐字节相同（公理）。命中即
 /// 取回缓存字节；未命中即重算并回填缓存。二者对同一 (帧, 子图) 的输出**逐
-/// 字节一致**（验收关卡 2）——这是复用不改输出的可证性来源。
+/// 字节一致**（关卡 2）——这是复用不改输出的可证性来源。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReuseDecision {
     /// 裁决。
@@ -661,12 +661,12 @@ impl ReuseCache {
 }
 
 // ---------------------------------------------------------------------------
-// reuse_ratio 统计（复用率度量；验收 ≥ 0.5）
+// reuse_ratio 统计（复用率度量；判据 ≥ 0.5）
 // ---------------------------------------------------------------------------
 
 /// 复用率度量：以"帧 × 子图"为统计单元。
 ///
-/// `reuse_ratio = 复用单元数 / 总单元数`。验收 ≥ 0.5。
+/// `reuse_ratio = 复用单元数 / 总单元数`。判据 ≥ 0.5。
 ///
 /// # 统计口径
 /// 总单元 = 全序列帧数 × 逻辑子图数（"逻辑子图"由调用方界定：通常为全图
@@ -715,7 +715,7 @@ impl ReuseStats {
         self.total
     }
 
-    /// 是否达验收线（≥ 0.5）。
+    /// 是否达判据线（≥ 0.5）。
     pub fn meets_phase3(&self) -> bool {
         self.ratio() >= 0.5
     }
@@ -833,7 +833,7 @@ impl IncrementalSession {
     ///
     /// # 确定性保证
     /// `recompute` 是纯函数（同输入同输出）；命中路径返回的字节 = 上一次
-    /// 同键 `recompute` 的字节 ⇒ 命中与重算**逐字节一致**（验收关卡 2、4）。
+    /// 同键 `recompute` 的字节 ⇒ 命中与重算**逐字节一致**（关卡 2、4）。
     pub fn process_unit<F>(
         &mut self,
         subgraph: &Hash256,
@@ -949,7 +949,7 @@ mod tests {
         }
     }
 
-    // ---- 验收关卡 1：脏区间正确性——改一节点只脏对应子图 ----
+    // ---- 关卡 1：脏区间正确性——改一节点只脏对应子图 ----
 
     #[test]
     fn checkpoint1_changing_one_leaf_only_dirties_its_ancestor_chain() {
@@ -1026,7 +1026,7 @@ mod tests {
         assert!(intervals.stable_intervals_excluding("missing", &changed).is_empty());
     }
 
-    // ---- 验收关卡 2：复用结果 == 全量重算（逐字节一致） ----
+    // ---- 关卡 2：复用结果 == 全量重算（逐字节一致） ----
 
     #[test]
     fn checkpoint2_reuse_equals_full_recompute_byte_identical() {
@@ -1104,7 +1104,7 @@ mod tests {
         assert_eq!(cache.hits(), 1);
     }
 
-    // ---- 验收关卡 3：reuse_ratio ≥ 0.5 断言 ----
+    // ---- 关卡 3：reuse_ratio ≥ 0.5 断言 ----
 
     #[test]
     fn checkpoint3_reuse_ratio_at_least_half() {
@@ -1131,7 +1131,7 @@ mod tests {
         println!("checkpoint3 reuse_ratio = {}", stats.ratio());
         assert!(
             stats.ratio() >= 0.5,
-            "复用率必须达验收线 ≥ 0.5，实际 {}",
+            "复用率必须达判据线 ≥ 0.5，实际 {}",
             stats.ratio()
         );
         assert!(stats.meets_phase3());
@@ -1178,7 +1178,7 @@ mod tests {
         assert!(s.meets_phase3());
     }
 
-    // ---- 验收关卡 4：缓存确定性（LRU 逐出不影响输出） ----
+    // ---- 关卡 4：缓存确定性（LRU 逐出不影响输出） ----
 
     #[test]
     fn checkpoint4_lru_eviction_does_not_change_output() {

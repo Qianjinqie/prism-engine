@@ -232,7 +232,7 @@ mod tests {
 
     #[test]
     fn mixdown_equals_serial_reference() {
-        //  验收：固定形状归约 ≡ 串行参考（同树两遍逐位一致）。
+        //  判据：固定形状归约 ≡ 串行参考（同树两遍逐位一致）。
         let tracks: Vec<AudioTrackInput> = (0..5)
             .map(|i| {
                 AudioTrackInput::new(

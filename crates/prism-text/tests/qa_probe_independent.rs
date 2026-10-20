@@ -1,6 +1,6 @@
 //! QA 独立探针 —— 缺陷 N3（`blit_glyph` 偏移饱和加溢出）**独立复核**。
 //!
-//! 本文件由 QA 编写，**不复用** `tests/fix_boundary.rs`（工程师自证）
+//! 本文件由 QA 编写，**不复用** `tests/fix_boundary.rs`（自证）
 //! 或 `tests/qa_attack_blit_overflow.rs`（缺陷见证）的任何代码路径。
 //!
 //! 缺陷态回顾：`ox = (pen_x.floor() as i64) + (bmp.left as i64)`。

@@ -1,4 +1,4 @@
-//! 内容批跨模块集成验收（Phase 2 验收第 3 条）。
+//! 内容批跨模块集成测试。
 //!
 //! 覆盖面（与 src 内单测互补：单测验"实现者预期"，本文件从**跨模块**视角验
 //! 端到端契约）：
@@ -11,7 +11,7 @@
 //!    布料 / SPH 以帧序列化状态（位置+速度位模式）自建 seek 复现；关节链走
 //!    [`prism_physics::session::SimSession`] 快照库路径。
 //!
-//! 确定性红线贯穿：所有断言用位模式比较（C24 平台中立），无全局 RNG。
+//! 确定性约束贯穿：所有断言用位模式比较（C24 平台中立），无全局 RNG。
 
 use prism_core::node::{Hash256, SnapshotStore};
 use prism_math::Vec3;
@@ -70,7 +70,7 @@ fn joints_limit_holds_displacement_in_range() {
 // 2. 布料能量单调降
 // ---------------------------------------------------------------------------
 
-/// 布料：从拉伸初态出发，能量逐帧非增（验收项）。
+/// 布料：从拉伸初态出发，能量逐帧非增（检查项）。
 #[test]
 fn cloth_energy_decreases_monotonically() {
     let spec = ClothSpec {

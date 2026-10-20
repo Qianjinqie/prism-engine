@@ -1113,7 +1113,7 @@ fn draw_dynpath(fbuf: &mut Fbuf16F, d: &DynPathTrack, t: f32, env: f32) {
 /// `u = clamp((t - at) / dur_sec, 0, 1)`（`dur_sec <= 0` 时
 /// `u = (t >= at) ? 1 : 0`）。
 ///
-/// v3-E f∘ease：[`CounterText::value_at`] 为 `Some(f)` 时读数改写为
+/// f∘ease：[`CounterText::value_at`] 为 `Some(f)` 时读数改写为
 /// `f(t)`（场景绝对秒，与 [`DynPathTrack`] 几何同一时钟）——动点沿曲线
 /// `f(x(t))` 复合运动时，HUD 与几何共享同一纯函数，逐位恒等；此时
 /// `from`/`to`/`dur_sec`/`easing` 不参与求值（设计包络备案）。
@@ -1142,7 +1142,7 @@ pub(crate) fn counter_value(c: &CounterText, t: f32) -> f32 {
 /// 计数器文本（E2）：`prefix + 定点小数`（`{:.N}` 格式，无科学计数）；
 /// `decimals > 6` 钳 6（`f32` 定点有效位上限，防病态长串）。纯函数。
 ///
-/// v3-E 负零归一（缺陷修复）：`counter_value` 只把**精确** `-0.0` 翻正，
+/// 负零归一（缺陷修复）：`counter_value` 只把**精确** `-0.0` 翻正，
 /// 而 `(-0.00005, 0)` 区间的值经 `{:.4}` 舍入后仍产出 `"-0.0000"`——数值
 /// 为零却带一根负号短横（HUD 过零帧的视觉跳变源之一）。此处按格式化
 /// 结果裁负号：仅当串以 `'-'` 开头且其余字符全为 `'0'` / `'.'` 时剥掉，
@@ -1320,12 +1320,12 @@ const WIPE_BAND: u16 = prism_core::sceneseq::WIPE_BAND;
 ///   - `Left`：镜像（b 自左侧入场，界线右移）；
 ///   - `Up`：`y < (1-k)*H` 显示 a、否则 b（b 自底部入场，界线上移）；
 ///   - `Down`：镜像（b 自顶部入场，界线下移）。
-/// - **Dissolve{seed}**（v3-E）：逐像素 `hash2(seed, x, y) < k` 显影 b、
+/// - **Dissolve{seed}**：逐像素 `hash2(seed, x, y) < k` 显影 b、
 ///   否则保留 a（语义对齐 `prism-postfx::effects::Dissolve` 的阈值显影，
 ///   同款 `prism_noise::pcg::hash2_f32`）——像素级非 A 即 B，中点帧是
 ///   A/B 并存的颗粒过渡；端点精确（`k=0` 无像素显影 ⇒ 逐位 a，
 ///   `k=1` 全显影 ⇒ 逐位 b，哈希值域 [0,1) 保证）；
-/// - **Push{dir}**（v3-E）：两帧作为同一画面整体平移——b 自 `dir` 侧
+/// - **Push{dir}**：两帧作为同一画面整体平移——b 自 `dir` 侧
 ///   入场、a 从对侧退出（`dir=Left`：`x < k·W` 显示 b 的左移采样、
 ///   否则显示 a 的右移采样；`Right`/`Up`/`Down` 镜像）。硬接缝无平滑带
 ///   （端点逐位精确由构造保证：`k=0` 全 a、`k=1` 全 b）；越界采样钳

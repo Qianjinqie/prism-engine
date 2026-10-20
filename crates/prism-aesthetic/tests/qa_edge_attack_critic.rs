@@ -338,7 +338,7 @@ fn critic_apply_is_pure() {
 // ===========================================================================
 
 /// autofix 对欠曝帧：2 轮评分回升（Improving），轨迹 ≥2 轮，末轮 > 首轮。
-/// 失败代表：闭环不收敛或方向错误（Phase 3 验收第 5 条）。
+/// 失败代表：闭环不收敛或方向错误。
 #[test]
 fn critic_autofix_improves_two_rounds() {
     let r = Rubric::default();

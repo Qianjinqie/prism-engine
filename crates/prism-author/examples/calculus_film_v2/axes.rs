@@ -7,7 +7,7 @@
 //! - [`riemann_rects`]：Riemann 矩形集（积分域 = 视口 x 域，右端点，
 //!   基线贴 `y=0` 或视口边缘，顶 clamp 视口）。
 //!
-//! 全部像素落位经 [`crate::common::Viewport::to_px`]（架构 §7.1 唯一
+//! 全部像素落位经 [`crate::common::Viewport::to_px`]（唯一
 //! 映射处），本文件不出现任何内联坐标映射公式。非法输入（空域 / 点数
 //! 不足 / 非有限函数值 / 非法视口）一律返回空而不 panic。
 
@@ -16,7 +16,7 @@ use crate::common::{
 };
 use prism_author::{FontKind, PathTrack, StaticText, Track};
 
-/// 网格步长（数学单位）：0.5（PRD 分镜网格密度）。
+/// 网格步长（数学单位）：0.5（分镜网格密度）。
 pub const GRID_STEP: f32 = 0.5;
 /// 刻度步长（数学单位）：1.0（整数刻度）。
 pub const TICK_STEP: f32 = 1.0;
@@ -43,7 +43,7 @@ const LABEL_MARGIN: f32 = 8.0;
 
 /// 生成坐标轴静态轨道：网格 → 主轴 → 4 箭头 → 整数刻度 → x/y 轴标签。
 ///
-/// 语义（架构 §3.3 / §7.1）：
+/// 语义：
 /// - 网格：`GRID_STEP` 倍数处满幅直线（白 alpha 0.10）；
 /// - 主轴：`y=0` / `x=0` 处直线；原点不在域内时**贴边**
 ///   （[`clamp_domain`]，轴画在最近域边上，白 alpha 0.90）；
@@ -150,7 +150,7 @@ pub fn axes_tracks(vp: &Viewport) -> Vec<Track> {
 /// 函数 `y = f(x)` 在数学区间 `[x0, x1]` 上均匀采样 `n` 点，经视口映射
 /// 为设备折线（`Vec<[f32; 2]>`，可直接喂 `PathTrack` / `DynPath` 的几何）。
 ///
-/// 纪律（架构 §4.2 / §7.1）：
+/// 纪律：
 /// - 采样点数学 x 落在视口 x 域之外 → **丢弃**（视口裁剪；折线自然
 ///   断在域边界，T05 动画几何按需取交集区间即可）；
 /// - `f` 返回非有限值 / 视口非法 / `n < 2` / 区间非有限 → 返回空；
@@ -199,7 +199,7 @@ pub fn sample_curve(
 /// 在右端点返回非有限值（该矩形跳过）/ 映射非有限 → 不计入，不 panic。
 ///
 /// 与 §4.2 签名 `riemann_rects(n, f, vp)` 一致：积分域取视口 x 域——
-/// S5 分镜（PRD §4.0）视口 x 域即 `[0, 2]`，无需另传区间。
+/// S5 分镜视口 x 域即 `[0, 2]`，无需另传区间。
 pub fn riemann_rects(n: u32, f: impl Fn(f32) -> f32, vp: &Viewport) -> Vec<Vec<[f32; 2]>> {
     let mut out: Vec<Vec<[f32; 2]>> = Vec::new();
     if n == 0 || !vp.is_valid() {

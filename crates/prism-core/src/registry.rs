@@ -6,7 +6,7 @@
 //! inventory / proc-macro）、（三问注册：问不齐注册表拒绝，三段式结构化
 //! 报错——在哪 / 缺哪问 / 怎么补，宪章 C18/C19）。
 //!
-//! 双通道形态：官方特解（alias 通道，alias.rs 随 A4 落地）与自定义特解
+//! 双通道形态：官方特解（alias 通道，alias.rs 后续落地）与自定义特解
 //! （`registry!` 通道）都走本文件的注册 API，汇入同一张 [`NodeRegistry`]。
 
 use std::collections::HashMap;
@@ -451,7 +451,7 @@ mod tests {
     fn dual_channels_merge_into_one_registry_runtime_indistinguishable() {
         let mut reg = NodeRegistry::new();
 
-        // 官方通道：直接 collect（alias.rs 随 A4 落地后走同一 API）。
+        // 官方通道：直接 collect（alias.rs 落地后走同一 API）。
         reg.collect(
             "official.piecewise",
             OfficialSpec::default().meta,

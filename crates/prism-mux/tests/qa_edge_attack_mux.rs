@@ -412,7 +412,7 @@ fn loudnorm_empty_buffer_is_safe() {
     assert_eq!(r.gain_linear, 1.0);
 }
 
-/// 归一后复测命中目标 ±0.5 LU（验收）。
+/// 归一后复测命中目标 ±0.5 LU（判据）。
 /// 失败代表：K 加权滤波 / 门控 / LUFS 公式实现错误 → 响度不达标。
 #[test]
 fn loudnorm_normalize_hits_target_within_half_lu() {

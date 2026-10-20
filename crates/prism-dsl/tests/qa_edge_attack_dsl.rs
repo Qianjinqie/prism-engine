@@ -1,7 +1,7 @@
 //! QA 攻击性测试 —— prism-dsl note 块。
 //!
 //! 攻击 note 块的字段白名单 / 数值防呆 / 音阶白名单 / 缺省回填 / 多块。
-//! 断言以文档规格（codegen.rs 注释、PRD note 块）为准，失败即偏差证据。
+//! 断言以文档规格（codegen.rs 注释与 note 块字段规格）为准，失败即偏差证据。
 
 use prism_dsl::{compile_v2, NoteInfo};
 

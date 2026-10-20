@@ -2,7 +2,7 @@
 //!
 //! 语义权威：LUT 应用（3D LUT 三线性插值）；
 //! 《兼容性宪章》行业对照表（达芬奇 / Resolve / Nuke 的 LUT 节点 → `lut3d`）
-//! 与验收 V12（`.cube` 解析 / 应用数值期望）；（B4
+//! 与（`.cube` 解析 / 应用数值期望）；（B4
 //! 落位 prism-postfx）。
 //!
 //! # 确定性纪律（关卡 2 / 5）
@@ -24,7 +24,7 @@ use prism_render::tile::TileEffect;
 // ---------------------------------------------------------------------------
 
 /// `.cube` 解析错误。错误码延续 PF 段（PF1003–PF1007；段位表单点在
-/// prism-core lib.rs，本 crate 新增条目需先上报获批）。
+/// prism-core lib.rs，本 crate 新增条目需先经协议方批准）。
 ///
 /// `line = 0` 表示文件级问题（如缺少 `LUT_3D_SIZE` 声明，无行可指）。
 #[derive(Debug, Clone, PartialEq)]

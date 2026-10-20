@@ -4,8 +4,8 @@
 //! 恶意输入**——分支判定半径、退化参数、乱序/重复关键帧、深度嵌套、错误
 //! 路径与 IEEE 语义边界。
 //!
-//! QA Round 1 修复记录：QA-01（Expr 深嵌套栈溢出 → 解析器深度上限 256，
-//! 见 expr.rs 单元测试）与 QA-02（Track NaN 时间 panic → NaN 值语义传播）
+//! 修复记录：Expr 深嵌套栈溢出 → 解析器深度上限 256，
+//! 见 expr.rs 单元测试）与 Track NaN 时间 panic → NaN 值语义传播
 //! 均已修复，无 `#[ignore]` 占位。
 
 use prism_anim::easing::EasingKind;
@@ -38,7 +38,7 @@ fn rk4_reference(spring: &Spring, t_end: f32, dt: f64) -> f64 {
 }
 
 /// C-①：ζ→1 邻域（分支判定半径 CRITICAL_EPS=1e-3 两侧各放三点）逐一对照
-/// RK4，验收线 < 1e-3（Phase 1 关卡 1）。ζ=0.999/1.001 恰在
+/// RK4，判据线 < 1e-3（关卡 1）。ζ=0.999/1.001 恰在
 /// 闭区间内走临界分支，0.9989/1.0011 刚好跨出——覆盖切换边界两侧。
 #[test]
 fn qa_spring_zeta_near_one_matches_rk4() {
@@ -63,7 +63,7 @@ fn qa_spring_zeta_near_one_matches_rk4() {
         }
         assert!(
             max_err < 1e-3,
-            "ζ={zeta}（{name}）：解析解 vs RK4 最大误差 {max_err:.3e}（验收线 1e-3）"
+            "ζ={zeta}（{name}）：解析解 vs RK4 最大误差 {max_err:.3e}（判据线 1e-3）"
         );
     }
 }
@@ -136,7 +136,7 @@ fn qa_track_infinite_time_clamps() {
     assert_eq!(tr.sample(f32::INFINITY), 2.0, "+inf 钳末帧");
 }
 
-/// QA-02（已修复）：`Track::sample(f32::NAN)` 返回 NaN（值语义传播），
+/// （已修复）：`Track::sample(f32::NAN)` 返回 NaN（值语义传播），
 /// **不 panic**——NaN 不满足任何 IEEE 比较、不落入任何段（见 track.rs
 /// `sample` 文档注释），此前在 track.rs:73 因 `partition_point` 谓词恒
 /// false 导致 `0 − 1` usize 下溢。
@@ -155,7 +155,7 @@ fn qa_track_nan_time_does_not_panic() {
 // ---------------------------------------------------------------------------
 
 /// C-③：200 层括号嵌套解析求值正确（深度健壮性下界；解析器深度上限
-/// 256 层——QA-01 修复后 1000 层恶意嵌套返回 `ExprError::DepthLimit`
+/// 256 层——修复后 1000 层恶意嵌套返回 `ExprError::DepthLimit`
 /// 而非栈溢出，见 expr.rs 单元测试 `deep_nesting_1000_levels_reports_depth_limit`）。
 #[test]
 fn qa_expr_deep_nesting_200_levels_ok() {

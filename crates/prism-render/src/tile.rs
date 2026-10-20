@@ -12,7 +12,7 @@
 //! 全帧效果（blur/bloom/DOF 等需要邻域像素的效果）声明邻域半径
 //! [`TileEffect::halo_radius`]；编排器（orchestrator.rs）对每个 tile 按半径
 //! 外扩采样窗口（钳制到帧边界，不环绕）、效果在窗口上求值、编排器只保留
-//! tile 核心区回写——保证跨 tile 结果与整幅渲染**逐字节一致**（验收关卡
+//! tile 核心区回写——保证跨 tile 结果与整幅渲染**逐字节一致**（关卡
 //! 1/2）。效果若申报半径不足，tile 边缘将发生窗口钳制读，与整幅产生可检出
 //! 的边界差异——这是协议的反向验证面。
 
@@ -74,7 +74,7 @@ impl TileGrid {
     }
 
     /// 按列/行数上取整均分构造（帧尺寸恰被整除时，列/行数精确等于
-    /// `cols`/`rows`——验收关卡 1 的 16×9 网格用此构造，如 192×108 →
+    /// `cols`/`rows`——关卡 1 的 16×9 网格用此构造，如 192×108 →
     /// 12×12 tile × 16 列 × 9 行 = 144 tile）。
     ///
     /// # Panics
@@ -136,8 +136,8 @@ pub trait TileEffect {
     fn eval_window(&self, window: &Fbuf16F) -> Fbuf16F;
 }
 
-/// 3×3 box blur——最小 halo 测试效果（供 Phase 1
-/// 验收 2 的 halo 用例；`halo_radius = 1`）。
+/// 3×3 box blur——最小 halo 测试效果（供
+/// 判据 2 的 halo 用例；`halo_radius = 1`）。
 ///
 /// 9 tap 按行主序（左上 → 右下）固定顺序求和、÷ 9——像素内固定序归约
 /// 与 tile 划分无关；f32 域运算、写回量化 f16（
@@ -182,7 +182,7 @@ mod tests {
 
     #[test]
     fn grid_counts_16x9_on_divisible_frame() {
-        // 验收关卡 1 的划分：192×108 ÷ 16×9 → 12×12 tile，恰 144 块。
+        // 关卡 1 的划分：192×108 ÷ 16×9 → 12×12 tile，恰 144 块。
         let grid = TileGrid::counts(192, 108, 16, 9);
         assert_eq!((grid.tile_w, grid.tile_h), (12, 12));
         assert_eq!((grid.cols(), grid.rows()), (16, 9));

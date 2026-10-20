@@ -1,7 +1,7 @@
 //! 受限表达式求值骨架（工作流 A2；D-7 自研受限求值器； 类图
 //! `PropertyChannel::eval(t)` 的表达式通道形态）。
 //!
-//! **本批范围（从简不过度设计）**：最小算术 `+ - * /`（含一元负号与括号）
+//! **当前范围（从简不过度设计）**：最小算术 `+ - * /`（含一元负号与括号）
 //! + 变量 `t`（时间，秒）/ `p`（进度 0–1）/ `w`（宽）/ `h`（高）。完整语法
 //! （函数白名单、`this.*`/节点引用、常量折叠、编译期环检测与行号）随 A4
 //! DSL v2 落地。
@@ -18,7 +18,7 @@
 
 use std::fmt;
 
-/// 表达式变量（本批全集：t/p/w/h）。
+/// 表达式变量（当前全集：t/p/w/h）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExprVar {
     /// 时间 t（秒）。
@@ -112,7 +112,7 @@ impl fmt::Display for ExprError {
             ),
             Self::UnknownVar { pos, name } => write!(
                 f,
-                "位置 {pos}：未知变量 '{name}'。建议：本批仅支持变量 t（时间秒）/p（进度）/w（宽）/h（高）；完整变量集随 DSL v2 扩展。"
+                "位置 {pos}：未知变量 '{name}'。建议：当前仅支持变量 t（时间秒）/p（进度）/w（宽）/h（高）；完整变量集随 DSL v2 扩展。"
             ),
             Self::BadNumber { pos } => write!(
                 f,
@@ -212,7 +212,7 @@ fn eval_ast(ast: &ExprAst, env: &ExprEnv) -> f32 {
 
 /// 解析器递归深度上限（括号嵌套与连续取负共用计数）。取 256：既容纳
 /// 既有 200 层括号嵌套健壮性测试下界（QA 外部测试），又远低于栈溢出
-/// 阈值——1000 层恶意嵌套必触发守卫（QA-01 修复）。
+/// 阈值——1000 层恶意嵌套必触发守卫。
 const MAX_PARSE_DEPTH: usize = 256;
 
 struct Parser<'a> {
@@ -308,7 +308,7 @@ impl<'a> Parser<'a> {
         match self.peek() {
             None => Err(ExprError::UnexpectedEnd),
             Some(b'(') => {
-                // 括号递归回溯到 parse_expr，是深嵌套栈溢出的根源（QA-01）：
+                // 括号递归回溯到 parse_expr，是深嵌套栈溢出的根源：
                 // 进入/离开各计一层，超限报 DepthLimit 而非继续下钻。
                 self.enter_depth()?;
                 self.pos += 1;
@@ -365,14 +365,14 @@ impl<'a> Parser<'a> {
 }
 
 // ---------------------------------------------------------------------------
-// 测试（Phase 1 验收 #3：表达式求值 vs 手写期望值 ≥10 用例）
+// 测试（判据 #3：表达式求值 vs 手写期望值 ≥10 用例）
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// 手写期望值用例（13 条，覆盖 Phase 1 验收线的 ≥10）。
+    /// 手写期望值用例（13 条，覆盖 判据线的 ≥10）。
     #[test]
     fn eval_matches_handwritten_expectations() {
         let cases: &[(&str, ExprEnv, f32)] = &[
@@ -445,7 +445,7 @@ mod tests {
         assert_eq!(expr.source(), "t * 10 + 1");
     }
 
-    /// QA-01 深度守卫：1000 层括号嵌套返回 `DepthLimit` 而非栈溢出 abort
+    /// 深度守卫：1000 层括号嵌套返回 `DepthLimit` 而非栈溢出 abort
     /// （宪章 C20：应报错不 panic；错误信息含建议段，宪章 C19）。
     #[test]
     fn deep_nesting_1000_levels_reports_depth_limit() {
@@ -456,7 +456,7 @@ mod tests {
         assert!(msg.contains("建议"), "C19：深度超限错误必含建议段: {msg}");
     }
 
-    /// QA-01 深度守卫：连续取负 `-------1` 与括号嵌套共用深度计数，
+    /// 深度守卫：连续取负 `-------1` 与括号嵌套共用深度计数，
     /// 同样报错不 panic（同类无界递归一并封堵）。
     #[test]
     fn deep_negation_chain_reports_depth_limit() {
@@ -465,7 +465,7 @@ mod tests {
         assert_eq!(err, ExprError::DepthLimit { max: MAX_PARSE_DEPTH });
     }
 
-    /// QA-01 深度守卫：上限内嵌套（100 层括号）不受影响，正常解析求值。
+    /// 深度守卫：上限内嵌套（100 层括号）不受影响，正常解析求值。
     #[test]
     fn nesting_within_depth_limit_still_parses() {
         let depth = 100;

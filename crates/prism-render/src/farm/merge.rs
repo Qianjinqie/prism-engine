@@ -424,7 +424,7 @@ mod tests {
 
     #[test]
     fn parallel_merge_matches_serial_reference_across_scales() {
-        // 核心验收（"并行 md5 == 串行 md5"）：多规模逐位一致。
+        // 核心一致性判据（"并行 md5 == 串行 md5"）：多规模逐位一致。
         // 规模含非 2 的幂（3 / 7 / 100 / 1000）与 2 的幂（1 / 2 / 8 / 1024）。
         for n in [1u64, 2, 3, 7, 8, 100, 1000, 1024] {
             let parts: Vec<FrameRange> = split_frames(0, n - 1, 8).expect("应可切分");

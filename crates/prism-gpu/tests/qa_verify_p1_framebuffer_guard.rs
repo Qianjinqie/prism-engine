@@ -244,7 +244,7 @@ fn g7_trait_defaults_present_and_non_panicking() {
     assert!(c.is_available(), "CpuRefBackend 恒可用");
     assert_eq!(c.backend_name(), "cpu-ref");
     // VulkanBackend：**不得 panic**；不可用；返回空帧（而非 unimplemented!()）。
-    // 注：Engineer 已将 VulkanBackend 升级为带探测上下文的实装，构造走
+    // 注：VulkanBackend 已升级为带探测上下文的实装，构造走
     // `new()`；渲染管线仍未实装 ⇒ 语义断言不变（不可用 + 空帧 + 不 panic）。
     let mut v = prism_gpu::vulkan::VulkanBackend::new();
     assert!(!v.is_available(), "VulkanBackend 未接入 ⇒ is_available() 须为 false");
@@ -259,7 +259,7 @@ fn g7_trait_defaults_present_and_non_panicking() {
     println!("G7 VulkanBackend::render_scene 未 panic，耗时 = {e:?}");
 }
 
-/// **行宽守卫正式断言**（原 `#[ignore]` 已知缺陷取证，缺陷已由 Engineer 修复）。
+/// **行宽守卫正式断言**（原 `#[ignore]` 已知缺陷取证，缺陷已修复）。
 ///
 /// 契约：`set_pixel` / `get_pixel` 对**行宽**越界（`x >= width` 或 `y >= height`）
 /// 必须**丢弃**，而不是像修复前那样把 `x == width` 回绕写到下一行第 0 列。

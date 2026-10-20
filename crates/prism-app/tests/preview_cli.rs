@@ -156,7 +156,7 @@ fn is_png(bytes: &[u8]) -> bool {
 
 #[test]
 fn single_frame_mode_exits_zero_and_writes_nonempty_png() {
-    // 验收 ④：单帧模式退出码 0 + 文件非空。
+    // 用例 ④：单帧模式退出码 0 + 文件非空。
     let prism = write_prism("single", "min.prism", MINIMAL_PRISM);
     let out = tmp_dir("single").join("frame.png");
     let output = Command::new(env!("CARGO_BIN_EXE_prism-app"))
@@ -182,7 +182,7 @@ fn single_frame_mode_exits_zero_and_writes_nonempty_png() {
 
 #[test]
 fn server_serves_frame_200_png_and_scrub_differs() {
-    // 验收 ②③：起服务 → HTTP 拉帧 200 + 非空；两个时间点的帧不同。
+    // 用例 ②③：起服务 → HTTP 拉帧 200 + 非空；两个时间点的帧不同。
     let prism = write_prism("server", "min.prism", MINIMAL_PRISM);
     let port = free_port();
     let (child, stderr_path) = spawn_server(&prism, port);

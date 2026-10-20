@@ -7,7 +7,7 @@
 //!   （movie / theme / import packs / scene / transition / anim / expr / formula /
 //!   layer / sim / stage3d / compose / audio / post / timeline / output）→
 //!   prism-core 节点图（`Graph` + `Node.params` + `Node.bindings`）与属性通道
-//!   （`PropertyChannel`），深语义（渲染 / 模拟步进 / 音频）留 Phase 2/3。
+//!   （`PropertyChannel`），深语义（渲染 / 模拟步进 / 音频）留 后续版本。
 //!
 //! # 编译流水线
 //! `source → Lexer（tokenize，手写）→ Parser（递归下降 + 语义检查，产出 AST）
@@ -1047,7 +1047,7 @@ mod tests {
 
     #[test]
     fn v2_cycle_detection_reports_line_numbers() {
-        // a → b → a 环：错误路径链带每个 compose 的定义行号（验收点名项）。
+        // a → b → a 环：错误路径链带每个 compose 的定义行号（点名项）。
         let src: &str = concat!(
             "// prism-dsl 1\n",       // 1
             "scene \"s\" {\n",        // 2

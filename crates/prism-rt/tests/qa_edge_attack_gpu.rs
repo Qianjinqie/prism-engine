@@ -1,7 +1,7 @@
-//! QA 攻击性测试 — Phase 4 D2 wavefront vs integrator 判对（`prism-rt`）。
+//! QA 攻击性测试 — 后续 D2 wavefront vs integrator 判对（`prism-rt`）。
 //!
 //! # 判对命门
-//! 验收核心：`wavefront::render_pixel`（GPU WGSL 的 CPU 仿真基准）
+//! 核心：`wavefront::render_pixel`（GPU WGSL 的 CPU 仿真基准）
 //! 必须与 `integrator::render_pixel`（CpuRef）在**同场景同种子**下逐像素**逐位一致**
 //! （强于「统计 diff ≤ 阈值」）。本文件以多种场景/参数/材质攻击该契约。
 //!
@@ -147,7 +147,7 @@ fn bitwise_diff(scene: &Scene, cam: &Camera, ctx: &EvalCtx, res: (u32, u32), p: 
 // ===========================================================================
 
 /// 失败含义（**P0 判对命门**）：wavefront CPU 仿真与 integrator 在 Cornell 场景
-/// 逐像素**逐位不一致**——GPU/CpuRef 互判基准破裂，Phase 4 验收失败。
+/// 逐像素**逐位不一致**——GPU/CpuRef 互判基准破裂，后续失败。
 #[test]
 fn wavefront_equals_integrator_cornell_bitwise() {
     let scene = cornell_scene();

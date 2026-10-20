@@ -158,7 +158,7 @@ mod tests {
             .unwrap();
         // 窗 0 的 click 被 Hann 压零，其余 15 个 click 应全部检出。
         assert!((14..=16).contains(&table.onsets.len()), "检出 {}", table.onsets.len());
-        // 每个 onset 到最近 click 的距离不超过 ±1 hop（帧定位验收）。
+        // 每个 onset 到最近 click 的距离不超过 ±1 hop（帧定位判据）。
         for o in &table.onsets {
             let nearest = clicks
                 .iter()
