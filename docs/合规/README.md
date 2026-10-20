@@ -35,10 +35,10 @@
 **自验命令（可直接粘贴执行）**：
 
 ```bash
-cd /workspace/media-engine
+# 在解包出的 workspace 根目录执行：
 
 # 1) 全部依赖都是本仓 path 依赖（应输出 29，无 registry 依赖）
-#    注意锁文件用的是双括号段名 [[package]]，单括号写法会输出 0（踩过这个坑）
+#    注意锁文件用的是双括号段名 [[package]]，单括号写法会输出 0
 $ grep -c '^\[\[package\]\]' Cargo.lock
 29
 
@@ -168,9 +168,9 @@ $ node tools/compliance_check.mjs --self-test   # 须判红
 **用法**：
 
 ```bash
-$ cd /workspace/media-engine
+$ cd <解包出的 workspace 根目录>
 $ node tools/compliance_check.mjs
-仓库根：/workspace/media-engine
+仓库根：<当前目录>
 判据：C1 零第三方代码依赖 / C2 资产登记完备 / C3 归属声明
 == C1 · 零第三方代码依赖 ==
   ok    [C1.1] 全部 130 条依赖均为本仓 path 依赖  29 个 crate，零第三方
