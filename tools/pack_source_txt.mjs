@@ -2,7 +2,7 @@
 // =============================================================================
 // pack_source_txt.mjs —— 把应发布内容合并成单文件 TXT 分发包
 //
-// 格式照抄用户旧引擎（video-engine-source.txt）的成熟格式：
+// 格式沿用本引擎自 v1.0 起的成熟格式（单文件 TXT + 内嵌解包脚本）：
 //   1. 头部写"还原成目录树 3 步"
 //   2. 内嵌 UNPACK SCRIPT BEGIN/END 之间的可用 Node 脚本（零依赖、Node 18+）
 //   3. 后接合并内容，每个文件以 === FILE: 路径 === 分隔
@@ -14,18 +14,54 @@
 //      （examples/ 必须带：prism-dsl 的测试用 include_str! 读它，缺了编不过）
 //   ❌ 排除：target/ node_modules/ *.bak dist/ .codebuddy/ 及任何中间产物
 //
-// 用法：node tools/pack_source_txt.mjs [--dry-run]
+// 用法：
+//   node tools/pack_source_txt.mjs              # 默认出版当前版本 2.0
+//                                               → dist/prism-engine-v2.0-source.txt
+//   node tools/pack_source_txt.mjs 2.0          # 显式传版本（等价于默认）
+//   node tools/pack_source_txt.mjs 1.0          # 回到 v1.0 产物名：在 v1.0 源码上跑
+//                                               # 即逐字节复现旧包（参数化不改变格式）
+//   PRISM_ENGINE_VERSION=2.0 node tools/pack_source_txt.mjs   # 等价（环境变量）
+//   node tools/pack_source_txt.mjs --dry-run    # 只统计不落盘（版本参数同样有效）
+//   node tools/pack_source_txt.mjs --verify     # 落盘后立刻解包回环校验（逐文件逐字节）
+//
+// 版本参数只决定**产物文件名与内嵌解包脚本的默认输入名**；打包逻辑、文件集合、
+// 排序与确定性保证完全一致（同输入 → 逐字节同输出）。
+//
+// **为什么默认 2.0 而不是 1.0**：默认值必须指向"当前该出的包"。若默认仍是 1.0，
+// 在 v2.0 源码上无参跑一次就会把 v2.0 内容写进 `…-v1.0-…txt`，**覆盖并毁掉
+// 真正的 v1.0 产物**（名字与内容不符，且旧包丢了就复现不回来）。v1.0 复现通道
+// 保留为显式 `1.0` 参数，不受默认值影响。
 // =============================================================================
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(__dirname, '..');
-const OUT = path.join(REPO, 'dist', 'prism-engine-v1.0-source.txt');
-const VERSION = '1.0';
-const PKG_NAME = 'prism-engine-v1.0-source.txt';
+
+/** 当前出版版本（默认值）。出下一版时改这一个常量即可。 */
+const CURRENT_VERSION = '2.0';
+
+/**
+ * 解析版本号：位置参数（第一个非 -- 开头的参数）优先，其次环境变量
+ * PRISM_ENGINE_VERSION，最后默认 CURRENT_VERSION（当前出版版本）。
+ * 接受 `2.0` / `2` / `1.5` 这类点分数字；非法输入明确报错退出，不静默兜底。
+ */
+function parseVersion() {
+  const positional = process.argv.slice(2).find((a) => !a.startsWith('--'));
+  const raw = positional ?? process.env.PRISM_ENGINE_VERSION ?? CURRENT_VERSION;
+  if (!/^\d+(\.\d+)*$/.test(raw)) {
+    console.error(`版本参数非法：${raw}（期望形如 1.0 / 2.0 的点分数字）`);
+    process.exit(2);
+  }
+  return raw;
+}
+const VERSION = parseVersion();
+const PKG_NAME = `prism-engine-v${VERSION}-source.txt`;
+const OUT = path.join(REPO, 'dist', PKG_NAME);
 
 // -----------------------------------------------------------------------------
 // 打包规则
@@ -222,6 +258,7 @@ let totalBytes = 0;
 for (const f of files) totalBytes += fs.statSync(path.join(REPO, f)).size;
 
 if (dryRun) {
+  console.log(`版本: v${VERSION}（dry-run，不落盘）`);
   console.log('文件数:', files.length);
   console.log('原始总字节:', totalBytes);
   const byTop = {};
@@ -233,6 +270,11 @@ if (dryRun) {
   process.exit(0);
 }
 
+// 包内 crate 数（crates/ 下的目录数，排除项已由 collect 剔除）——头部声明用实数
+const crateCount = new Set(
+  files.filter((f) => f.startsWith('crates/')).map((f) => f.split('/')[1]),
+).size;
+
 const header = [
   `PRISM ENGINE — 源码合并（${files.length} 个文件）`,
   '',
@@ -243,7 +285,7 @@ const header = [
   '   完成后在当前目录得到完整目录树（需 Node 18+）',
   '',
   '【分发包结构】',
-  '   src/                源码（26 个 crate）',
+  `   src/                源码（${crateCount} 个 crate）`,
   '   Compliance/         合规声明（零依赖核验 / 第三方声明 / 资产登记）',
   '   开发者指南.md        开发者文档（自包含：上手 / 架构 / 数学内核 / 门禁 / 扩展）',
   '   tools/              门禁脚本',
@@ -303,6 +345,69 @@ fs.writeFileSync(OUT, chunks.join(''), 'utf-8');
 
 const outSize = fs.statSync(OUT).size;
 console.log('打包完成:', path.relative(REPO, OUT));
-console.log(`文件数: ${files.length}（二进制 ${binCount} 个走 base64；无尾换行 ${noEolCount} 个）`);
+console.log(`版本: v${VERSION} · 文件数: ${files.length}（二进制 ${binCount} 个走 base64；无尾换行 ${noEolCount} 个）`);
 console.log('原始总字节:', totalBytes);
 console.log('TXT 大小:', outSize, `(${(outSize / 1048576).toFixed(2)} MiB)`);
+
+// -----------------------------------------------------------------------------
+// --verify：解包回环校验
+//
+// 做法：把**内嵌的那份解包脚本**（UNPACK_SCRIPT，与用户拿到的一字不差）写到临时
+// 目录并执行，然后逐文件比对"还原物"与"打包时的预期内容"：
+//   预期 = 若为二进制 ⇒ 原文件原字节；否则 ⇒ rewriteContent(原文件) 的 UTF-8 字节。
+// 这样校验的是**用户真正会得到的字节**，不是打包脚本自己的中间结论。
+//
+// 判据（任一不符 ⇒ 退出码 1）：
+//   1. 还原文件数 == 打包文件数；
+//   2. 每个包内路径都存在，且逐字节一致；
+//   3. 没有多出来的文件（除解包脚本自身）。
+// -----------------------------------------------------------------------------
+if (process.argv.includes('--verify')) {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'prism-pack-verify-'));
+  const script = path.join(tmp, 'unpack.cjs');
+  fs.writeFileSync(script, UNPACK_SCRIPT, 'utf-8');
+
+  console.log('\n── 回环校验（解包 → 逐文件比对） ──');
+  const out = execFileSync(process.execPath, [script, OUT], { cwd: tmp, encoding: 'utf-8' });
+  const m = out.match(/还原完成: (\d+) 个文件/);
+  const restored = m ? parseInt(m[1], 10) : -1;
+  console.log(`  解包报告还原 ${restored} 个文件（期望 ${files.length}）`);
+
+  const problems = [];
+  if (restored !== files.length) problems.push(`文件数不符：还原 ${restored} / 打包 ${files.length}`);
+
+  for (const f of files) {
+    const dest = remap(f);
+    const abs = path.join(tmp, dest);
+    if (!fs.existsSync(abs)) { problems.push(`缺文件：${dest}`); continue; }
+    const raw = fs.readFileSync(path.join(REPO, f));
+    const want = isBinary(raw) ? raw : Buffer.from(rewriteContent(f, raw.toString('utf-8')), 'utf-8');
+    const got = fs.readFileSync(abs);
+    if (!want.equals(got)) {
+      problems.push(`内容不一致：${dest}（期望 ${want.length} B / 实得 ${got.length} B）`);
+    }
+  }
+
+  // 多出来的文件（解包脚本自身除外）
+  const expected = new Set(['unpack.cjs', ...files.map(remap)]);
+  const walkAll = (dir) => {
+    const acc = [];
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) acc.push(...walkAll(p));
+      else acc.push(path.relative(tmp, p).split(path.sep).join('/'));
+    }
+    return acc;
+  };
+  for (const rel of walkAll(tmp)) if (!expected.has(rel)) problems.push(`多出文件：${rel}`);
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+
+  if (problems.length) {
+    console.error(`  ✗ 回环校验失败：${problems.length} 项`);
+    for (const p of problems.slice(0, 20)) console.error('    - ' + p);
+    if (problems.length > 20) console.error(`    … 另有 ${problems.length - 20} 项`);
+    process.exit(1);
+  }
+  console.log(`  ✓ 回环校验通过：${files.length} 个文件逐字节一致，无多余文件`);
+}
