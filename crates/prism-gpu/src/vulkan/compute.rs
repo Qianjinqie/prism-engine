@@ -22,14 +22,19 @@
 //!
 //! # 诚实边界（必读）
 //!
-//! 本仓库构建环境**只有 `libvulkan.so.1` loader，没有任何 ICD**
-//! （`vkCreateInstance` 返回 `VK_ERROR_INCOMPATIBLE_DRIVER`），因此上列调用
-//! **在本环境一次也不会真正执行**：`VulkanBackend::compute_dispatch` 会在
-//! 第 0 步（无 device context）返回 [`DispatchStatus::DeviceUnavailable`]，
-//! 报告串为 `no-vulkan-icd`，**不 panic、不返回假结果**。
+//! **无可用 Vulkan 设备的环境**（只装了 `libvulkan.so.1` loader、没有任何 ICD）：
+//! `vkCreateInstance` 返回 `VK_ERROR_INCOMPATIBLE_DRIVER`，因此上列调用一次也不会
+//! 真正执行——`VulkanBackend::compute_dispatch` 会在第 0 步（无 device context）
+//! 返回 [`DispatchStatus::DeviceUnavailable`]，报告串为 `no-vulkan-icd`，
+//! **不 panic、不返回假结果**。
 //!
-//! 真机派发由 `#[ignore]` 测试占位（`real_device_compute_dispatch_smoke`）：
-//! 有 GPU 的机器上 `cargo test -- --ignored` 即可实跑。
+//! **装了 ICD 的环境**（例如 Mesa lavapipe 软件 ICD，纯 CPU 光栅、不需要 GPU 硬件）：
+//! 上列 9 步会**真跑**。验证入口是 `real_device_compute_dispatch_smoke`——
+//! 它用**运行期自门控**：有设备就真派发并断言 GPU 结果 == CPU 参考（结果错 ⇒ 红），
+//! 无设备就打印 skip 原因后返回。**全仓禁 `#[ignore]`**（由 `prism-core` 的
+//! `qa_ignore_guard` 硬门禁守住），所以这里不存在"靠 `#[ignore]` 藏起来"的测试。
+//!
+//! 软件 ICD 只证明**功能正确**（枚举/管线/派发/读回全通），**不构成硬件加速比证据**。
 //!
 //! # 与 `sync` / `compute` 模块的关系
 //!
