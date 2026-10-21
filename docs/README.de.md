@@ -2,7 +2,7 @@
 
 # Prism Engine
 
-> Eine deterministische Rust-Medien-Engine ohne Abhängigkeiten – verteilt als **einzelne TXT-Datei**: eine 17 MB große Textdatei herunterladen, das Entpackungsskript ausführen und man erhält den vollständigen Quellbaum (28 crates), ohne npm / pip / ffmpeg / OpenEXR.
+> Ein abhängigkeitsfreier, deterministischer Media-Engine in Rust — verteilt als **einzelne TXT-Datei**: eine 17 MB große Textdatei herunterladen, das Entpack-Skript ausführen und schon liegt der vollständige Quellbaum vor (28 Crates) — ohne npm / pip / ffmpeg / OpenEXR.
 
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 ![Language](https://img.shields.io/badge/language-Rust-orange.svg)
@@ -11,97 +11,127 @@
 ![Tests](https://img.shields.io/badge/tests-3714%20passed-brightgreen.svg)
 ![Crates](https://img.shields.io/badge/crates-28-blue.svg)
 
-(Die Badges sind statische Fakten-Badges, die Zahlenbasis steht weiter unten; `crates-28` = die Anzahl der crates **im Distributionspaket**, im Repository liegt zusätzlich 1 Demo-crate, das nicht ins Paket geht, daher beträgt die Repository-Zahl 29. Nach Anbindung an die CI lassen sie sich durch dynamische Badges ersetzen.)
-
 ---
 
 ## Was ist das
 
-Prism Engine ist eine in Rust geschriebene Medien-Engine ohne Code-Abhängigkeiten von Drittanbietern: Bilder lesen, Satz, Bildgestaltung, Timeline-Schnitt und fertiger Film – alles in einer deterministischen Engine. Alle 110 Laufzeitabhängigkeiten (dazu 20 Testabhängigkeiten) sind `path`-Abhängigkeiten dieses Repositories – keine Netzabhängigkeit, kein Paketmanager, kein Supply-Chain-Risiko.
+Prism Engine ist ein in Rust geschriebener Media-Engine ohne Abhängigkeiten von Fremdcode: Bilder lesen, Satz setzen, Bilder zeichnen, Timelines schneiden, fertige Filme ausgeben — alles in einer einzigen deterministischen Engine. Alle 110 Laufzeitabhängigkeiten
+(dazu 20 Testabhängigkeiten) sind `path`-Abhängigkeiten dieses Repositorys — kein Netzwerk, kein Paketmanager,
+kein Supply-Chain-Risiko.
 
-Verteilt wird per **Single-File-Quelltextverteilung**: die gesamte Engine (622 Dateien, 28 crates) ist in eine UTF-8-Textdatei `prism-engine-v2.0-source.txt` zusammengeführt. Wer diese Datei besitzt, kann lokal einen Verzeichnisbaum wiederherstellen, der exakt dem Repository entspricht.
+Verteilt wird als **Single-File-Quellcode**: die gesamte Engine (622 Dateien, 28 Crates) ist in eine einzige UTF-8-Textdatei
+`prism-engine-v2.0-source.txt` zusammengeführt. Wer diese Datei besitzt, kann daraus lokal einen Verzeichnisbaum
+rekonstruieren, der dem Repository exakt entspricht.
 
 ---
 
 ## Was die Engine kann
 
-Überblick in einem Satz: **Ein Bild ist ein Motiv zu einem Zeitpunkt, ein Video ist eine Folge von Motiven über einen Zeitraum** – dieselbe Szenenbeschreibung ergibt, an einem Moment festgehalten, ein Einzelbild; kontinuierlich weitergeschoben und aufgezeichnet ergibt sie ein Video. Statisches und bewegtes Bild teilen sich denselben Funktionsumfang. Im Folgenden fünf Blöcke nach dem, was Sie tun wollen: **einlesen → anordnen → zeichnen → zum fertigen Film bringen → in Ihre eigene Toolchain einbinden**.
+Überblick in einem Satz: **Ein Bild ist die Ansicht einer Szene zu einem bestimmten Zeitpunkt, ein Video ist eine Folge solcher Ansichten über einen Zeitraum** —
+dieselbe Szenenbeschreibung ergibt, an einem Moment festgehalten, ein Einzelbild, und kontinuierlich fortgeschrieben und aufgezeichnet ein Video; statisches und bewegtes Bild teilen sich denselben Funktionsumfang.
+Im Folgenden fünf Blöcke entlang dessen, was man tun will: **einlesen → anordnen → zeichnen → ausliefern → in die eigene Toolchain einbinden**.
 
-### Was gelesen wird (Eingabe)
+### Was wird gelesen (Eingabe)
 
-- **Einheitliche Dekodier-Fassade**: ein Einstieg `decode_image(bytes, ext)` verteilt statische Bilder – PNG (nicht interlaced, 8/16 bit), Baseline-JPEG (Integer-IDCT, plattformübergreifend bitgenau), **Magic Number zuerst, Dateiendung als Rückfallebene** (auch bei falscher Endung dekodierbar); Formate außerhalb der Matrix oder solche, die externe Mithilfe brauchen, liefern stets einen dreiteiligen Fehler (wo / was / wie ändern) samt ffmpeg-Kooperationshinweis, **niemals stilles Scheitern**.
-- **Animierte Bilder / Audio / Container**: GIF, APNG native Dekodierung Frame für Frame (`prism-media`); WAV mit eingebauter Dekodierung, mp3/aac/FLAC über den ffmpeg-Probing-Pfad (`prism-audio`); MP4-MJPEG-Rücklesen (`decode_mp4_video`).
-- **EXR komplett**: Lesen und Schreiben, Kompression, DWA, dazu **Bitstrom-Abgleich über Implementierungsgrenzen hinweg** mit dem offiziellen OpenEXR (kein Selbstschreiben-und-selbst-Lesen).
-- **Kamera-RAW**: Baseline-RAW-Dekodierung. **Grenze**: `Compression=7` (lossless JPEG) echter DNGs ist nicht implementiert, von echten Kameras erzeugte DNGs lassen sich nicht lesen – das steht in den „Ehrlichen Grenzen" und wird nicht versteckt.
-- **3D-Assets**: glTF / OBJ-Import, USD-(`.usda`)-Parsing und MaterialX-Parameterpakete, meshes lassen sich in die Render-Szene übernehmen.
-- **Externe Schriften**: `load_font_file` lädt TTF/OTF von Drittanbietern direkt, die Fallback-Kette wird stufenweise aufgelöst, fehlende Glyphen liefern eine klare Diagnose statt Tofu-Kästchen.
+- **Einheitliche Decoder-Fassade**: ein Einstiegspunkt `decode_image(bytes, ext)` verteilt statische Bilder — PNG (nicht interlaced, 8/16 Bit),
+  Baseline-JPEG (Fixed-Point-IDCT, plattformübergreifend bitgenau deterministisch), **Magic Number zuerst, Dateiendung als Rückfallebene** (auch bei falscher Endung dekodierbar);
+  Formate außerhalb der Matrix oder mit Bedarf an externer Zusammenarbeit führen stets zu einem dreiteiligen Fehler (wo / was / wie beheben) samt Empfehlung zur ffmpeg-Zusammenarbeit,
+  **niemals stilles Scheitern**.
+- **Animierte Bilder / Audio / Container**: GIF, APNG native Dekodierung Frame für Frame (`prism-media`); WAV integriert dekodiert, mp3/aac/FLAC
+  über den ffmpeg-Probe-Pfad (`prism-audio`); MP4-MJPEG Rücklesen (`decode_mp4_video`).
+- **EXR komplett**: Lesen und Schreiben, Kompression, DWA, und **Bitstrom-Abgleich über Implementierungsgrenzen** mit dem offiziellen OpenEXR (nicht Selbstschreiben und Selbstlesen).
+- **Kamera-RAW**: Baseline-RAW-Dekodierung. **Grenze**: `Compression=7` (lossless JPEG) echter DNGs ist nicht implementiert,
+  von echten Kameras erzeugte DNGs lassen sich nicht lesen — das steht unter „Ehrliche Grenzen“ und wird nicht versteckt.
+- **3D-Assets**: glTF / OBJ-Import, USD (`.usda`)-Parsing und MaterialX-Parameterpakete, Meshes gelangen in die Render-Szene.
+- **Externe Schriften**: `load_font_file` lädt TTF/OTF von Drittanbietern direkt, die Fallback-Kette wird stufenweise aufgelöst,
+  fehlende Glyphen ergeben eine klare Diagnose statt Tofu-Kästchen.
 
-### Was angeordnet wird (Autorensyntax)
+### Was wird angeordnet (Autorensyntax)
 
-- **Vollständige Blocksyntax von DSL v2**: eine `.prism`-Datei beschreibt, „was gewünscht ist, wie es angeordnet ist, wie es sich bewegt, wie es aussieht, wohin exportiert wird"; das Kompilat ist ein Node-Graph + Eigenschaftskanäle + Timeline.
-- **Fünf Kombinatoren**: die High-Level-Kombinatoren `title_card` / `lower_third` / `split_screen` / `ken_burns` / `morph_between` expandieren zu einem Node-Graph; „90-Sekunden-Film" sinkt von handgeschriebenem Szenencode auf Zusammenstecken.
-- **Übergänge und Morph**: Fade / Wipe / Dissolve / Push vollständig parametrisiert (Dauer, Easing, Richtung), Morph als Verformung von Polylinien, Szenensequenzen zu jedem Zeitpunkt abtastbar.
-- **Formelsatz**: `math_ast` + `math_layout` setzen Hoch- und Tiefstellung / Brüche / Wurzelzeichen / große Operatoren / Matrizen; der DSL-Block `formula` setzt direkt, auf derselben Grundlinie wie der Fließtext.
+- **Vollständige Block-Syntax von DSL v2**: ein Satz `.prism` beschreibt „was gewünscht ist, wie es angeordnet wird, wie es sich bewegt, wie es aussieht,
+  wohin es exportiert wird“; das Kompilat ist ein Node-Graph + Property-Kanäle + Timeline.
+- **Fünf Kombinatoren**: `title_card` / `lower_third` / `split_screen` / `ken_burns` /
+  `morph_between` — High-Level-Kombinatoren expandieren zu Node-Graphen; „ein 90-Sekunden-Film“ sinkt vom handgeschriebenen Szenencode auf bloßes Zusammensetzen.
+- **Übergänge und Morph**: Fade / Wipe / Dissolve / Push voll parametrisiert (Dauer, Easing, Richtung),
+  Morph als Verformung von Polylinien, Szenensequenzen zu jedem Zeitpunkt abtastbar.
+- **Formelsatz**: `math_ast` + `math_layout` setzen Hoch- und Tiefstellung, Brüche, Wurzeln, große Operatoren,
+  Matrizen; der DSL-Block `formula` setzt direkt, auf derselben Grundlinie wie der Fließtext.
 
-### Was gezeichnet wird (Rendering und Simulation)
+### Was wird gezeichnet (Rendering und Simulation)
 
-- **Offline-Rendering in Fotoqualität**: Path Tracing + physikalisch korrekte BSDFs (diffus / spiegelnd / Glas / Metall), Glas und Metall über stochastische Inversion (Neumann-Reihe, Monte Carlo), Unterstützung für volumetrische Medien und Subsurface Scattering.
-- **Vier Familien gekrümmter Primitive**: Zylinder / Kegel / Torus / Rotationsfläche, alle analytisch geschnitten (quartische Gleichung über die geschlossene Ferrari-Lösung, exakte Wurzeln); beliebige Dreiecks-meshes + SAH-BVH, Parity-Abgleich über zwei Pfade.
-- **GPU compute**: geräteunabhängige Compute-Semantikschicht + Vulkan dispatch + handgeschriebenes minimales SPIR-V; unter der Software-ICD Mesa lavapipe vollständig lauffähig auf Plattformen ohne GPU (headless verifizierbar).
-- **Physik und Partikel**: einheitlicher XPBD-Solver (Starrkörper / Soft Bodies / Stoff / Gelenke / Fluide / Bruch), Rauch mit FLIP, Partikelsysteme (AudioReactive an die Audio-Hüllkurve gekoppelt).
-- **Generative Kunst und Postprocessing**: Strömungsfelder / L-system / zelluläre Automaten / Reaktions-Diffusion / Fraktale / Voronoi; blur / bloom / halation / Filmkorn / vier NPR-Stile (toon / watercolor / halftone / oil) / dreifach kombiniertes Denoising.
-- **Color Grading und Vektoren**: sekundäres Grading (HSL-Auswahl + RGB-Kurven), Stil-Presets cinematic / film / anime und drei Qualitätsstufen Entwurf/Standard/Film (Qualität ist ein Parameter, keine Esoterik); Rasterung von Vektorpfaden, Pfad-draw-on und morph.
-- **Audioverarbeitung**: Loudness-Normalisierung (loudnorm), Beat-Erkennung, Spektralanalyse, Hüllkurvenextraktion – koppelbar mit dem Bild (Partikel-AudioReactive folgt der Audio-Hüllkurve).
-- **Das CPU-Referenzbackend ist ein Bürger erster Klasse**: auch ohne GPU entstehen korrekte Bilder, und zugleich ist es der Korrektheitsmaßstab für die GPU.
+- **Offline-Rendering in Fotoqualität**: Path Tracing + physikalisch korrekte BSDF (diffus / spiegelnd / Glas / Metall),
+  Glas und Metall über stochastische Inversion (Monte-Carlo über die Neumann-Reihe), Unterstützung für volumetrische Medien und Subsurface Scattering.
+- **Vier Familien von Kurven-Primitiven**: Zylinder / Kegel / Torus / Rotationsfläche, alle analytisch geschnitten (Gleichung vierten Grades über
+  die geschlossene Lösung nach Ferrari, exakte Wurzeln); beliebige Dreiecks-Meshes + SAH-BVH, Parity-Abgleich über zwei Pfade.
+- **GPU compute**: geräteunabhängige Compute-Semantikschicht + Vulkan-Dispatch + handgeschriebenes minimales SPIR-V;
+  unter der Mesa-lavapipe-Software-ICD vollständig lauffähig auch auf Plattformen ohne GPU (headless verifizierbar).
+- **Physik und Partikel**: einheitlicher XPBD-Solver (starre Körper / Soft Bodies / Cloth / Gelenke / Fluide / Bruch),
+  Rauch über FLIP, Partikelsystem (AudioReactive an die Audio-Hüllkurve gekoppelt).
+- **Generative Kunst und Post-Processing**: Strömungsfeld / L-Systeme / zelluläre Automaten / Reaktions-Diffusion / Fraktale / Voronoi;
+  blur / bloom / halation / Filmkorn / vier NPR-Stile (toon / watercolor / halftone / oil) / 3-in-1-Entrauschung.
+- **Color Grading und Vektoren**: sekundäres Grading (HSL-Auswahl + RGB-Kurven), Stil-Presets cinematic / film / anime und
+  drei Qualitätsstufen Entwurf/Standard/Film (Qualität ist ein Parameter, keine Esoterik); Rasterung von Vektorpfaden, Pfad-Draw-on und Morph.
+- **Audiobearbeitung**: Loudness-Normalisierung (loudnorm), Beat-Erkennung, Spektralanalyse, Hüllkurvenextraktion —
+  koppelbar mit dem Bild (Partikel AudioReactive folgen der Audio-Hüllkurve).
+- **Das CPU-Referenz-Backend ist vollwertig**: Maschinen ohne GPU erzeugen trotzdem korrekte Bilder und dienen zugleich als Referenz für die Korrektheit der GPU.
 
-### Was herauskommt (Auslieferung)
+### Was wird ausgeliefert (Delivery)
 
-- **`render_movie` direkt**: das DSL-v2-Kompilat durchläuft in einem Aufruf „Auswertung Frame für Frame → tile-Rendering → Auslieferung", eine einzelne `.prism`-Datei erzeugt per Einzelbefehl den Film (`prism-app render demo.prism`); nicht abgedeckte Nodes melden ehrlich einen Fehler statt still zu approximieren.
-- **Vorschau-Kreislauf**: `prism-app preview` startet den Vorschau-Dienst; der Editor bietet zwei Vorschaustufen – Draft (geometrische Muster zur Erhaltung der Framerate) / Real (echtes Rendering mit niedriger spp, asynchron aktualisiert).
-- **Eigener Encoder + Ratenkontrolle**: ein zeitlicher I/P-Frame-Encoder im JPEG-Bereich schreibt in den privaten `PRMV`-Container (zwei Schema-Generationen, v2/v3), Water-Filling-Ratenkontrolle + qpel-Subpixel-Bewegungsschätzung (gemessen: PSNR +2.577 dB, Volumen −21.6 %).
-- **ffmpeg-Kooperationskette**: mit ffmpeg → über eine stdin-rawvideo-Pipe nach H.264/HEVC; ohne ffmpeg → automatischer Rückfall auf MJPEG, **die Engine liefert immer einen Film**; es werden keine Binaries gebündelt.
-- **EXR-Sequenzauslieferung**: die Bildfolge wird direkt als EXR geschrieben und geht in die Postproduktions-Pipeline.
-- **Verteilte Farm**: Verteilung auf Frame-Ebene + N Prozess-worker + deterministische Zusammenführung – paralleles MD5 == serielles MD5, Fortsetzung nach Unterbrechung möglich.
+- **`render_movie` direkt**: Das Kompilat von DSL v2 durchläuft in einem Aufruf „Frame-Auswertung → tile-Rendering →
+  Delivery“; ein einzelnes `.prism` ergibt mit einem Befehl den Film (`prism-app render demo.prism`); nicht abgedeckte Nodes melden ehrlich einen Fehler, statt stillschweigend zu approximieren.
+- **Geschlossener Vorschau-Kreislauf**: `prism-app preview` startet den Vorschau-Dienst; der Editor bietet zwei Vorschau-Stufen — Entwurf (geometrische Muster, Bildrate bleibt erhalten) /
+  Real (echtes Rendering mit niedriger spp, asynchrones Refresh).
+- **Eigener Encoder + Ratensteuerung**: I/P-Frame-Zeitkodierer im JPEG-Bereich über den privaten `PRMV`-Container (zwei Schema-Generationen
+  v2/v3), Water-Filling-Ratensteuerung + qpel-Subpixel-Bewegungsschätzung (gemessen PSNR +2,577 dB,
+  Volumen −21,6 %).
+- **ffmpeg-Kooperationskette**: mit ffmpeg → über stdin-rawvideo-Pipe nach H.264/HEVC;
+  ohne ffmpeg → automatischer Rückfall auf MJPEG, **die Engine liefert immer ein Ergebnis**; es werden keinerlei Binärdateien gebündelt.
+- **EXR-Sequenz-Delivery**: Frame-Sequenzen werden direkt als EXR geschrieben und gehen so in die Postproduktions-Pipeline.
+- **Verteilte Farm**: Verteilung auf Frame-Ebene + N-Prozess-Worker + deterministische Zusammenführung — parallele MD5 == serielle MD5,
+  inklusive Fortsetzen nach Unterbrechung.
 
-### Wie integriert wird (Ökosystem)
+### Wie die Integration aussieht (Ökosystem)
 
-- **MCP-Tool-Oberfläche**: drei stdio-JSON-RPC-Tools – `scene_check` (Kompilieren + Testrender + Frame-Zahlenschätzung), `render_submit` (deterministische job id + MD5-Digest pro Frame), `diagnose` (dreiteilige Fehlerlokalisierung).
-- **Node-SDK**: semantische Versionsaushandlung (inklusive 0.x-Sonderfall), mitgeliefert wird ein Beispiel-Node-Paket (`examples/sdk-nodes/cinematic-basic/`, kompilierbar / ladbar / aushandelbar).
-- **Skelett der Hardware-Encoding-Erkennung**: `prism-ffi-hwenc` mit Erkennungskette für drei Plattformen (VideoToolbox / NVENC / VAAPI) + Feature-Gate-Matrix; bei unpassender Plattform wird klar „nicht unterstützt" gemeldet.
+- **MCP-Tool-Oberfläche**: stdio-JSON-RPC mit drei Tools — `scene_check` (Kompilieren + Testrendern + Frame-Schätzung),
+  `render_submit` (deterministische job id + MD5-Digest pro Frame), `diagnose` (dreiteilige Fehlerlokalisierung).
+- **Node-SDK**: Aushandlung semantischer Versionen (inklusive Sonderfall 0.x), Beispiel-Node-Paket beigelegt
+  (`examples/sdk-nodes/cinematic-basic/`, kompilierbar / ladbar / verhandelbar).
+- **Gerüst zur Erkennung von Hardware-Encodern**: `prism-ffi-hwenc` Erkennungskette für drei Plattformen (VideoToolbox / NVENC / VAAPI)
+  + feature-gate-Matrix, bei nicht passender Plattform eine klare Meldung „nicht unterstützt“.
 
-> Die detaillierten Fähigkeitsgrenzen (was **nicht** geht) stehen im Abschnitt „Ehrliche Grenzen" der `开发者指南.md` im entpackten Paket –
-> dort ist der aktuelle reale Stand festgehalten (gekrümmte Primitive laufen nur über die CPU, das GPU-Beschleunigungsverhältnis muss auf der Zielhardware gemessen werden, Hardware-Encoding wird je nach
-> Zielplattform angebunden …); dieses Dokument gibt nur den Überblick und übertreibt nicht.
+> Detaillierte Fähigkeitsgrenzen (was **nicht** geht) stehen nach dem Entpacken in `开发者指南.md` im Abschnitt „Ehrliche Grenzen“ —
+> dort ist der aktuelle reale Stand notiert (Kurven-Primitive laufen nur auf der CPU, Beschleunigungsverhältnisse der GPU müssen auf der
+> Zielhardware gemessen werden, Hardware-Encoding wird je nach Zielplattform angebunden …); dieser Text gibt nur den Überblick und übertreibt nicht.
 
 ---
 
 ## Warum Single-File-Verteilung
 
-- **Auditierbar**: eine Textdatei, mit bloßem Auge lesbar, `diff`-bar, per Hash prüfbar; die Veröffentlichung ist damit eingefroren.
-- **Reproduzierbar**: Das Packen ist deterministisch – zweimaliges Packen derselben Eingabe ergibt identische SHA-256.
-- **Transportabel**: kein Klonen eines großen Repositories nötig, eine Datei lässt sich per Mail oder Chat verschicken, auch offline ist Wiederherstellen und Bauen möglich.
-- **Zur Abwägung**: Die Single-File-Verteilung gibt den Komfort „Code direkt auf GitHub durchstöbern" auf und gewinnt dafür die Determinismus-Garantie „eine Datei trägt alles, byteweise verifizierbar". Nach dem Entpacken liegt ein normales Cargo workspace vor, nicht anders als bei einem üblichen Rust-Projekt.
+- **Auditierbar**: eine Textdatei, für Menschen lesbar, `diff`-fähig, per Hash prüfbar — Veröffentlichung heißt Einfrieren.
+- **Reproduzierbar**: Das Packen ist deterministisch — gleiche Eingabe, zweimal gepackt, ergibt exakt identische SHA-256.
+- **Portabel**: kein Klonen eines großen Repositorys nötig, eine Datei lässt sich per E-Mail oder Chat übertragen und auch offline wiederherstellen und bauen.
+- **Zum Trade-off**: Die Single-File-Verteilung tauscht den Komfort „Code direkt auf GitHub durchsuchen“ gegen die Determinismus-Garantie „eine Datei trägt alles, und zwar byteweise verifizierbar“. Nach dem Entpacken erhält man einen gewöhnlichen Cargo workspace, nicht anders als ein übliches Rust-Projekt.
 
 ---
 
 ## Schnellstart
 
-Voraussetzungen: [Rust](https://www.rust-lang.org/) (inklusive `cargo`) und [Node.js](https://nodejs.org/) 18+ installieren.
+Voraussetzung: [Rust](https://www.rust-lang.org/) (mit `cargo`) und [Node.js](https://nodejs.org/) 18+ installieren.
 
 ```bash
-# 1. Die Datei prism-engine-v2.0-source.txt aus dem Repository herunterladen und lokal speichern
-# 2. In einem Texteditor öffnen und das Node.js-Skript zwischen "UNPACK SCRIPT BEGIN" und
-#    "UNPACK SCRIPT END" als unpack.cjs im selben Verzeichnis speichern
+# 1. die prism-engine-v2.0-source.txt aus dem Repository herunterladen und als lokale Datei speichern
+# 2. in einem Texteditor öffnen und das Node.js-Skript zwischen "UNPACK SCRIPT BEGIN" und "UNPACK SCRIPT END"
+#    als unpack.cjs im selben Verzeichnis speichern
 # 3. Entpacken ausführen (wenige Sekunden, stellt 622 Dateien wieder her)
 node unpack.cjs
-# 4. Im wiederhergestellten Verzeichnis (also der workspace-Wurzel) die vollständigen Tests laufen lassen
+# 4. im wiederhergestellten Verzeichnis (also der workspace-Wurzel) die vollständigen Tests laufen lassen
 cargo test --workspace --release
 # Erwartet: 3714 passed / 0 failed
 ```
 
-Nach dem Entpacken erhält man ein standardmäßiges Cargo workspace (28 crates unter `src/`); alle weiteren `cargo`-Befehle entsprechen denen eines normalen Rust-Projekts.
+Nach dem Entpacken liegt ein standardmäßiger Cargo workspace vor (28 Crates unter `src/`); alle weiteren `cargo`-Befehle sind wie bei einem üblichen Rust-Projekt.
 
-> wasm-Verifikationskette für Mobilgeräte: `rustup target add wasm32-unknown-unknown`, danach `cargo build -p prism-core --target wasm32-unknown-unknown`.
+> wasm-Verifikationskette für Mobilgeräte: `rustup target add wasm32-unknown-unknown`, dann `cargo build -p prism-core --target wasm32-unknown-unknown`.
 
 ---
 
@@ -109,30 +139,28 @@ Nach dem Entpacken erhält man ein standardmäßiges Cargo workspace (28 crates 
 
 | Pfad | Beschreibung |
 |------|------|
-| `src/` | Quellcode der **28 crates** (im Repository 29; ursprünglicher Name `crates/`, bei der Distribution zu `src/` umgruppiert; das Demo-crate `prism-anim-demo` ist nicht im Paket) |
-| `Compliance/` | Compliance-Erklärungen: Prüfung der Null-Abhängigkeit / Drittanbieter-Erklärungen / Asset-Register (ursprünglicher Name im Repository: `docs/合规/`) |
-| `开发者指南.md` | In sich geschlossene Entwicklerdokumentation: Einstieg / Architektur / mathematischer Kern / Gates / Erweiterung (ursprünglicher Name im Repository: `docs/开发者指南.md`) |
-| `tools/` | Gate-Skripte (Ghost-Write-Abwehr, Hygiene-Scan, Compliance-Selbstprüfung) |
+| `src/` | Quellcode der **28 Crates** (im Repository 29, ursprünglich `crates/`, bei der Verteilung zu `src/` umstrukturiert) |
+| `Compliance/` | Compliance-Erklärungen: Verifikation der Abhängigkeitsfreiheit / Drittanbieter-Erklärungen / Asset-Register (im Repository ursprünglich `docs/合规/`) |
+| `开发者指南.md` | In sich geschlossene Entwicklerdokumentation: Einstieg / Architektur / mathematischer Kern / Gates / Erweiterung (im Repository ursprünglich `docs/开发者指南.md`) |
+| `tools/` | Gate-Skripte (Schutz vor Ghost-Writes, Hygiene-Scan, Compliance-Selbstprüfung) |
 | `.github/workflows/` | CI-Konfiguration |
 | `Cargo.toml` / `Cargo.lock` / `.cargo/` | zum Bauen erforderliche Teile (workspace members zeigen bereits auf `src/*`) |
-| `examples/` | Beispiele für `prism-dsl`-Tests und Beispiel-Node-Pakete (per `include_str!` gelesen, fehlen sie, kompiliert es nicht) |
-
-> Die maßgebliche Design-Dokumentation (`docs/设计/`) wird **nicht mitverteilt** und bleibt ausschließlich im vollständigen Repository des Herausgebers.
+| `examples/` | Beispiele für `prism-dsl`-Tests und Beispiel-Node-Pakete (per `include_str!` gelesen, fehlen sie, schlägt die Kompilierung fehl) |
 
 ---
 
 ## Modulübersicht
 
-Die **28 crates** im Distributionspaket, nach Zuständigkeit gruppiert (im Repository gibt es zusätzlich das Demo-crate `prism-anim-demo`, das nur als reproduzierbares Beispiel im Repository liegt und nicht ins Paket geht):
+Die **28 Crates** im Distributionspaket, gruppiert nach Zuständigkeit:
 
 | Kategorie | crate |
 |------|-------|
-| Kernel | prism-core · prism-math · prism-bytes · prism-geometry · prism-noise |
-| Medien-I/O | prism-io · prism-media · prism-mux · prism-audio · prism-texture |
+| Kern | prism-core · prism-math · prism-bytes · prism-geometry · prism-noise |
+| Media-I/O | prism-io · prism-media · prism-mux · prism-audio · prism-texture |
 | Rendering | prism-render · prism-raster · prism-gpu · prism-postfx · prism-vector · prism-particles |
 | Animation/Generierung | prism-anim · prism-genart · prism-aesthetic · prism-physics |
 | Text/UI | prism-text · prism-rt · prism-app |
-| Erweitert | prism-ai · prism-dsl · prism-infra · prism-author |
+| Fortgeschritten | prism-ai · prism-dsl · prism-infra · prism-author |
 | Bypass (feature gate) | prism-ffi-hwenc |
 
 ---
@@ -140,71 +168,46 @@ Die **28 crates** im Distributionspaket, nach Zuständigkeit gruppiert (im Repos
 ## Bauen und Testen
 
 ```bash
-# Smoke-Test über das gesamte Repository (release, empfohlen)
+# Smoke-Test über das ganze Repository (release, empfohlen)
 cargo test --workspace --release
 # gleichwertiger Alias
 cargo xtest
-# schnelle Prüfung eines einzelnen crates
+# Schnellverifikation eines einzelnen crate
 cargo test -p prism-core --release
 ```
 
-- Vollständige Tests: **3714 passed / 0 failed / 0 ignored** (diese Version wurde tatsächlich auf dem **entpackten Baum** ausgeführt: 166 Test-Blöcke; im Repository sind es 167 Blöcke, die Differenz von 1 Block ist der leere Test-Block des Demo-crates, die Zahl der Testfälle ist gleich).
-- CI: **6 jobs** – Ghost-Write-Abwehr (ghost-guard) / Kompilieren + vollständige Tests (native) / wasm32-Build (wasm) / statische WGSL-Prüfung (wasm-verify) / Bitstrom-Abgleich mit dem offiziellen OpenEXR über Implementierungsgrenzen hinweg (interop) / Kreuzabgleich mit dem node-Host (lint).
-- 3 lokale Gate-Skripte (vollständig ohne Abhängigkeiten, nur `node`, siehe unten) + 1 Packskript; davon besteht die Compliance-Selbstprüfung **9/9**, der Gegentest wird **8/8 als rot** gewertet.
+- Vollständige Tests: **3714 passed / 0 failed / 0 ignored** (diese Fassung wurde tatsächlich auf dem **entpackten Baum** ausgeführt: 166 Testblöcke)
+- CI: **6 jobs** — Schutz vor Ghost-Writes (ghost-guard) / Kompilieren + vollständige Tests (native) / wasm32-Build (wasm) /
+  WGSL-Statikprüfung (wasm-verify) / Bitstrom-Abgleich über Implementierungsgrenzen mit dem offiziellen OpenEXR (interop) / Kreuzabgleich des node-Hosts (lint).
+- Lokale Gate-Skripte: 3 (vollständig abhängigkeitsfrei, nur `node`, siehe unten) + 1 Packskript;
+  davon Compliance-Selbstprüfung **9/9 bestanden**, Gegenselbstnachweis **8/8 rot bewertet**.
 
-Gate-Skripte lokal ausführen (Node 18+ erforderlich):
+Lokale Ausführung der Gates (Node 18+ erforderlich):
 
 ```bash
-node tools/ghost_guard.mjs --check        # Ghost-Write-Abwehr: G1 doppelte Definition / G2 echte Obermenge / G3 Dokumentation ohne Einrückung / G4 Kompilierung
-node tools/hygiene_scan.mjs               # Open-Source-Hygiene: listet jedes verbliebene interne Wording einzeln auf (Datei:Zeile), bei Treffer exit 1
+node tools/ghost_guard.mjs --check        # Schutz vor Ghost-Writes: G1 Doppeldefinition/G2 echte Obermenge/G3 Dokumente am Zeilenanfang/G4 Kompilierung
+node tools/hygiene_scan.mjs               # Open-Source-Hygiene: listet verbliebene interne Formulierungen einzeln auf (Datei:Zeilennummer), bei Treffer exit 1
 node tools/compliance_check.mjs           # Compliance-Selbstprüfung: sollte 9/9 bestehen
-node tools/compliance_check.mjs --self-test   # Gegentest: sollte rot werden und damit belegen, dass die Kriterien unterscheidungsfähig sind
+node tools/compliance_check.mjs --self-test   # Gegenselbstnachweis: sollte rot bewerten und so die Trennschärfe der Kriterien belegen
 ```
 
-> **Der Open-Source-Hygiene-Scan hat derzeit noch Altbestände an Treffern**: im Repository verbleibt frühes internes Wording, davon ist
-> **die mitgelieferte Dokumentationsebene auf null** (README / Entwicklerhandbuch / Compliance); der Rest steckt in **Quellkommentaren
-> innerhalb des Distributionspakets** und in **Repository-Dateien, die nicht mitverteilt werden**, wurde nach tatsächlichem Befund klassifiziert
-> und als eigener Aufräumpunkt geführt. Das Skript existiert gerade dazu, Rückstände **sichtbar und einzeln abarbeitbar** zu machen, statt Sauberkeit vorzutäuschen – bitte verstehen Sie „Trefferzahl ungleich 0" nicht als Versagen des Gates.
+> **Der Open-Source-Hygiene-Scan hat derzeit noch Altlast-Treffer**: Im Repository verbleiben frühe interne Formulierungen, wobei die
+> **mit dem Paket ausgelieferte Dokumentationsebene bereits auf null steht** (README / Entwicklerhandbuch / Compliance); die übrigen liegen in **Quellcode-Kommentaren innerhalb des Distributionspakets**
+> und in **nicht mit dem Paket ausgelieferten Repository-Dateien**, wurden nach Tatsachen klassifiziert und als eigene Aufräumposten geführt. Das Skript existiert genau dafür, die
+> Reste **sichtbar und einzeln abarbeitbar** zu machen, statt Sauberkeit vorzutäuschen — bitte verstehen Sie „Trefferzahl ungleich 0“ nicht als Versagen des Gates.
 
 ---
 
 ## Compliance
 
-Die Engine verspricht **null Code-Abhängigkeiten von Drittanbietern**, geprüft durch Selbstprüfung:
+Die Engine verspricht **null Abhängigkeiten von Drittanbieter-Code** und verifiziert dies durch Selbstprüfung:
 
-- **C1 Null Code-Abhängigkeiten von Drittanbietern**: alle 130 Abhängigkeiten (110 Laufzeit + 20 Test) sind `path`-Abhängigkeiten dieses Repositories; kein `build.rs`, keine nativen Linker-Anweisungen, `Cargo.lock` sperrt 29 Pakete dieses Repositories.
-- **C2 Vollständiges Asset-Register**: die Haupttabelle der 5 Assets hat alle Felder, der Status der Eigenentwicklung liegt in einem kontrollierten Vokabular; der vollständige Text der OFL-1.1-Schriftlizenz liegt bei der Schrift unter `src/prism-text/font_data/LICENSE`.
-- **C3 Drittanbieter-Zuordnungsanzeigen**: `Compliance/THIRD-PARTY-NOTICES.md` ist vorhanden und unterscheidet ausdrücklich „Datenasset ≠ Code-Abhängigkeit".
+- **C1 Null Abhängigkeiten von Drittanbieter-Code**: alle 130 Abhängigkeiten (110 Laufzeit + 20 Test) sind `path`-Abhängigkeiten dieses Repositorys; kein `build.rs`, keine nativen Link-Anweisungen, `Cargo.lock` sperrt 29 Pakete dieses Repositorys.
+- **C2 vollständiges Asset-Register**: alle Hauptfelder der 5 Assets sind vollständig, der Stand der Eigenentwicklung liegt im kontrollierten Vokabular; der vollständige Lizenztext der Schriftlizenz OFL 1.1 liegt bei der Schrift unter `src/prism-text/font_data/LICENSE`.
+- **C3 Drittanbieter-Attribution**: `Compliance/THIRD-PARTY-NOTICES.md` ist vorhanden und unterscheidet ausdrücklich „Datenassets ≠ Codeabhängigkeiten“.
 
-> Hinweis: Dieses Repository verteilt **Quellcode**. Das Schriftasset (Prism Sans SC Subset) steht unter SIL OFL 1.1, **der vollständige Lizenztext liegt bei der Schrift unter** `src/prism-text/font_data/LICENSE`; Herkunft und Lizenzregistrierung der Assets siehe `Compliance/assets/资产登记.md`.
+> Hinweis: Dieses Repository verteilt **Quellcode**. Die Schrift-Assets (Prism Sans SC Subset) stehen unter SIL OFL 1.1, **der vollständige Lizenztext liegt bei der Schrift unter** `src/prism-text/font_data/LICENSE`; Asset-Herkunft und Lizenzregistrierung siehe `Compliance/assets/资产登记.md`.
 
----
-
-## Deterministisches Packen (für Herausgeber)
-
-Um die Distributions-TXT aus dem vollständigen Repository neu zu erzeugen (Versionsnummer kann übergeben werden, standardmäßig wird die aktuelle Version v2.0 erzeugt):
-
-```bash
-node tools/pack_source_txt.mjs          # Standard → dist/prism-engine-v2.0-source.txt
-node tools/pack_source_txt.mjs 2.0      # gleichwertige Schreibweise (Versionsnummer explizit übergeben)
-node tools/pack_source_txt.mjs 1.0      # zurück zum Produktnamen der v1.0-Zeit (auf v1.0-Quellen ausgeführt wird das alte Paket byteweise reproduziert)
-node tools/pack_source_txt.mjs --verify # nach dem Packen sofortiger Entpack-Rundlauf zur Prüfung (Datei für Datei, Byte für Byte gegen den Quellbaum)
-# zweimal hintereinander ausführen; identische SHA-256 belegen, dass deterministisches Packen gilt
-```
-
-Der Packumfang ist strikt begrenzt auf: `crates/` (→ `src/`), `docs/合规/` (→ `Compliance/`), `docs/开发者指南.md`, `tools/`, `.github/`, `.cargo/`, `examples/`, `Cargo.toml`, `Cargo.lock`. Bewusst **ausgeschlossen** sind `docs/设计/`, `target/`, `node_modules/`, `dist/` selbst sowie sämtliche Zwischenprodukte.
-
----
-
-## Mitwirken
-
-Issues und Pull Requests sind willkommen. Bitte vor dem Einreichen sicherstellen:
-
-- `cargo test --workspace --release` läuft vollständig grün;
-- `node tools/hygiene_scan.mjs` führt **kein neues** internes Wording ein (das Skript listet alle Treffer inklusive Altbestand);
-- `node tools/compliance_check.mjs` besteht 9/9.
-
-Ausführlichere Hinweise zu Architektur und Erweiterung finden sich in der `开发者指南.md` nach dem Entpacken.
 
 ---
 
@@ -212,4 +215,6 @@ Ausführlichere Hinweise zu Architektur und Erweiterung finden sich in der `开�
 
 Dieses Projekt wird unter der **Apache License 2.0** veröffentlicht. Details siehe Datei [`LICENSE`](../LICENSE).
 
-> Compliance-Hinweis: Apache-2.0 verlangt die Beibehaltung von Copyright- und Lizenzhinweisen; bei einer Weitergabe auf Basis dieser Engine bitte die Zuordnungsanzeigen und das Asset-Register unter `Compliance/` beibehalten.
+> Compliance-Hinweis: Apache-2.0 verlangt die Beibehaltung von Urheberrechts- und Lizenzhinweisen; bei einer Weitergabe auf Basis dieser Engine bitte die Attributionshinweise und das Asset-Register unter `Compliance/` beibehalten.
+
+**Hinweis: Sollten andere Fassungen Übersetzungsfehler enthalten, gilt diese vereinfachte chinesische Fassung.**
