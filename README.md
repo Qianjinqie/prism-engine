@@ -11,9 +11,6 @@
 ![Tests](https://img.shields.io/badge/tests-3714%20passed-brightgreen.svg)
 ![Crates](https://img.shields.io/badge/crates-28-blue.svg)
 
-（徽章为静态事实徽章，数字口径见下文；`crates-28` = **分发包内**的 crate 数，
-仓库里另有 1 个不进包的演示 crate，故仓库数是 29。接入 CI 后可替换为动态徽章。）
-
 ---
 
 ## 这是什么
@@ -143,7 +140,7 @@ cargo test --workspace --release
 
 | 路径 | 说明 |
 |------|------|
-| `src/` | **28 个 crate** 的源码（仓库内 29 个，原名 `crates/`，分发时重组为 `src/`；演示 crate `prism-anim-demo` 不进包） |
+| `src/` | **28 个 crate** 的源码（仓库内 29 个，原名 `crates/`，分发时重组为 `src/`） |
 | `Compliance/` | 合规声明：零依赖核验 / 第三方声明 / 资产登记（仓库内原名 `docs/合规/`） |
 | `开发者指南.md` | 自包含开发者文档：上手 / 架构 / 数学内核 / 门禁 / 扩展（仓库内原名 `docs/开发者指南.md`） |
 | `tools/` | 门禁脚本（幽灵写入防御、卫生扫描、合规自检） |
@@ -151,14 +148,11 @@ cargo test --workspace --release
 | `Cargo.toml` / `Cargo.lock` / `.cargo/` | 构建必需件（workspace members 已指向 `src/*`） |
 | `examples/` | `prism-dsl` 测试用样例与示例节点包（`include_str!` 读取，缺了编译不过） |
 
-> 设计权威文档（`docs/设计/`）**不随分发**，仅留在发布方的完整仓库中。
-
 ---
 
 ## 模块概览
 
-分发包内 **28 个 crate** 按职责分组（仓库另有演示 crate `prism-anim-demo`，只在仓库里
-作为可复现示例，不进包）：
+分发包内 **28 个 crate** 按职责分组：
 
 | 类别 | crate |
 |------|-------|
@@ -183,8 +177,7 @@ cargo xtest
 cargo test -p prism-core --release
 ```
 
-- 全量测试：**3714 passed / 0 failed / 0 ignored**（本版已在**解包树**上实跑：166 个测试块；
-  仓库内是 167 块，差 1 块是演示 crate 的空测试块，用例数相同）。
+- 全量测试：**3714 passed / 0 failed / 0 ignored**（本版已在**解包树**上实跑：166 个测试块)
 - CI：**6 个 job**——幽灵写入防御（ghost-guard）/ 编译 + 全量测试（native）/ wasm32 构建（wasm）/
   WGSL 静态检查（wasm-verify）/ 与官方 OpenEXR 跨实现比特流对拍（interop）/ node 宿主交叉判对（lint）。
 - 本地门禁脚本 3 个（全零依赖、只用 `node`，下）+ 打包脚本 1 个；
@@ -216,33 +209,6 @@ node tools/compliance_check.mjs --self-test   # 反向自证：应判红，证�
 
 > 注：本仓库分发的是**源码**。字体资产（Prism Sans SC 子集）以 SIL OFL 1.1 许可，**许可证全文随字体置于** `src/prism-text/font_data/LICENSE`；资产来源与许可登记见 `Compliance/assets/资产登记.md`。
 
----
-
-## 确定性打包（发布方）
-
-如需从完整仓库重新生成分发 TXT（版本号可传，默认出版当前版本 v2.0）：
-
-```bash
-node tools/pack_source_txt.mjs          # 默认 → dist/prism-engine-v2.0-source.txt
-node tools/pack_source_txt.mjs 2.0      # 等价写法（显式传版本号）
-node tools/pack_source_txt.mjs 1.0      # 回到 v1.0 时代产物名（在 v1.0 源码上跑即逐字节复现旧包）
-node tools/pack_source_txt.mjs --verify # 打包后立刻解包回环校验（逐文件逐字节比对源码树）
-# 连跑两次，输出 SHA-256 一致即证明确定性打包成立
-```
-
-打包范围严格限定为：`crates/`（→ `src/`）、`docs/合规/`（→ `Compliance/`）、`docs/开发者指南.md`、`tools/`、`.github/`、`.cargo/`、`examples/`、`Cargo.toml`、`Cargo.lock`。刻意**排除** `docs/设计/`、`target/`、`node_modules/`、`dist/` 本身及一切中间产物。
-
----
-
-## 贡献
-
-欢迎 Issue 与 Pull Request。提交前请保持：
-
-- `cargo test --workspace --release` 全绿；
-- `node tools/hygiene_scan.mjs` **不新增**内部用语（脚本会列出全部命中，含存量）；
-- `node tools/compliance_check.mjs` 9/9 通过。
-
-更详细的架构与扩展指南见解包后的 `开发者指南.md`。
 
 ---
 
@@ -251,3 +217,5 @@ node tools/pack_source_txt.mjs --verify # 打包后立刻解包回环校验（�
 本项目以 **Apache License 2.0** 发布。详见 [`LICENSE`](LICENSE) 文件。
 
 > 合规提示：Apache-2.0 要求保留版权与许可声明；基于本引擎再行分发时，请保留 `Compliance/` 下的归属声明与资产登记。
+
+**注:其他版本如有翻译错误，请以此版简体中文为准。**
