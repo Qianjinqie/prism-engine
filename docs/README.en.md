@@ -1,4 +1,4 @@
-**English** | [简体中文](README.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [Español](README.es.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Português (BR)](README.pt-BR.md) | [Русский](README.ru.md)
+**English** | [简体中文](../README.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [Español](README.es.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Português (BR)](README.pt-BR.md) | [Русский](README.ru.md)
 
 # Prism Engine
 
@@ -121,6 +121,6 @@ The engine commits to **zero third-party code dependencies**, verified through s
 
 ## License
 
-This project is released under the **Apache License 2.0**. See the [`LICENSE`](LICENSE) file for details.
+This project is released under the **Apache License 2.0**. See the [`LICENSE`](../LICENSE) file for details.
 
 > Compliance notice: Apache-2.0 requires retaining copyright and license notices; when redistributing based on this engine, please keep the attribution notices and asset registry under `Compliance/`.

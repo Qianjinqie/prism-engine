@@ -1,4 +1,4 @@
-[English](README.en.md) | [简体中文](README.md) | [日本語](README.ja.md) | **한국어** | [Español](README.es.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Português (BR)](README.pt-BR.md) | [Русский](README.ru.md)
+[English](README.en.md) | [简体中文](../README.md) | [日本語](README.ja.md) | **한국어** | [Español](README.es.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Português (BR)](README.pt-BR.md) | [Русский](README.ru.md)
 
 # Prism Engine
 
@@ -121,6 +121,6 @@ node tools/compliance_check.mjs --self-test   # 역방향 자기 증명: 적색 
 
 ## 라이선스
 
-본 프로젝트는 **Apache License 2.0**으로 배포됩니다. 자세한 내용은 [`LICENSE`](LICENSE) 파일을 참고하세요.
+본 프로젝트는 **Apache License 2.0**으로 배포됩니다. 자세한 내용은 [`LICENSE`](../LICENSE) 파일을 참고하세요.
 
 > 컴플라이언스 안내: Apache-2.0은 저작권 및 라이선스 고지의 보존을 요구합니다. 본 엔진을 기반으로 재배포할 때는 `Compliance/` 아래의 귀속 선언과 자산 등록을 보존해 주세요.

@@ -1,4 +1,4 @@
-[English](README.en.md) | [简体中文](README.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [Español](README.es.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Português (BR)](README.pt-BR.md) | **Русский**
+[English](README.en.md) | [简体中文](../README.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [Español](README.es.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Português (BR)](README.pt-BR.md) | **Русский**
 
 # Prism Engine
 
@@ -121,6 +121,6 @@ node tools/compliance_check.mjs --self-test   # Обратная самопро�
 
 ## Лицензия
 
-Проект выпускается под лицензией **Apache License 2.0**. Подробнее см. файл [`LICENSE`](LICENSE).
+Проект выпускается под лицензией **Apache License 2.0**. Подробнее см. файл [`LICENSE`](../LICENSE).
 
 > Напоминание о соответствии: Apache-2.0 требует сохранения уведомлений об авторских правах и лицензии; при повторном распространении на основе этого движка сохраняйте заявления о принадлежности и реестр активов в `Compliance/`.

@@ -1,4 +1,4 @@
-[English](README.en.md) | [简体中文](README.md) | **日本語** | [한국어](README.ko.md) | [Español](README.es.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Português (BR)](README.pt-BR.md) | [Русский](README.ru.md)
+[English](README.en.md) | [简体中文](../README.md) | **日本語** | [한국어](README.ko.md) | [Español](README.es.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Português (BR)](README.pt-BR.md) | [Русский](README.ru.md)
 
 # Prism Engine
 
@@ -121,6 +121,6 @@ node tools/compliance_check.mjs --self-test   # 逆方向自己証明：赤と�
 
 ## ライセンス
 
-本プロジェクトは **Apache License 2.0** の下で公開されています。詳細は [`LICENSE`](LICENSE) ファイルを参照してください。
+本プロジェクトは **Apache License 2.0** の下で公開されています。詳細は [`LICENSE`](../LICENSE) ファイルを参照してください。
 
 > コンプライアンスに関する注意：Apache-2.0 は著作権およびライセンス表示の保持を求めます。本エンジンを基に再配布する場合は、`Compliance/` 配下の帰属宣言と資産登録を保持してください。
