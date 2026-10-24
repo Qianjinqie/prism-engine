@@ -48,13 +48,14 @@ const CURRENT_VERSION = '2.0';
 /**
  * 解析版本号：位置参数（第一个非 -- 开头的参数）优先，其次环境变量
  * PRISM_ENGINE_VERSION，最后默认 CURRENT_VERSION（当前出版版本）。
- * 接受 `2.0` / `2` / `1.5` 这类点分数字；非法输入明确报错退出，不静默兜底。
+ * 接受 `2.0` / `2` / `1.5` 这类点分数字，以及 `2.0-urgent_fix` 这类
+ * 「点分数字 + 连字符后缀」的 hotfix 版本；非法输入明确报错退出，不静默兜底。
  */
 function parseVersion() {
   const positional = process.argv.slice(2).find((a) => !a.startsWith('--'));
   const raw = positional ?? process.env.PRISM_ENGINE_VERSION ?? CURRENT_VERSION;
-  if (!/^\d+(\.\d+)*$/.test(raw)) {
-    console.error(`版本参数非法：${raw}（期望形如 1.0 / 2.0 的点分数字）`);
+  if (!/^\d+(\.\d+)*(-[A-Za-z0-9_]+)?$/.test(raw)) {
+    console.error(`版本参数非法：${raw}（期望形如 1.0 / 2.0，或 2.0-urgent_fix 的后缀形式）`);
     process.exit(2);
   }
   return raw;
