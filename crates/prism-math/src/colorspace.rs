@@ -195,6 +195,132 @@ impl TransformChain {
 mod tests {
     use super::*;
 
+    /// 债务留名 **T4**（2026-10-24 W2-B3 实测坐实；传闻 ~3.2e-2 属实）。
+    ///
+    /// # 债务内容
+    /// 旧轨 [`SRGB_TO_ACESCG`] / [`ACESCG_TO_SRGB`] 是 **Hill 拟合口径**
+    /// （Stephen Hill `ACESInput`/`ACESOutput` 拟合件，语义别名
+    /// [`SRGB_TO_ACESCG_FITTED_HILL`]），与**官方 AP1/sRGB 原色 + Bradford
+    /// 推导口径**存在系统性偏差。这是**两口径差异**，不是 W1 那种常量转录
+    /// 错误（AP1↔AP0 已按 S-2014-004 结清，结清锁见注册表
+    /// `legacy_ap1_ap0_matrices_debt_is_named`）——没有「唯一正确值」，
+    /// 只有「选哪口径」的单向门决策，故留名不修。
+    ///
+    /// # 口径来源
+    /// - **拟合**（本文件旧常量）：行和精确 1（D65 白点守恒），匹配 ACES
+    ///   官方 IDT 发布语境。影响面：`crate::aces::aces_fitted` 音调映射档
+    ///   以其为输入/输出阵；QA 参考实现
+    ///   （`qa_edge_attack_math_sample::aces_fitted_matches_reference_within_tolerance`）
+    ///   直接以旧常量为参考；`c2_color_golden` 位模式指纹经它固化；渲染侧
+    ///   prism-postfx `ColorManage` 经 [`TransformChain`] 可达。
+    /// - **推导**（新轨参照系）：`colorspace_registry` 20 空间定义按官方
+    ///   AP1 原色（R 0.713,0.293 / G 0.165,0.830 / B 0.128,0.044，D60
+    ///   名义白点）+ sRGB 原色 + Bradford(D65→D60) 装配。本测试内嵌断言：
+    ///   该推导与 ACES 官方公布的 sRGB→ACEScg 矩阵差 < 1e-6（实测
+    ///   ~4.5e-7）——**参照系即官方口径**，不是另一套私有值。
+    ///
+    /// # 实测偏差（每次测试运行重算复核；f32/f64 两口径都报）
+    /// - 正向 sRGB→ACEScg（拟合 vs 推导）：f64 口径 max |Δ| =
+    ///   **3.2045e-2 @ [2][2]**（derived 0.8698146341796377 vs fitted
+    ///   0.8377692103385925）；f32 口径 max |Δ| = **3.2045e-2 @ [2][2]**。
+    /// - 逆向 ACEScg→sRGB（拟合 vs 推导阵 f64 精确逆）：f64 口径 max |Δ| =
+    ///   **5.9690e-2 @ [0][0]**（inv 1.7050509926579847 vs 旧值 1.7647409）；
+    ///   f32 口径 max |Δ| = **5.969e-2 @ [0][0]**。
+    /// - f32 与 f64 口径相差 ~1e-7（偏差比 f32 舍入大 5 个数量级，口径
+    ///   选择不影响结论）。传闻 ~3.2e-2 **属实，以实测 3.2045e-2 为准**。
+    ///
+    /// # 为何现在不修
+    /// 修复 = 按官方 AP1 原色重录常量（+ 重算精确逆）⇒ `aces_fitted` /
+    /// golden 指纹 / QA 参考实现**全部输出字节变化** ⇒ 需要存量基线重渲
+    /// 决策——这是**单向门**，待作者拍板。且旧值匹配 ACES 官方 IDT 语境，
+    /// 直接替换会引入可见色偏（见文件头警告块）。
+    ///
+    /// # 结清需要（四件套齐备才能把本测试翻转为结清锁）
+    /// ① 按官方 AP1 原色重录两常量（逆阵 f64 求逆后收窄，非独立转录）；
+    /// ② C15 行为变化登记（输出字节变化进 CHANGELOG）；
+    /// ③ 存量基线重渲；④ 黄金值重录（c2_color_golden 等位模式指纹）。
+    /// 翻转先例见 W1：`legacy_ap1_ap0_matrices_debt_is_named`。
+    #[test]
+    fn legacy_srgb_acescg_matrices_debt_t4_is_named() {
+        use crate::colorspace_registry::{invert3, legacy_vs_derived_delta, Mat3d};
+
+        // —— 参照系自证：新轨推导 = 官方口径 ——
+        // ACES 官方公布的 sRGB→ACEScg 矩阵（D65 sRGB → D60 AP1，含
+        // Bradford；锚点同注册表 `registry_acescg_matches_official_aces_matrix`）。
+        let official: Mat3d = [
+            [0.613_097, 0.339_523, 0.047_379],
+            [0.070_194, 0.916_354, 0.013_452],
+            [0.020_616, 0.109_570, 0.869_815],
+        ];
+        let rep = legacy_vs_derived_delta().unwrap_or_else(|e| panic!("{e}"));
+        let mut ref_worst = 0.0f64;
+        for r in 0..3 {
+            for c in 0..3 {
+                ref_worst = ref_worst.max((rep.derived[r][c] - official[r][c]).abs());
+            }
+        }
+        assert!(
+            ref_worst < 1e-6,
+            "新轨推导 vs 官方公布矩阵超差 {ref_worst:e}：T4 参照系不再是官方口径，先查注册表再谈债务"
+        );
+
+        // —— 债务锁（主轴）：正向偏差必须仍然 > 1e-2 ——
+        // 任何人把旧常量「顺手」换成推导值（或反向偷换）都会撞红——
+        // 结清必须走单向门四件套（见测试文档注释），不许静默统一。
+        assert!(
+            rep.max_abs_diff > 1e-2,
+            "T4 正向偏差 {:.6e} 已 ≤ 1e-2：要么债务已结清（请走完四件套并把本测试翻转为结清锁），要么发生非预期漂移——两者都不许静默通过",
+            rep.max_abs_diff
+        );
+        // 形态钉住：最大差在 [2][2]、落在实测 3.2045e-2 邻域
+        // （传闻 3.2e-2 量级属实，以实测为准）。
+        assert_eq!(
+            rep.max_abs_diff_at,
+            (2, 2),
+            "T4 债务形态漂移：最大差位置应仍在 [2][2]"
+        );
+        assert!(
+            rep.max_abs_diff > 3e-2 && rep.max_abs_diff < 3.5e-2,
+            "T4 f64 口径正向偏差应锁在实测 3.2045e-2 邻域，实测 {:.6e}",
+            rep.max_abs_diff
+        );
+        // f32 口径：推导阵收窄 f32 后与旧常量 f32 逐元素比。
+        let mut worst_f32 = 0.0f32;
+        for r in 0..3 {
+            for c in 0..3 {
+                worst_f32 = worst_f32.max((rep.derived[r][c] as f32 - SRGB_TO_ACESCG[r][c]).abs());
+            }
+        }
+        assert!(
+            worst_f32 > 1e-2,
+            "T4 f32 口径正向偏差 {worst_f32:e} 已 ≤ 1e-2：债务疑似被结清或发生漂移，须走决策流程"
+        );
+
+        // —— 债务锁（逆向）：ACESCG_TO_SRGB vs 推导阵 f64 精确逆 ——
+        let inv = invert3(&rep.derived).unwrap_or_else(|e| panic!("{e}"));
+        let mut worst_inv_f64 = 0.0f64;
+        let mut worst_inv_f32 = 0.0f32;
+        for r in 0..3 {
+            for c in 0..3 {
+                worst_inv_f64 = worst_inv_f64.max((inv[r][c] - ACESCG_TO_SRGB[r][c] as f64).abs());
+                worst_inv_f32 = worst_inv_f32.max((inv[r][c] as f32 - ACESCG_TO_SRGB[r][c]).abs());
+            }
+        }
+        assert!(
+            worst_inv_f64 > 1e-2 && worst_inv_f64 < 1e-1,
+            "T4 f64 口径逆向偏差应锁在实测 5.9690e-2 邻域，实测 {worst_inv_f64:e}"
+        );
+        assert!(
+            worst_inv_f32 > 1e-2 && worst_inv_f32 < 1e-1,
+            "T4 f32 口径逆向偏差应锁在实测 5.969e-2 邻域，实测 {worst_inv_f32:e}"
+        );
+
+        println!(
+            "T4 债务留名（Hill 拟合 vs 官方原色推导）：fwd f64 {:.6e} / f32 {worst_f32:.6e}，inv f64 {worst_inv_f64:.6e} / f32 {worst_inv_f32:.6e}",
+            rep.max_abs_diff
+        );
+    }
+
     #[test]
     fn matrices_are_inverse_pairs() {
         // 矩阵互逆性：M · M⁻¹ ≈ I（误差 < 1e-4）。
