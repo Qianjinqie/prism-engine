@@ -29,10 +29,16 @@
 //! **不 panic、不返回假结果**。
 //!
 //! **装了 ICD 的环境**（例如 Mesa lavapipe 软件 ICD，纯 CPU 光栅、不需要 GPU 硬件）：
-//! 上列 9 步会**真跑**。验证入口是 `real_device_compute_dispatch_smoke`——
-//! 它用**运行期自门控**：有设备就真派发并断言 GPU 结果 == CPU 参考（结果错 ⇒ 红），
-//! 无设备就打印 skip 原因后返回。**全仓禁 `#[ignore]`**（由 `prism-core` 的
-//! `qa_ignore_guard` 硬门禁守住），所以这里不存在"靠 `#[ignore]` 藏起来"的测试。
+//! 上列 9 步会**真跑**。验证入口有三处，口径一致（GPU 读回 vs
+//! [`super::spirv::cpu_reference_mul2`]）：
+//! * [`super::VulkanBackend::compute_available`] 的**可用性自检**（生产路径，
+//!   首次询问时真跑一次并缓存，`is_available()` 的唯一依据）；
+//! * `crate::vulkan::compute::tests::real_device_compute_dispatch_smoke`
+//!   （单元层，运行期自门控）；
+//! * `tests/vulkan_compute_dispatch.rs`（集成层，逐位比对 + ULP 统计 +
+//!   设备名，无设备时 skip）。
+//! **全仓禁 `#[ignore]`**（由 `prism-core` 的 `qa_ignore_guard` 硬门禁守住），
+//! 所以这里不存在"靠 `#[ignore]` 藏起来"的测试。
 //!
 //! 软件 ICD 只证明**功能正确**（枚举/管线/派发/读回全通），**不构成硬件加速比证据**。
 //!
@@ -67,7 +73,8 @@ pub enum DispatchStatus {
     LayoutFailed,
     /// `vkCreateComputePipelines` 失败（管线不兼容）。
     PipelineFailed,
-    /// buffer / 内存分配失败。
+    /// buffer / 内存分配失败，或 dispatch extent 超出写绑定容量
+    /// （反越界守卫：宁可拒绝，也不越界写设备内存）。
     BufferFailed,
     /// 命令缓冲录制失败。
     CommandFailed,
@@ -116,9 +123,18 @@ pub struct ComputeRunReport {
     pub wasted_invocations: u64,
     /// 全部绑定的打包字节数（布局推导值）。
     pub buffer_bytes: u32,
+    /// 本次派发所在设备名（`VkPhysicalDeviceProperties::deviceName`）。
+    ///
+    /// 有设备上下文时非空（**成功与失败都带出**——失败报告也要能说清在哪个
+    /// 设备上失败的）；无设备 / wasm 时为空串。
+    pub device: String,
     /// 失败原因的人类可读补充（无则空串）。
     pub detail: String,
     /// 读回的浮点输出（`Ok` 时非空；其余情况为空 —— **不填假数据**）。
+    ///
+    /// 长度为**输出绑定的全部元素数**（布局容量，不是 extent）：被合法调用
+    /// 写到下标 `< extent 体积`，其余元素在派发前已清零，故恒为 `0.0`
+    /// （确定性；不把未初始化设备内存当结果）。
     pub output: Vec<f32>,
 }
 
@@ -168,6 +184,27 @@ pub fn plan(kernel: &KernelDesc, extent: [u32; 3]) -> DispatchPlan {
         wasted_invocations: cov.wasted_invocations,
         bindings,
         buffer_bytes: kernel.total_bytes(),
+    }
+}
+
+/// 纯数据守卫：dispatch 覆盖的调用数不得超过**写绑定**（最后一个 binding）
+/// 的元素容量。
+///
+/// SPIR-V kernel 不做边界判断（`mul2` 直接写 `dst[gid.x]`），尾组调用照样
+/// 落笔。extent 超出容量时驱动会真的越界写设备内存，故必须在任何 FFI 之前
+/// 拒绝。该检查只依赖 [`KernelDesc`] 的静态布局，**无设备环境也成立**——
+/// 同一 kernel + 同一 extent 在任何平台上得到同一判决，不因环境漂移。
+fn capacity_violation(kernel: &KernelDesc, plan: &DispatchPlan) -> Option<String> {
+    let last = kernel.layout().last().copied()?;
+    let capacity = (last.bytes / last.element.size().max(1)) as u64;
+    let needed = plan.shape.useful_invocations();
+    if needed > capacity {
+        Some(format!(
+            "dispatch extent {:?} 的调用数 {} 超出写绑定容量 {}（buffer {} 字节）",
+            plan.shape.extent, needed, capacity, last.bytes
+        ))
+    } else {
+        None
     }
 }
 
@@ -267,6 +304,7 @@ fn unavailable_report(
         invocations: plan.invocations,
         wasted_invocations: plan.wasted_invocations,
         buffer_bytes: plan.buffer_bytes,
+        device: String::new(),
         detail: detail.to_string(),
         output: Vec::new(),
     }
@@ -607,6 +645,26 @@ unsafe fn run_on_device(
                 "vkBindBufferMemory 失败",
             );
         }
+        // 确定性读回：先把整块设备内存清零再上机。VkDeviceMemory 的内容是
+        // 未初始化的——extent 小于绑定容量时，不清零就会把随机字节当结果
+        // 读回（「同输入两次跑出不同尾巴」）。
+        // 清零后的契约：**没有任何 invocation 写到的元素必为 +0.0**；尾组
+        // 调用写到的 extent 之外元素由 kernel 语义决定（mul2 读到的输入尾部
+        // 同样已清零，故结果仍为 +0.0）。
+        let mut zeroed: *mut std::ffi::c_void = std::ptr::null_mut();
+        if map_memory(
+            device,
+            memory,
+            0,
+            vk::VK_WHOLE_SIZE,
+            0,
+            &mut zeroed,
+        ) == vk::VK_SUCCESS
+            && !zeroed.is_null()
+        {
+            std::ptr::write_bytes(zeroed as *mut u8, 0, req.size as usize);
+            unmap_memory(device, memory);
+        }
         buffers.push((buffer, memory));
     }
 
@@ -881,6 +939,7 @@ unsafe fn run_on_device(
         invocations: plan.invocations,
         wasted_invocations: plan.wasted_invocations,
         buffer_bytes: plan.buffer_bytes,
+        device: String::new(),
         detail: String::new(),
         output,
     }
@@ -899,6 +958,15 @@ pub(crate) fn dispatch(
     input: &[f32],
 ) -> ComputeRunReport {
     let plan = plan(kernel, extent);
+    // 反越界守卫先于任何设备/FFI 分支（纯布局检查，环境无关）。
+    if let Some(detail) = capacity_violation(kernel, &plan) {
+        return unavailable_report(
+            kernel.name,
+            &plan,
+            DispatchStatus::BufferFailed,
+            &detail,
+        );
+    }
     match ctx {
         None => unavailable_report(
             kernel.name,
@@ -908,7 +976,10 @@ pub(crate) fn dispatch(
         ),
         Some(ctx) => {
             // SAFETY: `ctx` 由 `VulkanBackend` 持有，device/queue 遵循类型不变量。
-            unsafe { run_on_device(ctx, kernel, &plan, input) }
+            let mut report = unsafe { run_on_device(ctx, kernel, &plan, input) };
+            // 设备名是报告的自描述字段：成功与失败都如实带出（空 = 无设备）。
+            report.device = ctx.device_name.clone();
+            report
         }
     }
 }
@@ -922,6 +993,14 @@ pub(crate) fn dispatch(
     _input: &[f32],
 ) -> ComputeRunReport {
     let plan = plan(kernel, extent);
+    if let Some(detail) = capacity_violation(kernel, &plan) {
+        return unavailable_report(
+            kernel.name,
+            &plan,
+            DispatchStatus::BufferFailed,
+            &detail,
+        );
+    }
     unavailable_report(
         kernel.name,
         &plan,
@@ -1053,6 +1132,38 @@ mod tests {
             }
         }
         assert!(!run.status.as_str().is_empty());
+    }
+
+    /// 反越界守卫与设备无关：extent 超容量时**任何环境**都拒绝上机。
+    ///
+    /// 无设备环境同样走这条纯布局检查（`BufferFailed` 先于
+    /// `DeviceUnavailable`），保证同一 kernel + 同一 extent 的判决不随环境漂移。
+    #[test]
+    fn oversized_extent_is_refused_independently_of_environment() {
+        let kernel = spirv_probe_kernel();
+        let mut backend = VulkanBackend::new();
+        let r = backend.compute_dispatch(&kernel, [512, 1, 1], &[]);
+        assert_eq!(
+            r.status,
+            DispatchStatus::BufferFailed,
+            "512 > 256 必须在 FFI 之前被拒"
+        );
+        assert!(r.output.is_empty(), "被拒时不得有读回数据");
+        assert!(
+            r.detail.contains("超出写绑定容量"),
+            "拒绝原因须可诊断，实际：{}",
+            r.detail
+        );
+        // 恰好等于容量（256）不拒：进入设备分支（有设备 Ok，无设备如实报不可用）。
+        let at_limit = backend.compute_dispatch(&kernel, [256, 1, 1], &[]);
+        assert!(
+            matches!(
+                at_limit.status,
+                DispatchStatus::Ok | DispatchStatus::DeviceUnavailable
+            ),
+            "256 = 容量上限，不应被守卫拦截，实际：{}",
+            at_limit.status.as_str()
+        );
     }
 
     /// 状态短名稳定（诊断契约）。

@@ -2,16 +2,20 @@
 //!
 //! # ⚠️ 诚实边界（必读）
 //!
-//! 本模块**只实装了设备探测链**（instance → physical device → device →
-//! graphics queue）。**渲染管线尚未实装**：swapchain / render pass /
-//! graphics pipeline / 自研 SPIR-V 发射器 / 命令编码 / 读回路径**全部缺失**。
+//! **compute 路径已跑通**：instance → physical device → device+queue → 两个
+//! SSBO → shader module（自研 SPIR-V 发射器的 `mul2` words）→ compute
+//! pipeline → descriptor set → `vkCmdDispatch` → fence 等待 → map 读回 →
+//! 与 [`spirv::cpu_reference_mul2`] 逐位比对。这条闭环由
+//! [`VulkanBackend::compute_available`] **真跑一次自检**证明（不是靠探测推测）。
 //!
-//! 因此 [`VulkanBackend::is_available`] **恒返回 `false`**，即便探测链成功
-//! 拿到 instance + device 也不改口——`is_available` 的语义是「**能否 service
-//! `render_scene`**」，探测成功 ≠ 能出图（见 [`VulkanBackend`] 类型文档）。
-//! [`VulkanBackend::render_scene`] 如实返回 [`Framebuffer::empty`]（`is_valid()
-//! == false`），**绝不返回假帧**（例如全黑有效帧）冒充成功。上层据此安全
-//! 回退 [`crate::CpuRefBackend`]。
+//! **渲染管线仍未实装**：swapchain / render pass / graphics pipeline / 帧
+//! 读回全部缺失，[`VulkanBackend::render_scene`] 如实返回
+//! [`Framebuffer::empty`]（`is_valid() == false`），**绝不返回假帧**冒充成功。
+//! 上层据此安全回退 [`crate::CpuRefBackend`]。
+//!
+//! [`VulkanBackend::is_available`] 的口径 = **compute 闭环自检通过**：
+//! 探测到设备但自检失败（无 ICD / 管线被拒 / 读回不符）一律 `false`。
+//! 该值不覆盖渲染，二者是独立路径（见 [`VulkanBackend`] 类型文档）。
 //!
 //! # 零第三方依赖（D-15）
 //!
@@ -187,6 +191,11 @@ pub(crate) struct VulkanContext {
     graphics_queue_family: u32,
     /// 物理设备数量（诊断用）。
     device_count: usize,
+    /// `VkPhysicalDeviceProperties::deviceName`（如 `llvmpipe (LLVM 20.1.2, 256 bits)`）。
+    ///
+    /// 报告与诊断日志的唯一设备标识来源——`is_available()` 为真时必须能说出来
+    /// 「在哪个设备上真跑过」，故探测期就取好、不在报告里现编。
+    device_name: String,
     /// 从实例取到的函数表（`Drop` 时需要 `vkDestroyDevice`）。
     instance_fns: loader::InstanceFnTable,
     /// 从设备取到的函数表（`vkDestroyDevice`）。
@@ -229,10 +238,8 @@ impl Drop for VulkanContext {
 
 /// Vulkan 后端把手。
 ///
-/// 这是一个**能力占位 + 真实设备探测**而非可用渲染器：见模块头注的诚实边界。
-/// 它的存在意义有二：① 使上层能在所有平台统一引用 `VulkanBackend`；
-/// ② 在 native 平台提供真实的设备探测入口（[`VulkanBackend::probe`]），
-/// 为后续实装渲染管线铺路。
+/// 这是**compute 路径的真机装配 + 真实设备探测**，**不是**可用渲染器：
+/// 见模块头注的诚实边界。
 ///
 /// # 手写 FFI + 运行期探测（硬要求直面）
 ///
@@ -244,15 +251,19 @@ impl Drop for VulkanContext {
 ///    返回码须为 `VK_SUCCESS`，失败则清理并返回不可用）；
 /// 4. `vkEnumeratePhysicalDevices`（两段式：先问数量再取列表；选偏好设备）；
 /// 5. `vkCreateDevice`（选一个 graphics 队列族，队列数 1，优先级 1.0）；
-/// 6. 成功 → 缓存 instance/device/queue，`probed_device()` 返回 `true`。
+/// 6. 成功 → 缓存 instance/device/queue/deviceName，`probed_device()` 返回 `true`。
 ///
-/// # 为什么 `is_available()` 恒为 `false`
+/// # `is_available()` 的口径：完整 dispatch 闭环，不是「有设备」
 ///
-/// [`GpuDevice::is_available`] 的语义是「**能否 service `render_scene`**」。
-/// 本例虽然实装了探测链，但**没有** render pipeline / swapchain / 命令编码 /
-/// SPIR-V 发射器 / 读回路径，出一个真帧的最小闭环尚不存在。因此此处**不撒谎**
-/// ——探测成功不等于可用，恒返回 `false`，让上层安全降级到
-/// [`crate::CpuRefBackend`]。
+/// 探测到设备只说明可枚举，不说明 SPIR-V 能被接受、描述符能绑、队列能提交、
+/// 读回值正确。[`VulkanBackend::is_available`] 因此委托
+/// [`VulkanBackend::compute_available`]：**首次调用真跑一遍 mul2 探针**并与
+/// CPU 参考逐位比对，结果缓存。任一环节失败 ⇒ `false`，无设备平台同样
+/// `false`（优雅降级，不 panic）。
+///
+/// ⚠️ 渲染管线未实装：`is_available() == true` **不代表** `render_scene` 能
+/// 出图（它恒返回空帧）。需要渲染帧的调用方仍应以返回帧的 `is_valid()` 为准
+/// 回退 [`crate::CpuRefBackend`]。
 pub struct VulkanBackend {
     /// 探测会话结果（成功后持有 `VulkanContext`，`Drop` 时释放句柄）。
     ///
@@ -262,6 +273,17 @@ pub struct VulkanBackend {
     /// 诊断量：是否探测到物理设备（与 `context.is_some()` 基本一致，独立保留
     /// 便于 wasm 分支统一字段布局，并明确「探测到设备」与「可用」的区别）。
     probed_device: bool,
+    /// **完整 dispatch 路径**自检结果缓存（`None` = 尚未自检）。
+    ///
+    /// 惰性求值：只有被问 [`VulkanBackend::compute_available`] 时才真跑一次
+    /// mul2 探针（建管线 + 提交 + 读回 + 与 CPU 参考逐位比对）。探测到设备
+    /// 但自检失败（SPIR-V 被拒 / 队列提交失败 / 读回不符）⇒ 缓存 `false`，
+    /// 此后恒定 `false`——不重试、不撒谎。
+    ///
+    /// wasm32 无原生 Vulkan，`compute_available()` 直接返回 `false`，无需缓存
+    /// （故该字段在 wasm 下不参与布局，避免 dead_code）。
+    #[cfg(not(target_arch = "wasm32"))]
+    compute_self_test: std::cell::Cell<Option<bool>>,
 }
 
 impl VulkanBackend {
@@ -276,6 +298,7 @@ impl VulkanBackend {
             VulkanBackend {
                 context,
                 probed_device,
+                compute_self_test: std::cell::Cell::new(None),
             }
         }
         #[cfg(target_arch = "wasm32")]
@@ -325,6 +348,49 @@ impl VulkanBackend {
     /// 不同（见 [`VulkanBackend`] 类型文档）。
     pub fn probed_device(&self) -> bool {
         self.probed_device
+    }
+
+    /// **完整 compute dispatch 路径**是否可用（本后端 `is_available` 的唯一依据）。
+    ///
+    /// 「可用」的定义不是「探测到设备」，而是**真的把一条 kernel 跑完并读回**：
+    /// 首次调用时在设备上装配 mul2 探针（SPIR-V → shader module → 描述符 →
+    /// pipeline → 命令缓冲 → 队列提交 → fence 等待 → map 读回），并把读回值
+    /// 与 [`spirv::cpu_reference_mul2`] 做**逐位**比对。
+    ///
+    /// * 全链路通过且逐位一致 ⇒ `true`；
+    /// * 无设备上下文 / 任一步失败 / 读回不一致 ⇒ `false`（不 panic）；
+    /// * 结果缓存：失败后不再重试（不让「偶发成功」污染可用性口径）。
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn compute_available(&self) -> bool {
+        if let Some(v) = self.compute_self_test.get() {
+            return v;
+        }
+        let v = match self.context.as_deref() {
+            Some(ctx) => verify_compute_path(ctx),
+            None => false,
+        };
+        self.compute_self_test.set(Some(v));
+        v
+    }
+
+    /// wasm32：无原生 Vulkan，恒 `false`（不假装跑过）。
+    #[cfg(target_arch = "wasm32")]
+    pub fn compute_available(&self) -> bool {
+        false
+    }
+
+    /// 选中设备的名称（`VkPhysicalDeviceProperties::deviceName`）。
+    ///
+    /// 仅当探测链成功时为 `Some`；报告里出现设备名 = 真的在这个设备上跑过。
+    pub fn device_name(&self) -> Option<&str> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.context.as_deref().map(|c| c.device_name.as_str())
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            None
+        }
     }
 
     /// 探测成功时选中的 graphics 队列族索引；否则 `None`（诊断量）。
@@ -558,6 +624,7 @@ impl VulkanBackend {
             .graphics_queue_family
             .ok_or((stage, ProbeFailure::NoGraphicsQueueFamily))?;
         let physical_device = chosen.handle;
+        let device_name = chosen.name.clone();
 
         // --- 步骤 5：vkCreateDevice ---------------------------------------
         let priority: f32 = 1.0;
@@ -622,11 +689,38 @@ impl VulkanBackend {
             queue,
             graphics_queue_family,
             device_count: actual,
+            device_name,
             instance_fns,
             device_fns,
             _loader: loader,
         })
     }
+}
+
+// ---------------------------------------------------------------------------
+// 可用性自检：完整 compute dispatch 路径（真跑一次，不靠推测）
+// ---------------------------------------------------------------------------
+
+/// 在已建立的上下文中真跑一遍 mul2 探针，并与 CPU 参考**逐位**比对。
+///
+/// 这是 [`VulkanBackend::compute_available`] 的唯一判据：实例/设备探测成功
+/// 只说明「有设备」，本函数才回答「这条 dispatch 路径真能用」。任一环节
+/// 失败（建管线/提交/读回）或读回值不符 ⇒ `false`，**不 panic**。
+#[cfg(not(target_arch = "wasm32"))]
+fn verify_compute_path(ctx: &VulkanContext) -> bool {
+    let kernel = crate::compute::spirv_probe_kernel();
+    // 64 个值 = 1 个工作组（与探针 LocalSize 64 对齐，无尾组浪费）。
+    let input: Vec<f32> = (0..64).map(|i| (i as f32 - 32.0) * 0.25).collect();
+    let report = compute::dispatch(Some(ctx), &kernel, [input.len() as u32, 1, 1], &input);
+    if !report.is_ok() || report.output.len() < input.len() {
+        return false;
+    }
+    let mut expected = vec![0.0f32; input.len()];
+    spirv::cpu_reference_mul2(&input, &mut expected);
+    expected
+        .iter()
+        .zip(report.output.iter())
+        .all(|(e, g)| e.to_bits() == g.to_bits())
 }
 
 impl Default for VulkanBackend {
@@ -645,18 +739,21 @@ impl GpuDevice for VulkanBackend {
         Framebuffer::empty()
     }
 
-    /// 恒 `false`：能探测到 device 不代表能出图（渲染管线未实装）。
+    /// **如实**报告「完整 compute dispatch 路径可用」——见
+    /// [`VulkanBackend::compute_available`]（首次调用真跑一次 mul2 探针并逐位
+    /// 比对 CPU 参考，结果缓存）。
     ///
-    /// 见 [`VulkanBackend`] 类型文档的「为什么 `is_available()` 恒为 false」。
-    /// 待到本模块补上 swapchain / render pass / graphics pipeline / SPIR-V
-    /// 发射器 / 命令编码 / 读回路径后，此函数才可改为返回真实能力。
+    /// ⚠️ 渲染管线仍未实装，故本值为 `true` **不代表** [`Self::render_scene`]
+    /// 能出图：后者恒返回 [`Framebuffer::empty`]。二者是两条独立路径，
+    /// 调用方若需要渲染帧仍须回退 [`crate::CpuRefBackend`]（判据是
+    /// `render_scene` 返回帧的 [`Framebuffer::is_valid`]，不是本函数）。
     fn is_available(&self) -> bool {
-        false
+        self.compute_available()
     }
 
-    /// 稳定标识：所有平台一致，便于能力日志对齐。
+    /// 稳定标识：`vulkan-compute`（compute 路径已真跑；渲染管线未实装）。
     fn backend_name(&self) -> &'static str {
-        "vulkan-stub"
+        "vulkan-compute"
     }
 }
 
@@ -727,20 +824,34 @@ mod tests {
         }
     }
 
-    /// 后端标识跨平台稳定 + 恒不可用（渲染管线未实装）。
+    /// 后端标识跨平台稳定；可用性**严格等同**完整 dispatch 自检结果。
     ///
-    /// **非恒真自证**：`is_available() == false` 在「有 GPU 的机器」上**同样
-    /// 成立**（渲染未实装），故这不是「靠环境空转」的断言；一旦将来补上
-    /// 渲染管线，本断言必须翻转为 `true` 并补像素判对——正是这一翻转点证明
-    /// 它此刻非空。
+    /// **非恒真自证**：无设备的机器断言 `false`（诚实降级），有设备且闭环
+    /// 跑通的机器断言 `true`（本沙箱的 lavapipe 即此分支）。两个分支都是
+    /// 对当前环境真实能力的刻画——若把自检换成「探测到设备就算可用」，
+    /// 无 ICD 的机器上仍会红。
     #[test]
-    fn backend_is_unavailable_and_name_is_stable() {
+    fn backend_availability_follows_verified_compute_path() {
         let be = VulkanBackend::new();
-        assert_eq!(be.backend_name(), "vulkan-stub", "后端标识须跨平台稳定");
-        assert!(
-            !be.is_available(),
-            "渲染管线未实装 ⇒ is_available() 必须为 false（不得撒谎）"
+        assert_eq!(be.backend_name(), "vulkan-compute", "后端标识须跨平台稳定");
+        assert_eq!(
+            be.is_available(),
+            be.compute_available(),
+            "is_available 必须严格等同完整 dispatch 路径自检"
         );
+        if be.probed_device() {
+            assert!(
+                be.is_available(),
+                "有设备且自检跑通 ⇒ 必须报可用（否则 W3 闭环不成立）"
+            );
+            assert!(
+                be.device_name().is_some_and(|n| !n.is_empty()),
+                "可用却拿不到设备名 = 无法证明在哪个设备上跑过"
+            );
+        } else {
+            assert!(!be.is_available(), "无设备 ⇒ 不得报可用");
+            assert!(be.device_name().is_none(), "无设备 ⇒ 无设备名");
+        }
     }
 
     /// `render_scene` 返回**无效**空缓冲（而非 panic 或假帧）。
@@ -761,42 +872,52 @@ mod tests {
     ///
     /// 本测试同时是「`dlopen`/`dlclose` 配对」的烟雾证据：构造 N 次后仍能
     /// 正常返回（若句柄泄漏到耗尽则后续 `open` 会失败，但计数不变）。
+    /// 每次构造后都问一次 `is_available()`：有设备时这会把
+    /// 「建 instance → 建 device → 建/拆 compute 管线 → 提交 → 读回」
+    /// 整套真机资源生命周期跑 64 遍，任何一处漏释放/二次释放都会暴露。
     #[test]
     fn repeated_construction_is_stable_and_leak_free() {
         for _ in 0..64 {
             let be = VulkanBackend::new();
-            // 恒不可用（渲染未实装），且诊断量与之一致。
-            assert!(!be.is_available());
-            // 当前平台无可用 ICD 时，probed_device 应为 false；有可用 Vulkan 的
-            // 平台上可能为 true。此处不写死断言，避免恒真/恒假。
+            assert_eq!(
+                be.is_available(),
+                be.compute_available(),
+                "可用性口径在反复构造后不得漂移"
+            );
         }
     }
 
-    /// **环境自证（非恒真）**：`is_available()` 与「真实渲染能力」一致，
-    /// 且 `probed_device()` 与环境真实状态自洽。
+    /// **环境自证（非恒真）**：`is_available()` 必须与探测报告的**真实**状态
+    /// 自洽，而不是恒真/恒假。
     ///
-    /// 断言逻辑：无论是否有 Vulkan，`is_available()` **必须**为 `false`
-    /// （这是渲染未实装的不变量）；而 `probed_device()` 则**取决于环境**——
-    /// 本断言同时校验「若探测报告不可用，则 probed_device 必为 false」这一
-    /// 自洽性，使这条测试在两种环境下都刻画真实状态，而非恒真。
+    /// 有设备 ⇒ `probed_device()` 为真且自检必须跑通（本沙箱 lavapipe 走此分支）；
+    /// 无设备 ⇒ 二者同为假（诚实降级）。两条分支都不是空转断言。
     #[test]
     fn availability_is_consistent_with_probe_report() {
         let be = VulkanBackend::new();
         let report = VulkanBackend::probe();
 
-        // 不变量：渲染未实装 ⇒ 恒不可用（与环境无关）。
-        assert!(!be.is_available());
-
-        // 自洽性：探测报告不可用时，缓存中必不应有设备。
         if report.device_created {
             assert!(
                 be.probed_device(),
                 "probe() 报设备已创建，则 probed_device() 必须为 true"
             );
+            assert!(
+                be.is_available(),
+                "设备已创建且自检跑通 ⇒ is_available() 须为 true"
+            );
+            assert!(
+                be.device_name().is_some_and(|n| !n.is_empty()),
+                "设备已创建 ⇒ 必须有设备名"
+            );
         } else {
             assert!(
                 !be.probed_device(),
                 "probe() 报不可用，则 probed_device() 不得为 true"
+            );
+            assert!(
+                !be.is_available(),
+                "无设备 ⇒ is_available() 不得为 true"
             );
         }
     }
@@ -837,12 +958,14 @@ mod tests {
         assert_eq!(ProbeFailure::LoaderLoadFailed.as_str(), "loader-load-failed");
     }
 
-    /// `Default` 与 `new()` 行为一致（均不 panic、均不可用）。
+    /// `Default` 与 `new()` 行为一致（均不 panic、能力口径相同）。
     #[test]
     fn default_matches_new() {
-        let be = VulkanBackend::default();
-        assert!(!be.is_available());
-        assert_eq!(be.backend_name(), VulkanBackend::new().backend_name());
+        let by_default = VulkanBackend::default();
+        let by_new = VulkanBackend::new();
+        assert_eq!(by_default.backend_name(), by_new.backend_name());
+        assert_eq!(by_default.is_available(), by_new.is_available());
+        assert_eq!(by_default.device_name(), by_new.device_name());
     }
 
     /// **加载器边界（非 wasm）**：`loader::open()` 对不存在的库名返回 `None`。

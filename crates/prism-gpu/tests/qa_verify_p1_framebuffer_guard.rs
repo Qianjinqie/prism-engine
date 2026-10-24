@@ -243,18 +243,35 @@ fn g7_trait_defaults_present_and_non_panicking() {
     let c = CpuRefBackend;
     assert!(c.is_available(), "CpuRefBackend 恒可用");
     assert_eq!(c.backend_name(), "cpu-ref");
-    // VulkanBackend：**不得 panic**；不可用；返回空帧（而非 unimplemented!()）。
-    // 注：VulkanBackend 已升级为带探测上下文的实装，构造走
-    // `new()`；渲染管线仍未实装 ⇒ 语义断言不变（不可用 + 空帧 + 不 panic）。
+    // VulkanBackend：**不得 panic**；可用性严格等同「完整 compute dispatch
+    // 自检」，渲染管线仍未实装 ⇒ 恒返回空帧。
+    // 注：W3 起 `is_available()` 的口径从「恒 false（渲染未接）」改为
+    // 「mul2 探针真跑通且读回与 CPU 参考逐位一致才 true」——本机有 lavapipe
+    // 时该值为 true，无设备时为 false；两种环境都由下面的等式/蕴含断言刻画。
     let mut v = prism_gpu::vulkan::VulkanBackend::new();
-    assert!(!v.is_available(), "VulkanBackend 未接入 ⇒ is_available() 须为 false");
-    assert_eq!(v.backend_name(), "vulkan-stub");
+    assert_eq!(
+        v.is_available(),
+        v.compute_available(),
+        "is_available() 必须严格等同完整 dispatch 自检结果"
+    );
+    assert_eq!(v.backend_name(), "vulkan-compute");
+    if v.device_name().is_none() {
+        assert!(!v.is_available(), "无设备 ⇒ 必须诚实报不可用");
+    } else {
+        assert!(
+            v.is_available(),
+            "探测到了设备 ⇒ 完整 dispatch 闭环必须跑通（跑不通即真 bug，不许静默降级）"
+        );
+    }
     let t0 = Instant::now();
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| v.render_scene(&scene_req(64, 64))));
     let e = t0.elapsed();
     assert!(r.is_ok(), "VulkanBackend::render_scene 不得 panic（修前为 unimplemented!()）");
     let fb = r.expect("不应 panic");
-    assert!(!fb.is_valid(), "VulkanBackend 须返回空帧（调用方据此回退 CpuRefBackend）");
+    assert!(
+        !fb.is_valid(),
+        "渲染管线仍未实装 ⇒ 即便 compute 可用也须返回空帧（不得伪造出图）"
+    );
     assert!(fb.pixels.is_empty() && fb.width == 0 && fb.height == 0);
     println!("G7 VulkanBackend::render_scene 未 panic，耗时 = {e:?}");
 }

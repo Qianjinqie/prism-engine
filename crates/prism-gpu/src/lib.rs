@@ -8,10 +8,12 @@
 //! * [`CpuRefBackend`] — a real, runnable software ray-tracer (CPU reference).
 //! * [`vulkan::VulkanBackend`] — a native Vulkan backend with a real
 //!   run-time device-probe chain (hand-written `dlopen`/`dlsym` FFI, zero
-//!   third-party crates). The **render pipeline is not implemented yet**, so
-//!   it is **not renderable** ([`GpuDevice::is_available`] == `false`) and
-//!   `render_scene` returns an invalid [`Framebuffer::empty`]; callers fall
-//!   back to [`CpuRefBackend`] (always available).
+//!   third-party crates). The **compute dispatch path is real and verified**
+//!   (SPIR-V → pipeline → dispatch → fence → readback → bitwise CPU parity),
+//!   and [`GpuDevice::is_available`] reports `true` only when that full path
+//!   self-tests successfully. The **render pipeline is not implemented yet**,
+//!   so `render_scene` returns an invalid [`Framebuffer::empty`]; callers fall
+//!   back to [`CpuRefBackend`] (always available) based on the returned frame.
 //! * [`web::device::WebGpuBackend`] — the WebGPU path (hand-written browser
 //!   bindings) used by the wasm/mobile test link.
 //!
@@ -52,10 +54,12 @@ pub mod web;
 //
 // 手写 `dlopen`/`dlsym` + `#[repr(C)]` Vulkan struct 声明，**零第三方 crate**
 // （不引 `ash`/`vulkano`/`libloading`；D-15）。编译期不链接 `libvulkan`——
-// loader 在**运行期**探测，拿不到就不可用。当前实装设备探测链（instance /
-// physical device / device / graphics queue），**渲染管线尚未实装**：故
-// `is_available()` 如实恒为 `false`，`render_scene` 返回无效空缓冲（不撒谎）。
-// wasm32 下整个 `loader` 子模块被门禁剔除，`VulkanBackend` 恒报不可用。
+// loader 在**运行期**探测，拿不到就不可用。compute 闭环已真跑通：SPIR-V →
+// compute pipeline → 描述符 → dispatch → fence → 读回 → 与 CPU 参考逐位比对；
+// `is_available()` 只在**该闭环自检通过**时为 `true`（探测到设备不够）。
+// **渲染管线尚未实装**：`render_scene` 恒返回无效空缓冲（不撒谎），调用方
+// 仍须按返回帧的 `is_valid()` 回退 CPU。wasm32 下 `loader` 被门禁剔除，
+// `VulkanBackend` 恒报不可用。
 
 pub mod vulkan;
 
@@ -360,10 +364,17 @@ pub trait GpuDevice {
     /// [`Framebuffer::is_valid`]) instead.
     fn render_scene(&mut self, req: &SceneRenderRequest) -> Framebuffer;
 
-    /// Whether this backend can actually service [`GpuDevice::render_scene`] calls.
+    /// Whether this backend can actually perform real device work.
     ///
-    /// Callers should check this *before* rendering. Default `true` means "always
-    /// renderable" (true for [`CpuRefBackend`], which is pure software).
+    /// For render backends this means "can service [`GpuDevice::render_scene`]".
+    /// [`vulkan::VulkanBackend`] currently advertises its **verified compute
+    /// dispatch path** instead: the value is `true` only after a real kernel
+    /// run whose readback matches the CPU reference bit-for-bit. Its render
+    /// pipeline is still unimplemented, so `render_scene` keeps returning an
+    /// invalid buffer — callers that need frames must fall back to
+    /// [`CpuRefBackend`] based on the returned buffer's validity, not on this
+    /// flag. Default `true` means "always available" (correct for
+    /// [`CpuRefBackend`], which is pure software).
     fn is_available(&self) -> bool {
         true
     }
@@ -880,16 +891,26 @@ mod framebuffer_bounds {
         );
     }
 
-    /// 后端能力查询：Vulkan 桩不可用且渲染不 panic（返回空缓冲）。
+    /// 后端能力查询：Vulkan 的可用性 = **完整 compute dispatch 自检**，
+    /// 渲染管线未实装 ⇒ 恒返回空帧。
     ///
-    /// 注：Vulkan 已升级为带探测上下文的实装，构造走 `new()`；渲染管线
-    /// 仍未实装 ⇒ 语义不变（不可用 + 空帧）。
+    /// 语义（W3 起）：`is_available()` 只有在「mul2 探针真跑通且读回与 CPU
+    /// 参考逐位一致」时才为 `true`——有设备但管线被拒/读回不符仍为 `false`。
+    /// 无论真假，`render_scene` 都不得出图（渲染路径未接），也不得 panic。
     #[test]
-    fn vulkan_backend_is_unavailable_and_never_panics() {
+    fn vulkan_backend_capability_is_verified_and_render_stays_empty() {
         use crate::GpuDevice;
         let mut be = crate::vulkan::VulkanBackend::new();
-        assert!(!be.is_available(), "Vulkan 桩应报告不可用");
-        assert_eq!(be.backend_name(), "vulkan-stub");
+        assert_eq!(
+            be.is_available(),
+            be.compute_available(),
+            "is_available 必须严格等同完整 dispatch 自检"
+        );
+        assert_eq!(be.backend_name(), "vulkan-compute");
+        if !be.probed_device() {
+            assert!(!be.is_available(), "无设备时须诚实报不可用");
+            assert!(be.device_name().is_none());
+        }
 
         let req = tiny_request();
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

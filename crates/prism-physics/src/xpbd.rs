@@ -257,147 +257,15 @@ pub struct StepReport {
 // ---------------------------------------------------------------------------
 // 推进-停机模式声明（M3）与发散检测（E3）
 // ---------------------------------------------------------------------------
+//
+// W3：类型本体已上提为内核一等属性（`prism_core::fixpoint`，与环推进实例
+// 共用单一实现——模式元数据收拢进签名、发散检测单一判据）。此处按原路径
+// 重导出，physics 侧 API / 语义 / 错误码零变化。
 
-/// 求解器的推进-停机模式（求值层 §3.1 三定理查表的物理实例）。
-///
-/// XPBD 的数学定位（§3.1 命题 E2/E3）：约束投影 = 到凸集的投影 =
-/// **非扩张**（`Lip = 1`）⟹ 迭代不发散，但容差停机的误差界 `ε/(1−L)`
-/// 除零——**无先验误差界**；残差衰减是约束雅可比的**结构性衰减率**
-/// （逐类约束可证），不是 Banach 压缩假设。故 XPBD 唯一的诚实模式是
-/// **M3**：固定步数（子步数 × 迭代数显式标价）+ 残差记录（事后质量
-/// 指标）。M2（容差停机）对本求解器**不适用**——设了就是伪造 Banach
-/// 界，故不设其变体。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum SolveMode {
-    /// M3：固定步数 + 残差记录（无容差停机、无先验误差界）。
-    #[default]
-    FixedIterations,
-}
-
-/// 默认残差判定阈值 ε：与关卡 1 收敛判定同值（最终残余 < 1e-4）。
-///
-/// 两个用途都是**事后**（非停机判据）：① 残差质量指标判定；② 发散检测
-/// 的 ε 余量（见 [`DivergenceDetector`]）。
-pub const RESIDUAL_EPS_DEFAULT: f32 = 1e-4;
-
-/// 模式元数据：M3 声明 + 缓存键模式参数（求值层 §3.2 命题 S3 迭代层行：
-/// 迭代节点的缓存键必须含 (ε, n) 模式参数——模式元数据进签名）。
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct SolveModeMeta {
-    /// 模式声明（M3）。
-    pub mode: SolveMode,
-    /// 子步数（固定标价；缓存键分量）。
-    pub substeps: u32,
-    /// 迭代数 n（固定标价；缓存键分量——宿主会话自构造起即把它计入签名）。
-    pub iterations: u32,
-    /// 残差判定阈值 ε（缓存键分量；事后质量指标，非停机判据）。
-    pub residual_eps: f32,
-}
-
-impl SolveModeMeta {
-    /// 构造 M3 模式元数据（(ε, n) 显式标价，供签名 / 缓存键收拢）。
-    pub fn new(substeps: u32, iterations: u32, residual_eps: f32) -> Self {
-        Self { mode: SolveMode::FixedIterations, substeps, iterations, residual_eps }
-    }
-}
-
-/// 发散检测默认窗口：连续 3 个采样点残差上升超 ε 余量判发散（E3 推论
-/// (c)：不是单步不降——收敛平台期的单步抖动是正常微振）。
-pub const DIVERGENCE_WINDOW_DEFAULT: usize = 3;
-
-/// 发散检测器（§3.1 命题 E3 推论 (c) 的工程化）：对残差采样序列做事后
-/// 趋势判定。
-///
-/// 推理链：复合投影 `Φ = P_n ∘ … ∘ P_1` 的 `Lip(Φ) ≤ Π_i Lip(P_i)`；凸
-/// 投影 `Lip = 1`（E2 安全），非凸 / 折叠约束可 `> 1`（有发散风险）。
-/// 有限精度下 `Lip = 1` 的**边界情形**（`1 + O(ε_machine)`）在长迭代中
-/// 显现为残差**缓慢上升**——判据必须是「**连续 `window` 个采样点的上升量
-/// 超过 ε 余量**」：单步不降在收敛平台期正常出现（微振），不构成发散
-/// 证据；ε 余量把平台抖动与真实上升区分开。
-///
-/// 只观测、不改写：不接入求解循环（求解器语义零变化），采样粒度由调用方
-/// 选定（如会话层每帧末残差，或对 [`StepReport::residuals`] 事后扫描）。
-#[derive(Debug, Clone)]
-pub struct DivergenceDetector {
-    /// 连续上升步数阈值（≥ 1）。
-    window: usize,
-    /// 上升判定余量 ε（上升量 ≤ ε 视为平台抖动，不计）。
-    margin: f32,
-    /// 上一采样点残差。
-    prev: Option<f32>,
-    /// 当前连续上升步数。
-    streak: usize,
-    /// 已喂入的采样点数。
-    samples: usize,
-    /// 最近一次观测后的发散状态（连续上升达窗口 = true）。
-    diverged: bool,
-}
-
-impl DivergenceDetector {
-    /// 构造（`window` ≥ 1；`margin` 负值钳为 0）。
-    pub fn new(window: usize, margin: f32) -> Self {
-        Self {
-            window: window.max(1),
-            margin: if margin > 0.0 { margin } else { 0.0 },
-            prev: None,
-            streak: 0,
-            samples: 0,
-            diverged: false,
-        }
-    }
-
-    /// 喂入一个残差采样点。返回 `true` = 当前处于「连续 `window` 步上升
-    /// 超 ε 余量」的发散状态（E3 判据）。
-    ///
-    /// NaN 输入：全部比较为 false ⟹ 不计上升（streak 归零）。非有限残差
-    /// 的健康判定归调用方的有限值守卫（如 `hair::stabilize`）——本检测器
-    /// 只做趋势判定，不越权吞掉也不改写（C20）。
-    pub fn observe(&mut self, residual: f32) -> bool {
-        self.samples += 1;
-        self.diverged = match self.prev {
-            Some(prev) if residual > prev + self.margin => {
-                self.streak += 1;
-                self.streak >= self.window
-            }
-            _ => {
-                self.streak = 0;
-                false
-            }
-        };
-        self.prev = Some(residual);
-        self.diverged
-    }
-
-    /// 当前是否处于发散状态（连续上升达窗口）。
-    pub fn diverged(&self) -> bool {
-        self.diverged
-    }
-
-    /// 当前连续上升步数。
-    pub fn streak(&self) -> usize {
-        self.streak
-    }
-
-    /// 已喂入的采样点数。
-    pub fn samples(&self) -> usize {
-        self.samples
-    }
-
-    /// 清零趋势状态（保留窗口 / 余量配置；切换场景时用）。
-    pub fn reset(&mut self) {
-        self.prev = None;
-        self.streak = 0;
-        self.samples = 0;
-        self.diverged = false;
-    }
-
-    /// 批量扫描残差序列（事后审计 / 测试用；语义等价于逐点
-    /// [`Self::observe`]，任一点触发即返回 `true`）。
-    pub fn scan(samples: &[f32], window: usize, margin: f32) -> bool {
-        let mut detector = Self::new(window, margin);
-        samples.iter().any(|&r| detector.observe(r))
-    }
-}
+pub use prism_core::fixpoint::{
+    DivergenceDetector, SolveMode, SolveModeMeta, DIVERGENCE_WINDOW_DEFAULT,
+    RESIDUAL_EPS_DEFAULT,
+};
 
 /// XPBD 世界：粒子集 + 约束集 + 常量重力 + 求解循环。
 ///

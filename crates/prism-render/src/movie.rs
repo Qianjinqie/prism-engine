@@ -35,13 +35,16 @@
 //!   与缓存键不误复用（求值层 §3.2 S3 迭代层缓存键 (ε, n) 纪律）；
 //! - **seek 等价**：跨帧状态经 [`prism_core::node::SnapshotStore`]（键 =
 //!   (签名, 场景内帧号)）顺序延续 / 快照装配；冷 seek（帧 > 0 且前驱快照
-//!   缺失）结构化报错 `P3012`，绝不静默 fallback 到初态；
+//!   缺失）结构化报错 `P3012`，绝不静默 fallback 到初态。驱动本体已上提为
+//!   内核环实例 [`prism_core::fixpoint::LoopDriver`]（与时间实例同风格），
+//!   本模块只保留 XPBD 状态编解码与宿主层参数 / 错误码映射；
 //! - **同参数永远同画面**：sim 全部解算参数必须逐帧逐位一致（Const 通道
 //!   天然满足）；时变参数显式报错 `R5017`——时变外力族属扩展位；
-//! - **依赖边界**：prism-render 不依赖 prism-physics（无此路径边），求解器
-//!   在本模块内自包含实装，数值纪律逐位对齐 `prism-physics` 的
+//! - **依赖边界**：prism-render 不依赖 prism-physics（无此路径边），XPBD
+//!   求解核在本模块自包含实装，数值纪律逐位对齐 `prism-physics` 的
 //!   `xpbd.rs` / `session.rs`（半隐式欧拉 + XPBD 投影、约束按 id 升序
-//!   Gauss-Seidel、λ 每子步清零、仅 IEEE 基本运算）。
+//!   Gauss-Seidel、λ 每子步清零、仅 IEEE 基本运算）；帧内 M3 定数迭代走
+//!   内核 [`prism_core::fixpoint::run_fixed_point`]（残差记录 + 发散观测）。
 //!
 //! # 时间线语义（由 `CompileV2Output` 数据自身表达，无隐式开关）
 //! - 帧 `t` 落入唯一场景区间 → 该场景帧；
@@ -54,14 +57,17 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use prism_core::fixpoint::{
+    loop_frame_signature, run_fixed_point, LoopCodec, LoopDriver, SolveModeMeta,
+    RESIDUAL_EPS_DEFAULT,
+};
 use prism_core::node::{Hash256, NodeBinding, ParamValue, SnapshotStore};
 use prism_core::property::{sample_binding, PropertyChannel};
 use prism_core::sceneseq::{dissolve_hash, mix_u8, push_c, wipe_weight, PushDir, W_ONE};
-use prism_core::signature::{
-    channel_definition_hash, node_signature, snapshot_signature, ChannelDef, ChannelDefs,
-    SignatureError,
+use prism_core::signature::{ChannelDef, ChannelDefs, SignatureError};
+use prism_core::{
+    Aesthetic, Camera, EvalCtx, EvalError, Graph, Light, Material, Scene, StructureId,
 };
-use prism_core::{Aesthetic, Camera, EvalCtx, Graph, Light, Material, Scene, StructureId};
 use prism_dsl::{CompileV2Output, SceneV2, TransitionV2};
 use prism_gpu::{Framebuffer, GpuDevice};
 use prism_math::Vec3;
@@ -438,10 +444,10 @@ pub fn sim_frame_signature(
     iterations: u32,
     residual_eps: f32,
 ) -> MovieResult<Hash256> {
-    let mode: SimMode = SimMode { substeps, iterations, residual_eps };
-    mode.validate(node_id)?;
+    let mode: SolveModeMeta = SolveModeMeta::new(substeps, iterations, residual_eps);
+    validate_sim_mode(&mode, node_id)?;
     let defs: ChannelDefs = channel_defs_of(compile)?;
-    sim_signature_with_mode(&compile.graph, node_id, &defs, mode).map_err(signature_err)
+    loop_frame_signature(&compile.graph, node_id, &defs, &mode).map_err(signature_err)
 }
 
 // ---------------------------------------------------------------------------
@@ -661,16 +667,12 @@ const SIM_NOISE_DEFAULT: f32 = 0.1;
 const SIM_SUBSTEPS_DEFAULT: u32 = 4;
 /// 迭代数缺省（XPBD 刚度与迭代解耦：多迭代只降残差不改刚度）。
 const SIM_ITERATIONS_DEFAULT: u32 = 8;
-/// 残差判定阈值缺省（事后质量指标，非停机判据；M3 无容差停机）。
-const SIM_RESIDUAL_EPS_DEFAULT: f32 = 1e-4;
 /// sim 世界网格跨度（x/z 方向物理尺寸）。
 const SIM_SPAN: f32 = 2.4;
 /// sim 网格悬挂高度（顶行固定粒子的 y）。
 const SIM_HEIGHT: f32 = 1.5;
 /// 粒子叠加圆点颜色（暖橙，不透明写值）。
 const SIM_DOT_COLOR: [u8; 3] = [255, 176, 66];
-/// 发散检测窗口（E3：连续 3 帧末残差上升超 ε 余量才判发散，不是单步）。
-const SIM_DIVERGENCE_WINDOW: usize = 3;
 
 /// 严格读 f32 参数（sim 物理 / 模式参数用）：缺失 → 缺省；存在但非 F32 或
 /// 非有限 → 三段式报错（C20：缺省只覆盖"未声明"，不覆盖"声明了坏值"）。
@@ -715,88 +717,53 @@ fn sim_u32(
 
 /// 求解模式（M3 固定步数）：子步数 × 迭代数显式标价 + 残差阈值。
 ///
-/// 三元组即帧签名的组成部分（求值层 §3.2 S3 迭代层缓存键 (ε, n)）：
-/// 改任一 ⇒ 签名变 ⇒ 快照 / 缓存键不误复用。M2（容差停机）对本求解器
-/// 不适用——约束投影非扩张无先验误差界，容差停机即伪造 Banach 界。
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct SimMode {
-    /// 子步数（固定标价；缓存键分量）。
-    substeps: u32,
-    /// 迭代数 n（固定标价；缓存键分量）。
-    iterations: u32,
-    /// 残差判定阈值 ε（缓存键分量；事后质量指标，非停机判据）。
-    residual_eps: f32,
-}
-
-impl SimMode {
-    /// 从（解算后的）参数读模式：缺省 4 子步 × 8 迭代 × 1e-4；非法显式
-    /// 报错 R5018（C18/C21：无静默兜底——步数固定是确定性纪律）。
-    fn of_params(params: &prism_core::Params, node_id: u64) -> MovieResult<SimMode> {
-        let substeps: u32 = sim_u32(params, "substeps", SIM_SUBSTEPS_DEFAULT, node_id, "R5018")?;
-        let iterations: u32 = sim_u32(params, "iterations", SIM_ITERATIONS_DEFAULT, node_id, "R5018")?;
-        let residual_eps: f32 =
-            sim_f32(params, "residual_eps", SIM_RESIDUAL_EPS_DEFAULT, node_id, "R5018")?;
-        let mode: SimMode = SimMode { substeps, iterations, residual_eps };
-        mode.validate(node_id)?;
-        Ok(mode)
-    }
-
-    /// 模式防呆（C18/C21）：子步数 / 迭代数 ≥ 1，残差阈值正有限。
-    fn validate(&self, node_id: u64) -> MovieResult<()> {
-        if self.substeps == 0 {
-            return Err(RenderError::new(
-                "R5018",
-                format!("sim 节点 {node_id} 的模式参数 substeps"),
-                "子步数必须 ≥ 1（子步数固定是确定性纪律）".to_string(),
-                format!("substeps 传 ≥ 1 的整数，参考标价 {SIM_SUBSTEPS_DEFAULT}（小步比多迭代稳）"),
-            ));
-        }
-        if self.iterations == 0 {
-            return Err(RenderError::new(
-                "R5018",
-                format!("sim 节点 {node_id} 的模式参数 iterations"),
-                "迭代数必须 ≥ 1（迭代数固定是确定性纪律）".to_string(),
-                format!("iterations 传 ≥ 1 的整数，参考标价 {SIM_ITERATIONS_DEFAULT}（刚度与迭代解耦）"),
-            ));
-        }
-        if !(self.residual_eps.is_finite() && self.residual_eps > 0.0) {
-            return Err(RenderError::new(
-                "R5018",
-                format!("sim 节点 {node_id} 的模式参数 residual_eps"),
-                format!("残差阈值必须为正有限数，却得到 {}", self.residual_eps),
-                format!("residual_eps 传正数，参考标价 {SIM_RESIDUAL_EPS_DEFAULT}"),
-            ));
-        }
-        Ok(())
-    }
-}
-
-/// sim 模式元数据的通道定义编码（tag = 0x5333「S3」；判别 0（M3 固定步数，
-/// 唯一模式）++ substeps ++ iterations ++ residual_eps 位模式，大端）。
+/// 类型本体已上提为 `prism_core::fixpoint::SolveModeMeta`（内核一等属性）：
+/// `(ε, n)` 经 `solve_mode_def`（tag 0x5333）进帧签名（求值层 §3.2 S3 迭代层
+/// 缓存键纪律）。此处只保留**宿主层参数解算与 R5xxx 错误码映射**——防呆语义
+/// 与内核一致，码段按 render 成片直达族（R5018）报出。
 ///
-/// 签名只消费相等性、不解读内容（与 `ChannelDefs` 契约同款）。
-fn sim_mode_def(mode: SimMode) -> ChannelDef {
-    let mut def_bytes: Vec<u8> = Vec::with_capacity(13);
-    def_bytes.push(0u8);
-    def_bytes.extend_from_slice(&mode.substeps.to_be_bytes());
-    def_bytes.extend_from_slice(&mode.iterations.to_be_bytes());
-    def_bytes.extend_from_slice(&mode.residual_eps.to_bits().to_be_bytes());
-    ChannelDef { tag: 0x5333, def_bytes }
+/// M2（容差停机）对本求解器不适用——约束投影非扩张无先验误差界，容差停机
+/// 即伪造 Banach 界（`xpbd.rs` 模块文档成文纪律）。
+fn sim_mode_of_params(params: &prism_core::Params, node_id: u64) -> MovieResult<SolveModeMeta> {
+    let substeps: u32 = sim_u32(params, "substeps", SIM_SUBSTEPS_DEFAULT, node_id, "R5018")?;
+    let iterations: u32 = sim_u32(params, "iterations", SIM_ITERATIONS_DEFAULT, node_id, "R5018")?;
+    let residual_eps: f32 =
+        sim_f32(params, "residual_eps", RESIDUAL_EPS_DEFAULT, node_id, "R5018")?;
+    let mode: SolveModeMeta = SolveModeMeta::new(substeps, iterations, residual_eps);
+    validate_sim_mode(&mode, node_id)?;
+    Ok(mode)
 }
 
-/// sim 帧签名：节点子图签名（参数 canonical + 绑定通道定义哈希）再经模式
-/// 元数据通道定义哈希链收拢——(ε, n) 自此进签名 / 缓存键。
-fn sim_signature_with_mode(
-    graph: &Graph,
-    id: u64,
-    defs: &ChannelDefs,
-    mode: SimMode,
-) -> Result<Hash256, SignatureError> {
-    let subgraph: Hash256 = node_signature(graph, id, defs)?;
-    Ok(snapshot_signature(
-        &subgraph,
-        &[channel_definition_hash(&sim_mode_def(mode))],
-    ))
+/// 模式防呆（C18/C21）：子步数 / 迭代数 ≥ 1，残差阈值正有限。
+///
+/// 与内核 `SolveModeMeta::validate` 同判据；此处按 render 错误码段（R5018）
+/// 与 sim 节点定位报出（宿主层可行动建议）。
+fn validate_sim_mode(mode: &SolveModeMeta, node_id: u64) -> MovieResult<()> {
+    if mode.substeps == 0 {
+        return Err(RenderError::new(
+            "R5018",
+            format!("sim 节点 {node_id} 的模式参数 substeps"),
+            "子步数必须 ≥ 1（子步数固定是确定性纪律）".to_string(),
+            format!("substeps 传 ≥ 1 的整数，参考标价 {SIM_SUBSTEPS_DEFAULT}（小步比多迭代稳）"),
+        ));
+    }
+    if mode.iterations == 0 {
+        return Err(RenderError::new(
+            "R5018",
+            format!("sim 节点 {node_id} 的模式参数 iterations"),
+            "迭代数必须 ≥ 1（迭代数固定是确定性纪律）".to_string(),
+            format!("iterations 传 ≥ 1 的整数，参考标价 {SIM_ITERATIONS_DEFAULT}（刚度与迭代解耦）"),
+        ));
+    }
+    if !(mode.residual_eps.is_finite() && mode.residual_eps > 0.0) {
+        return Err(RenderError::new(
+            "R5018",
+            format!("sim 节点 {node_id} 的模式参数 residual_eps"),
+            format!("残差阈值必须为正有限数，却得到 {}", mode.residual_eps),
+            format!("residual_eps 传正数，参考标价 {RESIDUAL_EPS_DEFAULT}"),
+        ));
+    }
+    Ok(())
 }
 
 /// 签名计算错误 → 三段式渲染错误（码段透传：P3xxx 属图 / 签名族）。
@@ -1094,8 +1061,19 @@ impl SimSpec {
     ///    （Δλ = (−C − α̃λ)/(Σw + α̃)，α̃ = compliance/h²）；
     /// ③ 速度更新 `v = (x − x_prev)/h`；
     /// ④ 帧末阻尼 `v *= (1 − damping)`（显式外挂，不进投影）。
-    /// 返回帧末最大约束残余 |C|（M3 残差指标，喂发散检测）。
-    fn step(&self, particles: &mut [SimParticle], mode: SimMode, dt: f32) -> f32 {
+    ///
+    /// ② 的每子步 n 轮迭代走内核环实例 `prism_core::fixpoint::run_fixed_point`
+    /// （M3 定数 + 逐轮残差记录 + 发散观测；λ 在 `lambdas` 里跨轮存活，
+    /// 只在子步边界清零——X ⊕ Λ 语义）。返回帧末最大约束残余 |C|（喂驱动层
+    /// 的帧级发散检测）。
+    fn step(
+        &self,
+        particles: &mut Vec<SimParticle>,
+        mode: &SolveModeMeta,
+        dt: f32,
+    ) -> Result<f32, EvalError> {
+        // 契约：报错时状态必须未被推进——校验先于预测（驱动层的 Err 约定）。
+        mode.validate("sim 求解步（环推进参数）")?;
         let h: f32 = dt / mode.substeps as f32;
         let force_h: Vec3 = self.force * h;
         let mut lambdas: Vec<f32> = vec![0.0f32; self.constraints.len()];
@@ -1115,22 +1093,15 @@ impl SimSpec {
             for l in &mut lambdas {
                 *l = 0.0;
             }
-            for _ in 0..mode.iterations {
-                for (ci, c) in self.constraints.iter().enumerate() {
-                    let lambda = &mut lambdas[ci];
-                    project_distance(c, particles, h, lambda);
+            let constraints: &[SimConstraint] = &self.constraints;
+            let mut scan = |ps: &mut Vec<SimParticle>| -> f32 {
+                for (ci, c) in constraints.iter().enumerate() {
+                    project_distance(c, ps, h, &mut lambdas[ci]);
                 }
-            }
-            // 帧级残差采样（本子步末最大 |C|；纪律 3 的免费质量指标）。
-            let mut max_r: f32 = 0.0;
-            for c in &self.constraints {
-                let d: Vec3 = particles[c.a].position - particles[c.b].position;
-                let r: f32 = d.length() - c.rest_length;
-                if r.abs() > max_r {
-                    max_r = r.abs();
-                }
-            }
-            residual = max_r;
+                max_distance_residual(ps.as_slice(), constraints)
+            };
+            let report = run_fixed_point(particles, &mut scan, mode)?;
+            residual = report.final_residual().unwrap_or(0.0);
             // ③ 速度更新（固定粒子速度归零，与 xpbd 同口径）。
             let inv_h: f32 = 1.0 / h;
             for p in particles.iter_mut() {
@@ -1144,8 +1115,21 @@ impl SimSpec {
                 p.velocity = p.velocity * keep;
             }
         }
-        residual
+        Ok(residual)
     }
+}
+
+/// 约束集的最大 |C|（M3 残差读数；纪律 3 的免费质量指标）。
+fn max_distance_residual(particles: &[SimParticle], constraints: &[SimConstraint]) -> f32 {
+    let mut max_r: f32 = 0.0;
+    for c in constraints {
+        let d: Vec3 = particles[c.a].position - particles[c.b].position;
+        let r: f32 = d.length() - c.rest_length;
+        if r.abs() > max_r {
+            max_r = r.abs();
+        }
+    }
+    max_r
 }
 
 /// 距离约束投影一步（XPBD 论文 §3；与 `xpbd.rs` 的 `DistanceConstraint::project`
@@ -1232,68 +1216,28 @@ fn sim_decode_state(bytes: &[u8]) -> Option<(Vec<Vec3>, Vec<Vec3>)> {
     Some((positions, velocities))
 }
 
-/// 发散趋势检测（E3 工程化，对齐 `prism-physics` 的 `DivergenceDetector`）：
-/// 连续 `SIM_DIVERGENCE_WINDOW` 帧末残差上升超 ε 余量才判发散——单步不降
-/// 是收敛平台期的正常微振，不构成发散证据。只观测、不改写（求解语义零变化）。
-#[derive(Debug, Clone)]
-struct SimDivergence {
-    prev: Option<f32>,
-    streak: usize,
-    diverged: bool,
-}
-
-impl SimDivergence {
-    fn new() -> Self {
-        Self { prev: None, streak: 0, diverged: false }
-    }
-
-    /// 喂入一个帧末残差采样点；返回当前是否处于发散状态。
-    /// NaN 输入：全部比较为 false ⟹ 不计上升（非有限残差的健康判定归调用方）。
-    fn observe(&mut self, residual: f32, margin: f32) -> bool {
-        self.diverged = match self.prev {
-            Some(prev) if residual > prev + margin => {
-                self.streak += 1;
-                self.streak >= SIM_DIVERGENCE_WINDOW
-            }
-            _ => {
-                self.streak = 0;
-                false
-            }
-        };
-        self.prev = Some(residual);
-        self.diverged
-    }
-
-    fn diverged(&self) -> bool {
-        self.diverged
-    }
-}
-
-/// sim 运行时（有状态）：当前粒子状态 + 已加载 (签名, 场景内帧号)。
+/// sim 运行时（有状态）：规格模板 + 内核环驱动（[`LoopDriver`]）。
 ///
-/// 状态机不变式：`loaded` 为真时 `particles` 是 `(sig, frame)` 的精确状态；
-/// 快照库是纯数据资产（非隐藏全局），命中与否只影响重算量、不影响结果。
+/// 帧循环语义（幂等 / 顺序延续 / 快照装配 / 首帧初态 / 冷 seek P3012）已
+/// 上提为 `prism-core::fixpoint` 的通用环实例——本类型只剩宿主层职责：规格
+/// 解算参数比对、dt 与错误码映射（EvalError → R5xxx），不再自带第二套 seek
+/// 状态机。
 #[derive(Debug)]
 struct SimRuntime {
     node_id: u64,
     spec: SimSpec,
-    mode: SimMode,
     dt: f32,
     /// 规格解算参数的 canonical 字节（时变检测基线；同参数永远同画面）。
     params_canonical: Vec<u8>,
-    /// 当前粒子状态（跨帧状态 = 位置 + 速度）。
-    particles: Vec<SimParticle>,
-    sig: Hash256,
-    frame: u64,
-    loaded: bool,
-    divergence: SimDivergence,
+    /// 通用环驱动：X = 粒子（位置 + 速度），帧 = 一次 `spec.step`。
+    driver: LoopDriver<Vec<SimParticle>, SimCodec>,
 }
 
 impl SimRuntime {
     /// 构造运行时（防呆：dt / 模式 / 规格非法显式报错，无静默兜底）。
     fn new(
         spec: SimSpec,
-        mode: SimMode,
+        mode: SolveModeMeta,
         dt: f32,
         params_canonical: Vec<u8>,
         node_id: u64,
@@ -1306,121 +1250,84 @@ impl SimRuntime {
                 "dt 取 1/fps（正值）".to_string(),
             ));
         }
-        mode.validate(node_id)?;
+        validate_sim_mode(&mode, node_id)?;
         spec.validate(node_id)?;
-        Ok(Self {
-            node_id,
-            particles: spec.particles.clone(),
-            spec,
+        let driver: LoopDriver<Vec<SimParticle>, SimCodec> = LoopDriver::new(
+            format!("sim 节点 {node_id}"),
+            spec.particles.clone(),
+            SimCodec {
+                inv_mass: spec.particles.iter().map(|p| p.inv_mass).collect(),
+            },
             mode,
-            dt,
-            params_canonical,
-            sig: [0u8; 32],
-            frame: 0,
-            loaded: false,
-            divergence: SimDivergence::new(),
-        })
+        )
+        .map_err(loop_error)?;
+        Ok(Self { node_id, spec, dt, params_canonical, driver })
     }
 
-    /// 推进 / 求值到 (sig, local)（语义对齐 `prism-core::eval` 的
-    /// ConstraintFlow 帧循环接线 + `prism-physics::SimSession` 的快照装配）：
-    /// ① 幂等（同 (签名, 帧) 重入直接返回）；
-    /// ② 顺序延续（已加载同签名且目标在前方）——逐帧步进并写快照；
-    /// ③ 快照装配（目标帧命中：seek 回退 / 预热后跳帧）；
-    /// ④ 首帧初态（local == 0：规格初态入库，(sig, 0) 恒可恢复）；
-    /// ⑤ 前驱命中（恢复 (sig, local−1) 再步进一帧）；
-    /// ⑥ 冷 seek / 断档 → `P3012` 结构化报错（绝不静默 fallback 到初态——
-    ///    那会把 seek 断档变成语义级静默错误，eval.rs 明令禁止）。
+    /// 推进 / 求值到 (sig, local)：帧循环六分支（幂等 / 顺序延续 / 快照装配 /
+    /// 首帧初态 / 前驱命中 / 冷 seek P3012）由内核 [`LoopDriver`] 执行——语义
+    /// 与 `prism-core::eval` 的 ConstraintFlow 接线同构，绝不静默 fallback。
     fn advance_to(&mut self, sig: Hash256, local: u64, store: &mut SnapshotStore) -> MovieResult<()> {
-        // ① 幂等。
-        if self.loaded && self.sig == sig && self.frame == local {
-            return Ok(());
-        }
-        // ② 顺序延续（同签名且已加载帧在目标前方）。
-        if self.loaded && self.sig == sig && local > self.frame {
-            for f in (self.frame + 1)..=local {
-                self.step_frame(sig, f, store)?;
-            }
-            return Ok(());
-        }
-        // ③ 快照装配（目标帧命中）。
-        if let Some(bytes) = store.get(&(sig, local)) {
-            if let Some((positions, velocities)) = sim_decode_state(bytes) {
-                if self.set_state(&positions, &velocities) {
-                    self.sig = sig;
-                    self.frame = local;
-                    self.loaded = true;
-                    return Ok(());
-                }
-            }
-            // 字节不识别 / 粒子数不符 → 断档，落入后续分支。
-        }
-        // ④ 首帧初态。
-        if local == 0 {
-            self.particles = self.spec.particles.clone();
-            self.sig = sig;
-            self.frame = 0;
-            self.loaded = true;
-            store.insert((sig, 0), sim_state_bytes(&self.particles));
-            return Ok(());
-        }
-        // ⑤ 前驱命中：恢复 (sig, local−1) 再步进一帧。
-        if let Some(bytes) = store.get(&(sig, local - 1)) {
-            if let Some((positions, velocities)) = sim_decode_state(bytes) {
-                if self.set_state(&positions, &velocities) {
-                    self.sig = sig;
-                    self.step_frame(sig, local, store)?;
-                    return Ok(());
-                }
-            }
-        }
-        // ⑥ 冷 seek / 断档：结构化报错（C20；修复责任交还调用方）。
-        Err(RenderError::new(
-            "P3012",
-            format!("sim 帧循环（节点 {}，场景内帧 {local}）", self.node_id),
-            format!(
-                "帧间状态缺失：场景内帧 {local} 求值，但快照 (sig, {}) 不存在——seek 断档或缓存未顺序预热",
-                local - 1
-            ),
-            format!(
-                "从场景首帧起顺序求值（render_movie 全片渲染，或对同一 SimTimeline 逐帧调用 render_movie_frame，快照库随帧累积），或为该节点显式提供帧 {} 的初态快照",
-                local - 1
-            ),
-        ))
-    }
-
-    /// 步进一帧并写快照（当前签名键下）。
-    fn step_frame(&mut self, sig: Hash256, local: u64, store: &mut SnapshotStore) -> MovieResult<()> {
         // 防御性再查（C20：构造期验过 ≠ 永远合法）。
         self.spec.validate(self.node_id)?;
-        // 步进运行时活状态（规格是不可变模板——只读其外力 / 约束集）。
-        let residual: f32 = self.spec.step(&mut self.particles, self.mode, self.dt);
-        // M3 残差记录的下游消费者（E3）：帧末残差喂入发散检测——只观测。
-        self.divergence.observe(residual, self.mode.residual_eps);
-        self.frame = local;
-        store.insert((sig, local), sim_state_bytes(&self.particles));
-        Ok(())
+        let spec: &SimSpec = &self.spec;
+        let dt: f32 = self.dt;
+        let mode: SolveModeMeta = self.driver.mode();
+        self.driver
+            .advance_to(sig, local, store, |particles| spec.step(particles, &mode, dt))
+            .map_err(loop_error)
     }
 
-    /// 用外部状态覆写粒子 pos/vel（快照装配路径）。
-    ///
-    /// 长度不符返回 `false`（调用方按未命中处理，绝不部分覆写——C20）。
-    /// `inv_mass` 是构型属性（随规格保留），不属跨帧状态。
-    fn set_state(&mut self, positions: &[Vec3], velocities: &[Vec3]) -> bool {
-        if positions.len() != self.particles.len() || velocities.len() != self.particles.len() {
-            return false;
-        }
-        for (p, (&pos, &vel)) in self
-            .particles
-            .iter_mut()
-            .zip(positions.iter().zip(velocities.iter()))
-        {
-            p.position = pos;
-            p.velocity = vel;
-            p.prev_position = pos;
-        }
-        true
+    /// 当前粒子状态（跨帧状态 = 位置 + 速度）。
+    fn particles(&self) -> &[SimParticle] {
+        self.driver.state()
     }
+
+    /// 当前运行时是否处于发散趋势（E3 事后指标）。
+    fn diverged(&self) -> bool {
+        self.driver.diverged()
+    }
+}
+
+/// 粒子状态的快照编解码：载荷 = [`sim_state_bytes`]；解码以规格的
+/// `inv_mass` 向量回填构型属性（逆质量不属跨帧状态）。粒子数不符 / 字节
+/// 不识别 → `None`（按快照未命中处理，绝不部分覆写——C20）。
+#[derive(Debug)]
+struct SimCodec {
+    /// 每粒子逆质量（构型属性；位置 / 速度之外的唯一解码回填项）。
+    inv_mass: Vec<f32>,
+}
+
+impl LoopCodec<Vec<SimParticle>> for SimCodec {
+    fn encode(&self, state: &Vec<SimParticle>) -> Vec<u8> {
+        sim_state_bytes(state)
+    }
+
+    fn decode(&self, bytes: &[u8]) -> Option<Vec<SimParticle>> {
+        let (positions, velocities) = sim_decode_state(bytes)?;
+        if positions.len() != self.inv_mass.len() || velocities.len() != self.inv_mass.len() {
+            return None;
+        }
+        Some(
+            positions
+                .iter()
+                .zip(velocities.iter())
+                .zip(self.inv_mass.iter())
+                .map(|((&pos, &vel), &inv_mass)| SimParticle {
+                    position: pos,
+                    prev_position: pos,
+                    velocity: vel,
+                    inv_mass,
+                })
+                .collect(),
+        )
+    }
+}
+
+/// 内核环错误 → render 三段式（码段透传：P3xxx 属图 / seek 族；三段式字段
+/// 原样保留，修复建议已是可行动文本）。
+fn loop_error(err: EvalError) -> RenderError {
+    RenderError::new(err.code, err.location, err.problem, err.fix)
 }
 
 /// sim 时间线：一部影片的全部 sim 运行时 + 跨帧快照库（纯数据资产）。
@@ -1452,7 +1359,7 @@ impl SimTimeline {
 
     /// 任一 sim 运行时是否处于发散趋势（E3 事后指标；只观测、不改写）。
     pub fn diverged(&self) -> bool {
-        self.runtimes.values().any(|rt| rt.divergence.diverged())
+        self.runtimes.values().any(|rt| rt.diverged())
     }
 
     /// 推进一个 sim 节点到影片帧 `movie_frame`（场景内帧号 = movie_frame −
@@ -1472,9 +1379,9 @@ impl SimTimeline {
         let resolved: prism_core::Params = resolve_params(node, channels, t, movie_frame);
         let canonical: Vec<u8> = resolved.to_canonical_bytes();
         // 模式元数据取解算值（(ε, n) 进签名——S3 迭代层缓存键纪律）。
-        let mode: SimMode = SimMode::of_params(&resolved, node.id)?;
+        let mode: SolveModeMeta = sim_mode_of_params(&resolved, node.id)?;
         let sig: Hash256 =
-            sim_signature_with_mode(graph, node.id, defs, mode).map_err(signature_err)?;
+            loop_frame_signature(graph, node.id, defs, &mode).map_err(signature_err)?;
         if movie_frame < base_frame {
             return Err(RenderError::new(
                 "R5019",
@@ -1504,7 +1411,7 @@ impl SimTimeline {
             ));
         }
         rt.advance_to(sig, local, &mut self.store)?;
-        Ok(&rt.particles)
+        Ok(rt.particles())
     }
 }
 

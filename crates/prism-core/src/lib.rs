@@ -52,6 +52,9 @@ pub mod nodes;
 // v1.5-C（ADR-18）：转场类型下沉 + 场景序列（u8 整数混合 / 凸权重半群 /
 // Morph 几何核心）。零浮点、零第三方、同输入两跑 bitwise 相同。
 pub mod sceneseq;
+// W3：环推进（不动点迭代）——推进-停机四元组的环实例（M3 定数迭代 + 残差
+// 记录 + 发散检测 + 帧间 seek 驱动）。语义权威见 `docs/设计/研究/环推进-不动点实例.md`。
+pub mod fixpoint;
 
 pub use node::{EvalCtx, Node, NodeId, Params, Payload, SampleIndex, StructureId};
 pub use registry::{NodeRegistry, RegistryError};
@@ -72,6 +75,11 @@ pub use eval::{
     EvalOutput, SamplePlane,
 };
 pub use property::{sample_binding, PropertyChannel};
+pub use fixpoint::{
+    loop_frame_signature, run_fixed_point, solve_mode_def, DivergenceDetector, FixpointReport,
+    LoopCodec, LoopDriver, SolveMode, SolveModeMeta, DIVERGENCE_WINDOW_DEFAULT,
+    RESIDUAL_EPS_DEFAULT, SOLVE_MODE_CHANNEL_TAG,
+};
 pub use signature::{
     cache_key, channel_definition_hash, graph_canonical_bytes, graph_signature, graph_signatures,
     node_canonical_bytes, node_signature, snapshot_signature, CacheDims, ChannelDef, ChannelDefs,
