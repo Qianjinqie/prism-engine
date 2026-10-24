@@ -77,6 +77,11 @@ pub use fbuf::{f16_to_f32, f32_to_f16, Fbuf16F};
 
 pub mod usd;
 
+/// `.usda` 导出（引擎场景 → 标准文本，解析器的规范逆；R2 L2 字节不动点）。
+pub mod usd_export;
+
+pub use usd_export::{export_layer, export_scene, ExportMeta, ExportReport, UsdMaterial};
+
 pub mod materialx;
 
 // ---------------------------------------------------------------------------

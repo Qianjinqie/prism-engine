@@ -1065,19 +1065,23 @@ impl SimSpec {
     /// ② 的每子步 n 轮迭代走内核环实例 `prism_core::fixpoint::run_fixed_point`
     /// （M3 定数 + 逐轮残差记录 + 发散观测；λ 在 `lambdas` 里跨轮存活，
     /// 只在子步边界清零——X ⊕ Λ 语义）。返回帧末最大约束残余 |C|（喂驱动层
-    /// 的帧级发散检测）。
+    /// 的帧级发散检测）+ **逐轮发散判定**（W3 遗留：内核 `FixpointReport::
+    /// diverged` 此前在本处被丢弃，只留了 `final_residual`）。两个信号互补：
+    /// 逐轮看「一轮 M3 迭代内残差是否连续上升」（Φ 的收缩性），帧级看跨帧
+    /// 趋势；任一为真都说明解算不稳，故由 [`SimRuntime::diverged`] 取并。
     fn step(
         &self,
         particles: &mut Vec<SimParticle>,
         mode: &SolveModeMeta,
         dt: f32,
-    ) -> Result<f32, EvalError> {
+    ) -> Result<(f32, bool), EvalError> {
         // 契约：报错时状态必须未被推进——校验先于预测（驱动层的 Err 约定）。
         mode.validate("sim 求解步（环推进参数）")?;
         let h: f32 = dt / mode.substeps as f32;
         let force_h: Vec3 = self.force * h;
         let mut lambdas: Vec<f32> = vec![0.0f32; self.constraints.len()];
         let mut residual: f32 = 0.0;
+        let mut iter_diverged: bool = false;
         for _ in 0..mode.substeps {
             // ① 预测（固定粒子 inv_mass = 0：prev 同步、位置不动）。
             for p in particles.iter_mut() {
@@ -1102,6 +1106,8 @@ impl SimSpec {
             };
             let report = run_fixed_point(particles, &mut scan, mode)?;
             residual = report.final_residual().unwrap_or(0.0);
+            // 逐轮判定跨子步取或：任一子步的 Φ 发散都不该被子步边界抹掉。
+            iter_diverged |= report.diverged;
             // ③ 速度更新（固定粒子速度归零，与 xpbd 同口径）。
             let inv_h: f32 = 1.0 / h;
             for p in particles.iter_mut() {
@@ -1115,7 +1121,7 @@ impl SimSpec {
                 p.velocity = p.velocity * keep;
             }
         }
-        Ok(residual)
+        Ok((residual, iter_diverged))
     }
 }
 
@@ -1231,6 +1237,12 @@ struct SimRuntime {
     params_canonical: Vec<u8>,
     /// 通用环驱动：X = 粒子（位置 + 速度），帧 = 一次 `spec.step`。
     driver: LoopDriver<Vec<SimParticle>, SimCodec>,
+    /// 帧内**逐轮**（M3 迭代）发散判定的累计或（W3 遗留接线）。
+    ///
+    /// 与 `driver` 的帧间趋势检测互补、互不替代：`driver` 只看帧末残差序列，
+    /// 本条看一轮之内残差是否连续上升（Φ 失去收缩性）。只观测，不改写迭代
+    /// 控制流、不影响任何像素——仅让 [`SimRuntime::diverged`] 不再漏报。
+    iteration_diverged: bool,
 }
 
 impl SimRuntime {
@@ -1261,7 +1273,14 @@ impl SimRuntime {
             mode,
         )
         .map_err(loop_error)?;
-        Ok(Self { node_id, spec, dt, params_canonical, driver })
+        Ok(Self {
+            node_id,
+            spec,
+            dt,
+            params_canonical,
+            driver,
+            iteration_diverged: false,
+        })
     }
 
     /// 推进 / 求值到 (sig, local)：帧循环六分支（幂等 / 顺序延续 / 快照装配 /
@@ -1273,9 +1292,17 @@ impl SimRuntime {
         let spec: &SimSpec = &self.spec;
         let dt: f32 = self.dt;
         let mode: SolveModeMeta = self.driver.mode();
+        // 逐轮判定经闭包侧信道带出（内核步进签名是「帧末残差」，不扩其 API）。
+        let mut iter_diverged: bool = false;
         self.driver
-            .advance_to(sig, local, store, |particles| spec.step(particles, &mode, dt))
-            .map_err(loop_error)
+            .advance_to(sig, local, store, |particles| {
+                let (residual, diverged) = spec.step(particles, &mode, dt)?;
+                iter_diverged |= diverged;
+                Ok(residual)
+            })
+            .map_err(loop_error)?;
+        self.iteration_diverged |= iter_diverged;
+        Ok(())
     }
 
     /// 当前粒子状态（跨帧状态 = 位置 + 速度）。
@@ -1283,9 +1310,10 @@ impl SimRuntime {
         self.driver.state()
     }
 
-    /// 当前运行时是否处于发散趋势（E3 事后指标）。
+    /// 当前运行时是否处于发散（E3 事后指标）：**帧级趋势**（跨帧残差连续
+    /// 上升）或 **帧内逐轮趋势**（一轮 M3 迭代内残差连续上升）任一成立。
     fn diverged(&self) -> bool {
-        self.driver.diverged()
+        self.iteration_diverged || self.driver.diverged()
     }
 }
 
@@ -1357,7 +1385,12 @@ impl SimTimeline {
         &mut self.store
     }
 
-    /// 任一 sim 运行时是否处于发散趋势（E3 事后指标；只观测、不改写）。
+    /// 任一 sim 运行时是否处于发散（E3 事后指标；只观测、不改写）。
+    ///
+    /// 两个来源取并（W3 遗留接线）：内核 `run_fixed_point` 的**逐轮**
+    /// `FixpointReport::diverged`（此前在 `SimSpec::step` 里被丢弃）与
+    /// [`LoopDriver`] 的**帧级**趋势检测。任一路径报发散都如实返回 `true`；
+    /// 本判据不影响任何帧字节（解算控制流仍走 M3 定数步）。
     pub fn diverged(&self) -> bool {
         self.runtimes.values().any(|rt| rt.diverged())
     }
@@ -2814,5 +2847,39 @@ mod tests {
             .expect_err("越界帧号必须报错");
         assert_eq!(err.code, "R5021");
         assert!(err.to_string().contains("建议"), "三段式必含建议段");
+    }
+
+    /// **W3 遗留接线**：内核逐轮（帧内 M3）发散判定必须参与运行时报告面。
+    ///
+    /// 此前 `SimSpec::step` 只取 `FixpointReport::final_residual()`，
+    /// `diverged` 被丢弃——帧内发散永远无法到达 [`SimTimeline::diverged`]。
+    /// 本用例固定「两路取并」的语义：帧级趋势或逐轮趋势任一为真即报发散。
+    #[test]
+    fn runtime_divergence_ors_per_iteration_and_frame_level() {
+        let spec = SimSpec {
+            force: Vec3::new(0.0, 0.0, 0.0),
+            damping: 0.0,
+            particles: Vec::new(),
+            constraints: Vec::new(),
+        };
+        let mut rt = SimRuntime::new(
+            spec,
+            SolveModeMeta::new(1, 1, 1e-4),
+            0.5,
+            Vec::new(),
+            7,
+        )
+        .expect("空规格合法（无粒子 / 无约束）");
+        assert!(!rt.diverged(), "初始不得报发散");
+        // 逐轮信号单独为真 → 公开判据必须为真（若 `diverged` 只看 driver 就漏报）。
+        rt.iteration_diverged = true;
+        assert!(
+            rt.diverged(),
+            "逐轮（帧内）发散必须进入公开判据——W3 遗留不得回退"
+        );
+        assert!(
+            !rt.driver.diverged(),
+            "本用例的帧级检测器未被喂入采样，独立为假（证明是逐轮这一路生效）"
+        );
     }
 }

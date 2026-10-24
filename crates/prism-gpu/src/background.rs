@@ -1,27 +1,39 @@
 //! 背景渲染：CPU 参考实现（GPU 管线兜底）。
 //!
 //! 本模块把 demo 的逐像素 `paint_background` 热点迁移为无 GPU 平台完整可运行的
-//! CPU 后端，并作为 GPU shader（`shaders/background.wgsl`）的数值判对基准。
-//! **两端公式严格一致**（hash value noise + 手写 smoothstep + 手写正弦逼近），
-//! 保证「同输入同输出」；GPU 实际执行待 WebGPU 运行时（无 GPU 环境下仅校验
-//! shader 编译/解析，不实际 GPU 渲染）。
+//! CPU 后端，并作为 GPU 路径的数值判对基准。**三条实现严格同式**
+//! （hash value noise + 手写 smoothstep + 手写正弦逼近）：
+//!
+//! * [`render_background_cpu`]：CPU 参考（本文件，权威定义）；
+//! * `shaders/background.wgsl`：WGSL 源（WebGPU 侧，结构自检覆盖）；
+//! * [`crate::vulkan::spirv_bg`]：Vulkan compute 的 SPIR-V（自研发射器，
+//!   W4 起真机执行，与 CPU 逐字节对拍）。
 //!
 //! 接口：
 //! - [`render_background_cpu`]：纯 CPU 实现，返回 RGBA8（`Vec<u8>`，行主序，len = w*h*4）。
-//! - [`render_background`]：当前直接调用 CPU 参考；GPU 路径随 shader 构建就绪后接入。
+//! - [`render_background_gpu`]：Vulkan compute 真机出帧（W4 接通），失败返回 `None`。
+//! - [`render_background`]：引擎入口——**GPU 优先，失败回退 CPU 参考**（不 panic）。
+//!
+//! # GPU 路径（W4）
+//!
+//! SPIR-V 由 [`crate::vulkan::spirv_bg`] 的自研发射器生成，逐式对应本文件的
+//! CPU 参考（同求值树 + `NoContraction` + 无 libm）。判据是 §6 命题 P1：
+//! 逐点算子（`r = 0`）⟹ GPU 与 CPU 必须**逐字节相同**，不是「容差内接近」。
+//! 无设备/无 ICD 的平台上 [`render_background_gpu`] 返回 `None`，引擎入口
+//! 静默回退 CPU——这条降级路径与 GPU 路径一样有测试覆盖。
 
 use std::f32::consts::PI;
 
 /// 背景色顶端（垂直渐变）。与 demo `BG_TOP` 一致。
-const BG_TOP: [f32; 3] = [0.035, 0.055, 0.130];
+pub(crate) const BG_TOP: [f32; 3] = [0.035, 0.055, 0.130];
 /// 背景色底端（垂直渐变）。与 demo `BG_BOTTOM` 一致。
-const BG_BOTTOM: [f32; 3] = [0.058, 0.090, 0.205];
+pub(crate) const BG_BOTTOM: [f32; 3] = [0.058, 0.090, 0.205];
 /// 辉光冷青调系数。与 demo 一致。
-const GLOW: [f32; 3] = [0.030, 0.070, 0.120];
+pub(crate) const GLOW: [f32; 3] = [0.030, 0.070, 0.120];
 /// 2π。
-const TAU: f32 = 2.0 * PI;
+pub(crate) const TAU: f32 = 2.0 * PI;
 /// `1 / 2^32`，与 WGSL `hash2i` 的归一化系数一致（均按 f32 计算）。
-const INV_U32: f32 = 1.0 / 4_294_967_296.0;
+pub(crate) const INV_U32: f32 = 1.0 / 4_294_967_296.0;
 
 /// 确定性 u32 哈希（与 WGSL `hash_u32` 位级一致）。
 #[inline]
@@ -57,8 +69,11 @@ fn value_noise(px: f32, py: f32, seed: u32) -> f32 {
     let uy = fy * fy * (3.0 - 2.0 * fy);
     let x0 = ix;
     let y0 = iy;
-    let x1 = ix + 1;
-    let y1 = iy + 1;
+    // `wrapping_add`：`px` 为 +inf 时 `floor() as u32` 饱和到 `u32::MAX`，
+    // 朴素 `+ 1` 会在 debug 下 panic（C18）、release 下静默回绕。GPU 侧
+    // `OpIAdd` 本就是模 2^32 回绕，故这里显式回绕才是两端同式且不 panic 的写法。
+    let x1 = ix.wrapping_add(1);
+    let y1 = iy.wrapping_add(1);
     let v00 = hash2i(x0, y0, seed);
     let v10 = hash2i(x1, y0, seed);
     let v01 = hash2i(x0, y1, seed);
@@ -146,8 +161,24 @@ fn background_at(px: u32, py: u32, w: u32, h: u32, t: f32, seed: u32) -> [f32; 3
 ///
 /// 公式与 `shaders/background.wgsl` 一致，供数值一致性对拍。
 pub fn render_background_cpu(w: u32, h: u32, t: f32, seed: u64) -> Vec<u8> {
+    // 尺寸守卫（与 `Framebuffer::new` 同一拒绝语义）：`u32::MAX × u32::MAX × 4`
+    // 在 64 位上会溢出 `usize`，在 32 位上会尝试分配 16 EiB。真实缺陷：
+    // 早期实现直接 `vec![0u8; w*h*4]`，debug 下 panic、release 下 abort，
+    // 都违反 C18。超限一律返回空 vec（调用方按长度判断，不 panic）。
+    let Some(len) = (w as usize)
+        .checked_mul(h as usize)
+        .and_then(|px| px.checked_mul(crate::BYTES_PER_PIXEL))
+    else {
+        return Vec::new();
+    };
+    if w > crate::MAX_FRAMEBUFFER_DIM
+        || h > crate::MAX_FRAMEBUFFER_DIM
+        || len > crate::MAX_FRAMEBUFFER_BYTES
+    {
+        return Vec::new();
+    }
     let seed_u = seed as u32; // 高位折入低位，确定性；与 GPU uniform(u32) 同口径。
-    let mut out = vec![0u8; (w as usize) * (h as usize) * 4];
+    let mut out = vec![0u8; len];
     for y in 0..h {
         for x in 0..w {
             let [r, g, b] = background_at(x, y, w, h, t, seed_u);
@@ -161,13 +192,80 @@ pub fn render_background_cpu(w: u32, h: u32, t: f32, seed: u64) -> Vec<u8> {
     out
 }
 
-/// 引擎背景渲染入口。
+/// GPU 背景出帧（Vulkan compute 离屏 → 字节读回）。
 ///
-/// 当前直接调用 [`render_background_cpu`]（无 GPU 平台上的真实可运行后端）。
-/// GPU 路径随 `shaders/background.wgsl` 构建就绪后接入——届时按 seed/时间上传
-/// uniform、dispatch compute，再把 storage buffer 回读为 RGBA8。**注意**：无 GPU
-/// 环境下 shader 仅做编译/解析校验，不实际 GPU 渲染；此处返回的是 CPU
-/// 参考结果，可放心用于生产兜底。
+/// * 有可用设备（本沙箱 = lavapipe）⇒ 返回 `w*h*4` 字节的 RGBA8，与
+///   [`render_background_cpu`] **逐字节相同**（由 `tests/vulkan_background_gpu.rs`
+///   全像素对拍）；
+/// * 无设备 / 无 ICD / wasm / 尺寸超限 / 参数超契约（`t` 非有限）⇒ `None`
+///   （调用方回退 CPU，不 panic）。
+///
+/// 设备句柄按**线程**缓存（`thread_local`）：同一线程的连续帧复用同一个
+/// `VkDevice`，不会每帧重建 instance/device。
+///
+/// 降级分两级，成本都可预测：
+/// * **初始化级**：首次调用跑 `mul2` 探针（compute 自检）。无设备或自检失败
+///   ⇒ 该线程永久标记为「无 GPU 路径」，后续调用直接 `None`，不再碰驱动；
+/// * **单帧级**：某帧派发失败（如超大尺寸分配不到缓冲）只让这一帧回退
+///   CPU，不永久关闭 GPU 路径——偶发失败不应把能力位钉死。
+pub fn render_background_gpu(w: u32, h: u32, t: f32, seed: u64) -> Option<Vec<u8>> {
+    if w == 0 || h == 0 {
+        // 空图：CPU 参考返回空 vec，GPU 无需上机。
+        return None;
+    }
+    GPU_SLOT.with(|slot| {
+        let Ok(mut slot) = slot.try_borrow_mut() else {
+            // 重入（同一线程的嵌套调用）：保守回退 CPU，不 panic。
+            return None;
+        };
+        if matches!(*slot, GpuSlot::Uninit) {
+            let backend = crate::vulkan::VulkanBackend::new();
+            // 双门：探测到设备 且 最小 dispatch 闭环自检通过。
+            *slot = if backend.probed_device() && backend.compute_available() {
+                GpuSlot::Ready(Box::new(backend))
+            } else {
+                GpuSlot::Unavailable
+            };
+        }
+        match &mut *slot {
+            GpuSlot::Ready(backend) => {
+                let report = backend.render_background_frame(w, h, t, seed);
+                if report.is_ok() {
+                    Some(report.pixels)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    })
+}
+
+/// 本线程的 GPU 设备槽（探测一次，结果缓存；失败后不再重试）。
+///
+/// `Uninit`/`Unavailable` 两态是必要的：把「还没试」与「试过，不行」分开，
+/// 才能既惰性探测、又不让无设备平台每帧白跑一次 `VulkanBackend::new()`。
+enum GpuSlot {
+    Uninit,
+    Unavailable,
+    Ready(Box<crate::vulkan::VulkanBackend>),
+}
+
+thread_local! {
+    static GPU_SLOT: std::cell::RefCell<GpuSlot> = std::cell::RefCell::new(GpuSlot::Uninit);
+}
+
+/// 引擎背景渲染入口：**GPU 优先，CPU 兜底**。
+///
+/// 有可用 GPU 路径时返回 GPU 帧（与 CPU 参考逐字节一致，见
+/// [`render_background_gpu`]）；否则返回 [`render_background_cpu`]。
+/// 两条路径同输入同输出，调用方无需区分——这正是「GPU 从能算到能出图」
+/// 之后引擎入口应有的形态：**能力提升对上层透明，结果不变**。
+///
+/// 任何条件下都不 panic：尺寸超限时 CPU 参考同样返回拒绝缓冲（空 vec）。
 pub fn render_background(w: u32, h: u32, t: f32, seed: u64) -> Vec<u8> {
+    if let Some(pixels) = render_background_gpu(w, h, t, seed) {
+        return pixels;
+    }
     render_background_cpu(w, h, t, seed)
 }

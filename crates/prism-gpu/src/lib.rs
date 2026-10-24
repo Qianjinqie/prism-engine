@@ -11,9 +11,14 @@
 //!   third-party crates). The **compute dispatch path is real and verified**
 //!   (SPIR-V → pipeline → dispatch → fence → readback → bitwise CPU parity),
 //!   and [`GpuDevice::is_available`] reports `true` only when that full path
-//!   self-tests successfully. The **render pipeline is not implemented yet**,
-//!   so `render_scene` returns an invalid [`Framebuffer::empty`]; callers fall
-//!   back to [`CpuRefBackend`] (always available) based on the returned frame.
+//!   self-tests successfully. Since W4 the backend also **produces real
+//!   frames**: [`background::render_background_gpu`] runs the background
+//!   kernel offscreen and reads back RGBA8 that is byte-identical to the CPU
+//!   reference (`VulkanBackend::frame_available` reports that path after a
+//!   real 16×16 self-test). The **ray-traced scene pipeline is still not
+//!   implemented**, so `render_scene` returns an invalid
+//!   [`Framebuffer::empty`]; callers fall back to [`CpuRefBackend`] based on
+//!   the returned frame's validity.
 //! * [`web::device::WebGpuBackend`] — the WebGPU path (hand-written browser
 //!   bindings) used by the wasm/mobile test link.
 //!
@@ -32,8 +37,10 @@ pub mod shaders;
 // ----------------------------------------------------------------------------
 //
 // `background` 把 demo 的逐像素 `paint_background` 热点迁移为无 GPU 平台完整可运行的
-// CPU 后端，并作为 GPU shader（`shaders/background.wgsl`）的数值判对基准。GPU 实际
-// 执行待 WebGPU 运行时（无 GPU 环境下仅校验 shader 编译/解析）。
+// CPU 后端，并作为 GPU 实现的数值判对基准。W4 起 GPU 路径**真能出图**：
+// `render_background` 走 Vulkan compute（`vulkan::background` + 自研发射器
+// `vulkan::spirv_bg`），读回的 RGBA8 与 CPU 参考逐字节一致；无可用设备时
+// 静默回退 CPU（不 panic）。
 
 pub mod background;
 
@@ -77,8 +84,8 @@ pub mod metal;
 /// 便捷导出：Metal 后端把手（各平台一致可见）。
 pub use metal::MetalBackend;
 
-/// 背景渲染入口与 CPU 参考（GPU 管线兜底）。
-pub use background::{render_background, render_background_cpu};
+/// 背景渲染入口与 CPU 参考（GPU 优先、CPU 兜底）。
+pub use background::{render_background, render_background_cpu, render_background_gpu};
 
 // ----------------------------------------------------------------------------
 // D0 GPU 基础设施（设备无关算法层）
@@ -364,17 +371,29 @@ pub trait GpuDevice {
     /// [`Framebuffer::is_valid`]) instead.
     fn render_scene(&mut self, req: &SceneRenderRequest) -> Framebuffer;
 
-    /// Whether this backend can actually perform real device work.
+    /// Whether this backend can actually perform **verified real-device work**.
     ///
-    /// For render backends this means "can service [`GpuDevice::render_scene`]".
-    /// [`vulkan::VulkanBackend`] currently advertises its **verified compute
-    /// dispatch path** instead: the value is `true` only after a real kernel
-    /// run whose readback matches the CPU reference bit-for-bit. Its render
-    /// pipeline is still unimplemented, so `render_scene` keeps returning an
-    /// invalid buffer — callers that need frames must fall back to
-    /// [`CpuRefBackend`] based on the returned buffer's validity, not on this
-    /// flag. Default `true` means "always available" (correct for
-    /// [`CpuRefBackend`], which is pure software).
+    /// # 语义（W4 收口，W3 遗留 1）
+    ///
+    /// 本标志回答的是「**该后端申报的设备路径是否真的跑通过**」——
+    /// 对 [`vulkan::VulkanBackend`] 而言就是 **compute 可用**：`true` 仅当
+    /// mul2 探针的完整闭环（SPIR-V → pipeline → submit → fence → 读回）
+    /// 真跑一次且与 CPU 参考逐位一致。
+    ///
+    /// 它**不是**「能渲染场景」的承诺：
+    /// * 光追场景 [`GpuDevice::render_scene`] 仍未实装，Vulkan 恒返回
+    ///   [`Framebuffer::empty`]；需要场景帧的调用方只能按返回帧的
+    ///   [`Framebuffer::is_valid`] 回退，**不能**按本标志回退；
+    /// * 背景帧能力是另一条可查询的路径（`VulkanBackend::frame_available`，
+    ///   真跑一次背景 kernel 并确认读回长度），它比本标志更强。
+    ///
+    /// 之所以保持「compute 可用」这一口径而不改成 `false`：本 crate 的
+    /// backend 是 compute-first 的（scan/sort/kernel 语义层都建立在 dispatch
+    /// 之上），把「设备侧计算不可用」谎报成 `false` 会让所有 compute 消费方
+    /// 失去能力信息。选择与现有调用面兼容：**不改名、改文档 + 增加
+    /// `frame_available` 显式能力位**。
+    ///
+    /// 默认 `true` 表示「纯软件后端恒可用」（对 [`CpuRefBackend`] 正确）。
     fn is_available(&self) -> bool {
         true
     }

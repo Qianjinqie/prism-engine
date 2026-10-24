@@ -245,3 +245,31 @@ fn mode_metadata_changes_frame_signature_and_cache_key() {
         sim_frame_signature(&compile, id, 0, 8, 1e-4).expect_err("0 子步必须报错");
     assert_eq!(err.code, "R5018");
 }
+
+// ---------------------------------------------------------------------------
+// W3 遗留：逐轮（帧内）发散判定进报告面——不得误报
+// ---------------------------------------------------------------------------
+
+/// 逐轮发散信号接通后，健康布料（XPBD 收缩投影）在整条时间线上都不得
+/// 被误判为发散。这是本次接线的主要回归风险：把一个**新增**信号 OR 进
+/// 公开判据 [`SimTimeline::diverged`]，最容易出的错不是漏报而是误报，
+/// 那会让上游把正常影片当病态解算处理。
+#[test]
+fn per_iteration_divergence_signal_stays_quiet_for_healthy_cloth() {
+    let compile: prism_dsl::CompileV2Output = sim_compile();
+    let mut device = CpuRefBackend;
+    let mut sims: SimTimeline = SimTimeline::new();
+    let whole: Deliverable = render_movie(&compile, &mut device).expect("全片应可渲染");
+    for i in 0..whole.frame_count() {
+        render_movie_frame(&compile, &mut device, i as u64, &mut sims).expect("逐帧推进");
+        assert!(
+            !sims.diverged(),
+            "第 {i} 帧：健康布料（刚度 0.9 / 阻尼 0.02）不得误报逐轮发散"
+        );
+    }
+    // 渲染字节不受该信号影响（只观测、不改写迭代控制流）。
+    let again: Deliverable = render_movie(&compile, &mut CpuRefBackend).expect("二次全片");
+    for (i, (a, b)) in whole.frames.iter().zip(again.frames.iter()).enumerate() {
+        assert_eq!(a.pixels, b.pixels, "第 {i} 帧：发散观测不得改变任何像素");
+    }
+}

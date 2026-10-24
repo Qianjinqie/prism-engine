@@ -82,6 +82,11 @@ pub enum DispatchStatus {
     SubmitFailed,
     /// 内存映射读回失败。
     ReadbackFailed,
+    /// **输入违反 kernel 契约**（如非有限的时间参数），在 FFI 之前拒绝。
+    ///
+    /// 与 `BufferFailed` 分开：后者是资源/容量问题，前者是调用方的参数问题。
+    /// 拒绝后调用方回退 CPU 参考，结果仍是确定的（不让 SPIR-V 的 UB 决定像素）。
+    InvalidArguments,
     /// 平台不支持（wasm32 无原生 Vulkan）。
     UnsupportedPlatform,
 }
@@ -100,6 +105,7 @@ impl DispatchStatus {
             DispatchStatus::CommandFailed => "command-failed",
             DispatchStatus::SubmitFailed => "submit-failed",
             DispatchStatus::ReadbackFailed => "readback-failed",
+            DispatchStatus::InvalidArguments => "invalid-arguments",
             DispatchStatus::UnsupportedPlatform => "unsupported-platform",
         }
     }
@@ -143,6 +149,90 @@ impl ComputeRunReport {
     pub fn is_ok(&self) -> bool {
         self.status == DispatchStatus::Ok
     }
+}
+
+/// 一次 compute 派发的**字节级**报告（原始缓冲的权威口径）。
+///
+/// [`ComputeRunReport`] 是本类型的 f32 视图（探针语义）。背景帧的输出是
+/// **u32 打包 RGBA8**，必须走字节——若借道 f32，就要额外假设「读成 f32 再
+/// bitcast 不丢位」（LLVM 语义上成立但多一层无谓依赖，且报告字段会撒谎：
+/// 像素不是浮点数）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ByteRunReport {
+    /// 结果状态。
+    pub status: DispatchStatus,
+    /// kernel 名。
+    pub kernel: &'static str,
+    /// 派发的工作组个数 `(gx, gy, gz)`。
+    pub groups: [u32; 3],
+    /// 调用总数（含尾组浪费）。
+    pub invocations: u64,
+    /// 尾组浪费调用数。
+    pub wasted_invocations: u64,
+    /// 全部绑定的打包字节数。
+    pub buffer_bytes: u32,
+    /// 设备名（有上下文时非空，成功与失败都带出）。
+    pub device: String,
+    /// 失败原因（无则空串）。
+    pub detail: String,
+    /// 读回的原始字节（`Ok` 时为**末绑定的全部字节**；其余为空，不填假数据）。
+    pub output: Vec<u8>,
+}
+
+impl ByteRunReport {
+    /// 是否成功。
+    pub fn is_ok(&self) -> bool {
+        self.status == DispatchStatus::Ok
+    }
+
+    /// f32 视图：把字节按 little-endian f32 解释（探针路径的兼容口径）。
+    pub fn to_float_report(&self) -> ComputeRunReport {
+        let mut output = Vec::with_capacity(self.output.len() / 4);
+        for c in self.output.chunks_exact(4) {
+            output.push(f32::from_le_bytes([c[0], c[1], c[2], c[3]]));
+        }
+        ComputeRunReport {
+            status: self.status.clone(),
+            kernel: self.kernel,
+            groups: self.groups,
+            invocations: self.invocations,
+            wasted_invocations: self.wasted_invocations,
+            buffer_bytes: self.buffer_bytes,
+            device: self.device.clone(),
+            detail: self.detail.clone(),
+            output,
+        }
+    }
+}
+
+/// 字节报告的构造（无设备 / 被守卫拒绝 / wasm 三条路径共用同一口径）。
+fn byte_report(
+    kernel: &KernelDesc,
+    plan: &DispatchPlan,
+    status: DispatchStatus,
+    detail: &str,
+    device: String,
+) -> ByteRunReport {
+    ByteRunReport {
+        status,
+        kernel: kernel.name,
+        groups: plan.groups,
+        invocations: plan.invocations,
+        wasted_invocations: plan.wasted_invocations,
+        buffer_bytes: plan.buffer_bytes,
+        device,
+        detail: detail.to_string(),
+        output: Vec::new(),
+    }
+}
+
+/// f32 切片 → little-endian 字节（与设备内存的字节序一致）。
+fn f32_slice_to_le_bytes(input: &[f32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len() * 4);
+    for v in input {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    out
 }
 
 /// CPU 侧派发计划（**无 GPU 也能算**，真机只是把计划喂给驱动）。
@@ -289,22 +379,19 @@ fn missing_entry_points(fns: &vk::DeviceFnTable) -> Vec<&'static str> {
     missing
 }
 
-/// 无设备上下文时的报告（如实报无设备；装有 mesa-vulkan-drivers
-/// （lavapipe 软件 ICD）时有设备，走设备分支）。
-fn unavailable_report(
-    kernel: &'static str,
-    plan: &DispatchPlan,
+/// 真机路径的**原始**结果（字节读回；解释权在调用方）。
+#[cfg(not(target_arch = "wasm32"))]
+struct RawRun {
     status: DispatchStatus,
-    detail: &str,
-) -> ComputeRunReport {
-    ComputeRunReport {
+    detail: String,
+    output: Vec<u8>,
+}
+
+/// 失败时的原始结果（不填假数据：`output` 恒空）。
+#[cfg(not(target_arch = "wasm32"))]
+fn raw_unavailable(status: DispatchStatus, detail: &str) -> RawRun {
+    RawRun {
         status,
-        kernel,
-        groups: plan.groups,
-        invocations: plan.invocations,
-        wasted_invocations: plan.wasted_invocations,
-        buffer_bytes: plan.buffer_bytes,
-        device: String::new(),
         detail: detail.to_string(),
         output: Vec::new(),
     }
@@ -312,8 +399,10 @@ fn unavailable_report(
 
 /// **真机路径**：在已建立的 `VulkanContext` 上装配并派发一个 compute kernel。
 ///
-/// `input` 提供给 binding 0（若其字节数足够），其余绑定填 0；派发后读回
-/// **最后一个绑定的前 `n` 个 f32**（探针 kernel 的写目标）。
+/// `input_bytes` 原样写入 binding 0（若其字节数足够），其余绑定填 0；派发后
+/// **按字节读回最后一个绑定**（`bytes` 语义，调用方决定再解释成 f32 还是 RGBA8）。
+/// 字节口径是背景帧出图的必要条件：像素是 u32 打包值，走 f32 中转会引入
+/// 「读成 f32 再 bitcast」的额外假设。
 ///
 /// # Safety
 /// 调用方须保证 `ctx` 的 device/queue 有效（由 [`VulkanContext`] 的类型不变量
@@ -324,17 +413,15 @@ unsafe fn run_on_device(
     ctx: &VulkanContext,
     kernel: &KernelDesc,
     plan: &DispatchPlan,
-    input: &[f32],
-) -> ComputeRunReport {
+    input_bytes: &[u8],
+) -> RawRun {
     let device = ctx.device;
     let fns = &ctx.device_fns;
 
     // --- 步骤 0：必备入口齐全性 -----------------------------------------
     let missing = missing_entry_points(fns);
     if !missing.is_empty() {
-        return unavailable_report(
-            kernel.name,
-            plan,
+        return raw_unavailable(
             DispatchStatus::MissingEntryPoints(missing),
             "驱动/loader 未导出 compute 管线必备入口",
         );
@@ -411,9 +498,7 @@ unsafe fn run_on_device(
         fns.unmap_memory,
     )
     else {
-        return unavailable_report(
-            kernel.name,
-            plan,
+        return raw_unavailable(
             DispatchStatus::MissingEntryPoints(vec!["<unpack>"]),
             "入口表解包失败（内部一致性错误）",
         );
@@ -470,9 +555,7 @@ unsafe fn run_on_device(
 
     // --- 步骤 1：SPIR-V → VkShaderModule --------------------------------
     let Some(words) = super::spirv::module(kernel.spv_module) else {
-        return unavailable_report(
-            kernel.name,
-            plan,
+        return raw_unavailable(
             DispatchStatus::ShaderModuleFailed,
             "kernel 未嵌入 SPIR-V（本环境无 glslang，RT kernel 的 SPIR-V 待真机生成）",
         );
@@ -487,9 +570,7 @@ unsafe fn run_on_device(
     let r = create_shader_module(device, &smci, std::ptr::null(), &mut shader_module);
     if r != vk::VK_SUCCESS || shader_module == 0 {
         cleanup!();
-        return unavailable_report(
-            kernel.name,
-            plan,
+        return raw_unavailable(
             DispatchStatus::ShaderModuleFailed,
             "vkCreateShaderModule 返回非 VK_SUCCESS",
         );
@@ -516,9 +597,7 @@ unsafe fn run_on_device(
     };
     if create_dsl(device, &dslci, std::ptr::null(), &mut dsl) != vk::VK_SUCCESS || dsl == 0 {
         cleanup!();
-        return unavailable_report(
-            kernel.name,
-            plan,
+        return raw_unavailable(
             DispatchStatus::LayoutFailed,
             "vkCreateDescriptorSetLayout 失败",
         );
@@ -538,9 +617,7 @@ unsafe fn run_on_device(
         || pipeline_layout == 0
     {
         cleanup!();
-        return unavailable_report(
-            kernel.name,
-            plan,
+        return raw_unavailable(
             DispatchStatus::LayoutFailed,
             "vkCreatePipelineLayout 失败",
         );
@@ -572,7 +649,7 @@ unsafe fn run_on_device(
             "vkCreateComputePipelines 失败（VkResult = 0x{pipeline_result:08X}）"
         );
         cleanup!();
-        return unavailable_report(kernel.name, plan, DispatchStatus::PipelineFailed, &detail);
+        return raw_unavailable(DispatchStatus::PipelineFailed, &detail);
     }
 
     // --- 步骤 5：buffer + host 可见内存 ---------------------------------
@@ -596,24 +673,20 @@ unsafe fn run_on_device(
             || buffer == 0
         {
             cleanup!();
-            return unavailable_report(
-                kernel.name,
-                plan,
-                DispatchStatus::BufferFailed,
-                "vkCreateBuffer 失败",
-            );
+            return raw_unavailable(
+            DispatchStatus::BufferFailed,
+            "vkCreateBuffer 失败",
+        );
         }
         let mut req = vk::VkMemoryRequirements::default();
         get_mem_req(device, buffer, &mut req);
         let Some(type_index) = mem_props.pick_host_visible(req.memory_type_bits) else {
             destroy_buffer(device, buffer, std::ptr::null());
             cleanup!();
-            return unavailable_report(
-                kernel.name,
-                plan,
-                DispatchStatus::BufferFailed,
-                "无 host-visible coherent 内存类型（无法读回）",
-            );
+            return raw_unavailable(
+            DispatchStatus::BufferFailed,
+            "无 host-visible coherent 内存类型（无法读回）",
+        );
         };
         let mai = vk::VkMemoryAllocateInfo {
             s_type: vk::VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
@@ -627,23 +700,19 @@ unsafe fn run_on_device(
         {
             destroy_buffer(device, buffer, std::ptr::null());
             cleanup!();
-            return unavailable_report(
-                kernel.name,
-                plan,
-                DispatchStatus::BufferFailed,
-                "vkAllocateMemory 失败",
-            );
+            return raw_unavailable(
+            DispatchStatus::BufferFailed,
+            "vkAllocateMemory 失败",
+        );
         }
         if bind_buffer_memory(device, buffer, memory, 0) != vk::VK_SUCCESS {
             destroy_buffer(device, buffer, std::ptr::null());
             free_memory(device, memory, std::ptr::null());
             cleanup!();
-            return unavailable_report(
-                kernel.name,
-                plan,
-                DispatchStatus::BufferFailed,
-                "vkBindBufferMemory 失败",
-            );
+            return raw_unavailable(
+            DispatchStatus::BufferFailed,
+            "vkBindBufferMemory 失败",
+        );
         }
         // 确定性读回：先把整块设备内存清零再上机。VkDeviceMemory 的内容是
         // 未初始化的——extent 小于绑定容量时，不清零就会把随机字节当结果
@@ -668,10 +737,11 @@ unsafe fn run_on_device(
         buffers.push((buffer, memory));
     }
 
-    // 填输入数据（binding 0；只读绑定按访问方向判定）。
+    // 填输入数据（binding 0；只读绑定按访问方向判定）。按**字节**拷贝，
+    // 不做 f32 解释——背景 kernel 的参数块是 4 个 u32（含 f32 位型）。
     if let (Some(&(first_buf, first_mem)), Some(first_item)) = (buffers.first(), layout_items.first())
     {
-        if first_item.access == BindingAccess::ReadOnly && !input.is_empty() {
+        if first_item.access == BindingAccess::ReadOnly && !input_bytes.is_empty() {
             let mut mapped: *mut std::ffi::c_void = std::ptr::null_mut();
             if map_memory(
                 device,
@@ -683,11 +753,9 @@ unsafe fn run_on_device(
             ) == vk::VK_SUCCESS
                 && !mapped.is_null()
             {
-                let dst = mapped as *mut f32;
-                let n = input.len().min((first_item.bytes / 4) as usize);
-                for i in 0..n {
-                    std::ptr::write(dst.add(i), input[i]);
-                }
+                let dst = mapped as *mut u8;
+                let n = input_bytes.len().min(first_item.bytes as usize);
+                std::ptr::copy_nonoverlapping(input_bytes.as_ptr(), dst, n);
                 unmap_memory(device, first_mem);
             }
             let _ = first_buf;
@@ -709,9 +777,7 @@ unsafe fn run_on_device(
     };
     if create_pool(device, &dpci, std::ptr::null(), &mut pool) != vk::VK_SUCCESS || pool == 0 {
         cleanup!();
-        return unavailable_report(
-            kernel.name,
-            plan,
+        return raw_unavailable(
             DispatchStatus::LayoutFailed,
             "vkCreateDescriptorPool 失败",
         );
@@ -725,9 +791,7 @@ unsafe fn run_on_device(
     };
     if allocate_sets(device, &dsai, &mut desc_set) != vk::VK_SUCCESS || desc_set == 0 {
         cleanup!();
-        return unavailable_report(
-            kernel.name,
-            plan,
+        return raw_unavailable(
             DispatchStatus::LayoutFailed,
             "vkAllocateDescriptorSets 失败",
         );
@@ -769,9 +833,7 @@ unsafe fn run_on_device(
         || cmd_pool == 0
     {
         cleanup!();
-        return unavailable_report(
-            kernel.name,
-            plan,
+        return raw_unavailable(
             DispatchStatus::CommandFailed,
             "vkCreateCommandPool 失败",
         );
@@ -786,9 +848,7 @@ unsafe fn run_on_device(
     let mut cmd: vk::VkCommandBuffer = std::ptr::null_mut();
     if allocate_cmds(device, &cbai, &mut cmd) != vk::VK_SUCCESS || cmd.is_null() {
         cleanup!();
-        return unavailable_report(
-            kernel.name,
-            plan,
+        return raw_unavailable(
             DispatchStatus::CommandFailed,
             "vkAllocateCommandBuffers 失败",
         );
@@ -802,9 +862,7 @@ unsafe fn run_on_device(
     if begin_cmd(cmd, &cbbi) != vk::VK_SUCCESS {
         free_cmds(device, cmd_pool, 1, &cmd);
         cleanup!();
-        return unavailable_report(
-            kernel.name,
-            plan,
+        return raw_unavailable(
             DispatchStatus::CommandFailed,
             "vkBeginCommandBuffer 失败",
         );
@@ -825,9 +883,7 @@ unsafe fn run_on_device(
     if end_cmd(cmd) != vk::VK_SUCCESS {
         free_cmds(device, cmd_pool, 1, &cmd);
         cleanup!();
-        return unavailable_report(
-            kernel.name,
-            plan,
+        return raw_unavailable(
             DispatchStatus::CommandFailed,
             "vkEndCommandBuffer 失败",
         );
@@ -858,9 +914,7 @@ unsafe fn run_on_device(
     if queue_submit(ctx.queue, 1, &submit, if used_fence { fence } else { 0 }) != vk::VK_SUCCESS {
         free_cmds(device, cmd_pool, 1, &cmd);
         cleanup!();
-        return unavailable_report(
-            kernel.name,
-            plan,
+        return raw_unavailable(
             DispatchStatus::SubmitFailed,
             "vkQueueSubmit 失败",
         );
@@ -871,38 +925,32 @@ unsafe fn run_on_device(
         if wait_fences(device, 1, &fence, 1 /* VK_TRUE */, FENCE_TIMEOUT_NS) != vk::VK_SUCCESS {
             free_cmds(device, cmd_pool, 1, &cmd);
             cleanup!();
-            return unavailable_report(
-                kernel.name,
-                plan,
-                DispatchStatus::SubmitFailed,
-                "vkWaitForFences 超时/失败",
-            );
+            return raw_unavailable(
+            DispatchStatus::SubmitFailed,
+            "vkWaitForFences 超时/失败",
+        );
         }
     } else if let Some(wait_idle) = fns.queue_wait_idle {
         // fence 建不起来时的兜底：整队列阻塞至空闲。
         if wait_idle(ctx.queue) != vk::VK_SUCCESS {
             free_cmds(device, cmd_pool, 1, &cmd);
             cleanup!();
-            return unavailable_report(
-                kernel.name,
-                plan,
-                DispatchStatus::SubmitFailed,
-                "vkQueueWaitIdle 失败",
-            );
+            return raw_unavailable(
+            DispatchStatus::SubmitFailed,
+            "vkQueueWaitIdle 失败",
+        );
         }
     } else {
         free_cmds(device, cmd_pool, 1, &cmd);
         cleanup!();
-        return unavailable_report(
-            kernel.name,
-            plan,
+        return raw_unavailable(
             DispatchStatus::SubmitFailed,
             "无 fence 且无 vkQueueWaitIdle：无法确认 GPU 完成，拒绝读回",
         );
     }
 
-    // --- 步骤 9：读回最后一个绑定（写目标） -----------------------------
-    let mut output: Vec<f32> = Vec::new();
+    // --- 步骤 9：读回最后一个绑定（写目标，按字节） ----------------------
+    let mut output: Vec<u8> = Vec::new();
     if let (Some(&(_last_buf, last_mem)), Some(last_item)) =
         (buffers.last(), layout_items.last())
     {
@@ -910,36 +958,26 @@ unsafe fn run_on_device(
         if map_memory(device, last_mem, 0, vk::VK_WHOLE_SIZE, 0, &mut mapped) == vk::VK_SUCCESS
             && !mapped.is_null()
         {
-            let src = mapped as *const f32;
-            let n = (last_item.bytes / 4) as usize;
+            let src = mapped as *const u8;
+            let n = last_item.bytes as usize;
             output.reserve(n);
-            for i in 0..n {
-                output.push(std::ptr::read(src.add(i)));
-            }
+            output.extend_from_slice(std::slice::from_raw_parts(src, n));
             unmap_memory(device, last_mem);
         } else {
             free_cmds(device, cmd_pool, 1, &cmd);
             cleanup!();
-            return unavailable_report(
-                kernel.name,
-                plan,
-                DispatchStatus::ReadbackFailed,
-                "vkMapMemory 读回失败",
-            );
+            return raw_unavailable(
+            DispatchStatus::ReadbackFailed,
+            "vkMapMemory 读回失败",
+        );
         }
         let _ = last_item.elements;
     }
     free_cmds(device, cmd_pool, 1, &cmd);
     cleanup!();
 
-    ComputeRunReport {
+    RawRun {
         status: DispatchStatus::Ok,
-        kernel: kernel.name,
-        groups: plan.groups,
-        invocations: plan.invocations,
-        wasted_invocations: plan.wasted_invocations,
-        buffer_bytes: plan.buffer_bytes,
-        device: String::new(),
         detail: String::new(),
         output,
     }
@@ -951,62 +989,98 @@ unsafe fn run_on_device(
 /// * wasm32：`UnsupportedPlatform`；
 /// * 有上下文（如 lavapipe 软件 ICD）：走 [`run_on_device`] 真跑。
 #[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn dispatch_bytes(
+    ctx: Option<&VulkanContext>,
+    kernel: &KernelDesc,
+    extent: [u32; 3],
+    input: &[u8],
+) -> ByteRunReport {
+    let plan = plan(kernel, extent);
+    // 反越界守卫先于任何设备/FFI 分支（纯布局检查，环境无关）。
+    if let Some(detail) = capacity_violation(kernel, &plan) {
+        return byte_report(
+            kernel,
+            &plan,
+            DispatchStatus::BufferFailed,
+            &detail,
+            String::new(),
+        );
+    }
+    match ctx {
+        None => byte_report(
+            kernel,
+            &plan,
+            DispatchStatus::DeviceUnavailable,
+            "no-vulkan-icd：loader 在位但 vkCreateInstance 失败（当前平台无 Vulkan ICD）",
+            String::new(),
+        ),
+        Some(ctx) => {
+            // SAFETY: `ctx` 由 `VulkanBackend` 持有，device/queue 遵循类型不变量。
+            let raw = unsafe { run_on_device(ctx, kernel, &plan, input) };
+            ByteRunReport {
+                status: raw.status,
+                kernel: kernel.name,
+                groups: plan.groups,
+                invocations: plan.invocations,
+                wasted_invocations: plan.wasted_invocations,
+                buffer_bytes: plan.buffer_bytes,
+                // 设备名是报告的自描述字段：成功与失败都如实带出（空 = 无设备）。
+                device: ctx.device_name.clone(),
+                detail: raw.detail,
+                output: raw.output,
+            }
+        }
+    }
+}
+
+/// f32 入口：探针路径的兼容视图（内部走同一条字节路径）。
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn dispatch(
     ctx: Option<&VulkanContext>,
     kernel: &KernelDesc,
     extent: [u32; 3],
     input: &[f32],
 ) -> ComputeRunReport {
-    let plan = plan(kernel, extent);
-    // 反越界守卫先于任何设备/FFI 分支（纯布局检查，环境无关）。
-    if let Some(detail) = capacity_violation(kernel, &plan) {
-        return unavailable_report(
-            kernel.name,
-            &plan,
-            DispatchStatus::BufferFailed,
-            &detail,
-        );
-    }
-    match ctx {
-        None => unavailable_report(
-            kernel.name,
-            &plan,
-            DispatchStatus::DeviceUnavailable,
-            "no-vulkan-icd：loader 在位但 vkCreateInstance 失败（当前平台无 Vulkan ICD）",
-        ),
-        Some(ctx) => {
-            // SAFETY: `ctx` 由 `VulkanBackend` 持有，device/queue 遵循类型不变量。
-            let mut report = unsafe { run_on_device(ctx, kernel, &plan, input) };
-            // 设备名是报告的自描述字段：成功与失败都如实带出（空 = 无设备）。
-            report.device = ctx.device_name.clone();
-            report
-        }
-    }
+    let bytes = f32_slice_to_le_bytes(input);
+    dispatch_bytes(ctx, kernel, extent, &bytes).to_float_report()
 }
 
 /// wasm32 入口：无原生 Vulkan，如实报不支持（不 panic）。
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn dispatch_bytes(
+    _ctx: (),
+    kernel: &KernelDesc,
+    extent: [u32; 3],
+    _input: &[u8],
+) -> ByteRunReport {
+    let plan = plan(kernel, extent);
+    if let Some(detail) = capacity_violation(kernel, &plan) {
+        return byte_report(
+            kernel,
+            &plan,
+            DispatchStatus::BufferFailed,
+            &detail,
+            String::new(),
+        );
+    }
+    byte_report(
+        kernel,
+        &plan,
+        DispatchStatus::UnsupportedPlatform,
+        "wasm32 无原生 Vulkan（走 WebGPU 后端）",
+        String::new(),
+    )
+}
+
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn dispatch(
     _ctx: (),
     kernel: &KernelDesc,
     extent: [u32; 3],
-    _input: &[f32],
+    input: &[f32],
 ) -> ComputeRunReport {
-    let plan = plan(kernel, extent);
-    if let Some(detail) = capacity_violation(kernel, &plan) {
-        return unavailable_report(
-            kernel.name,
-            &plan,
-            DispatchStatus::BufferFailed,
-            &detail,
-        );
-    }
-    unavailable_report(
-        kernel.name,
-        &plan,
-        DispatchStatus::UnsupportedPlatform,
-        "wasm32 无原生 Vulkan（走 WebGPU 后端）",
-    )
+    let bytes = f32_slice_to_le_bytes(input);
+    dispatch_bytes((), kernel, extent, &bytes).to_float_report()
 }
 
 /// 探针失败原因 → 报告补充串（与 `ProbeFailure` 对齐的单一映射）。
@@ -1179,6 +1253,7 @@ mod tests {
             (DispatchStatus::CommandFailed, "command-failed"),
             (DispatchStatus::SubmitFailed, "submit-failed"),
             (DispatchStatus::ReadbackFailed, "readback-failed"),
+            (DispatchStatus::InvalidArguments, "invalid-arguments"),
             (DispatchStatus::UnsupportedPlatform, "unsupported-platform"),
         ];
         for (s, name) in cases {

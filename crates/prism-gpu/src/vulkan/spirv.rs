@@ -39,8 +39,8 @@
 // 编码辅助
 // ---------------------------------------------------------------------------
 
-/// 一条指令的首字：`(word_count << 16) | opcode`。
-const fn inst(word_count: u32, opcode: u32) -> u32 {
+/// 指令首字：`(word_count << 16) | opcode`。
+pub const fn inst(word_count: u32, opcode: u32) -> u32 {
     (word_count << 16) | opcode
 }
 
@@ -55,39 +55,84 @@ const fn opcode(w: u32) -> u32 {
 }
 
 // OpCode（SPIR-V 1.0 公开规范）。
-const OP_CAPABILITY: u32 = 17;
-const OP_MEMORY_MODEL: u32 = 14;
-const OP_ENTRY_POINT: u32 = 15;
-const OP_EXECUTION_MODE: u32 = 16;
-const OP_TYPE_VOID: u32 = 19;
-const OP_TYPE_BOOL: u32 = 20;
-const OP_TYPE_INT: u32 = 21;
-const OP_TYPE_FLOAT: u32 = 22;
-const OP_TYPE_VECTOR: u32 = 23;
-const OP_TYPE_ARRAY: u32 = 28;
-const OP_TYPE_RUNTIME_ARRAY: u32 = 29;
-const OP_TYPE_STRUCT: u32 = 30;
-const OP_TYPE_POINTER: u32 = 32;
-const OP_TYPE_FUNCTION: u32 = 33;
-const OP_CONSTANT: u32 = 43;
-const OP_FUNCTION: u32 = 54;
-const OP_FUNCTION_END: u32 = 56;
-const OP_VARIABLE: u32 = 59;
-const OP_LOAD: u32 = 61;
-const OP_STORE: u32 = 62;
-const OP_ACCESS_CHAIN: u32 = 65;
-const OP_DECORATE: u32 = 71;
-const OP_MEMBER_DECORATE: u32 = 72;
-const OP_COMPOSITE_EXTRACT: u32 = 81;
+pub const OP_CAPABILITY: u32 = 17;
+pub const OP_MEMORY_MODEL: u32 = 14;
+pub const OP_ENTRY_POINT: u32 = 15;
+pub const OP_EXECUTION_MODE: u32 = 16;
+/// `OpExtInstImport`（导入扩展指令集，如 `GLSL.std.450`）。
+pub const OP_EXT_INST_IMPORT: u32 = 11;
+/// `OpExtInst`（扩展指令调用）。
+pub const OP_EXT_INST: u32 = 12;
+pub const OP_TYPE_VOID: u32 = 19;
+pub const OP_TYPE_BOOL: u32 = 20;
+pub const OP_TYPE_INT: u32 = 21;
+pub const OP_TYPE_FLOAT: u32 = 22;
+pub const OP_TYPE_VECTOR: u32 = 23;
+pub const OP_TYPE_ARRAY: u32 = 28;
+pub const OP_TYPE_RUNTIME_ARRAY: u32 = 29;
+pub const OP_TYPE_STRUCT: u32 = 30;
+pub const OP_TYPE_POINTER: u32 = 32;
+pub const OP_TYPE_FUNCTION: u32 = 33;
+pub const OP_CONSTANT: u32 = 43;
+pub const OP_FUNCTION: u32 = 54;
+pub const OP_FUNCTION_END: u32 = 56;
+pub const OP_VARIABLE: u32 = 59;
+pub const OP_LOAD: u32 = 61;
+pub const OP_STORE: u32 = 62;
+pub const OP_ACCESS_CHAIN: u32 = 65;
+pub const OP_DECORATE: u32 = 71;
+pub const OP_MEMBER_DECORATE: u32 = 72;
+pub const OP_COMPOSITE_EXTRACT: u32 = 81;
+/// `OpConvertFToU`（浮点 → 无符号整；**向零截断**，越界为 UB，
+/// 故调用方必须先把值钳进 `[0, u32::MAX]`）。
+pub const OP_CONVERT_F_TO_U: u32 = 109;
+/// `OpConvertUToF`（无符号整 → 浮点；就近舍入到偶数）。
+pub const OP_CONVERT_U_TO_F: u32 = 112;
+/// `OpBitcast`（位型重解释；f32 ↔ u32 零开销，无舍入）。
+pub const OP_BITCAST: u32 = 124;
+/// `OpIAdd`（整数加，模 2^32 回绕）。
+pub const OP_I_ADD: u32 = 128;
+/// 指令 `OpFAdd`（浮点加）。
+pub const OP_F_ADD: u32 = 129;
+/// 指令 `OpFSub`（浮点减）。
+pub const OP_F_SUB: u32 = 131;
+/// 指令 `OpIMul`（整数乘，模 2^32 回绕）。
+pub const OP_I_MUL: u32 = 132;
 /// 指令 `OpFMul`（浮点乘）。
 ///
 /// lavapipe 实测修正：旧值 128 实为 `OpIAdd`。算术指令段自 128 起
 /// 按「整/浮」交替编号：128 OpIAdd / 129 OpFAdd / 130 OpISub / 131 OpFSub /
 /// 132 OpIMul / **133 OpFMul**——错位使 `mul2` kernel 语义改变且结果类型
 /// 非法（spirv-val: "Expected int scalar or vector type as Result Type"）。
-const OP_F_MUL: u32 = 133;
-const OP_LABEL: u32 = 248;
-const OP_RETURN: u32 = 253;
+pub const OP_F_MUL: u32 = 133;
+/// 指令 `OpFDiv`（浮点除；IEEE 正确舍入）。
+pub const OP_F_DIV: u32 = 136;
+/// `OpLogicalOr`。
+pub const OP_LOGICAL_OR: u32 = 166;
+/// `OpSelect`（条件选择；无分支，故不需要结构化控制流）。
+pub const OP_SELECT: u32 = 169;
+/// `OpUGreaterThanEqual`（无符号 ≥）。
+pub const OP_U_GREATER_THAN_EQUAL: u32 = 174;
+/// `OpFOrdLessThan`（有序浮点 <；NaN 为假）。
+pub const OP_F_ORD_LESS_THAN: u32 = 184;
+/// `OpFOrdGreaterThan`（有序浮点 >；NaN 为假）。
+pub const OP_F_ORD_GREATER_THAN: u32 = 186;
+/// `OpShiftRightLogical`（逻辑右移，高位补 0）。
+pub const OP_SHIFT_RIGHT_LOGICAL: u32 = 194;
+/// `OpShiftLeftLogical`。
+pub const OP_SHIFT_LEFT_LOGICAL: u32 = 196;
+/// `OpBitwiseOr`。
+pub const OP_BITWISE_OR: u32 = 197;
+/// `OpBitwiseXor`。
+pub const OP_BITWISE_XOR: u32 = 198;
+/// `OpSelectionMerge`（结构化选择头；**必须紧邻**其后的分支指令）。
+pub const OP_SELECTION_MERGE: u32 = 247;
+/// `OpBranch`。
+pub const OP_BRANCH: u32 = 249;
+/// `OpBranchConditional`。
+pub const OP_BRANCH_CONDITIONAL: u32 = 250;
+pub const OP_LABEL: u32 = 248;
+pub const OP_RETURN: u32 = 253;
 
 /// OpCode 白名单（本模块产出的子集；出现表外 OpCode ⇒ 字节被改动）。
 const ALLOWED_OPCODES: &[u32] = &[
@@ -95,6 +140,8 @@ const ALLOWED_OPCODES: &[u32] = &[
     OP_MEMORY_MODEL,
     OP_ENTRY_POINT,
     OP_EXECUTION_MODE,
+    OP_EXT_INST_IMPORT,
+    OP_EXT_INST,
     OP_TYPE_VOID,
     OP_TYPE_BOOL,
     OP_TYPE_INT,
@@ -115,8 +162,28 @@ const ALLOWED_OPCODES: &[u32] = &[
     OP_DECORATE,
     OP_MEMBER_DECORATE,
     OP_COMPOSITE_EXTRACT,
+    OP_CONVERT_F_TO_U,
+    OP_CONVERT_U_TO_F,
+    OP_BITCAST,
+    OP_I_ADD,
+    OP_F_ADD,
+    OP_F_SUB,
+    OP_I_MUL,
     OP_F_MUL,
+    OP_F_DIV,
+    OP_LOGICAL_OR,
+    OP_SELECT,
+    OP_U_GREATER_THAN_EQUAL,
+    OP_F_ORD_LESS_THAN,
+    OP_F_ORD_GREATER_THAN,
+    OP_SHIFT_RIGHT_LOGICAL,
+    OP_SHIFT_LEFT_LOGICAL,
+    OP_BITWISE_OR,
+    OP_BITWISE_XOR,
+    OP_SELECTION_MERGE,
     OP_LABEL,
+    OP_BRANCH,
+    OP_BRANCH_CONDITIONAL,
     OP_RETURN,
 ];
 
@@ -127,6 +194,8 @@ pub fn opcode_name(op: u32) -> &'static str {
         OP_MEMORY_MODEL => "OpMemoryModel",
         OP_ENTRY_POINT => "OpEntryPoint",
         OP_EXECUTION_MODE => "OpExecutionMode",
+        OP_EXT_INST_IMPORT => "OpExtInstImport",
+        OP_EXT_INST => "OpExtInst",
         OP_TYPE_VOID => "OpTypeVoid",
         OP_TYPE_BOOL => "OpTypeBool",
         OP_TYPE_INT => "OpTypeInt",
@@ -147,8 +216,28 @@ pub fn opcode_name(op: u32) -> &'static str {
         OP_DECORATE => "OpDecorate",
         OP_MEMBER_DECORATE => "OpMemberDecorate",
         OP_COMPOSITE_EXTRACT => "OpCompositeExtract",
+        OP_CONVERT_F_TO_U => "OpConvertFToU",
+        OP_CONVERT_U_TO_F => "OpConvertUToF",
+        OP_BITCAST => "OpBitcast",
+        OP_I_ADD => "OpIAdd",
+        OP_F_ADD => "OpFAdd",
+        OP_F_SUB => "OpFSub",
+        OP_I_MUL => "OpIMul",
         OP_F_MUL => "OpFMul",
+        OP_F_DIV => "OpFDiv",
+        OP_LOGICAL_OR => "OpLogicalOr",
+        OP_SELECT => "OpSelect",
+        OP_U_GREATER_THAN_EQUAL => "OpUGreaterThanEqual",
+        OP_F_ORD_LESS_THAN => "OpFOrdLessThan",
+        OP_F_ORD_GREATER_THAN => "OpFOrdGreaterThan",
+        OP_SHIFT_RIGHT_LOGICAL => "OpShiftRightLogical",
+        OP_SHIFT_LEFT_LOGICAL => "OpShiftLeftLogical",
+        OP_BITWISE_OR => "OpBitwiseOr",
+        OP_BITWISE_XOR => "OpBitwiseXor",
+        OP_SELECTION_MERGE => "OpSelectionMerge",
         OP_LABEL => "OpLabel",
+        OP_BRANCH => "OpBranch",
+        OP_BRANCH_CONDITIONAL => "OpBranchConditional",
         OP_RETURN => "OpReturn",
         _ => "OpUnknown",
     }
@@ -187,6 +276,11 @@ pub const DECORATION_BINDING: u32 = 33;
 pub const DECORATION_DESCRIPTOR_SET: u32 = 34;
 /// 装饰：`Offset`。
 pub const DECORATION_OFFSET: u32 = 35;
+/// 装饰：`NoContraction`（禁止把该浮点结果与相邻运算熔成 FMA）。
+///
+/// GPU 驱动**默认允许**收缩（Vulkan 规范），而 CPU 参考不会收缩——
+/// 一旦熔成 FMA，末位就与参考不同。逐位对拍要求下必须显式禁止。
+pub const DECORATION_NO_CONTRACTION: u32 = 42;
 /// 装饰：`ArrayStride`（BufferBlock 内数组/运行期数组的显式步长——
 /// Vulkan 消费方要求 Block 内数组必须显式声明步长，否则管线编译拒绝）。
 pub const DECORATION_ARRAY_STRIDE: u32 = 6;
@@ -444,19 +538,44 @@ static MUL2: &[u32] = &[
 /// `static`（非 `const`）：`const` 会在每个引用点物化独立副本，导致
 /// 「同一模块在不同调用点拿到不同地址」——与 `crate::shaders::SHADERS` 同一
 /// 教训（wgpu/FFI 传指针时须全程序唯一实例）。
+///
+/// 本表只放**静态字面字流**；由发射器生成的模块（[`super::spirv_bg`] 的
+/// 背景 kernel）走 [`generated_modules`]，两表由 [`module`] 统一寻址。
 pub static MODULES: &[(&str, &[u32])] = &[("spv_mul2_probe", MUL2)];
 
-/// 按名取模块字流。
+/// 由自研发射器**在运行期生成一次**的模块表（`OnceLock` 缓存，全程序唯一）。
+///
+/// 生成是纯函数（同输入必得同字节流），因此「运行期生成」不等于「不确定」：
+/// [`build_is_deterministic`](super::spirv_bg) 直接断言两次构建逐字相同。
+pub fn generated_modules() -> &'static [(&'static str, &'static [u32])] {
+    static GENERATED: std::sync::OnceLock<Vec<(&'static str, &'static [u32])>> =
+        std::sync::OnceLock::new();
+    GENERATED.get_or_init(|| {
+        vec![(
+            super::spirv_bg::MODULE_BACKGROUND,
+            super::spirv_bg::background_words(),
+        )]
+    })
+}
+
+/// 按名取模块字流（静态表 + 生成表）。
 pub fn module(name: &str) -> Option<&'static [u32]> {
-    MODULES
+    if let Some((_, w)) = MODULES.iter().find(|(n, _)| *n == name) {
+        return Some(w);
+    }
+    generated_modules()
         .iter()
         .find(|(n, _)| *n == name)
         .map(|(_, w)| *w)
 }
 
-/// 模块名全集（确定性顺序）。
+/// 模块名全集（确定性顺序：静态表在前，生成表在后）。
 pub fn module_names() -> Vec<&'static str> {
-    MODULES.iter().map(|(n, _)| *n).collect()
+    MODULES
+        .iter()
+        .chain(generated_modules().iter())
+        .map(|(n, _)| *n)
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -558,6 +677,25 @@ pub enum SpvError {
         /// 实际函数数。
         functions: u32,
     },
+    /// `OpAccessChain` 的索引链在**非复合类型**上继续下钻
+    /// （驱动侧表现是编译错误，激进实现直接崩溃）。
+    ///
+    /// 真实缺陷来源：把「指向 4 成员结构体的指针」误当成「指向数组的指针」
+    /// 多写了一个索引——`spirv-val` 报 "reached non-composite type"，
+    /// 而 lavapipe 在 W4 首次上机时直接 SIGSEGV。
+    AccessChainNotComposite {
+        /// 指令起始字下标。
+        at: usize,
+    },
+    /// `OpAccessChain` 的结构体成员下标越界。
+    AccessChainMemberOutOfRange {
+        /// 指令起始字下标。
+        at: usize,
+        /// 请求的成员下标。
+        member: u32,
+        /// 结构体成员数。
+        count: usize,
+    },
 }
 
 impl SpvError {
@@ -578,6 +716,8 @@ impl SpvError {
             SpvError::LocalSizeMismatch { .. } => "local-size-mismatch",
             SpvError::BindingMismatch { .. } => "binding-mismatch",
             SpvError::BadFunctionSection { .. } => "bad-function-section",
+            SpvError::AccessChainNotComposite { .. } => "access-chain-not-composite",
+            SpvError::AccessChainMemberOutOfRange { .. } => "access-chain-member-out-of-range",
         }
     }
 }
@@ -603,9 +743,112 @@ pub struct SpvSummary {
     pub opcodes: Vec<u32>,
 }
 
+/// `OpAccessChain` 校验需要的「类型形状」子集。
+enum SpvShape {
+    /// 结构体：成员类型 id（按成员序）。
+    Struct(Vec<u32>),
+    /// 数组 / 运行期数组：元素类型 id。
+    Sequence(u32),
+    /// 标量 / 向量 / 其它不可下钻的类型。
+    Leaf,
+    /// 指针：指向的类型 id。
+    Pointer { pointee: u32 },
+}
+
+/// **索引链形状校验**：`OpAccessChain` 的每个下标都必须作用在复合类型上。
+///
+/// 这是 W4 真机 SIGSEGV 的直接产物：`Params` 是「指向 4 成员结构体的指针」，
+/// 访问成员只需**一个**下标；多写一个下标就落在标量 `u32` 上。`spirv-val`
+/// 报 "reached non-composite type"，而 lavapipe 在建管线时崩溃——一个纯
+/// 结构缺陷把整个测试进程带走。此检查让同类缺陷在**无设备**时就被拦下。
+///
+/// 只跟踪结构体/数组/指针/标量的形状，不做类型匹配（那需要完整类型检查器）。
+fn check_access_chains(words: &[u32]) -> Result<(), SpvError> {
+    let mut shapes: Vec<(u32, SpvShape)> = Vec::new();
+    let mut vars: Vec<(u32, u32)> = Vec::new();
+    let mut consts: Vec<(u32, u32)> = Vec::new();
+
+    let mut i = 5usize;
+    while i < words.len() {
+        let wc = (words[i] >> 16) as usize;
+        if wc == 0 || i + wc > words.len() {
+            // 字长异常由 `validate` 主循环报更精确的错误。
+            break;
+        }
+        match words[i] & 0xFFFF {
+            OP_TYPE_STRUCT if wc >= 3 => {
+                shapes.push((words[i + 1], SpvShape::Struct(words[i + 2..i + wc].to_vec())));
+            }
+            OP_TYPE_RUNTIME_ARRAY if wc >= 3 => {
+                shapes.push((words[i + 1], SpvShape::Sequence(words[i + 2])));
+            }
+            OP_TYPE_ARRAY if wc >= 4 => {
+                shapes.push((words[i + 1], SpvShape::Sequence(words[i + 2])));
+            }
+            OP_TYPE_POINTER if wc >= 4 => {
+                shapes.push((words[i + 1], SpvShape::Pointer { pointee: words[i + 3] }));
+            }
+            OP_TYPE_VOID | OP_TYPE_BOOL | OP_TYPE_INT | OP_TYPE_FLOAT | OP_TYPE_VECTOR => {
+                shapes.push((words[i + 1], SpvShape::Leaf));
+            }
+            OP_VARIABLE if wc >= 3 => vars.push((words[i + 2], words[i + 1])),
+            OP_CONSTANT if wc >= 4 => consts.push((words[i + 2], words[i + 3])),
+            _ => {}
+        }
+        i += wc;
+    }
+
+    let shape_of = |id: u32| -> Option<&SpvShape> {
+        shapes.iter().find(|(t, _)| *t == id).map(|(_, s)| s)
+    };
+
+    let mut i = 5usize;
+    while i < words.len() {
+        let wc = (words[i] >> 16) as usize;
+        if wc == 0 || i + wc > words.len() {
+            break;
+        }
+        if words[i] & 0xFFFF == OP_ACCESS_CHAIN && wc >= 5 {
+            let base = words[i + 3];
+            if let Some(&(_, base_ty)) = vars.iter().find(|(v, _)| *v == base) {
+                if let Some(SpvShape::Pointer { pointee }) = shape_of(base_ty) {
+                    let mut cur = *pointee;
+                    for &idx in &words[i + 4..i + wc] {
+                        match shape_of(cur) {
+                            Some(SpvShape::Struct(members)) => {
+                                // 结构体下标必须是常量；取不到常量时跳过该项检查
+                                // （宁可漏检，不误报）。
+                                let Some(&(_, member)) =
+                                    consts.iter().find(|(c, _)| *c == idx)
+                                else {
+                                    break;
+                                };
+                                let m = member as usize;
+                                if m >= members.len() {
+                                    return Err(SpvError::AccessChainMemberOutOfRange {
+                                        at: i,
+                                        member,
+                                        count: members.len(),
+                                    });
+                                }
+                                cur = members[m];
+                            }
+                            Some(SpvShape::Sequence(elem)) => cur = *elem,
+                            _ => return Err(SpvError::AccessChainNotComposite { at: i }),
+                        }
+                    }
+                }
+            }
+        }
+        i += wc;
+    }
+    Ok(())
+}
+
 /// 结构验证：`words` 是完整模块（含 5 字头部）。
 ///
-/// 只做**结构**校验（不做类型/语义验算——那需 `spirv-val`，本环境无）。
+/// 只做**结构**校验（不做类型/语义验算——那需 `spirv-val`）；额外检查
+/// `OpAccessChain` 的索引链形状（见私有函数 `check_access_chains`）。
 pub fn validate(words: &[u32], expect: &SpvExpect) -> Result<SpvSummary, SpvError> {
     if words.len() < 5 {
         return Err(SpvError::TooShort);
@@ -709,6 +952,8 @@ pub fn validate(words: &[u32], expect: &SpvExpect) -> Result<SpvSummary, SpvErro
     if functions != 1 {
         return Err(SpvError::BadFunctionSection { functions });
     }
+    // 索引链形状：最后一道（也是最像驱动的一道）静态门禁。
+    check_access_chains(words)?;
     opcodes.sort_unstable();
     opcodes.dedup();
 
@@ -948,6 +1193,104 @@ mod tests {
         }
     }
 
+    /// **真机崩溃的静态复现**：`OpAccessChain` 多一个下标落在标量上。
+    ///
+    /// 背景 kernel 的 `Params` 是 4 成员结构体，访问成员只该有 1 个下标。
+    /// 施工中曾误写成 `[0, member]`（照抄 BufferBlock 内的数组访问），
+    /// `spirv-val` 报 "reached non-composite type"，lavapipe **SIGSEGV**。
+    /// 这里把该缺陷原样注回模块，断言结构校验能拦下它——无设备、无崩溃。
+    #[test]
+    fn validator_catches_access_chain_through_scalar() {
+        use crate::vulkan::spirv_bg::{background_words, ENTRY_BACKGROUND, WORKGROUP_BACKGROUND};
+        let expect = SpvExpect {
+            entry: ENTRY_BACKGROUND,
+            local_size: WORKGROUP_BACKGROUND,
+            bindings: &[0, 1],
+        };
+        let good = background_words();
+        validate(good, &expect).expect("原始模块应合法");
+
+        // 定位：第一条访问链（Params 成员，1 个下标）与最后一条（输出，2 个下标）。
+        let mut params_var = 0u32;
+        let mut last_chain = 0usize;
+        let mut first_chain_seen = false;
+        let mut i = 5usize;
+        while i < good.len() {
+            let wc = (good[i] >> 16) as usize;
+            assert!(wc > 0);
+            if good[i] & 0xFFFF == OP_ACCESS_CHAIN {
+                if !first_chain_seen && wc == 5 {
+                    params_var = good[i + 3];
+                    first_chain_seen = true;
+                }
+                last_chain = i;
+            }
+            i += wc;
+        }
+        assert_ne!(params_var, 0, "未找到参数块访问链");
+
+        // ① 把输出访问链的基址换成 Params（struct{4×u32}）：
+        //    [0, idx] 中 idx 落在 u32 上 ⇒ non-composite。
+        let mut bad = good.to_vec();
+        bad[last_chain + 3] = params_var;
+        assert!(
+            matches!(
+                validate(&bad, &expect),
+                Err(SpvError::AccessChainNotComposite { .. })
+            ),
+            "索引链穿过标量必须被静态拦下（否则真机会崩驱动）"
+        );
+
+        // ② 结构体成员下标越界：把某条 Params 链的下标常量换成一个巨大的常量 id。
+        let big_const = {
+            let mut found = 0u32;
+            let mut j = 5usize;
+            while j < good.len() {
+                let wc = (good[j] >> 16) as usize;
+                if good[j] & 0xFFFF == OP_CONSTANT && wc >= 4 && good[j + 3] > 16 {
+                    found = good[j + 2];
+                    break;
+                }
+                j += wc;
+            }
+            found
+        };
+        assert_ne!(big_const, 0, "模块中应存在大常量（hash 乘子）");
+        let mut bad2 = good.to_vec();
+        // 第一条 Params 访问链的最后一个操作数就是成员下标。
+        let mut i = 5usize;
+        let mut patched = false;
+        while i < good.len() {
+            let wc = (good[i] >> 16) as usize;
+            if good[i] & 0xFFFF == OP_ACCESS_CHAIN && wc == 5 && good[i + 3] == params_var {
+                bad2[i + 4] = big_const;
+                patched = true;
+                break;
+            }
+            i += wc;
+        }
+        assert!(patched, "未找到 Params 访问链");
+        assert!(
+            matches!(
+                validate(&bad2, &expect),
+                Err(SpvError::AccessChainMemberOutOfRange { .. })
+            ),
+            "越界成员下标必须被拦下"
+        );
+
+        // 失败原因短名非空。
+        for e in [
+            SpvError::AccessChainNotComposite { at: 0 },
+            SpvError::AccessChainMemberOutOfRange {
+                at: 0,
+                member: 9,
+                count: 4,
+            },
+        ] {
+            assert!(!e.as_str().is_empty());
+        }
+    }
+
     /// 反汇编摘要可读且稳定（诊断用）。
     #[test]
     fn disassembly_is_stable_and_covers_all_instructions() {
@@ -970,8 +1313,17 @@ mod tests {
     fn module_lookup_contract() {
         assert!(module("spv_mul2_probe").is_some());
         assert!(module("no_such_module").is_none());
-        assert_eq!(module_names(), vec!["spv_mul2_probe"]);
-        // 只声明了唯一真实二进制 —— 不虚报 RT kernel 已有 SPIR-V。
+        assert_eq!(
+            module_names(),
+            vec!["spv_mul2_probe", "spv_background"],
+            "静态模块 + 发射器模块，顺序固定"
+        );
+        // 手写字流只有一个；背景 kernel 由发射器生成 —— 两张表口径不混。
         assert_eq!(MODULES.len(), 1);
+        assert_eq!(generated_modules().len(), 1);
+        // 生成表指向 `OnceLock` 中的同一实例（指针稳定，FFI 传得出去）。
+        let a = module("spv_background").expect("背景模块已注册");
+        let b = module("spv_background").expect("背景模块已注册");
+        assert_eq!(a.as_ptr(), b.as_ptr(), "同一模块须全程序唯一实例");
     }
 }
