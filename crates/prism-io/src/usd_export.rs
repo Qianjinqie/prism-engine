@@ -45,9 +45,11 @@
 //!   是 L2 不动点，但对真正的 USD 消费方已不是组合弧（`@…@` 资产语法丢了）。
 //!   该信息缺口在导入侧建模（`usd::parse_attribute`），不在导出口，故
 //!   **不**进 [`ExportReport`]；修复需导入侧建模改动，见设计遗留项。
-//! - **非 ASCII 文本**照常写出（文件本身是合法 UTF-8），但本仓库解析器的
-//!   字符串体按字节推进（`usd::Lexer::read_string_body`），回读会破坏多字节
-//!   字符，故 L2 判据语料限 ASCII；命中时 [`ExportReport::non_ascii_text`] 记账；
+//! - **非 ASCII 文本无损**：字符串 / 资产路径 / 场景路径都按 UTF-8 原样写出，
+//!   导入器字符串体按字节收集后整体解码（`usd::Lexer::read_string_body`），
+//!   故 L2 字节不动点对中文 / emoji / 组合字符同样成立；仍拒绝非 ASCII 的
+//!   **裸标识符**（prim / 属性名）——USD 语法本身限定 ASCII 标识符，这是
+//!   结构化报错（PU1013），不是有损改写；
 //! - **材质是 UsdPreviewSurface 属性级直射**：解析器不求值 Shader 输入
 //!   （设计 D-1 未决），故属性级往返成立、语义级待接线；`sheen*` 无对应
 //!   输入，进 [`ExportReport::dropped_sheen`]；
@@ -102,8 +104,6 @@ pub struct ExportReport {
     pub renamed_prims: Vec<(String, String)>,
     /// 材质表里从未被任何 `material:binding` 引用的 key。
     pub unused_materials: Vec<String>,
-    /// 含非 ASCII 文本的位置（导出文本合法；本仓库解析器回读会破坏多字节字符）。
-    pub non_ascii_text: Vec<String>,
 }
 
 impl ExportReport {
@@ -117,7 +117,6 @@ impl ExportReport {
             && self.baked_transforms.is_empty()
             && self.renamed_prims.is_empty()
             && self.unused_materials.is_empty()
-            && self.non_ascii_text.is_empty()
     }
 
     /// 合并另一份报告（入口 [`export_scene`] 把适配层与序列化层的记账合流）。
@@ -131,12 +130,11 @@ impl ExportReport {
         self.baked_transforms.extend(o.baked_transforms);
         self.renamed_prims.extend(o.renamed_prims);
         self.unused_materials.extend(o.unused_materials);
-        self.non_ascii_text.extend(o.non_ascii_text);
     }
 
     /// 排序 + 去重（集合语义字段；`renamed_prims` 按 (源, 目标) 排序）。
     fn normalize(&mut self) {
-        let all: [&mut Vec<String>; 8] = [
+        let all: [&mut Vec<String>; 7] = [
             &mut self.dropped_time_samples,
             &mut self.dropped_variant_sets,
             &mut self.dropped_layer_metadata,
@@ -144,7 +142,6 @@ impl ExportReport {
             &mut self.relabeled_interpolation,
             &mut self.baked_transforms,
             &mut self.unused_materials,
-            &mut self.non_ascii_text,
         ];
         for v in all {
             v.sort();
@@ -751,13 +748,6 @@ impl<'a> Writer<'a> {
         self.out.push('\n');
     }
 
-    /// 非 ASCII 记账（导出正确，回读有损）。
-    fn note_non_ascii(&mut self, s: &str, loc: &str) {
-        if !s.is_ascii() {
-            self.report.non_ascii_text.push(loc.to_string());
-        }
-    }
-
     /// 整层。
     fn layer(&mut self, layer: &Layer) -> Result<(), UsdError> {
         let version = canonical_version(&layer.version)?;
@@ -775,7 +765,6 @@ impl<'a> Writer<'a> {
                 continue;
             }
             check_ident(k, &loc, "层元数据键")?;
-            self.note_non_ascii(v, &loc);
             meta.push((k.clone(), meta_value(v, &loc)?));
         }
         if !meta.is_empty() {
@@ -825,7 +814,6 @@ impl<'a> Writer<'a> {
                 "以树位置为准修正 `Prim.path`，或修正 `Prim.name`；否则 `material:binding` 会指向旧路径",
             ));
         }
-        self.note_non_ascii(&p.name, &loc);
         if !p.variant_sets.is_empty() {
             for v in &p.variant_sets {
                 self.report
@@ -885,28 +873,11 @@ impl<'a> Writer<'a> {
         if let Some(v) = emit_value(&a.type_name, &a.value, &loc)? {
             s.push_str(" = ");
             s.push_str(&v);
-            match &a.value {
-                AttrValue::Str(t) | AttrValue::Asset(t) | AttrValue::Path(t) => {
-                    self.note_non_ascii(t, &loc);
-                }
-                AttrValue::Strings(ts) => {
-                    for t in ts {
-                        self.note_non_ascii(t, &loc);
-                    }
-                }
-                AttrValue::Paths(ps) => {
-                    for t in ps {
-                        self.note_non_ascii(t, &loc);
-                    }
-                }
-                _ => {}
-            }
         }
         if let Some(i) = &a.interpolation {
             s.push_str(" ( interpolation = ");
             s.push_str(&quote(i, &loc)?);
             s.push_str(" )");
-            self.note_non_ascii(i, &loc);
         }
         self.line(depth, &s);
         Ok(())
@@ -932,9 +903,6 @@ impl<'a> Writer<'a> {
                 format!("[{}]", parts.join(", "))
             }
         };
-        for t in &r.targets {
-            self.note_non_ascii(t, &loc);
-        }
         self.line(depth, &format!("rel {} = {}", r.name, text));
         Ok(())
     }
@@ -1775,15 +1743,84 @@ def Xform "root"
         assert_eq!(out.meshes[0].world_transform, Mat4::identity());
     }
 
+    /// Unicode 无损 + 幂等链：导入 → 导出 → 导入 → 再导出，两次导出逐字节
+    /// 相同；中文 / emoji（4 字节）/ 组合字符（`e` + U+0301）逐字符相等。
+    ///
+    /// 旧版词法器逐字节 `as char` 会把多字节序列拆成多个 U+00XX，回读即乱码，
+    /// 再导出逐代恶化；本测试是那条链的回归钉子。
     #[test]
-    fn non_ascii_text_is_reported_but_written_verbatim() {
+    fn unicode_roundtrip_is_byte_fixed_point() {
+        let u = "材质🎨e\u{0301}"; // 中文 + emoji + 组合重音
+        let doc_plain = format!("{u} 行一");
+        // USDA 源里的 `\n` / `\t` 是转义、`\q` 是未知转义（原样保留反斜杠）。
+        let doc_escaped = format!("{u} 行一\\n行二\\t\\q");
+        let src = format!(
+            "#usda 1.0\n(\n    doc = \"{u}\"\n)\ndef Scope \"s\"\n{{\n    \
+             custom string doc = \"{doc_escaped}\"\n    \
+             string[] tags = [\"{u}\", \"尾巴\"]\n    \
+             asset tex = @textures/{u}.png@\n    \
+             path pick = </场景/材质>\n}}\n"
+        );
+
+        let l0 = parse_str(&src).expect("含 Unicode 的源必须可解析").layer;
+        let want_doc = format!("{doc_plain}\n行二\t\\q");
+        let got0 = l0.prims[0]
+            .value("doc")
+            .and_then(|v| v.as_str())
+            .expect("doc");
+        assert_eq!(got0, want_doc, "首轮导入就不是原文，词法层已损坏");
+
+        let (t1, r1) = export_layer(&l0).expect("首次导出");
+        assert!(r1.is_empty(), "Unicode 不得再进有损记账：{r1:?}");
+        assert!(t1.contains(&doc_plain), "Unicode 必须原样写出");
+
+        let l1 = parse_str(&t1).expect("导出的 Unicode 文本必须可回读").layer;
+        let got1 = l1.prims[0]
+            .value("doc")
+            .and_then(|v| v.as_str())
+            .expect("doc");
+        assert_eq!(got1, want_doc, "回读后字符串体被破坏（乱码/丢字符）");
+        assert_eq!(
+            l1.prims[0].value("tags").map(|v| v.as_strings()),
+            Some(vec![u.to_string(), "尾巴".to_string()])
+        );
+        let want_tex = format!("textures/{u}.png");
+        assert_eq!(
+            l1.prims[0].value("tex").and_then(|v| v.as_str()),
+            Some(want_tex.as_str())
+        );
+        assert_eq!(
+            l1.prims[0].value("pick").and_then(|v| v.as_str()),
+            Some("/场景/材质")
+        );
+        assert_eq!(l1.metadata, l0.metadata, "层元数据 Unicode 必须精确往返");
+
+        let (t2, r2) = export_layer(&l1).expect("再次导出");
+        assert_eq!(
+            t1, t2,
+            "Unicode 幂等链不成立：导入→导出→导入→再导出必须逐字节相同"
+        );
+        assert!(r2.is_empty(), "{r2:?}");
+
+        let l2 = parse_str(&t2).expect("二轮回读").layer;
+        let (t3, _) = export_layer(&l2).expect("三轮导出");
+        assert_eq!(t2, t3, "第三轮仍须字节不动点");
+    }
+
+    #[test]
+    fn non_ascii_text_is_written_verbatim_without_report() {
         let mut prim = new_prim(PrimKind::Def, "Scope", "s".to_string(), "/s".to_string());
         let mut a = new_attr("doc", "string", AttrValue::Str("材质".to_string()));
         a.custom = true;
         prim.attributes.push(a);
         let (text, rep) = export_layer(&layer_with(vec![prim])).expect("导出");
-        assert_eq!(rep.non_ascii_text, vec!["prim /s 的属性 doc".to_string()]);
+        assert!(rep.is_empty(), "非 ASCII 已不再是有损面：{rep:?}");
         assert!(text.contains("材质"), "导出写的是合法 UTF-8 原文");
+        let back = parse_str(&text).expect("回读").layer;
+        assert_eq!(
+            back.prims[0].value("doc").and_then(|v| v.as_str()),
+            Some("材质")
+        );
     }
 
     /// 导入资产直导：未知属性 / over / Xform 链原样回写（R1：不重排不解释）。

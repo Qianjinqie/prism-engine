@@ -282,12 +282,20 @@ impl UsdError {
         )
     }
 
-    /// PU1009：输入不是合法 UTF-8 文本。
-    pub fn invalid_utf8() -> Self {
+    /// PU1009：输入不是合法 UTF-8 文本（带首个非法字节的行/列）。
+    ///
+    /// `at` 是 `Utf8Error::valid_up_to()` 给出的字节偏移；行/列按**字节**
+    /// 计数，与词法器 `bump` 的口径一致。**不做** lossy 替换。
+    pub fn invalid_utf8(src: &[u8], at: usize) -> Self {
+        let (line, col) = line_col_at(src, at);
+        let bad = src.get(at).copied().unwrap_or(0);
         Self::new(
             "PU1009",
-            "usd::parse_bytes",
-            "输入不是合法 UTF-8 文本，无法按 `.usda` 解析",
+            format!("usd::lexer 第 {line} 行第 {col} 列"),
+            format!(
+                "输入不是合法 UTF-8 文本：第 {at} 字节处的 0x{bad:02x} 起序列非法\
+                 （拒绝 lossy 替换）"
+            ),
             "确认文件是 `.usda`（ASCII USD）且为 UTF-8 编码；`.usdc` 见 PU1001",
         )
     }
@@ -780,7 +788,7 @@ impl<'a> Lexer<'a> {
             }
             b'@' => {
                 self.bump();
-                let mut s = String::new();
+                let mut buf: Vec<u8> = Vec::new();
                 loop {
                     match self.bump() {
                         None => {
@@ -790,14 +798,19 @@ impl<'a> Lexer<'a> {
                             ))
                         }
                         Some(b'@') => break,
-                        Some(b) => s.push(b as char),
+                        Some(b) => buf.push(b),
                     }
                 }
-                Ok(Tok::Asset(s))
+                Ok(Tok::Asset(Self::decode_bytes(
+                    buf,
+                    line,
+                    col,
+                    "资产路径 `@...@` 内容",
+                )?))
             }
             b'<' => {
                 self.bump();
-                let mut s = String::new();
+                let mut buf: Vec<u8> = Vec::new();
                 loop {
                     match self.bump() {
                         None => {
@@ -807,10 +820,15 @@ impl<'a> Lexer<'a> {
                             ))
                         }
                         Some(b'>') => break,
-                        Some(b) => s.push(b as char),
+                        Some(b) => buf.push(b),
                     }
                 }
-                Ok(Tok::Path(s))
+                Ok(Tok::Path(Self::decode_bytes(
+                    buf,
+                    line,
+                    col,
+                    "场景路径 `<...>` 内容",
+                )?))
             }
             b'0'..=b'9' | b'-' | b'+' | b'.' => self.lex_number(line, col),
             _ => self.lex_ident(line, col),
@@ -879,20 +897,54 @@ impl<'a> Lexer<'a> {
         }
         if s.is_empty() {
             let bad = self.peek().unwrap_or(b'?');
+            // 只对可打印 ASCII 显示字符；多字节 UTF-8 的前导字节若按 Latin-1
+            // 显示会是误导性的「æ」之类，故非 ASCII 一律只给十六进制。
+            let shown = if bad.is_ascii_graphic() {
+                format!("（ASCII {:?}）", bad as char)
+            } else {
+                String::new()
+            };
             return Err(UsdError::syntax(
                 format!("usd::lexer 第 {line} 行第 {col} 列"),
-                format!("无法识别的字符：0x{bad:02x}（ASCII {:?}）", bad as char),
+                format!("无法识别的字符：0x{bad:02x}{shown}"),
             ));
         }
         Ok(Tok::Ident(s))
     }
 
+    /// 把已收集的字节整体解码为 UTF-8 文本（词法层**唯一**的解码点）。
+    ///
+    /// 多字节序列必须先在 `Vec<u8>` 里完整攒齐再解码：逐字节 `b as char`
+    /// 会把一个 UTF-8 字符拆成多个 U+00XX，产生乱码，且下次导出再导入会
+    /// 继续按字节拆——不幂等。非法 UTF-8 是**语法错误**（带内容起始行列），
+    /// 不做 lossy 替换（替换会把坏输入静默变成另一种字符串）。
+    fn decode_bytes(
+        bytes: Vec<u8>,
+        line: usize,
+        col: usize,
+        what: &str,
+    ) -> Result<String, UsdError> {
+        String::from_utf8(bytes).map_err(|e| {
+            let at = e.utf8_error().valid_up_to();
+            let bad = e.as_bytes().get(at).copied().unwrap_or(0);
+            UsdError::syntax(
+                format!("usd::lexer 第 {line} 行第 {col} 列"),
+                format!(
+                    "{what}不是合法 UTF-8：第 {at} 字节处的 0x{bad:02x} 起序列非法\
+                     （拒绝 lossy 替换）"
+                ),
+            )
+        })
+    }
+
     /// 读字符串内容（起始定界引号已被消费）。
     ///
     /// * `triple = false`：读到下一个**同种**引号即止（`"` 或 `'`）。
-    /// * `triple = true`：读到连续三个同种引号即止；其间单引号原样保留。
+    /// * `triple = true`：读到连续三个同种引号即止；其间单个同种引号原样保留。
     /// * 反斜杠转义仅解 `\n \t \r \\ \" \'`，未知转义**原样保留**
     ///   （USD 允许路径里的 `\x` 直传，静默吞掉会改路径）。
+    /// * 字符串体**按字节收集**，闭合处整体解码 UTF-8——逐字节 `as char`
+    ///   会拆坏多字节字符（中文/emoji/组合字符），见 [`Self::decode_bytes`]。
     fn read_string_body(
         &mut self,
         triple: bool,
@@ -900,7 +952,7 @@ impl<'a> Lexer<'a> {
         col: usize,
         quote: u8,
     ) -> Result<String, UsdError> {
-        let mut out = String::new();
+        let mut out: Vec<u8> = Vec::new();
         loop {
             let Some(c) = self.bump() else {
                 return Err(UsdError::syntax(
@@ -913,7 +965,7 @@ impl<'a> Lexer<'a> {
                 ));
             };
             if c == b'\\' {
-                // 转义序列。
+                // 转义序列（按字节展开；未知转义保留反斜杠 + 原字节）。
                 let Some(e) = self.bump() else {
                     return Err(UsdError::syntax(
                         format!("usd::lexer 第 {line} 行第 {col} 列"),
@@ -921,16 +973,16 @@ impl<'a> Lexer<'a> {
                     ));
                 };
                 match e {
-                    b'n' => out.push('\n'),
-                    b't' => out.push('\t'),
-                    b'r' => out.push('\r'),
-                    b'\\' => out.push('\\'),
-                    b'"' => out.push('"'),
-                    b'\'' => out.push('\''),
+                    b'n' => out.push(b'\n'),
+                    b't' => out.push(b'\t'),
+                    b'r' => out.push(b'\r'),
+                    b'\\' => out.push(b'\\'),
+                    b'"' => out.push(b'"'),
+                    b'\'' => out.push(b'\''),
                     other => {
                         // 保留未知转义的原样（USD 允许 `\x` 直传）。
-                        out.push('\\');
-                        out.push(other as char);
+                        out.push(b'\\');
+                        out.push(other);
                     }
                 }
                 continue;
@@ -941,14 +993,16 @@ impl<'a> Lexer<'a> {
                     if self.peek() == Some(quote) && self.peek_at(1) == Some(quote) {
                         self.bump();
                         self.bump();
-                        return Ok(out);
+                        return Self::decode_bytes(out, line, col, "字符串字面量");
                     }
-                    out.push('"');
+                    // 三引号体内的单个同种引号原样保留（**按定界符**，不是恒 `"`）。
+                    out.push(quote);
                     continue;
                 }
-                return Ok(out);
+                return Self::decode_bytes(out, line, col, "字符串字面量");
             }
-            out.push(c as char);
+            // 字节保真：多字节序列在此逐字节攒齐，闭合后整体解码。
+            out.push(c);
         }
     }
 }
@@ -1851,6 +1905,21 @@ fn validate_attr_value(
 /// USD crate 二进制格式的 magic（前 8 字节）。
 pub const USDC_MAGIC: &[u8; 8] = b"PXR-USDC";
 
+/// 字节偏移 → `(行, 列)`，均从 1 开始；列按**字节**计（与词法器同口径）。
+fn line_col_at(bytes: &[u8], at: usize) -> (usize, usize) {
+    let mut line = 1;
+    let mut col = 1;
+    for &b in bytes.iter().take(at) {
+        if b == b'\n' {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+    (line, col)
+}
+
 /// 解析结果：层 + 记账报告。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParsedUsda {
@@ -1867,7 +1936,8 @@ pub fn parse_bytes(bytes: &[u8]) -> Result<ParsedUsda, UsdError> {
     if bytes.starts_with(USDC_MAGIC) {
         return Err(UsdError::binary_not_supported(&bytes[..8]));
     }
-    let text = std::str::from_utf8(bytes).map_err(|_| UsdError::invalid_utf8())?;
+    let text =
+        std::str::from_utf8(bytes).map_err(|e| UsdError::invalid_utf8(bytes, e.valid_up_to()))?;
     parse_str(text)
 }
 
@@ -4271,6 +4341,81 @@ def Xform "root"
             .and_then(|v| v.as_str())
             .unwrap_or("");
         assert!(doc.contains('\n'), "三引号多行串应保留换行：{doc:?}");
+    }
+
+    /// 字符串体按字节保真：中文 / emoji（4 字节）/ 组合字符逐字符精确相等。
+    ///
+    /// 回归钉子：旧实现 `out.push(c as char)` 逐字节推进，一个多字节字符会被
+    /// 拆成多个 U+00XX（乱码），且每次导出再导入继续按字节拆，逐代恶化。
+    #[test]
+    fn utf8_string_literals_are_char_exact() {
+        // 中文 2 字（各 3 字节）+ emoji（4 字节）+ e + U+0301 组合重音（2 字节）。
+        let u = "材质🎨e\u{0301}";
+        let src = format!(
+            "#usda 1.0\ndef Scope \"s\"\n{{\n    \
+             string dq = \"{u}\"\n    \
+             string sq = '{u}'\n    \
+             string tq = \"\"\"{u}\n第二行\"\"\"\n    \
+             string tq_single = '''{u} it's'''\n    \
+             string unk = \"\\{u}\"\n    \
+             string esc = \"{u}\\n\\t\\q\\\\\"\n    \
+             string empty = \"\"\n}}\n"
+        );
+        let p = parse_str(&src).unwrap_or_else(|e| panic!("{e}"));
+        let val = |name: &str| {
+            p.layer.prims[0]
+                .value(name)
+                .and_then(|v| v.as_str())
+                .unwrap_or("<missing>")
+        };
+
+        // 逐字符 + 逐字节双断言（只比 `String` 相等已是字节级，这里显式展开）。
+        let got: Vec<char> = val("dq").chars().collect();
+        let want: Vec<char> = u.chars().collect();
+        assert_eq!(got, want, "双引号串逐字符必须相等：{:?}", val("dq"));
+        assert_eq!(val("dq").as_bytes(), u.as_bytes());
+        assert_eq!(got.len(), 5, "中文2 + emoji1 + e1 + 组合符1");
+        assert_eq!(val("dq").len(), 13, "3+3+4+1+2 字节");
+
+        assert_eq!(val("sq"), u, "单引号串同样字节保真");
+        assert_eq!(val("tq"), format!("{u}\n第二行"), "三引号串含多字节");
+        assert_eq!(
+            val("tq_single"),
+            format!("{u} it's"),
+            "三引号体内的单个同种引号必须原样保留"
+        );
+        assert_eq!(val("unk"), format!("\\{u}"), "未知转义保留反斜杠与完整字符");
+        assert_eq!(val("esc"), format!("{u}\n\t\\q\\"), "已知转义按字节展开");
+        assert_eq!(val("empty"), "", "空串保持空");
+    }
+
+    /// 非法 UTF-8：公共入口 PU1009；词法层兜底 PU1002（带行列），
+    /// 不 panic、不 lossy 替换成 U+FFFD。
+    #[test]
+    fn invalid_utf8_string_body_is_a_structured_error() {
+        // 第 4 行第 18 列是开引号，第 19 列起是字符串体；`\xe6\x9d` 是截断的 3 字节序列。
+        let bytes: &[u8] = b"#usda 1.0\ndef Scope \"s\"\n{\n    string doc = \"\xe6\x9d\"\n}\n";
+        let e = parse_bytes(bytes).expect_err("非法 UTF-8 输入必须报错");
+        assert_eq!(e.code, "PU1009");
+        assert!(e.problem.contains("UTF-8"), "{}", e.problem);
+        assert!(
+            e.location.contains("第 4 行第 19 列"),
+            "公共入口也要带行列：{}",
+            e.location
+        );
+        assert!(!e.fix.is_empty(), "C18：必须有建议段");
+
+        // 词法层直接兜底（绕过 parse_bytes 的整体闸门）：整体解码失败要报
+        // 明确语法错误并带字符串起始行列，而不是产出替换字符。
+        let mut lx = Lexer::new(bytes);
+        let e = lx.tokenize().expect_err("词法层必须拒绝非法 UTF-8");
+        assert_eq!(e.code, "PU1002");
+        assert!(
+            e.location.contains("第 4 行第 18 列"),
+            "错误必须带行/列：{}",
+            e.location
+        );
+        assert!(e.problem.contains("UTF-8"), "{}", e.problem);
     }
 
     // ── 渲染就绪网格（USD → prism-rt 加载路径）────────────────────────
