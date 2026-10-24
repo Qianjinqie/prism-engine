@@ -86,18 +86,34 @@ pub const ACESCG_TO_SRGB: Mat3 = [
     [-0.036_337_5, -0.162_436_8, 1.198_774_3],
 ];
 
-/// ACEScg（AP1）→ ACES2065-1（AP0）矩阵（ACES 官方）。
+/// ACEScg（AP1）→ ACES2065-1（AP0）矩阵（ACES 官方 S-2014-004 全矩阵）。
+///
+/// # 2026-10-24 W1 修复（行为变化登记见 CHANGELOG R-2026-xx-02）
+/// 旧值**第三行整体抄错**（旧 `[0.0283, 0.1292, 0.8593]` vs 官方
+/// `[-0.0055, 0.0040, 1.0015]`，逐元素 max ≈ 1.42e-1），且第一二行有
+/// 4 位小数级偏差（~3e-4 ~ 4e-3）。本常量已按 S-2014-004 官方全矩阵
+/// **重录全部三行**（逐位取官方值）。
+///
+/// 行和 ≈ 1（AP1/AP0 同为 D60 名义白点，白点映射到白点；实测行和偏离
+/// < 1e-7，由 `white_point_is_preserved` 以 1e-6 锁定）。
 pub const ACESCG_TO_ACES2065: Mat3 = [
-    [0.695_452_2, 0.140_377_3, 0.163_553_8],
-    [0.044_846_2, 0.859_671_3, 0.091_498_5],
-    [0.028_325_9, 0.129_160_8, 0.859_323_0],
+    [0.695_452_241_4, 0.140_678_696_5, 0.163_869_118_2],
+    [0.044_794_563_4, 0.859_671_047_5, 0.095_534_318_2],
+    [-0.005_525_882_6, 0.004_025_210_3, 1.001_500_672_3],
 ];
 
 /// ACES2065-1（AP0）→ ACEScg（AP1）矩阵（`ACESCG_TO_ACES2065` 的精确逆阵）。
+///
+/// # 2026-10-24 W1 修复（同 R-2026-xx-02）
+/// 旧值是**错误前向矩阵的逆**（"自洽地错了一对"）。本值由上述官方
+/// 矩阵在 **f64 求逆**（`colorspace_registry::invert3` 伴随矩阵法）后
+/// 收窄到 f32 得到，**非独立转录**；测试
+/// `aces2065_to_acescg_is_recomputed_inverse` 在每次测试运行时用同一
+/// 求逆件重算复核（容差 5e-7 = f32 双重收窄理论上界，见测试文档）。
 pub const ACES2065_TO_ACESCG: Mat3 = [
-    [1.461_272_6, -0.200_027_6, -0.256_823_6],
-    [-0.072_259_0, 1.192_038_1, -0.113_172_2],
-    [-0.037_307_1, -0.172_576_1, 1.189_182_9],
+    [1.451_439_3, -0.236_510_77, -0.214_928_64],
+    [-0.076_553_78, 1.176_229_8, -0.099_675_93],
+    [0.008_316_148, -0.006_032_45, 0.997_716_3],
 ];
 
 /// 用 3×3 矩阵变换 RGB（行主序点积；确定性固定求和序）。
@@ -213,12 +229,118 @@ mod tests {
                 assert!((sum - 1.0).abs() < 1e-4, "行和偏离白点守恒：{sum}");
             }
         }
+        // AP1↔AP0（S-2014-004 官方矩阵）：AP1/AP0 同为 D60 名义白点，
+        // 官方行和恰为 1.0（实测偏离 < 1e-7）——比 sRGB 对的 1e-4 **更严**
+        // （W1 修复后官方值替代了旧错误值，容差随之收紧）。
+        for m in [ACESCG_TO_ACES2065, ACES2065_TO_ACESCG] {
+            for r in 0..3 {
+                let sum = m[r][0] + m[r][1] + m[r][2];
+                assert!((sum - 1.0).abs() < 1e-6, "AP1↔AP0 行和偏离白点守恒：{sum}");
+            }
+        }
         // AP1↔AP0 白点守恒（显式作用于白点向量 [1,1,1]）。
         let white_ap0 = mat3_apply(&ACESCG_TO_ACES2065, [1.0, 1.0, 1.0]);
         let back = mat3_apply(&ACES2065_TO_ACESCG, white_ap0);
         for i in 0..3 {
-            assert!((back[i] - 1.0).abs() < 1e-3, "AP0↔AP1 白点往返失真：{back:?}");
+            // 官方矩阵互为精确逆，f32 往返实测 ~1e-7；容差由旧 1e-3 收紧到 1e-5。
+            assert!((back[i] - 1.0).abs() < 1e-5, "AP0↔AP1 白点往返失真：{back:?}");
         }
+    }
+
+    /// 逆阵重算验证：`ACES2065_TO_ACESCG` 必须是 `ACESCG_TO_ACES2065`
+    /// （S-2014-004 官方值）经 **f64 求逆**（注册表 `invert3`，伴随
+    /// 矩阵法）的结果，而非独立转录值。
+    ///
+    /// 容差 5e-7 的依据（f32 双重收窄的理论上界，非拍脑袋）：
+    /// 前向常量的 f32 舍入 ‖δM‖∞ ≤ ~6e-8，经求逆放大
+    /// ‖δM⁻¹‖ ≤ ‖M⁻¹‖·‖δM‖·‖M⁻¹‖ ≈ 1.9 × 6e-8 × 1.9 ≈ 2.2e-7；再加
+    /// 逆常量自身的 f32 舍入（max |值| ≈ 1.45 → ~8.7e-8），合计
+    /// ≈ 3.1e-7 < 5e-7。实测 1.15e-7。
+    #[test]
+    fn aces2065_to_acescg_is_recomputed_inverse() {
+        use crate::colorspace_registry::invert3;
+
+        let wide = [
+            [
+                ACESCG_TO_ACES2065[0][0] as f64,
+                ACESCG_TO_ACES2065[0][1] as f64,
+                ACESCG_TO_ACES2065[0][2] as f64,
+            ],
+            [
+                ACESCG_TO_ACES2065[1][0] as f64,
+                ACESCG_TO_ACES2065[1][1] as f64,
+                ACESCG_TO_ACES2065[1][2] as f64,
+            ],
+            [
+                ACESCG_TO_ACES2065[2][0] as f64,
+                ACESCG_TO_ACES2065[2][1] as f64,
+                ACESCG_TO_ACES2065[2][2] as f64,
+            ],
+        ];
+        let inv = invert3(&wide).unwrap_or_else(|e| panic!("{e}"));
+        let mut worst = 0.0f64;
+        for r in 0..3 {
+            for c in 0..3 {
+                worst = worst.max((inv[r][c] - ACES2065_TO_ACESCG[r][c] as f64).abs());
+            }
+        }
+        assert!(
+            worst < 5e-7,
+            "ACES2065_TO_ACESCG 不是官方前向矩阵的 f64 精确逆（实测 {worst:e}，f32 双重收窄理论上界 ~3.1e-7）"
+        );
+    }
+
+    /// 新旧轨一致性对拍：旧轨直接矩阵（官方 S-2014-004 值）vs 新轨
+    /// `colorspace_registry` 由 AP1/AP0 原色推导的转换结果。
+    ///
+    /// AP1/AP0 在注册表中同为 D60 名义白点 ⟺ `convert` 不走 Bradford
+    /// 适配项，复合即单一原色换基矩阵——与官方直接矩阵比对。
+    /// 样本含白点 [1,1,1]、三原色与固定伪随机值（确定性，禁真 RNG，C17）。
+    /// 预期 < 1e-5；**达不到即失败并如实报出实测值，不调容差**。
+    #[test]
+    fn aces_ap1_ap0_matches_registry_derivation() {
+        use crate::colorspace_registry::{by_name, convert};
+
+        let acescg = by_name("acescg").unwrap_or_else(|e| panic!("{e}"));
+        let aces2065 = by_name("aces2065").unwrap_or_else(|e| panic!("{e}"));
+        let samples: [[f32; 3]; 8] = [
+            [1.0, 1.0, 1.0], // 白点
+            [1.0, 0.0, 0.0], // AP1 红原色
+            [0.0, 1.0, 0.0], // AP1 绿原色
+            [0.0, 0.0, 1.0], // AP1 蓝原色
+            [0.18, 0.42, 0.91],
+            [0.63, 0.11, 0.27],
+            [0.50, 0.50, 0.50],
+            [1.25, 0.06, 0.44], // 超范围值（线性域允许）
+        ];
+        let mut worst_fwd = 0.0f64;
+        let mut worst_inv = 0.0f64;
+        for s in &samples {
+            let sd = [s[0] as f64, s[1] as f64, s[2] as f64];
+            // 正向 AP1 → AP0。
+            let direct = mat3_apply(&ACESCG_TO_ACES2065, *s);
+            let derived = convert(sd, acescg, aces2065).unwrap_or_else(|e| panic!("{e}"));
+            for i in 0..3 {
+                worst_fwd = worst_fwd.max((direct[i] as f64 - derived[i]).abs());
+            }
+            // 逆向 AP0 → AP1。
+            let direct_inv = mat3_apply(&ACES2065_TO_ACESCG, *s);
+            let derived_inv = convert(sd, aces2065, acescg).unwrap_or_else(|e| panic!("{e}"));
+            for i in 0..3 {
+                worst_inv = worst_inv.max((direct_inv[i] as f64 - derived_inv[i]).abs());
+            }
+        }
+        println!(
+            "新旧轨 AP1↔AP0 一致性：fwd worst = {worst_fwd:e}，inv worst = {worst_inv:e}（容差 1e-5）"
+        );
+        assert!(
+            worst_fwd < 1e-5,
+            "旧轨 ACESCG_TO_ACES2065 vs 注册表推导超差（实测 {worst_fwd:e}，预期 < 1e-5）"
+        );
+        assert!(
+            worst_inv < 1e-5,
+            "旧轨 ACES2065_TO_ACESCG vs 注册表推导超差（实测 {worst_inv:e}，预期 < 1e-5）"
+        );
     }
 
     #[test]

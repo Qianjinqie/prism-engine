@@ -2912,9 +2912,11 @@ mod tests {
 
     #[test]
     fn legacy_ap1_ap0_matrices_debt_is_named() {
-        // 旧轨 AP1↔AP0 常量债务留名（本轮药方外，**只登记不改**）。
+        // 旧轨 AP1↔AP0 常量债务：**已结清**（2026-10-24 W1-A1）。
+        // 本测试保留原名与历史记录——它是这笔债务的档案，从「债务锁」
+        // 翻转为「结清锁」，**不得删除**。
         //
-        // 事实（2026-10-23 实测 + 规范核对）：旧轨
+        // 【历史 · 债务坐实】2026-10-23 实测 + 规范核对：旧轨
         // `colorspace::ACESCG_TO_ACES2065` / `ACES2065_TO_ACESCG` 与
         // ACES 官方 S-2014-004 矩阵及其逆**坐实不符**——逐元素 max
         // ≈ 1.4e-1 / 1.9e-1，集中体现在第三行（官方第三行
@@ -2930,12 +2932,18 @@ mod tests {
         // `TransformChain` 消费线性域矩阵（color.rs `apply_color`），
         // 配置 AcesCg ↔ Aces2065 互转即中招。
         //
-        // 纪律：本轮药方（#12：补 PQ + 对拍固化）不含修旧轨常量，
-        // 按「药方与现实矛盾停下报告」处理——本测试把差异钉成断言，
-        // 防后人误认其为正确 AP1↔AP0；修复须独立工单（改常量会改变
-        // 既有渲染输出，按 C15 须走行为变化登记流程）。
-        // 新轨不受影响：推导值锚定规范公认值，见
-        // `new_track_matches_reference_primaries_matrices`。
+        // 【结清】2026-10-24 W1-A1 按官方 S-2014-004 全矩阵重录两常量
+        // （行为变化登记见 CHANGELOG R-2026-xx-02）：第三行改为官方
+        // [-0.0055258826, 0.0040252103, 1.0015006723]，第一二行补足
+        // 官方全精度；逆阵由官方前向矩阵 f64 求逆后收窄到 f32（非独立
+        // 转录，`aces2065_to_acescg_is_recomputed_inverse` 每次测试
+        // 运行重算复核）。新旧轨一致性实测 fwd 1.94e-6 / inv 3.38e-6。
+        //
+        // 【结清态断言】（反转自原「债务锁」的 >1e-2 不符锁）
+        // 1. 旧轨常量须与官方 S-2014-004 矩阵及其逆逐元素一致；
+        // 2. 旧轨常量须与新轨 `colorspace_registry` 推导的转换一致
+        //    （< 1e-5；样本含白点/三原色/固定伪随机值，确定性禁真 RNG，C17）。
+        // 任一漂移即红灯——防回归抄错，也防后人误改回错误值。
         use crate::colorspace::{ACES2065_TO_ACESCG, ACESCG_TO_ACES2065};
 
         let ap0_from_ap1 = [
@@ -2962,16 +2970,66 @@ mod tests {
                     worst_inv.max((ACES2065_TO_ACESCG[r][c] as f64 - ap1_from_ap0[r][c]).abs());
             }
         }
-        // 债务锁：与规范显著不符（远超舍入/两口径量级 ~3e-2）。
+        // 结清锁①：旧轨常量 = 官方 S-2014-004 矩阵及其逆。
         assert!(
-            worst_fwd > 1e-2,
-            "旧轨 ACESCG_TO_ACES2065 与官方矩阵差异应坐实（实测 {worst_fwd:e}）"
+            worst_fwd < 1e-5,
+            "旧轨 ACESCG_TO_ACES2065 应已按官方 S-2014-004 重录（实测偏差 {worst_fwd:e}）"
         );
         assert!(
-            worst_inv > 1e-2,
-            "旧轨 ACES2065_TO_ACESCG 与官方矩阵差异应坐实（实测 {worst_inv:e}）"
+            worst_inv < 1e-5,
+            "旧轨 ACES2065_TO_ACESCG 应已按官方 S-2014-004 逆阵重录（实测偏差 {worst_inv:e}）"
         );
-        // 参照登记（不作为判据）：实测 max ≈ 1.42e-1（fwd）/ 1.91e-1（inv）。
+
+        // 结清锁②：旧轨常量 vs 新轨 registry 推导（AP1/AP0 同为 D60
+        // 名义白点 ⟹ convert 无 Bradford 适配项，复合即单一原色换基
+        // 矩阵）。旧轨常量为 f32，此处以 f64 逐元素施加（确定性固定
+        // 求和序，与注册表 `mat3_apply` 同口径）。
+        let apply_f32_as_f64 = |m: &[[f32; 3]; 3], v: [f64; 3]| -> [f64; 3] {
+            let mut out = [0.0f64; 3];
+            for i in 0..3 {
+                out[i] = (0..3).map(|j| m[i][j] as f64 * v[j]).sum();
+            }
+            out
+        };
+        let acescg = by_name("acescg").unwrap_or_else(|e| panic!("{e}"));
+        let aces2065 = by_name("aces2065").unwrap_or_else(|e| panic!("{e}"));
+        let samples: [[f32; 3]; 8] = [
+            [1.0, 1.0, 1.0], // 白点
+            [1.0, 0.0, 0.0], // AP1 红原色
+            [0.0, 1.0, 0.0], // AP1 绿原色
+            [0.0, 0.0, 1.0], // AP1 蓝原色
+            [0.18, 0.42, 0.91],
+            [0.63, 0.11, 0.27],
+            [0.50, 0.50, 0.50],
+            [1.25, 0.06, 0.44], // 超范围值（线性域允许）
+        ];
+        let mut worst_derived_fwd = 0.0f64;
+        let mut worst_derived_inv = 0.0f64;
+        for s in &samples {
+            let sd = [s[0] as f64, s[1] as f64, s[2] as f64];
+            // 正向 AP1 → AP0。
+            let direct = apply_f32_as_f64(&ACESCG_TO_ACES2065, sd);
+            let derived = convert(sd, acescg, aces2065).unwrap_or_else(|e| panic!("{e}"));
+            for i in 0..3 {
+                worst_derived_fwd = worst_derived_fwd.max((direct[i] - derived[i]).abs());
+            }
+            // 逆向 AP0 → AP1。
+            let direct_inv = apply_f32_as_f64(&ACES2065_TO_ACESCG, sd);
+            let derived_inv = convert(sd, aces2065, acescg).unwrap_or_else(|e| panic!("{e}"));
+            for i in 0..3 {
+                worst_derived_inv = worst_derived_inv.max((direct_inv[i] - derived_inv[i]).abs());
+            }
+        }
+        assert!(
+            worst_derived_fwd < 1e-5,
+            "旧轨 ACESCG_TO_ACES2065 vs 注册表推导超差（实测 {worst_derived_fwd:e}，预期 < 1e-5）"
+        );
+        assert!(
+            worst_derived_inv < 1e-5,
+            "旧轨 ACES2065_TO_ACESCG vs 注册表推导超差（实测 {worst_derived_inv:e}，预期 < 1e-5）"
+        );
+        // 参照登记（不作为判据）：2026-10-24 结清时新旧轨一致性实测
+        // fwd 1.94e-6 / inv 3.38e-6。
     }
 
     #[test]
