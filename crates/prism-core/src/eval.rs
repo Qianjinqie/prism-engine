@@ -9,6 +9,15 @@
 //! 两遍求值，全帧输出逐字节一致（关卡 1）；求值顺序 = 拓扑序
 //! + 按 node_id 稳定 tie-break。签名缓存当前只落 eval 侧键类型
 //! （`SnapshotKey`，缓存存储归签名模块）。
+//!
+//! 帧循环接线（架构 §4.4「有状态模拟 = EvalCtx 快照库接线」）：`EvalCtx`
+//! 携带 `SnapshotStore` 持有值，帧循环驱动必须让快照库跨帧保留——同一
+//! EvalCtx 逐帧推进，或每帧新建 EvalCtx 时由驱动把上一帧库注入新 ctx
+//! （两种形态逐位等价，测试固化）。快照键 = (子图签名, 帧)，签名位来自
+//! `snapshot_signature()`（含通道定义哈希链）。seek 等价成立条件：跳第 N 帧
+//! ≡ 顺序推进到第 N 帧，逐字节；冷 seek（frame>0 且 (sig, frame-1) 缺失）
+//! → P3012 结构化报错，绝不静默 fallback（C20）。LRU 逐出只影响重算、
+//! 不影响结果，前提是依赖跨度 ≤ 保留窗口。
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -182,12 +191,33 @@ pub fn eval(
         } else {
             let mut input = reduce_by_composition(&node.composition, upstream)?;
             if structure == StructureId::ConstraintFlow {
-                // D-28 快照装配：按 (sig, frame-1) 取上一帧状态；无则图输入作初值。
-                input = if ctx.frame == 0 {
-                    input
-                } else {
-                    snapshot_read(ctx, sig, ctx.frame - 1).unwrap_or(input)
-                };
+                // D-28 快照装配：按 (sig, frame-1) 取上一帧状态。
+                // frame = 0：图输入作初值（首帧语义，合法）。
+                // frame > 0 且快照缺失：绝不静默 fallback 到初值——那会把
+                // seek 场景（时间线拖动 / LRU 逐出 / 缓存清空）变成语义级
+                // 静默错误：输出与首帧逐位相同、错误状态写回快照库并沿
+                // 轨道传播（qa_seek_snapshot_semantics 四个探针记录）。
+                // C20：结构化报错，修复责任交还调用方（顺序求值或显式初态）。
+                if ctx.frame > 0 {
+                    match snapshot_read(ctx, sig, ctx.frame - 1) {
+                        Some(prev) => input = prev,
+                        None => return Err(EvalError {
+                            code: "P3012",
+                            location: format!("eval（节点 {id}，帧 {}）", ctx.frame),
+                            problem: format!(
+                                "帧间状态缺失：节点 {id} 在帧 {} 求值，但快照 (sig, {}) 不存在——\
+                                 seek 断档或缓存未顺序预热",
+                                ctx.frame,
+                                ctx.frame - 1
+                            ),
+                            fix: format!(
+                                "从 0 帧起顺序求值（跨帧复用同一 EvalCtx，快照库随帧累积），\
+                                 或为该节点显式提供帧 {} 的初态快照",
+                                ctx.frame - 1
+                            ),
+                        }),
+                    }
+                }
             }
             let y = structure_impl.apply(&input, &node_ctx);
             if structure == StructureId::ConstraintFlow {
@@ -346,7 +376,14 @@ fn sample_mean(
 
 /// 快照读：按 (子图签名, 帧) 读一帧状态并解码为 [`Payload`]。
 ///
-/// 字节不被识别时返回 `None`（绝不猜测，宪章 C20）；LRU 逐出策略随后续存储工作落地——逐出只影响重算、不影响结果（seek 等价）。
+/// 字节不被识别时返回 `None`（绝不猜测，宪章 C20）。
+///
+/// **seek 等价的保障方式（第 4 轮研究后修订）**：`eval` 对 ConstraintFlow 在
+/// `frame > 0` 且快照缺失时**结构化报错（P3012）**，绝不静默 fallback 到初值——
+/// 旧路径（`unwrap_or(input)`）会把 seek 断档变成语义级静默错误：输出与首帧
+/// 逐位相同，且错误状态写回快照库沿轨道传播（`qa_seek_snapshot_semantics`
+/// 四探针记录）。LRU 逐出策略落地时，逐出必须遵守「依赖跨度 ≤ 保留窗口」，
+/// 否则同样触发 P3012——逐出影响重算的前提是**先保证不断档**。
 pub fn snapshot_read(ctx: &EvalCtx, sig: Hash256, frame: u64) -> Option<Payload> {
     let key: SnapshotKey = (sig, frame);
     ctx.snapshots.get(&key).and_then(|bytes| payload_from_bytes(bytes))
@@ -424,7 +461,11 @@ pub fn payload_from_bytes(bytes: &[u8]) -> Option<Payload> {
 mod tests {
     use super::*;
     use crate::node::{
-        DualityPair, KernelKind, LatticePlan, Node, OpCapabilities, ParamValue, StructureMeta,
+        ChannelRef, DualityPair, KernelKind, LatticePlan, Node, NodeBinding, OpCapabilities,
+        ParamValue, SnapshotStore, StructureMeta,
+    };
+    use crate::signature::{
+        channel_definition_hash, node_signature, snapshot_signature, ChannelDef, ChannelDefs,
     };
 
     /// 测试用子图签名（signature.rs 落地前由调用方提供的占位签名）。
@@ -1140,5 +1181,270 @@ mod tests {
         assert_eq!(stored.params.get("value"), Some(&ParamValue::F32(1.5)));
         assert_eq!(stored.bindings.len(), 1);
         assert_eq!(stored.bindings[0].channel.name, "rise");
+    }
+
+    // —— 帧循环接线（架构 §4.4：快照库跨帧保留 / seek 等价 / 冷 seek 报错） ——
+
+    /// 流节点图：单 ConstraintFlow 节点（模拟投影特解 +1 一步）。
+    fn flow_graph() -> Graph {
+        let mut g = Graph::new();
+        g.add_node(Node::new(9, StructureId::ConstraintFlow, Composition::Feed))
+            .unwrap();
+        g
+    }
+
+    #[test]
+    fn frame_loop_retains_snapshot_store_across_frames() {
+        // 帧循环接线的两种驱动形态必须逐位等价：
+        // A) 单个 EvalCtx 逐帧推进（库随帧累积）；
+        // B) 每帧新建 EvalCtx（movie.rs 帧循环形态），由驱动把上一帧库注入。
+        let g = flow_graph();
+        let registry = test_registry();
+        let plane = SamplePlane { pixel: (0, 0), spp: 1 };
+
+        let mut retained = EvalCtx::new(11, 0, 0);
+        let mut out_a = Vec::new();
+        for frame in 0..=4u64 {
+            retained.frame = frame;
+            out_a.push(
+                eval(&g, &registry, &plane, TEST_SIG, &mut retained)
+                    .unwrap()
+                    .get(9),
+            );
+        }
+
+        let mut carried = SnapshotStore::new();
+        let mut out_b = Vec::new();
+        for frame in 0..=4u64 {
+            let mut per_frame = EvalCtx::new(11, 0, frame);
+            per_frame.snapshots = std::mem::take(&mut carried);
+            out_b.push(
+                eval(&g, &registry, &plane, TEST_SIG, &mut per_frame)
+                    .unwrap()
+                    .get(9),
+            );
+            // 驱动把累积后的库搬回，供下一帧注入。
+            carried = per_frame.snapshots;
+        }
+
+        assert_eq!(
+            out_a, out_b,
+            "单 ctx 跨帧推进 ≡ 每帧新建 ctx 注入保留库（逐位一致）"
+        );
+        assert_eq!(
+            out_a,
+            vec![
+                Some(Payload::Scalar(0.0)),
+                Some(Payload::Scalar(1.0)),
+                Some(Payload::Scalar(2.0)),
+                Some(Payload::Scalar(3.0)),
+                Some(Payload::Scalar(4.0)),
+            ],
+            "0 → 1 → 2 → 3 → 4 逐帧投影"
+        );
+        assert_eq!(retained.snapshots.len(), 5, "五帧各一条快照");
+        assert_eq!(carried.len(), 5, "搬运后的库同样五条");
+        assert_eq!(
+            retained.snapshots.get(&(TEST_SIG, 4)),
+            carried.get(&(TEST_SIG, 4)),
+            "两种驱动的终态库逐位一致"
+        );
+    }
+
+    #[test]
+    fn seek_after_sequential_warmup_is_bit_identical() {
+        // 架构 §4.4 seek 等价成立条件：跳第 N 帧 ≡ 顺序推进到第 N 帧，逐字节。
+        let g = flow_graph();
+        let registry = test_registry();
+        let plane = SamplePlane { pixel: (0, 0), spp: 1 };
+
+        let mut sequential = EvalCtx::new(11, 0, 0);
+        let mut sequential_bytes = Vec::new();
+        for frame in 0..=6u64 {
+            sequential.frame = frame;
+            sequential_bytes.push(
+                eval(&g, &registry, &plane, TEST_SIG, &mut sequential)
+                    .unwrap()
+                    .to_canonical_bytes(),
+            );
+        }
+
+        // seek：注入预热后的快照库，直接跳第 6 帧求值。
+        let mut seeked = EvalCtx::new(11, 0, 6);
+        seeked.snapshots = sequential.snapshots.clone();
+        let seeked_bytes = eval(&g, &registry, &plane, TEST_SIG, &mut seeked)
+            .unwrap()
+            .to_canonical_bytes();
+
+        assert_eq!(
+            seeked_bytes, sequential_bytes[6],
+            "跳第 6 帧 ≡ 顺序推进到第 6 帧（逐字节）"
+        );
+        assert_eq!(seeked.snapshots.len(), 7, "seek 求值覆写同键，不新增条目");
+    }
+
+    #[test]
+    fn cold_seek_gap_is_structured_p3012_not_silent() {
+        // C20：冷 seek（frame>0 且 (sig, frame-1) 缺失）结构化报错，
+        // 绝不静默 fallback 到初值（那会把 seek 断档变成语义级静默错误）。
+        let g = flow_graph();
+        let registry = test_registry();
+        let plane = SamplePlane { pixel: (0, 0), spp: 1 };
+
+        let mut cold = EvalCtx::new(11, 0, 5);
+        let err = eval(&g, &registry, &plane, TEST_SIG, &mut cold).unwrap_err();
+
+        assert_eq!(err.code, "P3012");
+        assert!(err.location.contains("节点 9"), "三段式一【在哪】：{}", err.location);
+        assert!(err.problem.contains("快照"), "三段式二【什么事】：{}", err.problem);
+        assert!(err.fix.contains("顺序求值"), "三段式三【怎么改】：{}", err.fix);
+        let rendered = err.to_string();
+        assert!(rendered.contains("error[P3012]"), "{}", rendered);
+        assert!(rendered.contains("建议："), "必含建议段（C19）：{}", rendered);
+
+        // 错误路径不写快照（绝不把错误状态写回库沿轨道传播）。
+        assert!(
+            cold.snapshots.is_empty(),
+            "P3012 报错路径不得写入任何快照"
+        );
+
+        // frame=0 合法初值：无上一帧快照时以图输入（Empty）作初态（首帧语义）。
+        let mut first = EvalCtx::new(11, 0, 0);
+        let out0 = eval(&g, &registry, &plane, TEST_SIG, &mut first).unwrap();
+        assert_eq!(out0.get(9), Some(Payload::Scalar(0.0)), "frame=0 首帧初值合法");
+        assert_eq!(first.snapshots.len(), 1);
+    }
+
+    #[test]
+    fn snapshot_store_truncation_recompute_is_bit_identical() {
+        // S4 LRU 逐出中性：逐出只影响重算、不影响结果——窗口内续算与全量
+        // 重放逐位一致；逐出跨过依赖跨度则 P3012（前提是跨度 ≤ 保留窗口）。
+        let g = flow_graph();
+        let registry = test_registry();
+        let plane = SamplePlane { pixel: (0, 0), spp: 1 };
+
+        // 全量重放 0..=7，记录每帧 canonical 字节与终态快照库。
+        let mut full = EvalCtx::new(11, 0, 0);
+        let mut full_bytes = Vec::new();
+        for frame in 0..=7u64 {
+            full.frame = frame;
+            full_bytes.push(
+                eval(&g, &registry, &plane, TEST_SIG, &mut full)
+                    .unwrap()
+                    .to_canonical_bytes(),
+            );
+        }
+
+        // 截断：只保留窗口 [1,7]（帧 0 状态被逐出）——续算帧 2..=7 所需
+        // 的上一帧键均在窗口内（帧 2 依赖帧 1 状态，其后逐帧刚重算写出）。
+        let mut windowed = SnapshotStore::new();
+        for frame in 1..=7u64 {
+            windowed.insert(
+                (TEST_SIG, frame),
+                payload_to_bytes(&Payload::Scalar(frame as f32)),
+            );
+        }
+        let mut resume = EvalCtx::new(11, 0, 0);
+        resume.snapshots = windowed;
+        for frame in 2..=7u64 {
+            resume.frame = frame;
+            let bytes = eval(&g, &registry, &plane, TEST_SIG, &mut resume)
+                .unwrap()
+                .to_canonical_bytes();
+            assert_eq!(
+                bytes, full_bytes[frame as usize],
+                "窗口 [1,7] 续算与全量重放逐位一致（帧 {frame}）"
+            );
+        }
+        assert_eq!(
+            resume.snapshots.get(&(TEST_SIG, 7)),
+            full.snapshots.get(&(TEST_SIG, 7)),
+            "终态快照逐位一致"
+        );
+
+        // 逐出跨过依赖跨度：窗口 [5,7] 求帧 5 → 上一帧键 (sig,4) 缺失。
+        let mut gap = SnapshotStore::new();
+        for frame in 5..=7u64 {
+            gap.insert(
+                (TEST_SIG, frame),
+                payload_to_bytes(&Payload::Scalar(frame as f32)),
+            );
+        }
+        let mut cold_resume = EvalCtx::new(11, 0, 5);
+        cold_resume.snapshots = gap;
+        let err = eval(&g, &registry, &plane, TEST_SIG, &mut cold_resume).unwrap_err();
+        assert_eq!(
+            err.code, "P3012",
+            "窗口不含帧 4 时求帧 5 必报错，绝不静默续错"
+        );
+    }
+
+    #[test]
+    fn stream_snapshot_key_includes_channel_definition_chain() {
+        // 流层键闭包（S3）：快照键 = (snapshot_signature(子图签名, 通道定义链),
+        // 帧)——通道定义变更 → 链变更 → 键变更 → 旧快照绝不误用。
+        let mut g = Graph::new();
+        let mut n = Node::new(9, StructureId::ConstraintFlow, Composition::Feed);
+        n.bindings.push(NodeBinding {
+            param: "drive".to_string(),
+            channel: ChannelRef { name: "drive".to_string() },
+        });
+        g.add_node(n).unwrap();
+
+        let defs_v1: ChannelDefs = [(
+            "drive".to_string(),
+            ChannelDef { tag: 3, def_bytes: b"expr:sin(t)*2".to_vec() },
+        )]
+        .into_iter()
+        .collect();
+        let defs_v2: ChannelDefs = [(
+            "drive".to_string(),
+            ChannelDef { tag: 3, def_bytes: b"expr:sin(t)*3".to_vec() },
+        )]
+        .into_iter()
+        .collect();
+
+        let registry = test_registry();
+        let plane = SamplePlane { pixel: (0, 0), spp: 1 };
+
+        // 子图签名 + 通道定义链 → 快照签名位（D-28 键的签名位来源）。
+        let sub_v1 = node_signature(&g, 9, &defs_v1).unwrap();
+        let sub_v2 = node_signature(&g, 9, &defs_v2).unwrap();
+        assert_ne!(sub_v1, sub_v2, "节点签名已含通道变化特征");
+        let chain_v1 = [channel_definition_hash(&defs_v1["drive"])];
+        let chain_v2 = [channel_definition_hash(&defs_v2["drive"])];
+        let sig_v1 = snapshot_signature(&sub_v1, &chain_v1);
+        let sig_v2 = snapshot_signature(&sub_v2, &chain_v2);
+        assert_ne!(
+            sig_v1, sig_v2,
+            "通道定义变更必须改变快照签名（否则旧快照误复用）"
+        );
+
+        // v1 顺序预热 0..=2。
+        let mut warm = EvalCtx::new(11, 0, 0);
+        for frame in 0..=2u64 {
+            warm.frame = frame;
+            eval(&g, &registry, &plane, sig_v1, &mut warm).unwrap();
+        }
+        assert_eq!(warm.snapshots.len(), 3);
+
+        // 通道定义改版后以 v2 签名 seek 帧 2：旧键不在 v2 命名空间
+        // → P3012 结构化报错，绝不跨版本误用旧状态。
+        let mut cold_v2 = EvalCtx::new(11, 0, 2);
+        cold_v2.snapshots = warm.snapshots.clone();
+        let err = eval(&g, &registry, &plane, sig_v2, &mut cold_v2).unwrap_err();
+        assert_eq!(
+            err.code, "P3012",
+            "通道定义变更后旧快照不得误用：{}",
+            err
+        );
+
+        // v2 从 0 帧重新预热：键命名空间全新，与 v1 历史互不污染。
+        let mut redo_v2 = EvalCtx::new(11, 0, 0);
+        let out0 = eval(&g, &registry, &plane, sig_v2, &mut redo_v2).unwrap();
+        assert_eq!(out0.get(9), Some(Payload::Scalar(0.0)));
+        redo_v2.frame = 1;
+        let out1 = eval(&g, &registry, &plane, sig_v2, &mut redo_v2).unwrap();
+        assert_eq!(out1.get(9), Some(Payload::Scalar(1.0)), "v2 命名空间独立演进");
     }
 }

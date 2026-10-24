@@ -22,11 +22,23 @@
 //!   历史快照均走此路）；
 //! - **失效重建**：其余情形（签名变更未命中 / 快照被 LRU 逐出）从初态重推
 //!   ——确定性求解保证重推结果与历史逐位一致（缓存命中与否不影响结果）。
+//!
+//! # 模式声明（M3）
+//!
+//! 本会话是 XPBD 的宿主：固定步长推进 = 求值层 **M3 模式**（无 M2 容差
+//! 停机、无先验误差界——约束投影非扩张，E2）。残差经
+//! [`crate::xpbd::StepReport`] 记录，每帧末值喂入发散检测（E3：连续若干
+//! 帧上升超 ε 余量才判发散，不是单步）。模式元数据（含 (ε, n) 缓存键
+//! 分量）经 [`SimSession::solve_mode`] 显式给出——迭代数自构造起即签名
+//! 的组成部分（见 [`SimSession::new`] 防呆段）。
 
 use prism_core::node::{Hash256, SnapshotKey, SnapshotStore};
 use prism_math::Vec3;
 
-use crate::xpbd::{DistanceConstraint, World};
+use crate::xpbd::{
+    DistanceConstraint, DivergenceDetector, SolveMode, SolveModeMeta, World,
+    DIVERGENCE_WINDOW_DEFAULT, RESIDUAL_EPS_DEFAULT,
+};
 use crate::PhysicsError;
 
 // ---------------------------------------------------------------------------
@@ -215,6 +227,8 @@ pub struct SimSession {
     world: World,
     /// `world` 是否为 (sig, frame) 的有效状态。
     loaded: bool,
+    /// 发散检测器（E3：每帧末残差的事后趋势判定；只观测、不改写）。
+    divergence: DivergenceDetector,
 }
 
 impl SimSession {
@@ -260,6 +274,7 @@ impl SimSession {
             sig: [0u8; 32],
             frame: 0,
             loaded: false,
+            divergence: DivergenceDetector::new(DIVERGENCE_WINDOW_DEFAULT, RESIDUAL_EPS_DEFAULT),
         })
     }
 
@@ -271,6 +286,19 @@ impl SimSession {
     /// 当前帧号。
     pub fn frame(&self) -> u64 {
         self.frame
+    }
+
+    /// 显式模式元数据（M3 + (ε, n) 缓存键分量；求值层 §3.2 S3 迭代层——
+    /// 迭代数自构造起就是本会话签名的组成部分，此处收拢为可进签名的
+    /// 模式声明）。
+    pub fn solve_mode(&self) -> SolveModeMeta {
+        SolveModeMeta::new(self.substeps, self.iterations, RESIDUAL_EPS_DEFAULT)
+    }
+
+    /// 发散检测器（只读；E3 事后趋势判定——连续
+    /// [`DIVERGENCE_WINDOW_DEFAULT`] 帧末残差上升超 ε 余量才判发散）。
+    pub fn divergence(&self) -> &DivergenceDetector {
+        &self.divergence
     }
 
     /// 推进/求值到 (sig, frame)。
@@ -332,7 +360,13 @@ impl SimSession {
     ) -> Result<(), PhysicsError> {
         // 收敛曲线由 xpbd::World::step 报告；会话层只消费收敛结果（残余指标
         // 需要时由调用方直用 World）。
-        let _report = self.world.step(self.dt, self.substeps, self.iterations)?;
+        let report = self.world.step(self.dt, self.substeps, self.iterations)?;
+        // M3 残差记录的下游消费者（E3）：每帧末残差喂入发散检测器——只
+        // 观测、不改写（求解器语义零变化）。子步内收敛曲线的形状由
+        // StepReport 直接观察，此处只需帧级趋势。
+        if let Some(&final_residual) = report.residuals.last() {
+            self.divergence.observe(final_residual);
+        }
         self.frame = frame;
         store.insert((sig, frame), state_bytes(&self.world));
         Ok(())
@@ -569,5 +603,35 @@ mod tests {
         let mut bad_version = bytes.clone();
         bad_version[8..12].copy_from_slice(&999u32.to_be_bytes());
         assert_eq!(decode_state(&bad_version), None);
+    }
+
+    /// M3 显式化：会话声明固定步数模式元数据，(ε, n) 为缓存键分量；
+    /// 迭代数是签名组成部分——改迭代数即改模式元数据（§3.2 S3）。
+    #[test]
+    fn session_declares_m3_mode_metadata() {
+        let s = session(); // dt = 1/60，substeps = 4，iterations = 8
+        let meta = s.solve_mode();
+        assert_eq!(meta.mode, SolveMode::FixedIterations);
+        assert_eq!((meta.substeps, meta.iterations), (4, 8));
+        assert_eq!(meta.residual_eps, RESIDUAL_EPS_DEFAULT);
+        // 迭代数进签名（new 防呆段自述）⇒ 进模式元数据 ⇒ 进缓存键。
+        let s16 = SimSession::new(chain_spec(), 1.0 / 60.0, 4, 16).unwrap();
+        assert_ne!(s.solve_mode(), s16.solve_mode(), "迭代数不同 ⇒ 模式元数据不同");
+    }
+
+    /// 发散检测接线：每帧末残差喂入检测器（采样点数 = 推进帧数）；
+    /// 静定链（零初速、约束初态即满足）不判发散。
+    #[test]
+    fn session_feeds_divergence_detector_per_frame() {
+        // 零初速 + 初始间距恰为 rest_length：下垂静定，无摆动激励。
+        let mut spec = chain_spec();
+        for p in &mut spec.particles {
+            p.velocity = Vec3::splat(0.0);
+        }
+        let mut s = SimSession::new(spec, 1.0 / 60.0, 4, 8).unwrap();
+        let mut store = SnapshotStore::new();
+        s.advance_to(SIG_A, 8, &mut store).unwrap();
+        assert_eq!(s.divergence().samples(), 8, "每帧末残差应喂入检测器");
+        assert!(!s.divergence().diverged(), "静定收敛链不应判发散");
     }
 }

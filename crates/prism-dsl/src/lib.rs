@@ -870,13 +870,58 @@ mod tests {
         assert_eq!(sim.kind, "cloth");
         assert!((s2.camera.as_ref().unwrap().fov_rad - 45.0_f32.to_radians()).abs() < 1e-6);
 
-        // 节点图：s1 = camera + sdf + material + text + particles + compose = 6；
+        // 节点图：s1 = camera + sdf + material + light + text + particles +
+        //         compose + post(bloom/grain 两个效果节点) + audio = 10；
         //         s2 = camera + sdf + sim = 3。
         assert_eq!(
             out.graph.topo_order().expect("图应可拓扑排序").len(),
-            9,
+            13,
             "全文档节点数"
         );
+
+        // 断点 A/B/C 投影验收（猜想 E「Info + node_id」）：audio/post/light
+        // 节点进 graph、经各块 Info 的 node_ids 登记，但不在 node_ids
+        // （render 消费面 `build_models` 遍历 node_ids，三侧求值路径未接入，
+        // 进去即误报 R5010；缺口在产物层显式登记，不静默丢弃）。
+        let audio = s1.audio.as_ref().expect("audio 应登记");
+        let music_node =
+            out.graph.node(audio.node_ids[0]).expect("audio 音乐床节点应在图中");
+        assert!(matches!(
+            music_node.structure,
+            StructureId::SpectralDecomposition
+        ));
+        assert!((f32_param(music_node, "bpm") - 120.0).abs() < 1e-6);
+        assert!(!s1.node_ids.contains(&audio.node_ids[0]), "audio 节点不进 node_ids");
+        assert_eq!(s1.post.node_ids.len(), 2, "post 两字段两个效果节点");
+        let post_bloom = out.graph.node(s1.post.node_ids[0]).expect("bloom 节点应在图中");
+        assert!(matches!(post_bloom.structure, StructureId::Convolution));
+        assert!(matches!(post_bloom.composition, prism_core::node::Composition::Chain));
+        assert!((f32_param(post_bloom, "bloom") - 0.3).abs() < 1e-6);
+        assert!(!s1.node_ids.contains(&s1.post.node_ids[0]), "post 节点不进 node_ids");
+        let post_grain = out.graph.node(s1.post.node_ids[1]).expect("grain 节点应在图中");
+        assert!(matches!(post_grain.structure, StructureId::DeterministicSampling));
+        assert!(matches!(post_grain.composition, prism_core::node::Composition::Chain));
+        assert!((f32_param(post_grain, "grain") - 0.1).abs() < 1e-6);
+        assert!(!s1.node_ids.contains(&s1.post.node_ids[1]), "post 节点不进 node_ids");
+        // light：无独立 Info（render 侧无摘要消费），经节点图可见。
+        let light_node = out
+            .graph
+            .topo_order()
+            .expect("图应可拓扑排序")
+            .into_iter()
+            .map(|id| out.graph.node(id).expect("节点应在图中"))
+            .find(|n| {
+                matches!(n.structure, StructureId::RadiativeTransfer)
+                    && n.params.get("dir_x").is_some()
+            })
+            .expect("light 源项节点（S8 + dir_x）应在图中");
+        assert!((f32_param(light_node, "dir_x") - 1.0).abs() < 1e-6);
+        assert!((f32_param(light_node, "dir_y") - (-1.0)).abs() < 1e-6);
+        assert!((f32_param(light_node, "dir_z") - (-0.5)).abs() < 1e-6);
+        assert!((f32_param(light_node, "intensity") - 3.0).abs() < 1e-6);
+        // s1 的 render 消费面清单：camera + sdf + material + text + particles
+        // + compose = 6（light / post / audio 节点已排除）。
+        assert_eq!(s1.node_ids.len(), 6, "render 消费面不含 audio/post/light 节点");
 
         // 命名通道：字段级关键帧 + 顶层 anim + expr + sim force。
         assert_eq!(out.channels.len(), 4, "title.x / cam.orbit / boost / force strength");
@@ -1717,6 +1762,135 @@ mod tests {
             "// prism-dsl 1\nscene \"s\" { post { bloom 2 } }\n",
             2,
             "P1021",
+        );
+    }
+
+    #[test]
+    fn v2_audio_block_projects_node() {
+        // 断点 A：audio 块投影音乐床节点（S6 谱分解，Feed）——「audio = 谱解 +
+        // 流」模式标签。节点进 graph 且经 AudioInfo.node_ids 登记，但不在
+        // node_ids（render 消费面未接入，进去即误报 R5010）。
+        let src = concat!(
+            "// prism-dsl 1\n",
+            "scene \"s\" { audio { music { bpm 140 gain 0.5 duck 6 } } }\n"
+        );
+        let out: CompileV2Output = compile_v2(src).expect("audio 块应编译成功");
+        let s = &out.scenes[0];
+        let audio = s.audio.as_ref().expect("audio 应登记");
+        assert_eq!(audio.node_ids.len(), 1, "一个 audio 块一个音乐床节点");
+        let id: prism_core::NodeId = audio.node_ids[0];
+        let node = out.graph.node(id).expect("音乐床节点应在图中（node_id 可达）");
+        assert!(matches!(node.structure, StructureId::SpectralDecomposition));
+        assert!(matches!(node.composition, prism_core::node::Composition::Feed));
+        assert!((f32_param(node, "bpm") - 140.0).abs() < 1e-6);
+        assert!((f32_param(node, "gain") - 0.5).abs() < 1e-6);
+        assert!((f32_param(node, "duck") - 6.0).abs() < 1e-6);
+        assert!(!s.node_ids.contains(&id), "audio 节点不应进 node_ids");
+        assert_eq!(out.graph.topo_order().expect("图应可拓扑排序").len(), 1);
+    }
+
+    #[test]
+    fn v2_audio_empty_block_projects_defaults() {
+        // `audio {}`：music 子块缺席 → 摘要保持为空（既有语义不变），节点参数
+        // 回落 DEFAULT_BPM / GAIN / DUCK（与摘要缺省回填同源）。
+        let src: &str = "// prism-dsl 1\nscene \"s\" { audio {} }\n";
+        let out: CompileV2Output = compile_v2(src).expect("空 audio 块应编译成功");
+        let audio = out.scenes[0].audio.as_ref().expect("audio 应登记");
+        assert!(audio.music.is_empty(), "music 子块缺席：摘要无字段（既有语义）");
+        let node = out.graph.node(audio.node_ids[0]).expect("音乐床节点应在图中");
+        assert!((f32_param(node, "bpm") - 120.0).abs() < 1e-6);
+        assert!((f32_param(node, "gain") - 0.8).abs() < 1e-6);
+        assert!((f32_param(node, "duck") - 12.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn v2_post_block_projects_chain() {
+        // 断点 B：post 逐字段投影——bloom → S2 卷积族效果特解、grain → S4 双尺度
+        // 颗粒特解，Composition::Chain 串行，声明序 = 链序（架构总设计 PostFX
+        // 映射表）。字段序调换 → 链序跟随调换（确定性）。
+        let src: &str = "// prism-dsl 1\nscene \"s\" { post { bloom 0.3 grain 0.1 } }\n";
+        let out: CompileV2Output = compile_v2(src).expect("post 块应编译成功");
+        let s = &out.scenes[0];
+        assert_eq!(s.post.node_ids.len(), 2, "两个字段两个效果节点");
+        let bloom = out.graph.node(s.post.node_ids[0]).expect("bloom 节点应在图中");
+        assert!(matches!(bloom.structure, StructureId::Convolution));
+        assert!(matches!(bloom.composition, prism_core::node::Composition::Chain));
+        assert!((f32_param(bloom, "bloom") - 0.3).abs() < 1e-6);
+        let grain = out.graph.node(s.post.node_ids[1]).expect("grain 节点应在图中");
+        assert!(matches!(grain.structure, StructureId::DeterministicSampling));
+        assert!(matches!(grain.composition, prism_core::node::Composition::Chain));
+        assert!((f32_param(grain, "grain") - 0.1).abs() < 1e-6);
+        for id in &s.post.node_ids {
+            assert!(!s.node_ids.contains(id), "post 节点不应进 node_ids");
+        }
+        assert_eq!(out.graph.topo_order().expect("图应可拓扑排序").len(), 2);
+    }
+
+    #[test]
+    fn v2_light_block_projects_source_node() {
+        // 断点 C：light 投影 S8 源项节点（「light = 场景源项 g」）——direction
+        // 逐分量透传不归一（v1 纪律）、color / 255 归一化（C17）、intensity
+        // 原值。light 无独立 Info：经节点图可见，不在 node_ids。
+        let src = concat!(
+            "// prism-dsl 1\n",
+            "scene \"s\" { stage3d { light key { direction(1,-1,-0.5) color #fff4e6 intensity 3 } } }\n"
+        );
+        let out: CompileV2Output = compile_v2(src).expect("light 块应编译成功");
+        let s = &out.scenes[0];
+        assert!(s.node_ids.is_empty(), "stage3d 仅 light：render 消费面为空");
+        let order = out.graph.topo_order().expect("图应可拓扑排序");
+        assert_eq!(order.len(), 1, "light 节点入图");
+        let node = out.graph.node(order[0]).expect("light 节点应在图中");
+        assert!(matches!(node.structure, StructureId::RadiativeTransfer));
+        assert!(matches!(node.composition, prism_core::node::Composition::Feed));
+        assert!((f32_param(node, "dir_x") - 1.0).abs() < 1e-6);
+        assert!((f32_param(node, "dir_y") - (-1.0)).abs() < 1e-6);
+        assert!((f32_param(node, "dir_z") - (-0.5)).abs() < 1e-6);
+        assert!((f32_param(node, "intensity") - 3.0).abs() < 1e-6);
+        assert!((f32_param(node, "color_r") - 1.0).abs() < 1e-6);
+        assert!((f32_param(node, "color_g") - 244.0 / 255.0).abs() < 1e-4);
+        assert!((f32_param(node, "color_b") - 230.0 / 255.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn v2_light_defaults_projected() {
+        // light 字段缺席：direction 缺省 (1,-1,-0.5)（两黄金示例主光方向）、
+        // color 白、intensity 1.0（与 v1 DEFAULT_LIGHT_INTENSITY 一致）。
+        let src: &str = "// prism-dsl 1\nscene \"s\" { stage3d { light bare {} } }\n";
+        let out: CompileV2Output = compile_v2(src).expect("空 light 块应编译成功");
+        let order = out.graph.topo_order().expect("图应可拓扑排序");
+        assert_eq!(order.len(), 1);
+        let node = out.graph.node(order[0]).expect("light 节点应在图中");
+        assert!((f32_param(node, "dir_x") - 1.0).abs() < 1e-6);
+        assert!((f32_param(node, "dir_y") - (-1.0)).abs() < 1e-6);
+        assert!((f32_param(node, "dir_z") - (-0.5)).abs() < 1e-6);
+        assert!((f32_param(node, "intensity") - 1.0).abs() < 1e-6);
+        assert!((f32_param(node, "color_r") - 1.0).abs() < 1e-6);
+        assert!((f32_param(node, "color_g") - 1.0).abs() < 1e-6);
+        assert!((f32_param(node, "color_b") - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn v2_light_material_coexist_node_ids_boundary() {
+        // material 与 light 同为 S8：material 进 node_ids（render 已支持），
+        // light 不进（render 的 S8 分支只认 albedo_r，源项节点会误报 R5010）。
+        let src = concat!(
+            "// prism-dsl 1\n",
+            "scene \"s\" { stage3d {\n",
+            "  material red { albedo #c0392b }\n",
+            "  light key { direction(1,-1,-0.5) intensity 3 }\n",
+            "} }\n"
+        );
+        let out: CompileV2Output = compile_v2(src).expect("material + light 应编译成功");
+        let s = &out.scenes[0];
+        assert_eq!(s.node_ids.len(), 1, "node_ids 只含 material");
+        let mat = out.graph.node(s.node_ids[0]).expect("material 节点应在图中");
+        assert!(mat.params.get("albedo_r").is_some(), "render 认 S8 + albedo_r");
+        let order = out.graph.topo_order().expect("图应可拓扑排序");
+        assert_eq!(order.len(), 2, "material + light 两节点入图");
+        assert!(
+            !s.node_ids.contains(&order[1]) || order[1] == s.node_ids[0],
+            "light 节点不在 node_ids"
         );
     }
 

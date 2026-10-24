@@ -21,6 +21,14 @@
 //! 复用**绝不能改变输出**：命中缓存 = 直接取回上帧字节；未命中 = 全量重算。
 //! 两者产出经 [`ReuseVerdict`] 保证**逐字节一致**（关卡 2）。LRU 逐出
 //! 只影响"是否重算"，不影响"算出什么"——seek 等价成立（D-28）。
+//!
+//! # 求值台快照接线（架构 §4.4）
+//! 会话跨帧保留 [`SnapshotStore`]：帧循环驱动经
+//! [`IncrementalSession::eval_frame`] 把会话库装入 `EvalCtx`、求值后写回——
+//! 有状态模拟（ConstraintFlow）的快照随帧累积，seek 等价成立（跳第 N 帧
+//! ≡ 顺序推进到第 N 帧，逐字节）。冷 seek（frame>0 且 (sig, frame-1) 缺失）
+//! → P3012 结构化报错，绝不静默 fallback（C20）；错误路径原样还回快照库，
+//! 错误状态绝不落库。
 
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
@@ -29,8 +37,10 @@ use std::fmt;
 use prism_core::signature::{
     cache_key, graph_signatures, CacheDims, ChannelDefs, SignatureError,
 };
-use prism_core::node::Hash256;
-use prism_core::{Graph, NodeId};
+use prism_core::node::{EvalCtx, Hash256, SnapshotStore};
+use prism_core::{
+    eval, EvalError, EvalOutput, Graph, NodeId, NodeRegistry, SamplePlane,
+};
 use prism_io::fbuf::Fbuf16F;
 
 // ---------------------------------------------------------------------------
@@ -761,6 +771,13 @@ pub struct IncrementalSession {
     /// 会话当前帧号（D-28 快照键的帧维）。`process_unit` 的缓存键 = (子图签名,
     /// 帧, 维度)——不同帧同子图同维度必须得到不同键，杜绝跨帧误命中。
     frame: u64,
+    /// 会话跨帧保留的模拟快照库（D-28 求值台快照接线）：帧循环驱动经
+    /// [`IncrementalSession::eval_frame`] 把本库装入 `EvalCtx`，求值后写回。
+    /// 快照键 = (子图签名, 帧)，签名位来自 `snapshot_signature()`（含通道
+    /// 定义哈希链）。LRU 逐出只影响重算、不影响结果（seek 等价，§4.4）。
+    snapshots: SnapshotStore,
+    /// 全局种子（`EvalCtx::global_seed`；渲染会话级常量，默认 0）。
+    global_seed: u64,
 }
 
 impl IncrementalSession {
@@ -771,6 +788,8 @@ impl IncrementalSession {
             cache: ReuseCache::new(cache_capacity),
             stats: ReuseStats::new(),
             frame: 0,
+            snapshots: SnapshotStore::new(),
+            global_seed: 0,
         }
     }
 
@@ -787,6 +806,55 @@ impl IncrementalSession {
     /// 推进到下一帧。
     pub fn advance_frame(&mut self) {
         self.frame = self.frame.wrapping_add(1);
+    }
+
+    /// 设定全局种子（`EvalCtx::global_seed`；采样节点随机流的输入之一）。
+    pub fn set_global_seed(&mut self, seed: u64) {
+        self.global_seed = seed;
+    }
+
+    /// 会话快照库引用（跨帧保留的有状态模拟状态仓，D-28）。
+    pub fn snapshots(&self) -> &SnapshotStore {
+        &self.snapshots
+    }
+
+    /// 会话快照库可变引用（驱动可显式注入/截断状态，如 seek 预热）。
+    pub fn snapshots_mut(&mut self) -> &mut SnapshotStore {
+        &mut self.snapshots
+    }
+
+    /// 求值一帧（求值台快照接线的驱动入口，架构 §4.4）：把会话快照库装入
+    /// `EvalCtx`，求值后写回——快照跨帧保留，有状态模拟随帧累积。
+    ///
+    /// `sig` 必须来自 `snapshot_signature()`（含通道定义哈希链）。成功时会话
+    /// 帧号推进到 `frame`。
+    ///
+    /// # Errors
+    /// 透传 `eval` 的结构化错误（如冷 seek 的 P3012：frame>0 且
+    /// (sig, frame-1) 缺失——绝不静默 fallback，C20）。错误路径原样还回
+    /// 快照库：错误状态不落库，已累积的历史帧状态不丢失。
+    pub fn eval_frame(
+        &mut self,
+        graph: &Graph,
+        registry: &NodeRegistry,
+        plane: &SamplePlane,
+        sig: Hash256,
+        frame: u64,
+    ) -> Result<EvalOutput, EvalError> {
+        let mut ctx = EvalCtx::new(self.global_seed, 0, frame);
+        // 会话库装入 ctx（take：不 clone 每帧整库）；match 后无论成败都
+        // 把库写回会话——错误路径还回的库即求值前状态（eval 在写快照前
+        // 报错，错误状态不落库）。
+        ctx.snapshots = std::mem::take(&mut self.snapshots);
+        let result = eval(graph, registry, plane, sig, &mut ctx);
+        self.snapshots = ctx.snapshots;
+        match result {
+            Ok(output) => {
+                self.set_frame(frame);
+                Ok(output)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// 复用统计。
@@ -912,7 +980,12 @@ pub fn bytes_to_fbuf(bytes: &[u8]) -> Result<Fbuf16F, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use prism_core::node::{Composition, MergeOp, Node, ParamValue, StructureId};
+    use prism_core::node::{
+        Composition, DualityPair, KernelKind, LatticePlan, MathStructure, MergeOp, Node,
+        OpCapabilities, ParamValue, Payload, SampleIndex, StructureId, StructureMeta,
+    };
+    use prism_core::payload_to_bytes;
+    use prism_core::signature::{node_signature, snapshot_signature};
 
     /// 叶子节点（可设参数值）。
     fn leaf(id: NodeId, structure: StructureId, x: f32) -> Node {
@@ -1295,5 +1368,599 @@ mod tests {
             "通道恒定帧应被扣除（收窄生效），实际 {}",
             dirty.dirty_frame_count()
         );
+    }
+
+    // ---- 求值台快照接线（架构 §4.4：会话库跨帧保留 / seek 等价 / 种子贯通） ----
+
+    /// 模拟投影特解（测试用 ConstraintFlow）：状态 +1 一步（Empty = 初值 0）。
+    #[derive(Debug)]
+    struct StepSpec {
+        meta: StructureMeta,
+    }
+
+    impl Default for StepSpec {
+        fn default() -> Self {
+            Self {
+                meta: StructureMeta::new(
+                    StructureId::ConstraintFlow,
+                    KernelKind::Green,
+                    DualityPair::PrimalMultiplier,
+                    LatticePlan::LatticeAnchored,
+                    OpCapabilities { invert: false, sample: false },
+                ),
+            }
+        }
+    }
+
+    impl MathStructure for StepSpec {
+        fn meta(&self) -> &StructureMeta {
+            &self.meta
+        }
+        fn apply(&self, x: &Payload, _ctx: &EvalCtx) -> Payload {
+            match x {
+                Payload::Empty => Payload::Scalar(0.0),
+                Payload::Scalar(v) => Payload::Scalar(v + 1.0),
+                other => *other,
+            }
+        }
+    }
+
+    /// splitmix64 终化（整数运算跨平台逐位一致）。
+    fn hash_mix(seed: u64, x: u64) -> u64 {
+        let mut z = seed ^ x;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+
+    /// 采样特解（测试用）：样本流 = hash(全局种子, 节点id, 帧, pixel, 样本)
+    /// 纯函数派生（唯一随机性入口的测试实例）。
+    #[derive(Debug)]
+    struct SeedProbeSpec {
+        meta: StructureMeta,
+    }
+
+    impl Default for SeedProbeSpec {
+        fn default() -> Self {
+            Self {
+                meta: StructureMeta::new(
+                    StructureId::DeterministicSampling,
+                    KernelKind::Transfer,
+                    DualityPair::SampleMeasure,
+                    LatticePlan::LatticeAnchored,
+                    OpCapabilities { invert: false, sample: true },
+                ),
+            }
+        }
+    }
+
+    impl MathStructure for SeedProbeSpec {
+        fn meta(&self) -> &StructureMeta {
+            &self.meta
+        }
+        fn apply(&self, x: &Payload, _ctx: &EvalCtx) -> Payload {
+            *x
+        }
+        fn sample(&self, si: SampleIndex, ctx: &EvalCtx) -> Payload {
+            let mut h = hash_mix(ctx.global_seed, si.node_id);
+            h = hash_mix(h, si.frame);
+            h = hash_mix(h, ((si.pixel.0 as u64) << 32) | si.pixel.1 as u64);
+            h = hash_mix(h, si.sample as u64);
+            Payload::Scalar((h >> 40) as f32 / 16_777_216.0)
+        }
+    }
+
+    fn flow_registry() -> NodeRegistry {
+        let mut reg = NodeRegistry::new();
+        reg.collect(
+            "step",
+            StepSpec::default().meta,
+            || Box::new(StepSpec::default()),
+        )
+        .unwrap();
+        reg.collect(
+            "seed_probe",
+            SeedProbeSpec::default().meta,
+            || Box::new(SeedProbeSpec::default()),
+        )
+        .unwrap();
+        reg
+    }
+
+    /// 流节点图：单 ConstraintFlow 节点（求值台侧装配路径的代表）。
+    fn flow_graph() -> Graph {
+        let mut g = Graph::new();
+        g.add_node(Node::new(9, StructureId::ConstraintFlow, Composition::Feed))
+            .unwrap();
+        g
+    }
+
+    /// 测试快照签名位：node_signature → snapshot_signature（空链，域分隔
+    /// 于裸子图签名）。
+    fn flow_sig(g: &Graph, id: NodeId) -> Hash256 {
+        let defs = ChannelDefs::new();
+        let sub = node_signature(g, id, &defs).unwrap();
+        snapshot_signature(&sub, &[])
+    }
+
+    #[test]
+    fn session_eval_frame_retains_snapshots_across_frames() {
+        // 会话驱动：eval_frame 逐帧推进，快照库跨帧保留（架构 §4.4 接线）。
+        let g = flow_graph();
+        let registry = flow_registry();
+        let plane = SamplePlane { pixel: (0, 0), spp: 1 };
+        let sig = flow_sig(&g, 9);
+
+        let mut session = IncrementalSession::new(4);
+        let mut session_out = Vec::new();
+        for frame in 0..=3u64 {
+            session_out.push(
+                session
+                    .eval_frame(&g, &registry, &plane, sig, frame)
+                    .unwrap()
+                    .get(9),
+            );
+        }
+        assert_eq!(
+            session_out,
+            vec![
+                Some(Payload::Scalar(0.0)),
+                Some(Payload::Scalar(1.0)),
+                Some(Payload::Scalar(2.0)),
+                Some(Payload::Scalar(3.0)),
+            ],
+            "0 → 1 → 2 → 3 逐帧投影"
+        );
+        assert_eq!(session.snapshots().len(), 4, "四帧各一条快照（跨帧保留）");
+        assert_eq!(session.frame(), 3, "成功求值后会话帧号推进");
+
+        // 对照：单 EvalCtx 逐帧推进（求值台侧语义），逐位一致。
+        let mut ctx = EvalCtx::new(0, 0, 0);
+        let mut manual = Vec::new();
+        for frame in 0..=3u64 {
+            ctx.frame = frame;
+            manual.push(eval(&g, &registry, &plane, sig, &mut ctx).unwrap().get(9));
+        }
+        assert_eq!(session_out, manual, "会话驱动 ≡ 单 ctx 推进（逐位一致）");
+        assert_eq!(
+            session.snapshots().get(&(sig, 3)),
+            ctx.snapshots.get(&(sig, 3)),
+            "终态快照库逐位一致"
+        );
+    }
+
+    #[test]
+    fn session_seek_after_warmup_is_bit_identical() {
+        // seek 等价（架构 §4.4）：跳第 N 帧 ≡ 顺序推进到第 N 帧，逐字节；
+        // 冷 seek → P3012 结构化报错，绝不静默 fallback（C20）。
+        let g = flow_graph();
+        let registry = flow_registry();
+        let plane = SamplePlane { pixel: (0, 0), spp: 1 };
+        let sig = flow_sig(&g, 9);
+
+        // 顺序预热 0..=6。
+        let mut warm = IncrementalSession::new(4);
+        let mut warm_bytes = Vec::new();
+        for frame in 0..=6u64 {
+            warm_bytes.push(
+                warm
+                    .eval_frame(&g, &registry, &plane, sig, frame)
+                    .unwrap()
+                    .to_canonical_bytes(),
+            );
+        }
+
+        // seek：新会话注入预热库，直接跳第 6 帧。
+        let mut seeked = IncrementalSession::new(4);
+        *seeked.snapshots_mut() = warm.snapshots().clone();
+        let out = seeked.eval_frame(&g, &registry, &plane, sig, 6).unwrap();
+        assert_eq!(
+            out.to_canonical_bytes(),
+            warm_bytes[6],
+            "跳第 6 帧 ≡ 顺序推进到第 6 帧（逐字节）"
+        );
+        assert_eq!(seeked.frame(), 6);
+        assert_eq!(seeked.snapshots().len(), 7, "seek 覆写同键不新增条目");
+
+        // 冷 seek（空库直接跳帧 6）→ P3012。
+        let mut cold = IncrementalSession::new(4);
+        let err = cold.eval_frame(&g, &registry, &plane, sig, 6).unwrap_err();
+        assert_eq!(err.code, "P3012");
+        assert!(err.to_string().contains("建议："), "必含建议段（C19）：{}", err);
+        // 错误路径不写快照、帧号不推进（错误状态绝不落库）。
+        assert!(cold.snapshots().is_empty(), "P3012 错误路径不得写入快照");
+        assert_eq!(cold.frame(), 0, "求值失败的帧号不推进");
+
+        // 错误后顺序预热仍正常（库未被污染）。
+        cold.eval_frame(&g, &registry, &plane, sig, 0).unwrap();
+        let out1 = cold.eval_frame(&g, &registry, &plane, sig, 1).unwrap();
+        assert_eq!(out1.get(9), Some(Payload::Scalar(1.0)));
+    }
+
+    #[test]
+    fn session_global_seed_reaches_eval_ctx() {
+        // set_global_seed 必须贯通到 EvalCtx：采样节点样本流含全局种子
+        // （C17：同种子逐位一致，不同种子不同流）。
+        let mut g = Graph::new();
+        g.add_node(Node::new(
+            5,
+            StructureId::DeterministicSampling,
+            Composition::Feed,
+        ))
+        .unwrap();
+        let registry = flow_registry();
+        let plane = SamplePlane { pixel: (3, 7), spp: 2 };
+        let sig = flow_sig(&g, 5);
+
+        let mut a = IncrementalSession::new(4);
+        a.set_global_seed(11);
+        let out_a = a.eval_frame(&g, &registry, &plane, sig, 3).unwrap();
+        let mut b = IncrementalSession::new(4);
+        b.set_global_seed(11);
+        let out_b = b.eval_frame(&g, &registry, &plane, sig, 3).unwrap();
+        let mut c = IncrementalSession::new(4);
+        c.set_global_seed(22);
+        let out_c = c.eval_frame(&g, &registry, &plane, sig, 3).unwrap();
+
+        assert_eq!(
+            out_a.to_canonical_bytes(),
+            out_b.to_canonical_bytes(),
+            "同种子 → 逐位一致"
+        );
+        assert_ne!(
+            out_a.to_canonical_bytes(),
+            out_c.to_canonical_bytes(),
+            "不同种子 → 不同样本流"
+        );
+    }
+
+    #[test]
+    fn session_snapshot_window_truncation_recompute_is_neutral() {
+        // 会话级截断中性：显式把库裁到窗口 [1,7]（帧 0 状态逐出），续算
+        // 帧 2..=7 与全量重放逐位一致（S4：逐出只影响重算不影响结果）。
+        let g = flow_graph();
+        let registry = flow_registry();
+        let plane = SamplePlane { pixel: (0, 0), spp: 1 };
+        let sig = flow_sig(&g, 9);
+
+        let mut full = IncrementalSession::new(4);
+        let mut full_bytes = Vec::new();
+        for frame in 0..=7u64 {
+            full_bytes.push(
+                full
+                    .eval_frame(&g, &registry, &plane, sig, frame)
+                    .unwrap()
+                    .to_canonical_bytes(),
+            );
+        }
+
+        // 截断窗口：只保留帧 1..=7 的状态（帧 0 被逐出）。
+        let mut windowed = IncrementalSession::new(4);
+        for frame in 1..=7u64 {
+            windowed
+                .snapshots_mut()
+                .insert((sig, frame), payload_to_bytes(&Payload::Scalar(frame as f32)));
+        }
+        for frame in 2..=7u64 {
+            let bytes = windowed
+                .eval_frame(&g, &registry, &plane, sig, frame)
+                .unwrap()
+                .to_canonical_bytes();
+            assert_eq!(
+                bytes, full_bytes[frame as usize],
+                "窗口 [1,7] 续算与全量重放逐位一致（帧 {frame}）"
+            );
+        }
+        assert_eq!(
+            windowed.snapshots().get(&(sig, 7)),
+            full.snapshots().get(&(sig, 7)),
+            "终态快照逐位一致"
+        );
+    }
+
+    // ---- S2 五类通道恒定区间覆盖（每类至少一条「区间内复用、区间外重算」） ----
+
+    /// 帧维缓存维度（帧号进键；D-28 帧维权威）。
+    fn frame_dims(frame: u64) -> CacheDims {
+        CacheDims { frame, ..dims(1) }
+    }
+
+    /// S2 覆盖助手（五类通道同一把尺）：以「通道恒定区间 + 保守变更包络」
+    /// 跑一遍帧循环，返回（每帧裁决, 脏集合）。
+    ///
+    /// 流程：
+    /// 1. 空参首轮 observe 建基线（空基线会把全部节点判脏，掩盖通道收窄）；
+    /// 2. 首轮全帧 v1 签名重算回填缓存（预热）；
+    /// 3. observe 通道参数变更（保守包络 = `changed`，可能全帧）；
+    /// 4. 次轮逐帧：脏帧（区间外）→ v2 签名新键未命中 → 重算；净帧
+    ///    （区间内）→ v1 签名命中 → 复用（重算闭包 panic，防名为复用
+    ///    实则重算）。
+    ///
+    /// `graph_v1` = 变更前参数图（v1 签名），`graph_v2` = 变更后参数图
+    /// （v2 签名）；净帧的参数与基线逐位相同（恒定带证明）⇒ 其每帧签名
+    /// 即 v1，脏帧签名即 v2。
+    fn channel_coverage_verdicts(
+        graph_v1: &Graph,
+        graph_v2: &Graph,
+        channel: &str,
+        stable: &[FrameRange],
+        changed: FrameRange,
+        total: u64,
+    ) -> (Vec<(u64, ReuseVerdict)>, DirtySet) {
+        let defs = ChannelDefs::new();
+        let root_v1 = graph_signatures(graph_v1, &defs).unwrap()[&4];
+        let root_v2 = graph_signatures(graph_v2, &defs).unwrap()[&4];
+        assert_ne!(root_v1, root_v2, "参数变更必须改变根签名（否则无重算可言）");
+
+        let mut intervals = ChannelIntervals::new();
+        for r in stable {
+            intervals.push(channel, *r);
+        }
+        let artifact = |sig: &Hash256| -> TileArtifact { sig[0..8].to_vec() };
+
+        let mut session = IncrementalSession::new(64);
+        // 1) 空参首轮：建基线。
+        session
+            .observe_frame(graph_v1, &defs, &[], total, 1, &intervals)
+            .unwrap();
+        // 2) 首轮全帧 v1 重算回填（预热）。
+        for f in 0..total {
+            session.set_frame(f);
+            let (_, v) = session.process_unit(&root_v1, &frame_dims(f), || artifact(&root_v1));
+            assert_eq!(v, ReuseVerdict::Recompute, "预热帧 {f} 必未命中");
+        }
+        // 3) observe 通道参数变更（保守包络）。
+        let change = ParamChange {
+            node: 1,
+            channel: Some(channel.to_string()),
+            changed_frames: changed,
+        };
+        let dirty = session
+            .observe_frame(graph_v2, &defs, &[change], total, 1, &intervals)
+            .unwrap();
+        // 4) 次轮逐帧：区间外重算（v2 新键）、区间内复用（v1 命中）。
+        let mut verdicts = Vec::new();
+        for f in 0..total {
+            session.set_frame(f);
+            let d = frame_dims(f);
+            let is_dirty = dirty.ranges_of(4).iter().any(|r| r.contains(f));
+            if is_dirty {
+                let (bytes, v) = session.process_unit(&root_v2, &d, || artifact(&root_v2));
+                assert_eq!(v, ReuseVerdict::Recompute, "区间外帧 {f} 必须重算（新签名未命中）");
+                assert_eq!(bytes, artifact(&root_v2), "重算产物 = 纯函数直出（逐字节）");
+                verdicts.push((f, v));
+            } else {
+                let (bytes, v) = session.process_unit(&root_v1, &d, || {
+                    panic!("区间内帧 {f} 必须命中复用，不得调用重算闭包")
+                });
+                assert_eq!(v, ReuseVerdict::Reuse, "区间内帧 {f} 必须复用");
+                assert_eq!(bytes, artifact(&root_v1), "复用产物 = 首轮回填字节（逐字节）");
+                verdicts.push((f, v));
+            }
+        }
+        (verdicts, dirty)
+    }
+
+    #[test]
+    fn s2_const_channel_full_band_reuses_empty_band_recomputes() {
+        // CH0 常值：值不变 → 恒定带 = 全帧一段 → 签名虽变（定义笔误类）
+        // 但每帧参数与基线逐位相同 → 区间内（全帧）复用；值变 → 无恒定
+        // 带（每帧参数都变）→ 区间外（全序列）重算。
+        let total = 20u64;
+        let v1 = chain_graph(0.5);
+        let v2 = chain_graph(0.9);
+
+        let (verdicts, dirty) = channel_coverage_verdicts(
+            &v1,
+            &v2,
+            "const",
+            &[FrameRange::full(total)],
+            FrameRange::full(total),
+            total,
+        );
+        assert_eq!(dirty.dirty_frame_count(), 0, "Const 未变值：全帧一段恒定 → 无脏帧");
+        assert!(
+            verdicts.iter().all(|(_, v)| *v == ReuseVerdict::Reuse),
+            "区间内（全帧）复用"
+        );
+
+        let (verdicts, dirty) = channel_coverage_verdicts(
+            &v1,
+            &v2,
+            "const",
+            &[],
+            FrameRange::full(total),
+            total,
+        );
+        assert_eq!(dirty.dirty_frame_count(), total, "Const 变值：无恒定带 → 全帧脏");
+        assert!(
+            verdicts.iter().all(|(_, v)| *v == ReuseVerdict::Recompute),
+            "区间外（全序列）重算"
+        );
+    }
+
+    #[test]
+    fn s2_track_channel_piecewise_constant_bands() {
+        // CH1 关键帧轨道：关键帧之间分段常。恒定带 [0,4]∪[10,19]，区间外
+        // [5,9] 重算（参数仅在帧 5..9 与基线不同）。
+        let total = 20u64;
+        let (verdicts, dirty) = channel_coverage_verdicts(
+            &chain_graph(0.5),
+            &chain_graph(0.9),
+            "track",
+            &[
+                FrameRange { start: 0, end: 4 },
+                FrameRange { start: 10, end: 19 },
+            ],
+            FrameRange::full(total),
+            total,
+        );
+        assert_eq!(dirty.dirty_frame_count(), 5, "脏帧 = [5,9] 共 5 帧");
+        for (f, v) in &verdicts {
+            let expect = if (5..=9).contains(f) {
+                ReuseVerdict::Recompute
+            } else {
+                ReuseVerdict::Reuse
+            };
+            assert_eq!(*v, expect, "帧 {f} 裁决：区间内复用、区间外重算");
+        }
+    }
+
+    #[test]
+    fn s2_expr_channel_rate_bound_zero_is_conservative_per_frame() {
+        // CH2 表达式：变化率界 = 0（无界信息）→ 保守逐帧，无恒定带 → 全帧
+        // 重算（不猜，C20）；有界 → 恒定带 [0,9] 内复用、[10,19] 重算。
+        let total = 20u64;
+        let (verdicts, dirty) = channel_coverage_verdicts(
+            &chain_graph(0.5),
+            &chain_graph(0.9),
+            "expr",
+            &[],
+            FrameRange::full(total),
+            total,
+        );
+        assert_eq!(dirty.dirty_frame_count(), total, "Expr 无变化率界 → 保守逐帧全脏");
+        assert!(verdicts.iter().all(|(_, v)| *v == ReuseVerdict::Recompute));
+
+        let (verdicts, dirty) = channel_coverage_verdicts(
+            &chain_graph(0.5),
+            &chain_graph(0.9),
+            "expr",
+            &[FrameRange { start: 0, end: 9 }],
+            FrameRange::full(total),
+            total,
+        );
+        assert_eq!(dirty.dirty_frame_count(), 10, "脏帧 = [10,19] 共 10 帧");
+        for (f, v) in &verdicts {
+            let expect = if (10..=19).contains(f) {
+                ReuseVerdict::Recompute
+            } else {
+                ReuseVerdict::Reuse
+            };
+            assert_eq!(*v, expect, "帧 {f} 裁决：区间内复用、区间外重算");
+        }
+    }
+
+    #[test]
+    fn s2_spring_channel_lipschitz_bands() {
+        // CH3 弹簧：Lipschitz 界证明 [0,9]∪[15,19] 参数与基线逐位相同
+        // （弹簧静止/位相等值段），区间外 [10,14] 重算。
+        let total = 20u64;
+        let (verdicts, dirty) = channel_coverage_verdicts(
+            &chain_graph(0.5),
+            &chain_graph(0.9),
+            "spring",
+            &[
+                FrameRange { start: 0, end: 9 },
+                FrameRange { start: 15, end: 19 },
+            ],
+            FrameRange::full(total),
+            total,
+        );
+        assert_eq!(dirty.dirty_frame_count(), 5, "脏帧 = [10,14] 共 5 帧");
+        for (f, v) in &verdicts {
+            let expect = if (10..=14).contains(f) {
+                ReuseVerdict::Recompute
+            } else {
+                ReuseVerdict::Reuse
+            };
+            assert_eq!(*v, expect, "帧 {f} 裁决：区间内复用、区间外重算");
+        }
+    }
+
+    #[test]
+    fn s2_audio_reactive_channel_baked_segment_bands() {
+        // CH4 音频反应：烘焙表分段常。恒定带 = 烘焙段 [0,3]∪[8,11]∪[16,19]，
+        // 区间外 [4,7]∪[12,15] 重算。
+        let total = 20u64;
+        let (verdicts, dirty) = channel_coverage_verdicts(
+            &chain_graph(0.5),
+            &chain_graph(0.9),
+            "audio",
+            &[
+                FrameRange { start: 0, end: 3 },
+                FrameRange { start: 8, end: 11 },
+                FrameRange { start: 16, end: 19 },
+            ],
+            FrameRange::full(total),
+            total,
+        );
+        assert_eq!(dirty.dirty_frame_count(), 8, "脏帧 = [4,7]∪[12,15] 共 8 帧");
+        for (f, v) in &verdicts {
+            let expect = if (4..=7).contains(f) || (12..=15).contains(f) {
+                ReuseVerdict::Recompute
+            } else {
+                ReuseVerdict::Reuse
+            };
+            assert_eq!(*v, expect, "帧 {f} 裁决：区间内复用、区间外重算");
+        }
+    }
+
+    // ---- S4 LRU 逐出中性（逐出只影响重算、不影响结果；D-28 seek 等价） ----
+
+    #[test]
+    fn s4_lru_eviction_recompute_is_bit_identical_to_pre_eviction() {
+        // 容量 2：帧 0..=2 三键依次回填 → 帧 0 键（最久未用）被逐出；
+        // 保留键回取不变，被逐出键重算与逐出前**逐位一致**。
+        let mut session = IncrementalSession::new(2);
+        let sig: Hash256 = [7u8; 32];
+        let artifact = |f: u64| -> TileArtifact { vec![f as u8; 4] };
+
+        let (b0, v0) = session.process_unit(&sig, &frame_dims(0), || artifact(0));
+        assert_eq!(v0, ReuseVerdict::Recompute);
+        let (b1, _) = session.process_unit(&sig, &frame_dims(1), || artifact(1));
+        let (b2, _) = session.process_unit(&sig, &frame_dims(2), || artifact(2));
+
+        assert_eq!(session.cache().len(), 2, "容量 2：最久未用的帧 0 键被逐出");
+        assert!(!session.cache().contains(&cache_key(&sig, &frame_dims(0))));
+
+        // 保留键（帧 1）仍命中，回取逐位不变。
+        let (b1b, v1) = session.process_unit(&sig, &frame_dims(1), || {
+            panic!("保留键不得触发重算")
+        });
+        assert_eq!(v1, ReuseVerdict::Reuse);
+        assert_eq!(b1b, b1, "逐出不改变保留键的回取值");
+
+        // 被逐出键（帧 0）重算：与逐出前逐位一致（纯函数 ⇒ 逐出无损）。
+        let (b0b, v0b) = session.process_unit(&sig, &frame_dims(0), || artifact(0));
+        assert_eq!(v0b, ReuseVerdict::Recompute, "被逐出键必未命中");
+        assert_eq!(b0b, b0, "逐出后重算与逐出前逐位一致（S4 中性）");
+        assert_eq!(b2, artifact(2));
+    }
+
+    #[test]
+    fn s4_eviction_seek_after_eviction_is_bit_identical() {
+        // S4 × seek：容量 3 < 序列长 6 → 旧帧键被逐出；seek 回已逐出帧
+        // → 重算 → 与顺序推进时该帧字节逐位一致（逐出只影响重算、不影响
+        // 结果；seek 等价成立条件不受逐出破坏）。
+        let mut session = IncrementalSession::new(3);
+        let sig: Hash256 = [9u8; 32];
+        let artifact = |f: u64| -> TileArtifact {
+            let mut out = Vec::with_capacity(10);
+            out.extend_from_slice(&f.to_le_bytes());
+            out.extend_from_slice(&sig[0..2]);
+            out
+        };
+
+        // 顺序推进 0..=5（容量 3 → 帧 0,1,2 键先后被逐出）。
+        let mut seq = Vec::new();
+        for f in 0..=5u64 {
+            let (bytes, v) = session.process_unit(&sig, &frame_dims(f), || artifact(f));
+            assert_eq!(v, ReuseVerdict::Recompute);
+            seq.push(bytes);
+        }
+        assert_eq!(session.cache().len(), 3, "只留最近 3 帧键");
+
+        // seek 回帧 1（已逐出）→ 重算 → 与顺序推进逐位一致。
+        let (back, v) = session.process_unit(&sig, &frame_dims(1), || artifact(1));
+        assert_eq!(v, ReuseVerdict::Recompute, "已逐出帧必未命中");
+        assert_eq!(back, seq[1], "逐出后 seek 重算与顺序推进逐位一致");
+
+        // 帧 4（未逐出）→ 命中复用，字节不变。
+        let (keep, v4) = session.process_unit(&sig, &frame_dims(4), || {
+            panic!("未逐出键不得触发重算")
+        });
+        assert_eq!(v4, ReuseVerdict::Reuse);
+        assert_eq!(keep, seq[4]);
     }
 }

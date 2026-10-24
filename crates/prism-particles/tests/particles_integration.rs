@@ -299,6 +299,54 @@ fn seek_equals_sequential_advance() {
     assert!(bitwise_eq(&seq.views(), &seeked.views()), "seek 应逐位等价于顺序推进");
 }
 
+/// seek 等式的双机制对拍（同一数学的两种落地）：
+/// - **显式重放**（`sim.rs::seek_with`：丢弃脏态，从空池重放 0..N）；
+/// - **快照续算**（求值台语义：帧 M 快照 → 恢复 → 续推到 N）。
+/// 二者与顺序推进应逐位一致（快照字节级，不只是视图）——粒子域
+/// 「发射/初态 = 帧号纯函数」与求值台「快照装配 + 单步投影」是同一
+/// seek 等式的两个实例，对拍证明它们在本域给出同一条帧轨道。
+/// 定容池（capacity 32 < 60 帧发射数）强制逐出，加强对拍覆盖面。
+#[test]
+fn seek_with_replay_matches_snapshot_continuation_bitwise() {
+    let dt = 1.0 / 60.0;
+    let capacity = 32;
+
+    // 路径 A：顺序推进 0 → 60。
+    let mut seq = ParticleSim::new(test_emitter(), test_forces(), dt, capacity);
+    seq.advance_to(60);
+
+    // 路径 B：脏态（先推进到 17 帧）+ seek_with 显式重放到 60。
+    let mut dirty = ParticleSim::new(test_emitter(), test_forces(), dt, capacity);
+    dirty.advance_to(17);
+    let replayed = dirty.seek_with(60, test_forces());
+
+    // 路径 C：帧 33 快照 → 恢复（力场按同规格重建）→ 续推到 60。
+    let mut snap_src = ParticleSim::new(test_emitter(), test_forces(), dt, capacity);
+    snap_src.advance_to(33);
+    let bytes = snap_src.snapshot_bytes();
+    let mut resumed = ParticleSim::new(test_emitter(), ForceSet::new(), dt, capacity);
+    resumed.restore(&bytes).expect("快照恢复应成功");
+    resumed.set_forces(test_forces());
+    resumed.advance_to(60);
+
+    assert_eq!(seq.frame(), 60);
+    assert_eq!(seq.spawned(), replayed.spawned(), "重放发射数应一致");
+    assert_eq!(seq.spawned(), resumed.spawned(), "续算发射数应一致");
+    assert!(bitwise_eq(&seq.views(), &replayed.views()), "显式重放应逐位等于顺序推进");
+    assert!(bitwise_eq(&seq.views(), &resumed.views()), "快照续算应逐位等于顺序推进");
+    // 快照字节级对拍（帧号 / 时刻 / 发射数 / 逐槽位模式全覆盖）。
+    assert_eq!(
+        seq.snapshot_bytes(),
+        replayed.snapshot_bytes(),
+        "重放路径快照字节应逐位一致"
+    );
+    assert_eq!(
+        seq.snapshot_bytes(),
+        resumed.snapshot_bytes(),
+        "续算路径快照字节应逐位一致"
+    );
+}
+
 #[test]
 fn slot_identity_differs_reproducibly() {
     // 池逐出：容量 4、每帧 1 个、生存期长 → 池恒满 4，最旧被逐。

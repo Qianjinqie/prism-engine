@@ -76,9 +76,15 @@
 //!   本模块**不**声称达到 colord/ACES 官方参考实现的逐位一致。
 //! - **无 gamut 映射 / 无色域裁剪剪裁逻辑**：`from_xyz` 对色域外 XYZ 返回
 //!   原始外插值（含负分量），**不**做 clamp。调用方要裁剪请自行处理。
-//! - **无 HDR 扩展域标定**：PQ/HLG 在 [`crate::pq`]/[`crate::hlg`] 里，
-//!   本注册表**不**把它们注册为条目（它们的"原色 + 白点"语义与 SDR
-//!   三元组不同，硬塞进来会失真）。
+//! - **HDR 编码空间的注册现状（本轮修订）**：PQ 已注册为 `rec2020pq`
+//!   条目（BT.2020 原色 + D65 + SMPTE ST 2084 PQ 传递函数，研究命题 C4
+//!   指名的两轨合并唯一真缺口，2026 年值域层偿还批次补上）；**HLG 仍未
+//!   注册**——引擎 [`crate::hlg`] 是 HLG OETF（BT.2100 系统另一条曲线，
+//!   与 BT.2020 §4.1 SDR OETF 是**不同曲线**），注册表无对应 def，旧轨
+//!   `ColorSpace::HlgDisplay` 因此仍无新轨对应——留名指认为剩余债
+//!   （判据 API `legacy_variant_isomorphism` 如实报告 5/6 对齐）。
+//!   域外输入按 [`crate::pq`] 既有口径 clamp 到 [0,1]（见
+//!   [`TransferFunction::Pq`] 文档「域外输入行为」的如实记录）。
 //! - `ProPhoto RGB` 的 ROMM 曲线是**纯 1.8 幂近似**，ROMM 的趾段（toe）
 //!   未建模；`ACEScc` 的负段断点常数系转录自 ACES/SMPTE 规范，未经
 //!   官方测试向量逐位校验（见「诚实边界」与集成测试中的往返自洽断言）。
@@ -90,6 +96,7 @@
 
 use std::fmt;
 
+use crate::colorspace::ColorSpace;
 use crate::det_pow::det_pow;
 use crate::Vec3;
 
@@ -441,6 +448,31 @@ pub enum TransferFunction {
     /// （f32 进出，相对误差 ~1e-7），**不用 `powf`**（落平台 libm，
     /// 跨平台尾位不一致，违反 C17）。
     Bt2020,
+    /// PQ（SMPTE ST 2084 / BT.2100 Perceptual Quantizer）HDR 传递函数。
+    ///
+    /// # 实现口径：复用 [`crate::pq`]，零常数重复
+    /// decode/encode 分别转调 [`crate::pq::pq_eotf`] / [`crate::pq::pq_oetf`]
+    /// （同一套常数的唯一住所——`m1/m2/c1/c2/c3` 逐位取 SMPTE ST 2084:2014，
+    /// 幂运算走 D-29 [`crate::det_pow::det_pow`]）。求值精度为 **f32**，
+    /// 与注册表既定口径一致（模块头「精度口径」：传递函数在 f32 求值，
+    /// 公开 API 收窄点在唯一的适配处）。本变体**不**另立一套常数或公式
+    /// ——那是重复定义，会出现两套尾位。
+    ///
+    /// # 域外输入行为（如实记录，与白名单纪律的边界）
+    /// [`crate::pq`] 两函数对输入**先 clamp 到 [0,1]** 再求值（该件的
+    /// 既有口径：PQ 的编码/线性域按 ST 2084 定义即归一化 [0,1]，超域
+    /// 输入无规范意义）。本注册表**沿用该行为并在文档显式声明**——
+    /// 调用方若需要「超域即报错」的 stricter 语义，应在喂入前自行校验
+    /// （注册表的非有限检查照常先行，NaN/Inf 仍报错，见 decode/encode）。
+    /// 与 [`TransferFunction::PureGamma`] 的负输入报错**不是同一口径**，
+    /// 特此说明，避免误以为本变体会拒绝越界。
+    ///
+    /// # 端点与单调
+    /// `decode(0) = 0`、`decode(1) = 1`（1.0 = 10000 cd/m² 归一峰值，
+    /// [`crate::pq::PQ_PEAK_NITS`]）；encode 互为逆。EOTF 单调递增
+    /// （感知量化的基本性质，测试见 `pq_is_monotonic_increasing` 与本
+    /// 文件内 PQ 专项测试）。
+    Pq,
 }
 
 /// sRGB 解码断点（IEC 61966-2-1）。
@@ -525,6 +557,11 @@ impl TransferFunction {
                     det_pow(t as f32, (1.0 / BT2020_OETF_EXPONENT) as f32) as f64
                 }
             }
+            TransferFunction::Pq => {
+                // E' → E（PQ EOTF）。复用 `crate::pq`（f32 求值、域外
+                // clamp [0,1]——见本变体文档「域外输入行为」）。
+                crate::pq::pq_eotf(v as f32) as f64
+            }
         })
     }
 
@@ -585,6 +622,11 @@ impl TransferFunction {
                     let t = det_pow(v as f32, BT2020_OETF_EXPONENT as f32) as f64;
                     BT2020_ALPHA * t - (BT2020_ALPHA - 1.0)
                 }
+            }
+            TransferFunction::Pq => {
+                // E → E'（PQ OETF / inverse-EOTF）。复用 `crate::pq`
+                // （f32 求值、域外 clamp [0,1]——见本变体文档）。
+                crate::pq::pq_oetf(v as f32) as f64
             }
         })
     }
@@ -1115,7 +1157,7 @@ fn det_pow_int_f64(x: f64, p: f64) -> f64 {
 // ===========================================================================
 
 /// 注册表条目总数。
-pub const COLOR_SPACE_COUNT: usize = 20;
+pub const COLOR_SPACE_COUNT: usize = 21;
 
 /// 全部注册色彩空间。
 ///
@@ -1324,7 +1366,27 @@ pub static COLOR_SPACES: [ColorSpaceDef; COLOR_SPACE_COUNT] = [
         representation: Representation::Rgb,
         transfer: TransferFunction::Bt2020,
     },
-    // 16. Rec.601 NTSC：SMPTE-C 白点（0.31006/0.31616）+ γ 2.2。
+    // 16. Rec.2020 / BT.2020 的 PQ（ST 2084）编码空间（HDR10 交付）。
+    // 补的是「BT.2020 原色 + D65 + PQ 传递函数」三元组——研究（命题 C4）
+    // 指名的两轨合并唯一真缺口：旧轨 `ColorSpace::PqDisplay` 此前在新轨
+    // 无对应条目。与 `rec2020`（同一套 BT.2020 原色，SDR OETF）是**同原色
+    // 两条传递函数**的规范配对（BT.2100 系统：PQ 与 HLG 各一条），不是
+    // 重复条目。传递函数复用 `crate::pq`（f32 求值、域外 clamp，见
+    // `TransferFunction::Pq` 文档）；常数一字不改、零重复定义。
+    ColorSpaceDef {
+        name: "rec2020pq",
+        display_name: "Rec.2020 / BT.2020 (PQ HDR)",
+        citation: "SMPTE ST 2084:2014（PQ 传递函数，经 ITU-R BT.2100-2 Table 4 复核）+ ITU-R BT.2100-2（BT.2020 原色 + D65，PQ 系统）",
+        white_point: WhitePoint::D65,
+        primaries: Primaries::new(
+            Chromaticity::new(0.708, 0.292),
+            Chromaticity::new(0.170, 0.797),
+            Chromaticity::new(0.131, 0.046),
+        ),
+        representation: Representation::Rgb,
+        transfer: TransferFunction::Pq,
+    },
+    // 17. Rec.601 NTSC：SMPTE-C 白点（0.31006/0.31616）+ γ 2.2。
     ColorSpaceDef {
         name: "rec601ntsc",
         display_name: "Rec.601 NTSC (SMPTE-C)",
@@ -1338,7 +1400,7 @@ pub static COLOR_SPACES: [ColorSpaceDef; COLOR_SPACE_COUNT] = [
         representation: Representation::Rgb,
         transfer: TransferFunction::PureGamma { exponent: 2.2 },
     },
-    // 17. Rec.601 PAL：EBU 601（Kr = 0.299, Kb = 0.114 → 0.640/0.330、
+    // 18. Rec.601 PAL：EBU 601（Kr = 0.299, Kb = 0.114 → 0.640/0.330、
     //     0.290/0.600、0.150/0.060）白点 D65 + γ 2.8。
     ColorSpaceDef {
         name: "rec601pal",
@@ -1353,7 +1415,7 @@ pub static COLOR_SPACES: [ColorSpaceDef; COLOR_SPACE_COUNT] = [
         representation: Representation::Rgb,
         transfer: TransferFunction::PureGamma { exponent: 2.8 },
     },
-    // 18. Rec.709 / BT.709：HDTV 基准。
+    // 19. Rec.709 / BT.709：HDTV 基准。
     ColorSpaceDef {
         name: "rec709",
         display_name: "Rec.709 / BT.709",
@@ -1367,7 +1429,7 @@ pub static COLOR_SPACES: [ColorSpaceDef; COLOR_SPACE_COUNT] = [
         representation: Representation::Rgb,
         transfer: TransferFunction::Linear,
     },
-    // 19. sRGB（IEC 61966-2-1）：sRGB 曲线 + BT.709 色度 + D65。
+    // 20. sRGB（IEC 61966-2-1）：sRGB 曲线 + BT.709 色度 + D65。
     ColorSpaceDef {
         name: "srgb",
         display_name: "sRGB (IEC 61966-2-1)",
@@ -1381,7 +1443,7 @@ pub static COLOR_SPACES: [ColorSpaceDef; COLOR_SPACE_COUNT] = [
         representation: Representation::Rgb,
         transfer: TransferFunction::Srgb,
     },
-    // 20. 线性 sRGB：BT.709 色度 + D65 + 线性（数值上等同 `lineargb709`）。
+    // 21. 线性 sRGB：BT.709 色度 + D65 + 线性（数值上等同 `lineargb709`）。
     ColorSpaceDef {
         name: "srgblinear",
         display_name: "Linear sRGB",
@@ -1584,6 +1646,214 @@ impl core::fmt::Display for LegacyVsDerivedDelta {
             self.derived_row_sums[0], self.derived_row_sums[1], self.derived_row_sums[2]
         )
     }
+}
+
+// ===========================================================================
+//  两轨同构判据（研究《能力对齐的数学分层》命题 C4）
+// ===========================================================================
+
+/// 命题 C4 的色度容差：旧轨变体的文档语义三元组 vs 新轨 def 逐项对拍时，
+/// 色度坐标按规范给出位数（4~6 位小数）容许的尾差。
+pub const ISOMORPHISM_CHROMATICITY_TOL: f64 = 1e-6;
+
+/// 旧轨 [`ColorSpace`] 变体 ↔ 新轨 [`ColorSpaceDef`] 的同构判据报告
+/// （[`legacy_variant_isomorphism`] 的返回体）。
+///
+/// 命题 C4：变体 `e` 与 def `d` 表示同一色彩空间 **当且仅当**
+/// `(primaries, white_point, transfer)` 三元组逐项相等（浮点容差内）。
+/// 旧轨枚举是**无数据变体**（不携带原色/白点/传递函数），故判据的
+/// 「期望三元组」取自各变体的**文档语义**（`colorspace.rs` 的变体 doc
+/// 注释 + ACES/BT 规范名义值），在此逐项列出、可审计。
+#[derive(Debug, Clone, PartialEq)]
+pub struct VariantIsomorphism {
+    /// 受判定的旧轨变体。
+    pub variant: ColorSpace,
+    /// 期望三元组中的传递函数（`None` = 注册表**无对应变体可表**该曲线，
+    /// 如 HLG OETF——此时 `transfer_match = false` 且无从匹配）。
+    pub expected_transfer: Option<TransferFunction>,
+    /// 三元组**全部**匹配的新轨 def 名（表序；空 = 无对应）。
+    ///
+    /// 可能多于一个：`srgblinear` 与 `lineargb709` 的三元组数值相同
+    /// （BT.709 原色即 sRGB 原色、同为 D65 + Linear），名字不同——
+    /// 如实全部列出，不擅自挑一个。
+    pub matched_defs: Vec<&'static str>,
+    /// 逐项判据（对**最佳候选**：匹配项最多、并列取表序首个）：
+    /// 原色在 [`ISOMORPHISM_CHROMATICITY_TOL`] 内。
+    pub primaries_match: bool,
+    /// 白点相等。
+    pub white_point_match: bool,
+    /// 传递函数相等（期望不可表时为 false）。
+    pub transfer_match: bool,
+    /// 三元组逐项相等（命题 C4 的同构定义；= `!matched_defs.is_empty()`）。
+    pub is_isomorphic: bool,
+    /// 最佳候选名（无任何候选时为 None；候选按表序首个最佳）。
+    pub best_candidate: Option<&'static str>,
+    /// 人类可读结论（含债务留名）。
+    pub note: String,
+}
+
+/// 色度坐标对拍（容差 [`ISOMORPHISM_CHROMATICITY_TOL`]）。
+fn chromaticity_eq(a: &Chromaticity, b: &Chromaticity) -> bool {
+    (a.x - b.x).abs() <= ISOMORPHISM_CHROMATICITY_TOL
+        && (a.y - b.y).abs() <= ISOMORPHISM_CHROMATICITY_TOL
+}
+
+/// 原色三元组对拍（逐原色坐标，容差同上）。
+fn primaries_eq(a: &Primaries, b: &Primaries) -> bool {
+    chromaticity_eq(&a.red, &b.red)
+        && chromaticity_eq(&a.green, &b.green)
+        && chromaticity_eq(&a.blue, &b.blue)
+}
+
+/// 旧轨变体的**文档语义三元组**（原色, 白点, 传递函数）。
+///
+/// 来源逐条注明：
+/// - `LinearSrgb`：colorspace.rs 变体 doc「场景线性 = 线性 sRGB
+///   primaries，白点 D65」→ sRGB/BT.709 原色 + D65 + Linear；
+/// - `AcesCg`：ACES 规范名义 AP1 + **D60**。旧轨 doc 的「白点 D65 接入」
+///   描述的是**拟合矩阵**（`SRGB_TO_ACESCG` 行和 = 1 ⇒ D65 进 D65 出）的
+///   接入行为，**不是空间名义白点**——判据按名义白点（研究命题 C4
+///   「已核对」口径：AcesCg ↔ acescg（D60, AP1, Linear））；
+/// - `Aces2065`：ACES 规范名义 AP0 + D60 + Linear；
+/// - `SrgbDisplay`：sRGB 原色 + D65 + sRGB 曲线；
+/// - `PqDisplay`：colorspace.rs 变体 doc「PQ（ST 2084）编码显示域
+///   （HDR10 交付）」→ BT.2020 原色 + D65 + PQ（BT.2100 PQ 系统）；
+/// - `HlgDisplay`：colorspace.rs 变体 doc「HLG（BT.2100）编码显示域」→
+///   BT.2020 原色 + D65 + **HLG OETF**（注册表无此传递函数变体——
+///   `TransferFunction::Bt2020` 是 BT.2020 §4.1 SDR OETF，与 HLG 是
+///   **不同曲线**，引擎另有 [`crate::hlg`]）。
+fn expected_triple(variant: ColorSpace) -> (Primaries, WhitePoint, Option<TransferFunction>) {
+    // sRGB / BT.709 共用同一套原色数值（规范即如此）。
+    let srgb_primaries = Primaries::new(
+        Chromaticity::new(0.640, 0.330),
+        Chromaticity::new(0.300, 0.600),
+        Chromaticity::new(0.150, 0.060),
+    );
+    // BT.2020 原色（PQ 与 HLG 两系统共用）。
+    let bt2020_primaries = Primaries::new(
+        Chromaticity::new(0.708, 0.292),
+        Chromaticity::new(0.170, 0.797),
+        Chromaticity::new(0.131, 0.046),
+    );
+    match variant {
+        ColorSpace::LinearSrgb => (
+            srgb_primaries,
+            WhitePoint::D65,
+            Some(TransferFunction::Linear),
+        ),
+        ColorSpace::AcesCg => (
+            Primaries::new(
+                Chromaticity::new(0.713, 0.293),
+                Chromaticity::new(0.165, 0.830),
+                Chromaticity::new(0.128, 0.044),
+            ),
+            WhitePoint::D60,
+            Some(TransferFunction::Linear),
+        ),
+        ColorSpace::Aces2065 => (
+            Primaries::new(
+                Chromaticity::new(0.734_699, 0.265_301),
+                Chromaticity::new(0.0, 1.0),
+                Chromaticity::new(0.000_100, -0.077_000),
+            ),
+            WhitePoint::D60,
+            Some(TransferFunction::Linear),
+        ),
+        ColorSpace::SrgbDisplay => (
+            srgb_primaries,
+            WhitePoint::D65,
+            Some(TransferFunction::Srgb),
+        ),
+        ColorSpace::PqDisplay => (
+            bt2020_primaries,
+            WhitePoint::D65,
+            Some(TransferFunction::Pq),
+        ),
+        ColorSpace::HlgDisplay => (bt2020_primaries, WhitePoint::D65, None),
+    }
+}
+
+/// 命题 C4 的同构判据：旧轨变体 ↔ 新轨 def 三元组对拍。
+///
+/// 对给定变体，取其**文档语义三元组**（见 [`expected_triple`]），在
+/// [`COLOR_SPACES`] 中找全部「原色（容差内）+ 白点 + 传递函数」逐项
+/// 相等的 def；无匹配时报告**最佳候选**（匹配项最多、并列取表序首个）
+/// 与逐项判据，便于指名差额（如 HLG 差在传递函数）。
+///
+/// # 确定性（C17）
+/// 表序遍历 + 固定容差 + 固定 tie-break（表序）；同变体逐次调用返回
+/// **逐位相同**的报告（无 HashMap / 无浮点排序）。
+pub fn legacy_variant_isomorphism(variant: ColorSpace) -> VariantIsomorphism {
+    let (expected_primaries, expected_white, expected_transfer) = expected_triple(variant);
+    let mut matched_defs: Vec<&'static str> = Vec::new();
+    let mut best: Option<(usize, &'static ColorSpaceDef)> = None; // (匹配项数, def)
+    for d in COLOR_SPACES.iter() {
+        let p = primaries_eq(&expected_primaries, &d.primaries);
+        let w = expected_white == d.white_point;
+        let t = expected_transfer == Some(d.transfer);
+        let hits = usize::from(p) + usize::from(w) + usize::from(t);
+        if p && w && t {
+            matched_defs.push(d.name);
+        }
+        // 最佳候选：命中数严格更多才替换（表序首个在并列时胜出）。
+        if hits > 0 && best.map(|(h, _)| hits > h).unwrap_or(true) {
+            best = Some((hits, d));
+        }
+    }
+    let is_isomorphic = !matched_defs.is_empty();
+    let (best_candidate, primaries_match, white_point_match, transfer_match) = match best {
+        Some((_, d)) => (
+            Some(d.name),
+            primaries_eq(&expected_primaries, &d.primaries),
+            expected_white == d.white_point,
+            expected_transfer == Some(d.transfer),
+        ),
+        None => (None, false, false, false),
+    };
+    let note = match variant {
+        ColorSpace::HlgDisplay => format!(
+            "债务留名：HLG OETF 未注册（引擎 hlg.rs 独立存在；Bt2020 TF 是 \
+             BT.2020 §4.1 SDR OETF，与 HLG 不同曲线）——原色与白点均匹配 \
+             BT.2020/D65，差额仅在传递函数；补 HLG def 即可对齐"
+        ),
+        _ if is_isomorphic => format!(
+            "同构：匹配 {:?}（三元组逐项相等）",
+            matched_defs
+        ),
+        _ => format!(
+            "非同构：无三元组全等 def（最佳候选 {best_candidate:?}，\
+             逐项 primaries={primaries_match} white={white_point_match} transfer={transfer_match}）"
+        ),
+    };
+    VariantIsomorphism {
+        variant,
+        expected_transfer,
+        matched_defs,
+        primaries_match,
+        white_point_match,
+        transfer_match,
+        is_isomorphic,
+        best_candidate,
+        note,
+    }
+}
+
+/// 全部六个旧轨变体的判据报告（固定变体序，确定性）。
+///
+/// 实测结论：**5/6 同构**（LinearSrgb / AcesCg / Aces2065 / SrgbDisplay /
+/// PqDisplay），HlgDisplay 留名指认为剩余债（见 [`VariantIsomorphism::note`]）。
+pub fn legacy_isomorphism_report() -> Vec<VariantIsomorphism> {
+    [
+        ColorSpace::LinearSrgb,
+        ColorSpace::AcesCg,
+        ColorSpace::Aces2065,
+        ColorSpace::SrgbDisplay,
+        ColorSpace::PqDisplay,
+        ColorSpace::HlgDisplay,
+    ]
+    .into_iter()
+    .map(legacy_variant_isomorphism)
+    .collect()
 }
 
 /// 按表示形态查（升序）。
@@ -2282,6 +2552,426 @@ mod tests {
         for v in back.iter() {
             assert!(v.abs() < 1e-12, "黑白往返后应仍为黑：{back:?}");
         }
+    }
+
+    // -----------------------------------------------------------------------
+    //  PQ 补空间（值域层 #12：命题 C4 指名的两轨合并唯一真缺口）
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn rec2020pq_def_is_registered_with_expected_triple() {
+        // 补的 def：BT.2020 原色 + D65 + PQ（SMPTE ST 2084）传递函数。
+        let def = by_name("rec2020pq").unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(def.white_point, WhitePoint::D65, "rec2020pq 白点必须为 D65");
+        assert_eq!(
+            def.transfer,
+            TransferFunction::Pq,
+            "rec2020pq 传递函数必须为 Pq"
+        );
+        assert_eq!(def.representation, Representation::Rgb);
+        // 原色与 rec2020 同套（BT.2020）。
+        let rec2020 = by_name("rec2020").unwrap_or_else(|e| panic!("{e}"));
+        assert!(
+            primaries_eq(&def.primaries, &rec2020.primaries),
+            "rec2020pq 与 rec2020 必须共用 BT.2020 原色"
+        );
+        // 引用规范在位（citation 非空且点名 ST 2084 / BT.2100）。
+        assert!(def.citation.contains("ST 2084"), "citation 应点名 ST 2084");
+        assert!(def.citation.contains("BT.2100"), "citation 应点名 BT.2100");
+        // 分组查询能查到它。
+        assert!(
+            by_transfer(TransferFunction::Pq).iter().any(|d| d.name == "rec2020pq"),
+            "by_transfer(Pq) 应包含 rec2020pq"
+        );
+        // 名序：rec2020 < rec2020pq < rec601ntsc（严格升序，by_name 二分前提）。
+        let names = names();
+        let i_pq = names.iter().position(|n| *n == "rec2020pq").expect("已注册");
+        let i_2020 = names.iter().position(|n| *n == "rec2020").expect("已注册");
+        let i_601 = names.iter().position(|n| *n == "rec601ntsc").expect("已注册");
+        assert!(i_2020 < i_pq && i_pq < i_601, "rec2020pq 必须插在 rec2020 与 rec601ntsc 之间");
+    }
+
+    #[test]
+    fn pq_transfer_function_reuses_pq_rs_bitwise() {
+        // 判据（零常数重复）：TransferFunction::Pq 与 crate::pq 逐位一致——
+        // 同一套常数、同一条曲线，只允许一个实现住所。
+        let tf = TransferFunction::Pq;
+        for i in 0..=100u32 {
+            let v = i as f64 / 100.0;
+            let got = tf.decode(v).unwrap_or_else(|e| panic!("{e}"));
+            let want = crate::pq::pq_eotf(v as f32);
+            assert_eq!(
+                (got as f32).to_bits(),
+                want.to_bits(),
+                "PQ decode 必须与 pq_eotf 逐位一致（v = {v}）"
+            );
+            let got_e = tf.encode(v).unwrap_or_else(|e| panic!("{e}"));
+            let want_e = crate::pq::pq_oetf(v as f32);
+            assert_eq!(
+                (got_e as f32).to_bits(),
+                want_e.to_bits(),
+                "PQ encode 必须与 pq_oetf 逐位一致（v = {v}）"
+            );
+        }
+        // 非有限输入照常报错（注册表契约不因复用而松弛）。
+        assert!(tf.decode(f64::NAN).is_err(), "NaN 必须报错");
+        assert!(tf.encode(f64::INFINITY).is_err(), "Inf 必须报错");
+    }
+
+    #[test]
+    fn pq_def_endpoints_roundtrip_and_monotonic() {
+        // 端点：0 → 0、1 → 1（1.0 = 10000 cd/m² 归一峰值）。
+        let tf = TransferFunction::Pq;
+        assert!(tf.decode(0.0).unwrap_or_else(|e| panic!("{e}")).abs() < 1e-9);
+        assert!((tf.decode(1.0).unwrap_or_else(|e| panic!("{e}")) - 1.0).abs() < 1e-5);
+        assert!(tf.encode(0.0).unwrap_or_else(|e| panic!("{e}")).abs() < 1e-6);
+        assert!((tf.encode(1.0).unwrap_or_else(|e| panic!("{e}")) - 1.0).abs() < 1e-5);
+        // 单调 + 往返（一致性判据 < 1e-4，与 pq.rs 测试同口径）。
+        let mut prev = -1.0f64;
+        for i in 0..=200u32 {
+            let v = i as f64 / 200.0;
+            let lin = tf.decode(v).unwrap_or_else(|e| panic!("{e}"));
+            assert!(lin >= prev, "PQ EOTF 必须单调递增（v = {v}）");
+            prev = lin;
+            let back = tf.encode(lin).unwrap_or_else(|e| panic!("{e}"));
+            assert!((back - v).abs() < 1e-4, "PQ 往返 v={v} → {back}");
+        }
+    }
+
+    #[test]
+    fn rec2020pq_preserves_black_and_white_and_roundtrips() {
+        // 注册表遍历级性质：黑白点保持 + 基内往返（与 rec2020 同判据）。
+        let def = by_name("rec2020pq").unwrap_or_else(|e| panic!("{e}"));
+        let black = def.to_xyz([0.0, 0.0, 0.0]).unwrap_or_else(|e| panic!("{e}"));
+        for v in black.iter() {
+            assert!(v.abs() < 1e-12, "rec2020pq 黑点: {black:?}");
+        }
+        let white = def.to_xyz([1.0, 1.0, 1.0]).unwrap_or_else(|e| panic!("{e}"));
+        let d65 = WhitePoint::D65.xyz();
+        for (g, w) in white.iter().zip(d65.iter()) {
+            assert!((g - w).abs() < 1e-6, "rec2020pq 白点守恒: {g} vs {w}");
+        }
+        let xyz = def.to_xyz([0.25, 0.5, 0.75]).unwrap_or_else(|e| panic!("{e}"));
+        let back = def.from_xyz(xyz).unwrap_or_else(|e| panic!("{e}"));
+        for i in 0..3 {
+            assert!((back[i] - [0.25, 0.5, 0.75][i]).abs() < 1e-4, "往返 [{i}]: {}", back[i]);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    //  两轨同构判据（研究命题 C4）
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn two_track_isomorphism_criterion_locks_five_of_six() {
+        use crate::colorspace::ColorSpace as Cs;
+        // 5/6 同构（研究「已核对」清单 + PQ 缺口偿还后的更新）。
+        //
+        // 如实记录：`LinearSrgb` 匹配到**三个** def——`lineargb709` /
+        // `rec709` / `srgblinear` 的三元组逐项相同（BT.709 原色数值上
+        // 就是 sRGB 原色、同为 D65 + Linear；注册表自身文档亦注明
+        // lineargb709「与 srgblinear 数值等同」）。研究清单只指名
+        // `srgblinear` 这一配对；判据如实全列，不擅自收窄。
+        let expect_isomorphic = |v: Cs, defs: &[&str]| {
+            let r = legacy_variant_isomorphism(v);
+            assert!(r.is_isomorphic, "{v:?} 应同构: {}", r.note);
+            for d in defs {
+                assert!(r.matched_defs.contains(d), "{v:?} 应匹配 {d}: {:?}", r.matched_defs);
+            }
+            assert_eq!(r.matched_defs.len(), defs.len(), "{v:?} 匹配集应恰为 {defs:?}");
+        };
+        expect_isomorphic(Cs::LinearSrgb, &["lineargb709", "rec709", "srgblinear"]);
+        expect_isomorphic(Cs::AcesCg, &["acescg"]);
+        expect_isomorphic(Cs::Aces2065, &["aces2065"]);
+        expect_isomorphic(Cs::SrgbDisplay, &["srgb"]);
+        expect_isomorphic(Cs::PqDisplay, &["rec2020pq"]);
+
+        // HlgDisplay：债务留名——原色/白点匹配 BT.2020/D65，差仅在传递函数。
+        let hlg = legacy_variant_isomorphism(Cs::HlgDisplay);
+        assert!(!hlg.is_isomorphic, "HlgDisplay 不应同构（HLG 未注册）");
+        assert!(hlg.matched_defs.is_empty());
+        assert_eq!(hlg.expected_transfer, None, "HLG OETF 在注册表无对应变体");
+        assert!(hlg.primaries_match, "HlgDisplay 原色应匹配 BT.2020");
+        assert!(hlg.white_point_match, "HlgDisplay 白点应匹配 D65");
+        assert!(!hlg.transfer_match, "HlgDisplay 差额必须在传递函数");
+        assert!(hlg.note.contains("HLG"), "债务须留名 HLG: {}", hlg.note);
+
+        // 汇总：5 同构 1 债。
+        let report = legacy_isomorphism_report();
+        assert_eq!(report.len(), 6);
+        assert_eq!(report.iter().filter(|r| r.is_isomorphic).count(), 5);
+    }
+
+    #[test]
+    fn isomorphism_criterion_is_deterministic() {
+        // 同变体逐次调用逐位相同（C17：无 HashMap / 无浮点排序）。
+        for v in [
+            crate::colorspace::ColorSpace::LinearSrgb,
+            crate::colorspace::ColorSpace::HlgDisplay,
+        ] {
+            let a = legacy_variant_isomorphism(v);
+            let b = legacy_variant_isomorphism(v);
+            assert_eq!(a, b, "{v:?} 判据必须逐位确定");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    //  两轨 f32 采样点对拍（值域层 #12「对拍固化」）
+    // -----------------------------------------------------------------------
+
+    /// 两轨对拍的 f32 采样点集：4³ 网格 + 边界 + 中性 + 超域样本。
+    ///
+    /// 超域样本（>1 / <0）纳入的理由：旧轨 `pq` 函数对输入 clamp 到
+    /// [0,1]（既有口径），新轨 `TransferFunction::Pq` 沿用并文档声明；
+    /// 对拍必须覆盖 clamp 段两侧，否则「域外行为一致」是空话。
+    fn sampling_points_f32() -> Vec<[f32; 3]> {
+        let mut v = Vec::new();
+        for i in 0..=4u32 {
+            for j in 0..=4u32 {
+                for k in 0..=4u32 {
+                    v.push([i as f32 / 4.0, j as f32 / 4.0, k as f32 / 4.0]);
+                }
+            }
+        }
+        v.push([0.0, 0.0, 0.0]);
+        v.push([1.0, 1.0, 1.0]);
+        v.push([0.5, 0.5, 0.5]);
+        v.push([0.123, 0.456, 0.789]);
+        v.push([1.5, -0.25, 2.0]); // 超域：两轨均应 clamp 后同值
+        v
+    }
+
+    #[test]
+    fn two_track_sampling_points_agree_within_tolerance() {
+        // 值域层 #12 对拍固化的采样点版。对拍面按配对如实分级——
+        // **不是每个配对都有数值对拍面**，逐对记录依据：
+        //
+        // (1) PqDisplay ↔ rec2020pq（TF 级）：旧轨 `crate::pq`（f32）vs
+        //     新轨 `TransferFunction::Pq`（同一实现的转调）——**逐位**
+        //     （`to_bits` 相等；复用即唯一实现，见
+        //     `pq_transfer_function_reuses_pq_rs_bitwise`，此处补 f32
+        //     采样点形式并覆盖超域 clamp 段）。
+        // (2) LinearSrgb ↔ srgblinear（TF 级）：Linear 传递函数双侧恒等
+        //     ——旧轨 `TransformChain` 同域短路逐位，新轨 decode/encode
+        //     恒等——**逐位**。
+        // (3) SrgbDisplay ↔ srgb：旧轨**无** sRGB OETF 链（`TransformChain`
+        //     对显示域短路拒绝，`chain_rejects_display_domain` 已锁）——
+        //     无数值对拍面，语义同构由三元组判据锁定
+        //     （`two_track_isomorphism_criterion_locks_five_of_six`）。
+        //     本测试把「链拒绝」事实钉为断言，防后人误以为漏了对拍。
+        // (4) AcesCg ↔ acescg / Aces2065 ↔ aces2065（矩阵级）：两口径/
+        //     债务问题，不可容差一致——见
+        //     `new_track_matches_reference_primaries_matrices`（新轨锚定
+        //     规范公认值）与 `legacy_ap1_ap0_matrices_debt_is_named`
+        //     （旧轨债务留名），此处不虚报一致。
+        use crate::colorspace::TransformChain;
+        use crate::pq::{pq_eotf, pq_oetf};
+
+        let points = sampling_points_f32();
+
+        // (1) PQ：f32 采样点，encode/decode 双向逐位。
+        let tf = TransferFunction::Pq;
+        for &c in &points {
+            for &v in c.iter() {
+                let want_oetf = pq_oetf(v);
+                let got_oetf = tf.encode(v as f64).unwrap_or_else(|e| panic!("{e}")) as f32;
+                assert_eq!(
+                    got_oetf.to_bits(),
+                    want_oetf.to_bits(),
+                    "PQ encode 采样点必须与旧轨 pq_oetf 逐位一致（v = {v}）"
+                );
+                let want_eotf = pq_eotf(v);
+                let got_eotf = tf.decode(v as f64).unwrap_or_else(|e| panic!("{e}")) as f32;
+                assert_eq!(
+                    got_eotf.to_bits(),
+                    want_eotf.to_bits(),
+                    "PQ decode 采样点必须与旧轨 pq_eotf 逐位一致（v = {v}）"
+                );
+            }
+        }
+
+        // (2) LinearSrgb 恒等：旧轨同域短路 vs 新轨 Linear TF。
+        let chain = TransformChain::new(
+            crate::colorspace::ColorSpace::LinearSrgb,
+            crate::colorspace::ColorSpace::LinearSrgb,
+        );
+        let srgblinear = by_name("srgblinear").unwrap_or_else(|e| panic!("{e}"));
+        for &c in &points {
+            let old = chain.apply(c);
+            assert_eq!(old, Some(c), "旧轨同域链必须逐位短路");
+            for &v in c.iter() {
+                let d = srgblinear
+                    .transfer
+                    .decode(v as f64)
+                    .unwrap_or_else(|e| panic!("{e}"));
+                assert_eq!(d, v as f64, "Linear decode 必须恒等（v = {v}）");
+                let e = srgblinear
+                    .transfer
+                    .encode(v as f64)
+                    .unwrap_or_else(|e| panic!("{e}"));
+                assert_eq!(e, v as f64, "Linear encode 必须恒等（v = {v}）");
+            }
+        }
+
+        // (3) SrgbDisplay 链拒绝：旧轨无 sRGB OETF 矩阵链（无数值对拍面
+        //     的结构性原因，钉住）。
+        for to in [
+            crate::colorspace::ColorSpace::SrgbDisplay,
+            crate::colorspace::ColorSpace::PqDisplay,
+            crate::colorspace::ColorSpace::HlgDisplay,
+        ] {
+            let c = TransformChain::new(crate::colorspace::ColorSpace::LinearSrgb, to);
+            assert!(
+                c.apply([0.1, 0.2, 0.3]).is_none(),
+                "显示域不得进矩阵链（对拍面归 TF 级/OETF 模块）"
+            );
+        }
+    }
+
+    #[test]
+    fn new_track_matches_reference_primaries_matrices() {
+        // 新轨数值锚定**规范公认值**（这是 AcesCg↔acescg /
+        // Aces2065↔aces2065 对拍的正确形态：旧轨常量一个两口径、一个
+        // 债务留名，都不可作基准；基准只能是规范）：
+        // - acescg rgb_to_xyz = AP1_TO_XYZ_MATRIX（colour-science
+        //   `colour.models.rgb.dataset.aces.AP1_TO_XYZ_MATRIX`，
+        //   与 ampas aces-dev README-MATRIX.md 同源）；
+        // - aces2065 rgb_to_xyz = AP0_TO_XYZ_MATRIX（同源）；
+        // - convert(acescg → aces2065) 隐含单矩阵 = AP0_from_AP1
+        //   （ACES 官方 S-2014-004，ACES Color Space Conversion）。
+        //
+        // 容差如实分级：AP1 规范原色 3 位小数、新轨 def 与公认矩阵输入
+        // 同位，容差 1e-6（实测 max ≈ 3e-8）；AP0 规范原色 4 位、公认
+        // 矩阵由更高位输入推导，容差 1e-4（实测 max ≈ 2.8e-5）；
+        // AP0_from_AP1 单矩阵容差 1e-5（实测 max ≈ 3.1e-6）。
+        // 差异来源均为**输入色度给出位数**，非公式偏离。
+        let acescg = by_name("acescg").unwrap_or_else(|e| panic!("{e}"));
+        let aces2065 = by_name("aces2065").unwrap_or_else(|e| panic!("{e}"));
+
+        // AP1 → XYZ（公认值，colour-science / ampas 同源）。
+        let ap1_to_xyz = [
+            [0.66245418, 0.13400421, 0.15618769],
+            [0.27222872, 0.67408177, 0.05368952],
+            [-0.00557465, 0.00406073, 1.01033910],
+        ];
+        let got = acescg
+            .rgb_to_xyz_mat3f32()
+            .unwrap_or_else(|e| panic!("{e}"));
+        let mut worst = 0.0f64;
+        for r in 0..3 {
+            for c in 0..3 {
+                worst = worst.max((got[r][c] as f64 - ap1_to_xyz[r][c]).abs());
+            }
+        }
+        assert!(
+            worst <= 1e-6,
+            "acescg 矩阵 vs 公认 AP1_TO_XYZ 超差: {worst:e}"
+        );
+
+        // AP0 → XYZ（公认值）。
+        let ap0_to_xyz = [
+            [0.95252396, 0.0, 0.0000936786],
+            [0.34396645, 0.72816610, -0.07213255],
+            [0.0, 0.0, 1.00882518],
+        ];
+        let got0 = aces2065
+            .rgb_to_xyz_mat3f32()
+            .unwrap_or_else(|e| panic!("{e}"));
+        let mut worst0 = 0.0f64;
+        for r in 0..3 {
+            for c in 0..3 {
+                worst0 = worst0.max((got0[r][c] as f64 - ap0_to_xyz[r][c]).abs());
+            }
+        }
+        assert!(
+            worst0 <= 1e-4,
+            "aces2065 矩阵 vs 公认 AP0_TO_XYZ 超差: {worst0:e}"
+        );
+
+        // convert(acescg → aces2065) 采样点 vs 官方 AP0_from_AP1
+        // （S-2014-004）。同白点 D60 ⟺ 无 Bradford 项，复合即单矩阵。
+        let ap0_from_ap1 = [
+            [0.6954522414, 0.1406786965, 0.1638690622],
+            [0.0447945634, 0.8596711185, 0.0955343182],
+            [-0.0055258826, 0.0040252103, 1.0015006723],
+        ];
+        let mut worst_c = 0.0f64;
+        for s in sampling_points_f32() {
+            let sd = [s[0] as f64, s[1] as f64, s[2] as f64];
+            let got_c = convert(sd, acescg, aces2065).unwrap_or_else(|e| panic!("{e}"));
+            for i in 0..3 {
+                let want: f64 = (0..3).map(|j| ap0_from_ap1[i][j] * sd[j]).sum();
+                worst_c = worst_c.max((got_c[i] - want).abs());
+            }
+        }
+        assert!(
+            worst_c <= 1e-5,
+            "convert AP1→AP0 vs 官方 S-2014-004 超差: {worst_c:e}"
+        );
+    }
+
+    #[test]
+    fn legacy_ap1_ap0_matrices_debt_is_named() {
+        // 旧轨 AP1↔AP0 常量债务留名（本轮药方外，**只登记不改**）。
+        //
+        // 事实（2026-10-23 实测 + 规范核对）：旧轨
+        // `colorspace::ACESCG_TO_ACES2065` / `ACES2065_TO_ACESCG` 与
+        // ACES 官方 S-2014-004 矩阵及其逆**坐实不符**——逐元素 max
+        // ≈ 1.4e-1 / 1.9e-1，集中体现在第三行（官方第三行
+        // [-0.0055, 0.0040, 1.0015] 是小负/小正/≈1 结构，旧轨第三行
+        // [0.0283, 0.1292, 0.8593] 整体偏离）。AP1/AP0 同为 D60 名义
+        // 白点、矩阵由原色唯一确定——**不存在「两口径」解释**（区别于
+        // `SRGB_TO_ACESCG` 的 Hill 拟合口径，后者由
+        // `legacy_vs_derived_delta` 留名 ~3.2e-2）。疑似常量转录错误。
+        // 两常量互为精确逆（`matrices_are_inverse_pairs` 已锁），故是
+        // **自洽地错了一对**。
+        //
+        // 影响面：渲染侧可达——prism-postfx `ColorManage` 经
+        // `TransformChain` 消费线性域矩阵（color.rs `apply_color`），
+        // 配置 AcesCg ↔ Aces2065 互转即中招。
+        //
+        // 纪律：本轮药方（#12：补 PQ + 对拍固化）不含修旧轨常量，
+        // 按「药方与现实矛盾停下报告」处理——本测试把差异钉成断言，
+        // 防后人误认其为正确 AP1↔AP0；修复须独立工单（改常量会改变
+        // 既有渲染输出，按 C15 须走行为变化登记流程）。
+        // 新轨不受影响：推导值锚定规范公认值，见
+        // `new_track_matches_reference_primaries_matrices`。
+        use crate::colorspace::{ACES2065_TO_ACESCG, ACESCG_TO_ACES2065};
+
+        let ap0_from_ap1 = [
+            [0.6954522414, 0.1406786965, 0.1638690622],
+            [0.0447945634, 0.8596711185, 0.0955343182],
+            [-0.0055258826, 0.0040252103, 1.0015006723],
+        ];
+        let ap1_from_ap0 = [
+            [1.4514393161, -0.2365107469, -0.2149285693],
+            [-0.0765537734, 1.1762296998, -0.0996759264],
+            [0.0083161484, -0.0060324498, 0.9977163014],
+        ];
+        let mut worst_fwd = 0.0f64;
+        for r in 0..3 {
+            for c in 0..3 {
+                worst_fwd =
+                    worst_fwd.max((ACESCG_TO_ACES2065[r][c] as f64 - ap0_from_ap1[r][c]).abs());
+            }
+        }
+        let mut worst_inv = 0.0f64;
+        for r in 0..3 {
+            for c in 0..3 {
+                worst_inv =
+                    worst_inv.max((ACES2065_TO_ACESCG[r][c] as f64 - ap1_from_ap0[r][c]).abs());
+            }
+        }
+        // 债务锁：与规范显著不符（远超舍入/两口径量级 ~3e-2）。
+        assert!(
+            worst_fwd > 1e-2,
+            "旧轨 ACESCG_TO_ACES2065 与官方矩阵差异应坐实（实测 {worst_fwd:e}）"
+        );
+        assert!(
+            worst_inv > 1e-2,
+            "旧轨 ACES2065_TO_ACESCG 与官方矩阵差异应坐实（实测 {worst_inv:e}）"
+        );
+        // 参照登记（不作为判据）：实测 max ≈ 1.42e-1（fwd）/ 1.91e-1（inv）。
     }
 
     #[test]

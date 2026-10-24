@@ -12,6 +12,36 @@
 //!   ——同树同遍历序、同浮点结合序，任意执行拓扑逐位一致；
 //! - **层序决定论**：树的前序遍历给 A（左/下层）后 B（右/上层）；over 语义
 //!   一律"B 覆盖 A"——层序固定则输出逐位固定。
+//!
+//! # 算子二分纪律（规格《值域层-预乘混合规格》§3/命题 3.1）
+//!
+//! - **覆盖类**（over/plus）：满足结合律——over 的结合律在预乘混合域中
+//!   证明（命题 2.4：`over` 内部表示 `C = α·c`，定义 2.1–2.3），故覆盖类
+//!   可扁平化、括号自由：平铺列表（左结合树）、固定形状归约
+//!   （[`eval_flat`](ComposeNode::eval_flat)）与显式树形求值三者等价；
+//! - **着色类**（screen/multiply/mask）：规格 §3 逐个核对后确认**预乘域
+//!   无标准定义**（如 mask 强行预乘会把「遮罩」静默改成「淡出」），故留在
+//!   直通域、锁层序 + 左结合，禁止扁平化重组；且不可与覆盖类混布后
+//!   重排——**混排改变结果**（命题 3.1 的可证面）。
+//!
+//! 数值备注（如实记录）：引擎直通公式下 screen/multiply/mask 各自其实
+//! 满足结合律（`s(x,y)=x+y−xy`、乘积、`a·m` 均结合；QA 测试
+//! `qa_over_premultiplied::acceptance_5_shading_ops_are_bracket_locked`
+//! 对拍确认）。锁序是**保守纪律**而非公式缺陷：其牙齿在混布场景
+//! （`over(a, screen(b,c)) ≠ screen(over(a,b), c)`）与 mask 的层序
+//! 敏感性（mask 不交换）。
+//!
+//! # Alpha 三语义（规格 §4）
+//!
+//! - over：合成 alpha（`αo = αb + αa·(1−αb)`）；
+//! - plus：加算 alpha（`αa + αb`）；
+//! - screen/multiply：覆盖式 `max(αa, αb)`；
+//! - mask：乘积式 `αa·αb`。
+//!
+//! # 对外契约
+//!
+//! [`LayerBuf`] 出入均为**直通**（straight，非预乘）RGBA；预乘表示仅为
+//! over 的内部计算域（定义 2.1），对调用方不可见。
 
 use prism_math::clamp;
 
@@ -69,9 +99,38 @@ impl LayerBuf {
     }
 }
 
+/// 定义 2.2（to_pre）：直通域 RGBA → 预乘域 `C = α·c`。
+///
+/// `α ≤ 0 ⟹ (0,0,0,0)`：零 alpha 像素在预乘表示下无未定义色，
+/// 杜绝除零 NaN 源（规格命题 4.1）。
+fn to_premultiplied(c: [f32; 4]) -> [f32; 4] {
+    let a = c[3];
+    if a <= 0.0 {
+        [0.0, 0.0, 0.0, 0.0]
+    } else {
+        [c[0] * a, c[1] * a, c[2] * a, a]
+    }
+}
+
+/// 定义 2.2（from_pre）：预乘域 `C = α·c` → 直通域 RGBA。
+///
+/// `α ≤ 0 ⟹ (0,0,0,0)`：与 [`to_premultiplied`] 对偶，同样无除零 NaN
+/// （规格命题 4.1）。
+fn from_premultiplied(c: [f32; 4]) -> [f32; 4] {
+    let a = c[3];
+    if a <= 0.0 {
+        [0.0, 0.0, 0.0, 0.0]
+    } else {
+        [c[0] / a, c[1] / a, c[2] / a, a]
+    }
+}
+
 /// 逐像素混合核心：`a` 为下层、`b` 为上层，返回混合结果（固定表达式序）。
 ///
-/// - `Over`：`a·(1−αb) + b·αb`（标准 over）；αa 同理合成 alpha；
+/// - `Over`：预乘域标准 over（定义 2.3，引擎层序约定 B 覆盖 A）：
+///   `Co = Cb + Ca·(1−αb)`、`αo = αb + αa·(1−αb)`，其中 `C = α·c`
+///   为预乘表示（定义 2.1/2.2）；该形式下 over 满足结合律（命题 2.4），
+///   且误差结构从复利 O(nε) 退化为单层 O(ε)（注 2.4.1）；
 /// - `Plus`：`a + b`（加算）；
 /// - `Screen`：`1 − (1−a)(1−b)`（滤色）；
 /// - `Multiply`：`a·b`（正片叠底）；
@@ -79,16 +138,32 @@ impl LayerBuf {
 ///
 /// RGB 分量走混合式，alpha 通道固定取 `max(αa, αb)` 的覆盖式（mask 除外，
 /// 取 `αa·αb`）——所有公式为有限项四则运算，逐位确定。
+///
+/// # 兼容性（规格命题 2.5，引擎层序约定下逐位成立）
+///
+/// - 上层不透明（αb = 1）⟹ 输出 = b（逐位）；
+/// - 下层不透明（αa = 1）⟹ 与修复前直通公式逐位相同（αa 权重与归一化
+///   均成平凡，加法交换律 + Sterbenz 论证）；
+/// - 双不透明 ⟹ 输出 = b；双透明 ⟹ `(0,0,0,0)`（无 NaN）。
+///
+/// 行为变化仅见于**半透明叠半透明**（αa < 1 且 αb < 1）：修复前缺 αa
+/// 权重与归一化，输出非标准 Porter-Duff；修复后为标准预乘 over。
 pub fn blend_pixel(op: MergeOp, a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     let mut out = [0.0f32; 4];
     match op {
         MergeOp::Over => {
-            let ab = b[3];
-            let aa = a[3];
-            out[3] = ab + aa * (1.0 - ab);
-            for i in 0..3 {
-                out[i] = a[i] * (1.0 - ab) + b[i] * ab;
-            }
+            // 定义 2.3（预乘域 over），引擎层序约定 a = 下层、b = 上层：
+            //   Co = Cb + Ca·(1−αb)，αo = αb + αa·(1−αb)。
+            // 表达式序固定：先 keep，后四通道统一 `cb + ca·keep`。
+            let ca = to_premultiplied(a);
+            let cb = to_premultiplied(b);
+            let keep = 1.0 - cb[3]; // 1 − αb
+            out = from_premultiplied([
+                cb[0] + ca[0] * keep,
+                cb[1] + ca[1] * keep,
+                cb[2] + ca[2] * keep,
+                cb[3] + ca[3] * keep,
+            ]);
         }
         MergeOp::Plus => {
             for i in 0..4 {
@@ -184,10 +259,11 @@ impl ComposeNode {
 
     /// 求值：递归合并，返回合成结果。
     ///
-    /// 归约纪律：多路同 op 的平铺链经 [`reduce`] 走固定形状
-    /// 结合树——但为保持"逐层 over"的层序语义（over 非结合时结果依赖层序），
-    /// 本求值对 `Merge` 节点严格按**树形**（左结合）递归，不重组；层序决定论
-    /// 由此保证。返回 None 表示叶为空（不应发生）。
+    /// 归约纪律：对 `Merge` 节点严格按**树形**递归，不重组——层序决定论
+    /// 由此保证。覆盖类算子（over/plus）因结合律成立（命题 2.4），树形
+    /// 求值与扁平化路径（[`eval_flat`](ComposeNode::eval_flat)）等价；
+    /// 着色类算子（screen/multiply/mask）按规格 §3/命题 3.1 锁层序，
+    /// 仅树形求值有效。
     pub fn eval(&self) -> LayerBuf {
         match self {
             Self::Leaf(buf) => buf.clone(),
@@ -201,8 +277,12 @@ impl ComposeNode {
 
     /// 求值——多输入版：对一组同 op 平铺层走固定形状归约（性能路径）。
     ///
-    /// 语义与左结合 `eval` 在 op 结合时一致；非结合 op（over）下调用方应
-    /// 用 [`ComposeNode::eval`] 的树形求值。
+    /// 覆盖类算子（over/plus）满足结合律（命题 2.4），固定形状归约与
+    /// 左结合 [`eval`](ComposeNode::eval) 语义一致（误差在 ULP 量级，
+    /// 见规格 §5 验收 1 的如实记录）；**着色类算子（screen/multiply/mask）
+    /// 按规格 §3/命题 3.1 锁层序 + 左结合，调用方不得对本路径喂着色类
+    /// op**（纪律依据：预乘域无标准定义、混布改变结果——见模块头
+    /// 「算子二分纪律」的数值备注）。
     pub fn eval_flat(op: MergeOp, layers: &[LayerBuf]) -> Option<LayerBuf> {
         if layers.is_empty() {
             return None;
@@ -255,6 +335,53 @@ mod tests {
         let r = merge(MergeOp::Over, &a, &b).get(0, 0);
         assert!((r[0] - 0.5).abs() < 1e-6 && (r[2] - 0.5).abs() < 1e-6, "over 混合: {r:?}");
         assert!((r[3] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn over_semitransparent_over_semitransparent_is_porter_duff() {
+        // 定义 2.3：0.5 红（下）上叠 0.5 蓝（上）。
+        // 预乘域：Ca=(0.5,0,0,0.5)，Cb=(0,0,0.5,0.5)，keep=0.5
+        //   ⟹ Co=(0.25,0,0.5)，αo=0.75 ⟹ 直通 (1/3, 0, 2/3, 0.75)。
+        // 这是修复后**行为变化**的象限（半透明叠半透明）：修复前输出
+        // (0.5, 0, 0.5, 0.75)（缺 αa 权重与归一化，非标准 Porter-Duff）。
+        let a = solid(1, 1, [1.0, 0.0, 0.0, 0.5]);
+        let b = solid(1, 1, [0.0, 0.0, 1.0, 0.5]);
+        let r = merge(MergeOp::Over, &a, &b).get(0, 0);
+        assert!((r[0] - 1.0 / 3.0).abs() < 1e-6, "over 半叠半 R: {r:?}");
+        assert!((r[1] - 0.0).abs() < 1e-6, "over 半叠半 G: {r:?}");
+        assert!((r[2] - 2.0 / 3.0).abs() < 1e-6, "over 半叠半 B: {r:?}");
+        assert!((r[3] - 0.75).abs() < 1e-6, "over 半叠半 alpha: {r:?}");
+    }
+
+    #[test]
+    fn over_opaque_upper_is_bitwise_upper() {
+        // 命题 2.5(a)（引擎记号）：上层不透明 αb=1 ⟹ 输出 = b（逐位）。
+        let a = solid(1, 1, [0.3, 0.6, 0.9, 0.25]);
+        let b = solid(1, 1, [0.125, 0.5, 0.875, 1.0]);
+        let r = merge(MergeOp::Over, &a, &b).get(0, 0);
+        assert_eq!(r, b.get(0, 0), "αb=1 必须逐位输出上层");
+    }
+
+    #[test]
+    fn over_double_transparent_is_transparent_black_no_nan() {
+        // 命题 4.1：双透明 ⟹ (0,0,0,0)（= LayerBuf 透明黑初值），无 NaN。
+        let a = solid(1, 1, [0.7, 0.7, 0.7, 0.0]);
+        let b = solid(1, 1, [0.2, 0.4, 0.6, 0.0]);
+        let r = merge(MergeOp::Over, &a, &b).get(0, 0);
+        assert_eq!(r, [0.0, 0.0, 0.0, 0.0], "双透明必须输出透明黑");
+        assert!(r.iter().all(|v| v.is_finite()), "双透明不得产生 NaN/Inf");
+    }
+
+    #[test]
+    fn over_transparent_lower_is_bitwise_upper() {
+        // 命题 2.5 推论：下层全透（αa=0）⟹ Ca=0 ⟹ 输出 = b。
+        // 逐位成立的条件：αb 为 2 的幂时 to_pre/from_pre 往返（b·α/α）
+        // 无舍入；本样例 αb=1/2 属此列（一般 α 下为 1–2 ULP，见 QA
+        // 集成测试 acceptance_4 的如实记录）。
+        let a = solid(1, 1, [0.9, 0.1, 0.4, 0.0]);
+        let b = solid(1, 1, [0.125, 0.5, 0.875, 0.5]);
+        let r = merge(MergeOp::Over, &a, &b).get(0, 0);
+        assert_eq!(r, b.get(0, 0), "αa=0 必须逐位输出上层");
     }
 
     #[test]

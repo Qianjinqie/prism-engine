@@ -261,4 +261,151 @@ mod tests {
         assert_eq!(a.len(), 4_410);
         assert!(a.iter().all(|v| v.is_finite() && v.abs() <= 0.5 + 1e-6), "幅度不超过 gain");
     }
+
+    /// 群作用（圆周群旋转流）：相位推进算子 Φ: p ↦ fract(p + f/sr) 满足
+    /// Φᵇ∘Φᵃ = Φᵃ⁺ᵇ——从索引 i 出发"先推进 a 步再推进 b 步"与一步跳到
+    /// i+a+b 在 S¹ 圆周距离内一致。这是 seek 等式（D-28：跳第 N 帧 ≡
+    /// 顺序推进）在音频样本索引流上的实例：相位是索引的纯函数，复合只受
+    /// 定点舍入约束。
+    ///
+    /// 误差预算（容差 1e-11 的依据，非拍脑袋）：直接侧一次除法舍入
+    /// ≤ 相位值·2⁻⁵³（相位值 ≤ ~1e4 → ≤1.1e-12）；步进侧每段一次
+    /// k·step 乘加舍入 ≤ ulp/2 ≈ 1.1e-16，累加器重放每步一次舍入
+    /// ≤ 2⁻⁵³（fract 的 floor 相减为 Sterbenz 精确、不引入误差），
+    /// 最大用例累加 3048 步 → ≤3.4e-13；合计 ≤5e-13，容差取 20× 余量。
+    #[test]
+    fn phase_advance_composes_as_group_action() {
+        let (f, sr) = (441.0_f32, 44_100_u32);
+        let step = f as f64 / sr as f64; // Φ 的单步位移 = fl(0.01)
+        // 圆周距离：fract 边界（≈0/≈1 两侧）不放大误差。
+        let circ = |a: f64, b: f64| {
+            let d = (a - b).abs();
+            d.min(1.0 - d)
+        };
+        for &(i, a, b) in &[
+            (0_usize, 1, 1),
+            (0, 100, 100),
+            (7, 333, 77),
+            (12_345, 1_000, 2_048),
+        ] {
+            let direct = (f as f64 * (i + a + b) as f64 / sr as f64).fract();
+            // 算子复合：k 步推进 = 一次 k·step 位移；旋转群可交换，两种顺序都验。
+            for (x, y) in [(a, b), (b, a)] {
+                let mut p = (f as f64 * i as f64 / sr as f64).fract();
+                p = (p + x as f64 * step).fract();
+                p = (p + y as f64 * step).fract();
+                assert!(
+                    circ(direct, p) < 1e-11,
+                    "Φ^{x}∘Φ^{y} ≠ Φ^{}：direct={direct:e} stepped={p:e}",
+                    x + y
+                );
+            }
+            // 累加器重放（seek 等式的"重放侧"）：从 p_i 起单步循环 a+b 步
+            // == 直接求值——状态机振荡器与纯函数振荡器给出同一轨道。
+            let mut acc = (f as f64 * i as f64 / sr as f64).fract();
+            for _ in 0..(a + b) {
+                acc = (acc + step).fract();
+            }
+            assert!(
+                circ(direct, acc) < 1e-11,
+                "累加器重放 ≠ 直接求值：direct={direct:e} replayed={acc:e}"
+            );
+        }
+    }
+
+    /// 样本级群作用：正弦在"先推进到 i、再步进 n 步"所得相位处的取值 ==
+    /// 直接在 i+n 求值。定点预算：相位差 ≤ ~2e-11（见
+    /// [`phase_advance_composes_as_group_action`]），正弦对相位的 Lipschitz
+    /// 常数为 TAU → 样本差 ≤ 1.3e-10，远小于 f32 出入口舍入（~6e-8）；
+    /// 容差 1e-6 与既有 `phase_is_pure_function_of_index` 一致。
+    #[test]
+    fn sine_samples_compose_within_fixed_point_tolerance() {
+        let (f, sr) = (440.0_f32, 44_100_u32);
+        let step = f as f64 / sr as f64;
+        for &(i, n) in &[(0_usize, 1), (0, 4_410), (7, 999), (55_555, 123_456)] {
+            let direct = sample_osc(Waveform::Sine, f, i + n, sr) as f64;
+            // "先算 i 步" = fract(f·i/sr)（索引纯函数）；"再算 n 步" = 单步循环。
+            let mut q = (f as f64 * i as f64 / sr as f64).fract();
+            for _ in 0..n {
+                q = (q + step).fract();
+            }
+            // 同一正弦函数（det::sin_f64），只换相位参数——隔离出复合性质。
+            let stepped = crate::det::sin_f64(std::f64::consts::TAU * q) as f32 as f64;
+            assert!(
+                (direct - stepped).abs() < 1e-6,
+                "样本级复合失败 @ i={i} n={n}：direct={direct:e} stepped={stepped:e}"
+            );
+        }
+    }
+
+    /// 整周期回归：f·n = sr 时 Φⁿ = 恒等（相位前进整数圈后回到原位）。
+    /// 441 Hz @ 44.1k：n = 100 样本恰好一圈，f·(i+n)/sr = f·i/sr + 1，
+    /// fract 后同相位——"一步跳整圈"与"原位"在定点内一致。
+    /// 预算：相位值 ≤ (i+n)/100 ≈ 1e4 → 两侧除法舍入 ≤ 2.2e-12；波形最大
+    /// 斜率 ~2/dt = 200（saw @ 441Hz，BLEP 窗缘）→ 样本差 ≤ 4.4e-10 << 1e-6。
+    #[test]
+    fn integer_period_returns_to_same_sample() {
+        let (f, sr) = (441.0_f32, 44_100_u32);
+        let n = 100_usize; // f·n/sr = 1.0 整圈
+        for i in [0_usize, 1, 37, 4_410, 999_999] {
+            for wf in [Waveform::Sine, Waveform::Square, Waveform::Saw, Waveform::Triangle] {
+                let a = sample_osc(wf, f, i, sr);
+                let b = sample_osc(wf, f, i + n, sr);
+                assert!(
+                    (a - b).abs() < 1e-6,
+                    "{wf:?} @ i={i}：整圈回归 a={a:e} b={b:e}"
+                );
+            }
+        }
+    }
+
+    /// 索引流乱序访问 == 顺序扫描（逐位）：纯函数相位的直接推论——第 i
+    /// 样本不依赖遍历历史，随机 seek 与顺序推进给出同一轨道。逆序、伪随机
+    /// 置换、跨段跳进跳出三条乱序路径都逐位复现顺序流（若有人给振荡器加
+    /// 隐藏累加状态，本测试即红）。
+    #[test]
+    fn random_index_access_matches_sequential_scan_bitwise() {
+        let (f, sr) = (440.0_f32, 44_100_u32);
+        let n = 20_000_usize;
+        // 确定性 LCG（零依赖；不用系统随机源）。
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            state
+        };
+        for wf in [Waveform::Sine, Waveform::Square, Waveform::Saw, Waveform::Triangle] {
+            let seq: Vec<f32> = (0..n).map(|i| sample_osc(wf, f, i, sr)).collect();
+            // 路径 1：逆序扫描。
+            for i in (0..n).rev() {
+                assert_eq!(sample_osc(wf, f, i, sr).to_bits(), seq[i].to_bits());
+            }
+            // 路径 2：伪随机置换（Fisher–Yates，LCG 驱动）。
+            let mut order: Vec<usize> = (0..n).collect();
+            for k in (1..n).rev() {
+                let j = (next() % (k as u64 + 1)) as usize;
+                order.swap(k, j);
+            }
+            for &i in &order {
+                assert_eq!(sample_osc(wf, f, i, sr).to_bits(), seq[i].to_bits(), "{wf:?} @ {i}");
+            }
+            // 路径 3：跨段跳进跳出——先探远处（应命中顺序流该位），再回到顺序流。
+            let mut i = 0;
+            let mut walked = Vec::with_capacity(n);
+            while i < n {
+                walked.push(sample_osc(wf, f, i, sr));
+                let jump = 97 + (next() % 211) as usize; // 97..=307
+                if let Some(&ahead) = seq.get(i + jump) {
+                    assert_eq!(
+                        sample_osc(wf, f, i + jump, sr).to_bits(),
+                        ahead.to_bits(),
+                        "{wf:?} 跳步探测 @ {i}+{jump}"
+                    );
+                }
+                i += 1;
+            }
+            assert_eq!(walked, seq, "{wf:?}：跳探后的顺序流应逐位复现");
+        }
+    }
 }

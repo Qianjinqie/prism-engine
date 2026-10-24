@@ -15,11 +15,19 @@
 //!
 //! # 收敛依据（的工程化）
 //!
-//! 每子步的 Gauss–Seidel 投影是不动点迭代：残差按 O(q^iters) 衰减，q < 1
-//! 为映射压缩系数（Banach），由约束雅可比谱决定——这正是"子步数/迭代数可
-//! 以显式标价"的数学出处。子步长 h 越小，α̃ = α/h² 越大、单步投影越保守，
-//! 即"小步比多迭代稳"。默认档（4 子步 × 8 迭代）为骨架参考标价，调用方按
-//! 场景在 [`World::step`] 参数处显式给定（危险默认值禁止，宪章 C21）。
+//! 每子步的 Gauss–Seidel 投影是不动点迭代。数学定位（求值层《能力对齐的
+//! 数学分层》§3.1 命题 E2/E3）：约束投影 = 到凸集的投影 = **非扩张**
+//! （Lip = 1）——迭代不发散，但 Banach 定理**不给出衰减率**（容差停机的
+//! 误差界 `ε/(1−L)` 除零），即**无先验误差界**；实测的「残差按 O(q^iters)
+//! 衰减，q < 1」来自约束雅可比的**结构性衰减率**（逐类约束可证），不是
+//! 泛泛的压缩性假设——**禁止伪造 Banach 界**。故本求解器注册为 **M3
+//! 模式**（[`SolveMode`]）：固定步数显式标价 + 残差记录（[`StepReport`]，
+//! 事后质量指标），不含 M2 容差停机。子步长 h 越小，α̃ = α/h² 越大、单步
+//! 投影越保守，即"小步比多迭代稳"。默认档（4 子步 × 8 迭代）为骨架参考
+//! 标价，调用方按场景在 [`World::step`] 参数处显式给定（危险默认值禁止，
+//! 宪章 C21）。含 Lipschitz > 1 分量（非凸/折叠约束）时的发散风险由
+//! [`DivergenceDetector`] 事后检测（E3：连续若干步残差上升超 ε 余量才判
+//! 发散，不是单步）。
 //!
 //! # 积分格式（长时程物理漂移）
 //!
@@ -244,6 +252,151 @@ pub enum Integrator {
 pub struct StepReport {
     /// 长度 = substeps × iterations；顺序 = 子步外层 × 迭代内层（固定）。
     pub residuals: Vec<f32>,
+}
+
+// ---------------------------------------------------------------------------
+// 推进-停机模式声明（M3）与发散检测（E3）
+// ---------------------------------------------------------------------------
+
+/// 求解器的推进-停机模式（求值层 §3.1 三定理查表的物理实例）。
+///
+/// XPBD 的数学定位（§3.1 命题 E2/E3）：约束投影 = 到凸集的投影 =
+/// **非扩张**（`Lip = 1`）⟹ 迭代不发散，但容差停机的误差界 `ε/(1−L)`
+/// 除零——**无先验误差界**；残差衰减是约束雅可比的**结构性衰减率**
+/// （逐类约束可证），不是 Banach 压缩假设。故 XPBD 唯一的诚实模式是
+/// **M3**：固定步数（子步数 × 迭代数显式标价）+ 残差记录（事后质量
+/// 指标）。M2（容差停机）对本求解器**不适用**——设了就是伪造 Banach
+/// 界，故不设其变体。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SolveMode {
+    /// M3：固定步数 + 残差记录（无容差停机、无先验误差界）。
+    #[default]
+    FixedIterations,
+}
+
+/// 默认残差判定阈值 ε：与关卡 1 收敛判定同值（最终残余 < 1e-4）。
+///
+/// 两个用途都是**事后**（非停机判据）：① 残差质量指标判定；② 发散检测
+/// 的 ε 余量（见 [`DivergenceDetector`]）。
+pub const RESIDUAL_EPS_DEFAULT: f32 = 1e-4;
+
+/// 模式元数据：M3 声明 + 缓存键模式参数（求值层 §3.2 命题 S3 迭代层行：
+/// 迭代节点的缓存键必须含 (ε, n) 模式参数——模式元数据进签名）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SolveModeMeta {
+    /// 模式声明（M3）。
+    pub mode: SolveMode,
+    /// 子步数（固定标价；缓存键分量）。
+    pub substeps: u32,
+    /// 迭代数 n（固定标价；缓存键分量——宿主会话自构造起即把它计入签名）。
+    pub iterations: u32,
+    /// 残差判定阈值 ε（缓存键分量；事后质量指标，非停机判据）。
+    pub residual_eps: f32,
+}
+
+impl SolveModeMeta {
+    /// 构造 M3 模式元数据（(ε, n) 显式标价，供签名 / 缓存键收拢）。
+    pub fn new(substeps: u32, iterations: u32, residual_eps: f32) -> Self {
+        Self { mode: SolveMode::FixedIterations, substeps, iterations, residual_eps }
+    }
+}
+
+/// 发散检测默认窗口：连续 3 个采样点残差上升超 ε 余量判发散（E3 推论
+/// (c)：不是单步不降——收敛平台期的单步抖动是正常微振）。
+pub const DIVERGENCE_WINDOW_DEFAULT: usize = 3;
+
+/// 发散检测器（§3.1 命题 E3 推论 (c) 的工程化）：对残差采样序列做事后
+/// 趋势判定。
+///
+/// 推理链：复合投影 `Φ = P_n ∘ … ∘ P_1` 的 `Lip(Φ) ≤ Π_i Lip(P_i)`；凸
+/// 投影 `Lip = 1`（E2 安全），非凸 / 折叠约束可 `> 1`（有发散风险）。
+/// 有限精度下 `Lip = 1` 的**边界情形**（`1 + O(ε_machine)`）在长迭代中
+/// 显现为残差**缓慢上升**——判据必须是「**连续 `window` 个采样点的上升量
+/// 超过 ε 余量**」：单步不降在收敛平台期正常出现（微振），不构成发散
+/// 证据；ε 余量把平台抖动与真实上升区分开。
+///
+/// 只观测、不改写：不接入求解循环（求解器语义零变化），采样粒度由调用方
+/// 选定（如会话层每帧末残差，或对 [`StepReport::residuals`] 事后扫描）。
+#[derive(Debug, Clone)]
+pub struct DivergenceDetector {
+    /// 连续上升步数阈值（≥ 1）。
+    window: usize,
+    /// 上升判定余量 ε（上升量 ≤ ε 视为平台抖动，不计）。
+    margin: f32,
+    /// 上一采样点残差。
+    prev: Option<f32>,
+    /// 当前连续上升步数。
+    streak: usize,
+    /// 已喂入的采样点数。
+    samples: usize,
+    /// 最近一次观测后的发散状态（连续上升达窗口 = true）。
+    diverged: bool,
+}
+
+impl DivergenceDetector {
+    /// 构造（`window` ≥ 1；`margin` 负值钳为 0）。
+    pub fn new(window: usize, margin: f32) -> Self {
+        Self {
+            window: window.max(1),
+            margin: if margin > 0.0 { margin } else { 0.0 },
+            prev: None,
+            streak: 0,
+            samples: 0,
+            diverged: false,
+        }
+    }
+
+    /// 喂入一个残差采样点。返回 `true` = 当前处于「连续 `window` 步上升
+    /// 超 ε 余量」的发散状态（E3 判据）。
+    ///
+    /// NaN 输入：全部比较为 false ⟹ 不计上升（streak 归零）。非有限残差
+    /// 的健康判定归调用方的有限值守卫（如 `hair::stabilize`）——本检测器
+    /// 只做趋势判定，不越权吞掉也不改写（C20）。
+    pub fn observe(&mut self, residual: f32) -> bool {
+        self.samples += 1;
+        self.diverged = match self.prev {
+            Some(prev) if residual > prev + self.margin => {
+                self.streak += 1;
+                self.streak >= self.window
+            }
+            _ => {
+                self.streak = 0;
+                false
+            }
+        };
+        self.prev = Some(residual);
+        self.diverged
+    }
+
+    /// 当前是否处于发散状态（连续上升达窗口）。
+    pub fn diverged(&self) -> bool {
+        self.diverged
+    }
+
+    /// 当前连续上升步数。
+    pub fn streak(&self) -> usize {
+        self.streak
+    }
+
+    /// 已喂入的采样点数。
+    pub fn samples(&self) -> usize {
+        self.samples
+    }
+
+    /// 清零趋势状态（保留窗口 / 余量配置；切换场景时用）。
+    pub fn reset(&mut self) {
+        self.prev = None;
+        self.streak = 0;
+        self.samples = 0;
+        self.diverged = false;
+    }
+
+    /// 批量扫描残差序列（事后审计 / 测试用；语义等价于逐点
+    /// [`Self::observe`]，任一点触发即返回 `true`）。
+    pub fn scan(samples: &[f32], window: usize, margin: f32) -> bool {
+        let mut detector = Self::new(window, margin);
+        samples.iter().any(|&r| detector.observe(r))
+    }
 }
 
 /// XPBD 世界：粒子集 + 约束集 + 常量重力 + 求解循环。
@@ -1029,5 +1182,92 @@ mod tests {
                 .collect()
         };
         assert_eq!(run(false), run(true), "显式设欧拉应与默认逐位一致");
+    }
+
+    // -----------------------------------------------------------------------
+    // M3 模式声明与发散检测（求值层 E2/E3 的物理侧落地）
+    // -----------------------------------------------------------------------
+
+    /// M3 显式化：模式元数据声明固定步数 + (ε, n) 缓存键分量；无 M2 变体
+    /// （非扩张框架无先验误差界，容差停机即伪造 Banach 界）。
+    #[test]
+    fn solve_mode_metadata_declares_m3_with_cache_key_params() {
+        let meta = SolveModeMeta::new(4, 8, RESIDUAL_EPS_DEFAULT);
+        assert_eq!(meta.mode, SolveMode::FixedIterations);
+        assert_eq!(meta.mode, SolveMode::default(), "M3 是唯一（默认）模式");
+        assert_eq!((meta.substeps, meta.iterations), (4, 8));
+        assert_eq!(meta.residual_eps, 1e-4);
+        // 模式参数即缓存键分量（§3.2 S3）：改迭代数 ⇒ 元数据变 ⇒ 键变。
+        assert_ne!(meta, SolveModeMeta::new(4, 16, RESIDUAL_EPS_DEFAULT));
+        assert_ne!(meta, SolveModeMeta::new(4, 8, 1e-6));
+    }
+
+    /// E3：单步上升 + ε 余量内抖动不判发散（连续窗口未达 / 超不过余量）。
+    #[test]
+    fn divergence_detector_ignores_single_steps_and_epsilon_jitter() {
+        let mut d = DivergenceDetector::new(3, 1e-3);
+        assert!(!d.observe(1.0));
+        assert!(!d.observe(1.5), "单步尖峰不是发散（E3：非单步）");
+        assert!(!d.observe(0.9), "回落 → streak 归零");
+        assert!(!d.observe(1.1));
+        assert!(!d.diverged(), "尖峰 + 回落不应判发散");
+
+        // ε 余量内的缓慢抖动：每步 +1e-4 < margin 1e-3 → 平台抖动，不累计。
+        let mut j = DivergenceDetector::new(3, 1e-3);
+        for k in 0..10 {
+            let r = 1.0 + (k as f32) * 1e-4;
+            assert!(!j.observe(r), "ε 余量内抖动不应累计：step {k}");
+        }
+        assert_eq!(j.streak(), 0);
+    }
+
+    /// E3：连续 window 步上升超 ε 余量才判发散；含「Lip = 1 + O(ε)」
+    /// 缓慢上升的边界情形（每步 +2·margin 被抓，每步 +0.5·margin 不抓）。
+    #[test]
+    fn divergence_detector_flags_consecutive_rise_above_margin() {
+        let mut d = DivergenceDetector::new(3, 1e-3);
+        assert!(!d.observe(1.0));
+        assert!(!d.observe(1.01), "streak 1");
+        assert!(!d.observe(1.02), "streak 2");
+        assert!(d.observe(1.03), "连续 3 步上升超余量应判发散");
+        assert!(d.diverged());
+        assert_eq!(d.streak(), 3);
+        // 趋势判定非锁存：回落后解除。
+        assert!(!d.observe(0.5));
+        assert!(!d.diverged());
+
+        // 缓慢上升（E3 边界情形）：每步 +2·margin。
+        let slow: Vec<f32> = (0..6).map(|k| 1.0 + 2e-3 * k as f32).collect();
+        assert!(DivergenceDetector::scan(&slow, 3, 1e-3), "缓慢上升应判发散");
+        // 亚余量爬行：每步 +0.5·margin → 永不判。
+        let crawl: Vec<f32> = (0..6).map(|k| 1.0 + 5e-4 * k as f32).collect();
+        assert!(!DivergenceDetector::scan(&crawl, 3, 1e-3), "亚余量爬行不应判发散");
+    }
+
+    /// 真实收敛曲线（StepReport 残差序列）不得被判发散——检测器不误伤
+    /// 正常求解（子步边界的单步回升 < 连续窗口）。
+    #[test]
+    fn divergence_detector_clears_real_convergence_trace() {
+        // 关卡 1 同构型：三粒子链、零柔度、4 子步 × 8 迭代。
+        let mut world = World::new(Vec3::splat(0.0));
+        world.add_particle(Vec3::new(0.0, 0.0, 0.0), Vec3::splat(0.0), 0.0);
+        world.add_particle(Vec3::new(1.2, 0.0, 0.0), Vec3::splat(0.0), 1.0);
+        world.add_particle(Vec3::new(2.4, 0.0, 0.0), Vec3::splat(0.0), 1.0);
+        world
+            .add_constraint(Box::new(DistanceConstraint::new(1, 0, 1, 1.0, 0.0)))
+            .unwrap();
+        world
+            .add_constraint(Box::new(DistanceConstraint::new(2, 1, 2, 1.0, 0.0)))
+            .unwrap();
+        let report = world.step(1.0 / 60.0, 4, 8).unwrap();
+        assert_eq!(report.residuals.len(), 32, "4 子步 × 8 迭代 = 32 个采样点");
+        assert!(
+            !DivergenceDetector::scan(
+                &report.residuals,
+                DIVERGENCE_WINDOW_DEFAULT,
+                RESIDUAL_EPS_DEFAULT
+            ),
+            "真实收敛曲线不应被判发散（防误伤）"
+        );
     }
 }

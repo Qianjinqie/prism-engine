@@ -9,7 +9,15 @@
 //! - **节点映射**（友好名 → 结构表）：layer text → S12 实体表示；
 //!   layer particles → S4 确定性抽样；sim → S3 约束梯度流；stage3d sdf →
 //!   S12；stage3d material → S8 辐射传输；stage3d camera → S5 重参数化；
-//!   compose → S2 卷积（Merge(op) 汇点）。
+//!   compose → S2 卷积（Merge(op) 汇点）；stage3d light → S8 辐射传输
+//!   （场景源项侧，与 material 同族）；audio → S6 谱分解（「audio = 谱解 + 流」
+//!   模式标签，见《解结构-十二条差距的统一》§25）；post → S2 卷积族效果特解
+//!   （bloom / vignette / chromatic）与 S4 双尺度颗粒特解（grain），逐字段建点、
+//!   Composition::Chain 串行（声明序 = 链序，见《架构总设计》PostFX 映射表）。
+//! - **audio/post/light 与 node_ids 的边界**：三者的节点进 `graph`（求值台可见），
+//!   但不进 `SceneV2::node_ids`——后者是 render 消费面清单（`build_models` 遍历它），
+//!   而 render 侧尚无 audio/post/light 求值路径，进去即误报 R5010。缺口在
+//!   `AudioInfo::node_ids` / `PostInfo::node_ids` / 节点图内显式登记，不静默丢弃。
 //! - **compose op 映射**：add→Merge(Plus)、multiply→Merge(Multiply)、
 //!   over→Over、screen→Screen、mask→Mask（Over/Screen/Mask 在标量域 eval
 //!   时由 prism-core 如实报 P3012，DSL 层不静默禁用）。
@@ -208,16 +216,22 @@ pub struct SimInfo {
     pub node_id: NodeId,
 }
 
-/// post 处理参数摘要（v2）：字段名 → 值（BTreeMap 固定序）。
+/// post 处理参数摘要（v2）：字段名 → 值（BTreeMap 固定序）+ 逐字段投影的
+/// 节点 id（声明序 = Chain 链序；bloom/vignette/chromatic → S2，grain → S4）。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PostInfo {
     pub params: BTreeMap<String, f32>,
+    /// 本块各字段投影出的节点 id（声明序；空 = 未声明 post 块）。
+    pub node_ids: Vec<NodeId>,
 }
 
-/// audio 参数摘要（v2）：music 子块的 bpm / gain / duck 平铺。
+/// audio 参数摘要（v2）：music 子块的 bpm / gain / duck 平铺 + 音乐床节点 id
+/// （S6 谱分解；「audio = 谱解 + 流」模式标签）。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AudioInfo {
     pub music: BTreeMap<String, f32>,
+    /// 音乐床节点 id（S6；多个 audio 块按声明序全部登记，无孤儿节点）。
+    pub node_ids: Vec<NodeId>,
 }
 
 /// note 块摘要（作曲系统）：块名 + 音阶 / 根音 / 速度 / 小节 / 种子 / 琶音开关。
@@ -281,7 +295,11 @@ pub struct SceneV2 {
     pub start: f32,
     /// 场景时长（秒）。
     pub duration: f32,
-    /// 本场景产出的全部节点 id（升序）。
+    /// 本场景产出的 render 消费面节点 id（升序）：layer / sim / compose /
+    /// stage3d（camera / sdf / material）。**不含** audio / post / light 的
+    /// 投影节点——它们已进 `graph`（求值台可见，经各块 Info 的 node_ids 登记），
+    /// 但 render 侧 `build_models` 尚无对应求值路径，进本清单会误报 R5010；
+    /// 接入 render 后此处随求值面扩展，不静默。
     pub node_ids: Vec<NodeId>,
     /// 相机轨道（stage3d.camera；None = 未声明）。
     pub camera: Option<CameraOrbit>,
@@ -1056,6 +1074,9 @@ pub(crate) fn codegen_v2(doc: &DocumentV2Ast) -> Result<CompileV2Output, DslErro
         let mut post: PostInfo = PostInfo::default();
         let mut audio: Option<AudioInfo> = None;
         let mut notes: Vec<NoteInfo> = Vec::new();
+        // 已投影但不进 node_ids（render 消费面）的节点：audio / post / light。
+        // 进 graph 供求值台可见，登记于各块 Info；进 node_ids 会误报 R5010。
+        let mut deferred_ids: Vec<NodeId> = Vec::new();
         // 本场景的 compose 定义列表（build_compose 递归解析引用用）。
         let scene_composes: Vec<&ComposeAst> = scene
             .items
@@ -1068,7 +1089,7 @@ pub(crate) fn codegen_v2(doc: &DocumentV2Ast) -> Result<CompileV2Output, DslErro
         for item in &scene.items {
             match item {
                 SceneItem::Stage3d(st) => {
-                    let cam: CameraOrbit = build_stage3d(&mut b, st, si)?;
+                    let cam: CameraOrbit = build_stage3d(&mut b, st, si, &mut deferred_ids)?;
                     camera = Some(cam);
                 }
                 SceneItem::Layer(l) => {
@@ -1092,17 +1113,24 @@ pub(crate) fn codegen_v2(doc: &DocumentV2Ast) -> Result<CompileV2Output, DslErro
                     build_compose(&mut b, c, si, &scene_composes)?;
                 }
                 SceneItem::Audio(a) => {
-                    audio = Some(build_audio(a)?);
+                    let info: AudioInfo = build_audio(&mut b, a)?;
+                    deferred_ids.extend_from_slice(&info.node_ids);
+                    audio = Some(info);
                 }
                 SceneItem::Note(n) => {
                     notes.push(build_note(n)?);
                 }
                 SceneItem::Post(p) => {
-                    post = build_post(p)?;
+                    let info: PostInfo = build_post(&mut b, p)?;
+                    deferred_ids.extend_from_slice(&info.node_ids);
+                    post.params.extend(info.params);
+                    post.node_ids.extend(info.node_ids);
                 }
             }
         }
-        let node_ids: Vec<NodeId> = (id_begin..b.next_id).collect();
+        let node_ids: Vec<NodeId> = (id_begin..b.next_id)
+            .filter(|id| !deferred_ids.contains(id))
+            .collect();
         scenes_v2.push(SceneV2 {
             name: scene.name.clone(),
             start: starts[si],
@@ -1219,9 +1247,14 @@ fn codegen_fonts(doc: &DocumentV2Ast) -> Vec<FontSlotSpec> {
 // v2 各块构建
 // ---------------------------------------------------------------------------
 
-/// stage3d 块 → 节点（camera→S5、sdf→S12、material→S8、light 校验后登记忽略），
-/// 返回场景相机摘要。
-fn build_stage3d(b: &mut V2Builder, st: &Stage3dAst, si: usize) -> Result<CameraOrbit, DslError> {
+/// stage3d 块 → 节点（camera→S5、sdf→S12、material→S8、light→S8 源项），
+/// 返回场景相机摘要。light 节点经 `deferred` 登记（进 graph 不进 node_ids）。
+fn build_stage3d(
+    b: &mut V2Builder,
+    st: &Stage3dAst,
+    si: usize,
+    deferred: &mut Vec<NodeId>,
+) -> Result<CameraOrbit, DslError> {
     // camera：至多一个（parser 已保证），无则缺省轨道。
     let mut orbit: CameraOrbit =
         CameraOrbit { center: Vec3::new(0.0, 0.0, 0.0), radius: DEFAULT_ORBIT_RADIUS, fov_rad: DEFAULT_FOV_DEG.to_radians() };
@@ -1234,9 +1267,11 @@ fn build_stage3d(b: &mut V2Builder, st: &Stage3dAst, si: usize) -> Result<Camera
     for mat in &st.materials {
         build_material(b, mat, si)?;
     }
-    // light：参数白名单校验（direction / color / intensity），产物登记忽略（后续版本 接入光源求解）。
+    // light：参数白名单校验（direction / color / intensity）后投影为 S8 源项
+    // 节点（「light = 场景源项 g」模式标签；原「校验后登记忽略」断点已补）。
     for light in &st.lights {
-        validate_light(light)?;
+        let id: NodeId = build_light(b, light, si)?;
+        deferred.push(id);
     }
     Ok(orbit)
 }
@@ -1770,39 +1805,52 @@ fn build_material(b: &mut V2Builder, mat: &MaterialV2Ast, si: usize) -> Result<N
     Ok(id)
 }
 
-/// light 条目参数白名单校验（direction / color / intensity；产物登记忽略）。
-fn validate_light(light: &LightV2Ast) -> Result<(), DslError> {
+/// light 条目 → S8 辐射传输（场景源项）节点 + 块名登记。
+///
+/// direction / color / intensity 白名单校验与错误码消息逐字保留自原
+/// `validate_light`（P1002 未知字段 / 类型错不变）；原「校验后登记忽略」
+/// （源码自述「后续版本接入光源求解」）的断点已补：参数现投影为节点
+/// params——direction 逐分量透传、不取模不归一化（v1 纪律），color 与
+/// material.albedo 同族按 0..1 归一化（C17），intensity 原值。
+///
+/// 字段缺席时的缺省：direction (1,-1,-0.5)（两个黄金示例的主光方向：
+/// `examples/w2d_showcase.prism` 与 `lib.rs` 黄金测试）、color 白、
+/// intensity 1.0（与 v1 `DEFAULT_LIGHT_INTENSITY` 一致）。
+fn build_light(b: &mut V2Builder, light: &LightV2Ast, si: usize) -> Result<NodeId, DslError> {
+    let mut direction: Vec3 = Vec3::new(1.0, -1.0, -0.5);
+    let mut color: (u8, u8, u8) = (255, 255, 255);
+    let mut intensity: f32 = DEFAULT_LIGHT_INTENSITY;
     for f in &light.fields {
         match f.name.as_str() {
             "direction" => {
-                if vec3_of(f.value.as_ref()).is_none() {
-                    return Err(type_err(
+                direction = vec3_of(f.value.as_ref()).ok_or_else(|| {
+                    type_err(
                         f.line,
                         "light 块中字段 'direction'",
                         "vec3（如 (1,-1,-0.5) 或 1,-1,-0.5）",
                         f.value.as_ref(),
-                    ));
-                }
+                    )
+                })?;
             }
             "color" => {
-                if color_of(f.value.as_ref()).is_none() {
-                    return Err(type_err(
+                color = color_of(f.value.as_ref()).ok_or_else(|| {
+                    type_err(
                         f.line,
                         "light 块中字段 'color'",
                         "#RRGGBB 颜色",
                         f.value.as_ref(),
-                    ));
-                }
+                    )
+                })?;
             }
             "intensity" => {
-                if num_of(f.value.as_ref()).is_none() {
-                    return Err(type_err(
+                intensity = num_of(f.value.as_ref()).ok_or_else(|| {
+                    type_err(
                         f.line,
                         "light 块中字段 'intensity'",
                         "数字",
                         f.value.as_ref(),
-                    ));
-                }
+                    )
+                })?;
             }
             other => {
                 return Err(err_at(
@@ -1815,7 +1863,18 @@ fn validate_light(light: &LightV2Ast) -> Result<(), DslError> {
             }
         }
     }
-    Ok(())
+    let id: NodeId = b.alloc_id();
+    let mut node: Node = Node::new(id, StructureId::RadiativeTransfer, Composition::Feed);
+    node.params.set("dir_x", ParamValue::F32(direction.x));
+    node.params.set("dir_y", ParamValue::F32(direction.y));
+    node.params.set("dir_z", ParamValue::F32(direction.z));
+    node.params.set("color_r", ParamValue::F32(color.0 as f32 / 255.0));
+    node.params.set("color_g", ParamValue::F32(color.1 as f32 / 255.0));
+    node.params.set("color_b", ParamValue::F32(color.2 as f32 / 255.0));
+    node.params.set("intensity", ParamValue::F32(intensity));
+    b.graph.add_node(node).expect("递增 id 不应重复");
+    b.block_nodes.insert((si, "light", light.name.clone()), id);
+    Ok(id)
 }
 
 /// layer 块 → 节点（text→S12 / particles→S4），填充 params 与通道绑定。
@@ -2329,8 +2388,10 @@ fn dangling(r: &ComposeRef) -> DslError {
     )
 }
 
-/// audio 块 → AudioInfo 摘要（music 子块的 bpm / gain / duck 平铺 + 防呆）。
-fn build_audio(audio: &AudioAst) -> Result<AudioInfo, DslError> {
+/// audio 块 → AudioInfo 摘要（music 子块的 bpm / gain / duck 平铺 + 防呆），
+/// 并投影音乐床节点（S6 谱分解；「audio = 谱解 + 流」模式标签，见
+/// 《解结构-十二条差距的统一》§25 / §6.4 偿还路径断点 A）。
+fn build_audio(b: &mut V2Builder, audio: &AudioAst) -> Result<AudioInfo, DslError> {
     let mut info: AudioInfo = AudioInfo::default();
     for f in &audio.fields {
         match f.name.as_str() {
@@ -2406,6 +2467,25 @@ fn build_audio(audio: &AudioAst) -> Result<AudioInfo, DslError> {
             }
         }
     }
+    // 节点投影：一个音乐床节点（S6 谱分解，Feed）。params 取 music 摘要值，
+    // 未声明字段回落 DEFAULT_*（与摘要缺省回填同源；music 子块整体缺席
+    // （`audio {{}}`）时同样回落，节点恒带全量三参数）。
+    let id: NodeId = b.alloc_id();
+    let mut node: Node = Node::new(id, StructureId::SpectralDecomposition, Composition::Feed);
+    node.params.set(
+        "bpm",
+        ParamValue::F32(info.music.get("bpm").copied().unwrap_or(DEFAULT_BPM)),
+    );
+    node.params.set(
+        "gain",
+        ParamValue::F32(info.music.get("gain").copied().unwrap_or(DEFAULT_GAIN)),
+    );
+    node.params.set(
+        "duck",
+        ParamValue::F32(info.music.get("duck").copied().unwrap_or(DEFAULT_DUCK_DB)),
+    );
+    b.graph.add_node(node).expect("递增 id 不应重复");
+    info.node_ids.push(id);
     Ok(info)
 }
 
@@ -2641,8 +2721,14 @@ fn build_formula(f: &FormulaAst) -> Result<FormulaNode, DslError> {
     Ok(FormulaNode { name: f.name.clone(), notation, size, x, y, color, align, line: f.line })
 }
 
-/// post 块 → PostInfo 摘要（bloom / grain / vignette / chromatic ∈ [0,1]）。
-fn build_post(post: &PostAst) -> Result<PostInfo, DslError> {
+/// post 块 → PostInfo 摘要（bloom / grain / vignette / chromatic ∈ [0,1]），
+/// 并逐字段投影效果节点：bloom / vignette / chromatic 归 S2 卷积族效果特解，
+/// grain 归 S4 双尺度颗粒特解（《架构总设计》PostFX 映射表：
+/// `post { bloom, grain }` = (S2) 与 (S4+S2) 的 Chain）。各节点取
+/// Composition::Chain 并按声明序连边（声明序 = 链序 f∘g∘h；链首输入即
+/// 场景合成图像，其来源不在本块定义内，留空不发明）。校验顺序逐字保留：
+/// num → range → 白名单。
+fn build_post(b: &mut V2Builder, post: &PostAst) -> Result<PostInfo, DslError> {
     let mut info: PostInfo = PostInfo::default();
     for f in &post.fields {
         let v: f32 = num_of(f.value.as_ref()).ok_or_else(|| {
@@ -2667,6 +2753,22 @@ fn build_post(post: &PostAst) -> Result<PostInfo, DslError> {
             ));
         }
         info.params.insert(f.name.clone(), v);
+        // 节点投影：每字段一个效果节点，Chain 串行（声明序 = 链序）。
+        let structure: StructureId = match f.name.as_str() {
+            "grain" => StructureId::DeterministicSampling,
+            _ => StructureId::Convolution,
+        };
+        let id: NodeId = b.alloc_id();
+        let mut node: Node = Node::new(id, structure, Composition::Chain);
+        node.params.set(f.name.clone(), ParamValue::F32(v));
+        b.graph.add_node(node).expect("递增 id 不应重复");
+        // 与前一字段节点连边（f∘g∘h；链首无前驱，输入留空）。
+        if let Some(&prev) = info.node_ids.last() {
+            b.graph
+                .connect(prev, id, 0)
+                .expect("新节点槽位不应冲突");
+        }
+        info.node_ids.push(id);
     }
     Ok(info)
 }

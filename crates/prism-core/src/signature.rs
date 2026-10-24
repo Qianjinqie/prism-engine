@@ -994,6 +994,56 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_signature_chain_is_order_sensitive_and_domain_separated() {
+        // 快照签名位 = hash(SNAPSHOT_TAG, 子图签名, 通道定义链)：链**序**敏感
+        // （通道顺序进签名，防跨通道拼接歧义）、链**长**敏感、空链域分隔于
+        // 裸签名；与缓存键族输出互异（族间域分隔）。
+        let sub: Hash256 = [0x11; 32];
+        let a: Hash256 = [0xA0; 32];
+        let b: Hash256 = [0x0B; 32];
+
+        let sig_ab = snapshot_signature(&sub, &[a, b]);
+        let sig_ba = snapshot_signature(&sub, &[b, a]);
+        assert_ne!(sig_ab, sig_ba, "链序敏感：[a,b] ≠ [b,a]");
+
+        assert_ne!(
+            sig_ab,
+            snapshot_signature(&sub, &[a]),
+            "链长敏感：[a,b] ≠ [a]"
+        );
+        assert_ne!(
+            sig_ab,
+            snapshot_signature(&sub, &[a, b, a]),
+            "链长敏感：[a,b] ≠ [a,b,a]"
+        );
+
+        assert_ne!(
+            snapshot_signature(&sub, &[]),
+            sub,
+            "空链仍域分隔于裸子图签名"
+        );
+        assert_eq!(
+            snapshot_signature(&sub, &[]),
+            snapshot_signature(&sub, &[]),
+            "同输入同输出（确定性）"
+        );
+
+        // 族间域分隔：缓存键族（CACHE_KEY_TAG + schema + 版本 + 维度）与
+        // 快照签名族（SNAPSHOT_TAG + 子图 + 链）输出互异。
+        let dims = CacheDims {
+            width: 1920,
+            height: 1080,
+            spp_tier: 2,
+            tile: (0, 0),
+            engine_version: 1,
+            frame: 0,
+        };
+        let ck = cache_key(&sub, &dims);
+        assert_ne!(ck, snapshot_signature(&sub, &[]), "缓存键族 ≠ 快照签名族（空链）");
+        assert_ne!(ck, sig_ab, "缓存键族 ≠ 快照签名族（双链）");
+    }
+
+    #[test]
     fn empty_graph_has_defined_signature() {
         let g = Graph::new();
         let bytes = graph_canonical_bytes(&g);
