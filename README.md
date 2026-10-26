@@ -1,15 +1,16 @@
-[English](docs/README.en.md) | **简体中文** | [日本語](docs/README.ja.md) | [한국어](docs/README.ko.md) | [Español](docs/README.es.md) | [Français](docs/README.fr.md) | [Deutsch](docs/README.de.md) | [Português (BR)](docs/README.pt-BR.md) | [Русский](docs/README.ru.md)
-
 # Prism Engine
 
-> 零依赖、确定性的 Rust 媒体引擎 —— 以**单文件 TXT 分发**：下载一个 17 MB 文本，运行解包脚本即得完整源码树（28 个 crate），无需 npm / pip / ffmpeg / OpenEXR。
+> 零依赖、确定性的 Rust 媒体引擎 —— 以**单文件 TXT 分发**：下载一个 18 MB 文本，运行解包脚本即得完整源码树（28 个 crate），无需 npm / pip / ffmpeg / OpenEXR。
 
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 ![Language](https://img.shields.io/badge/language-Rust-orange.svg)
 ![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)
 ![Distribution](https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg)
-![Tests](https://img.shields.io/badge/tests-3714%20passed-brightgreen.svg)
+![Tests](https://img.shields.io/badge/tests-3929%20passed-brightgreen.svg)
 ![Crates](https://img.shields.io/badge/crates-28-blue.svg)
+
+（徽章为静态事实徽章，数字口径见下文；`crates-28` = **分发包内**的 crate 数，
+仓库里另有 1 个不进包的演示 crate，故仓库数是 29。接入 CI 后可替换为动态徽章。）
 
 ---
 
@@ -20,8 +21,8 @@ Prism Engine 是一个用 Rust 编写的零第三方代码依赖媒体引擎：�
 （另有 20 条测试依赖）均为本仓 `path` 依赖——不依赖网络、不需要包管理器、
 没有供应链风险。
 
-采用**单文件源码分发**：整个引擎（622 个文件、28 个 crate）合并进一个 UTF-8
-文本 `prism-engine-v2.0-source.txt`。持有该文件即可在本地还原出与仓库完全一致的
+采用**单文件源码分发**：整个引擎（642 个文件、28 个 crate）合并进一个 UTF-8
+文本 `prism-engine-v2.1-source.txt`。持有该文件即可在本地还原出与仓库完全一致的
 目录树。
 
 ---
@@ -106,6 +107,61 @@ Prism Engine 是一个用 Rust 编写的零第三方代码依赖媒体引擎：�
 
 ---
 
+## 引擎内特能力（功能清单之外的那些）
+
+有些能力不适合塞进「读 / 排 / 画 / 出 / 集成」的功能列表——它们是引擎内部的**深水区资产**。
+单开这一章，避免主功能列表被细节淹没。
+
+### 音频：一套内置 DAW 内核
+
+`prism-audio` 不是"能读 WAV"的边缘模块，而是从作曲到混音的完整链路，每个函数都是
+参数的纯函数（同输入跨平台逐位一致）：
+
+- **合成**：PolyBLEP 防混叠振荡器族 + ADSR 闭式包络 + 4 情绪预设；
+- **乐理**：音阶库（大小调/五声/中古调式）、12-TET 音级↔频率、和弦进行**功能语法状态机** + 声部引导；
+- **编排**：琶音器（模式/速率/八度）、step 鼓机、小节/节拍网格配乐编排；
+- **素材**：手写 SMF 解析（MIDI 导入）、SFZ 采样器、颗粒合成；
+- **声音设计**：物理建模、空间声像、效果器链；
+- **混音**：多轨线性混合 + 淡入淡出 + 峰值防削波；
+- **分析与联动**：节拍/onset 检测、FFT 频谱、包络提取、AudioReactive 烘焙
+  （第 N 帧读固定窗，帧级纯函数、seek 等价）、响度归一。
+
+> 边界：AAC/mp3 不自研（专利历史包袱 + 工程量），走外部 ffmpeg 协作。
+
+### 可定义核库（特解注册表）
+
+引擎的每个节点类型 = 一个「核 + 格 + 对偶」三元组**特解**。第三方（或你自己）可以
+用 `registry!` 静态注册新特解，**不改引擎核心**：
+
+- 静态汇入制（宏在定义 crate 内展开，禁 `inventory`/proc-macro，零依赖）；
+- 注册时**三问校验**（核形式 / 格 / 对偶），答不齐直接拒绝并给三段式报错；
+- 官方特解与自定义特解走**同一张注册表**，运行时无差别；
+- 数学上对应「算子方程 `f = g + Kf` 的六种求逆策略」——精确 / 随机 / 局部 / 正则化 /
+  迭代 / 谱，新特性的接入是**声明三元组**，而不是往渲染循环里打补丁。
+
+### 确定性与可复现基建
+
+- **签名闭包**：节点图 / 缓存键 / 快照键 / 帧签名统一为「四维配置哈希」，改参数
+  ⇒ 键必变 ⇒ 不会误复用；迭代节点键含 `(ε, n)`，流节点键含帧号；
+- **字节不动点**：USD 导出→导入→导出逐字节一致；WAV 16/24/32bit 往返一致；
+  EXR 与官方实现跨实现比特流对拍；
+- **单文件分发确定性**：同一源码两次打包 SHA-256 完全一致，解包回环逐文件逐字节校验。
+
+### GPU 后端（诚实分述）
+
+- **Vulkan**：compute + 光追场景双管线**真实运行**（lavapipe 软件 ICD 上无 GPU 可验），
+  `render_scene` 出帧与 CPU 参考**逐字节 0 差异**；`is_available()` 是 compute ∧ render 双自检；
+- **Metal**：同构移植 + 编译门控就绪，**未实机验证、不点亮**（`is_available()` 恒 false）；
+- **WebGPU**：可行性结论已出（迁移量 4–6 人日），渲染路径未实现。
+
+### 反假绿门禁
+
+四个本地门禁脚本（零依赖、只用 `node`）：幽灵写入防御（含反向自证）、开源卫生扫描、
+合规自检（9/9 + 反向自证 8/8 判红）、打包回环校验。门禁只有「通过」或「判红」两种结果，
+不接受"看起来过了"——**假绿比失败更危险**。
+
+---
+
 ## 为什么是单文件分发
 
 - **可审计**：一个文本文件，人眼可读、可 `diff`、可哈希校验，发布即冻结。
@@ -120,14 +176,14 @@ Prism Engine 是一个用 Rust 编写的零第三方代码依赖媒体引擎：�
 前置：安装 [Rust](https://www.rust-lang.org/)（含 `cargo`）与 [Node.js](https://nodejs.org/) 18+。
 
 ```bash
-# 1. 下载仓库中的 prism-engine-v2.0-source.txt，存为本地文件
+# 1. 下载仓库中的 prism-engine-v2.1-source.txt，存为本地文件
 # 2. 用文本编辑器打开，把 "UNPACK SCRIPT BEGIN" 与 "UNPACK SCRIPT END"
 #    之间的 Node.js 脚本另存为同目录下的 unpack.cjs
-# 3. 运行解包（约数秒，还原 622 个文件）
+# 3. 运行解包（约数秒，还原 642 个文件）
 node unpack.cjs
 # 4. 在还原出的目录（即 workspace 根）跑全量测试
 cargo test --workspace --release
-# 预期：3714 passed / 0 failed
+# 预期：3929 passed / 0 failed
 ```
 
 解包后得到一个标准 Cargo workspace（`src/` 下 28 个 crate），后续 `cargo` 命令与常规 Rust 项目相同。
@@ -140,7 +196,7 @@ cargo test --workspace --release
 
 | 路径 | 说明 |
 |------|------|
-| `src/` | **28 个 crate** 的源码（仓库内 29 个，原名 `crates/`，分发时重组为 `src/`） |
+| `src/` | **28 个 crate** 的源码（仓库内 29 个，原名 `crates/`，分发时重组为 `src/`；演示 crate `prism-anim-demo` 不进包） |
 | `Compliance/` | 合规声明：零依赖核验 / 第三方声明 / 资产登记（仓库内原名 `docs/合规/`） |
 | `开发者指南.md` | 自包含开发者文档：上手 / 架构 / 数学内核 / 门禁 / 扩展（仓库内原名 `docs/开发者指南.md`） |
 | `tools/` | 门禁脚本（幽灵写入防御、卫生扫描、合规自检） |
@@ -148,11 +204,14 @@ cargo test --workspace --release
 | `Cargo.toml` / `Cargo.lock` / `.cargo/` | 构建必需件（workspace members 已指向 `src/*`） |
 | `examples/` | `prism-dsl` 测试用样例与示例节点包（`include_str!` 读取，缺了编译不过） |
 
+> 设计权威文档（`docs/设计/`）**不随分发**，仅留在发布方的完整仓库中。
+
 ---
 
 ## 模块概览
 
-分发包内 **28 个 crate** 按职责分组：
+分发包内 **28 个 crate** 按职责分组（仓库另有演示 crate `prism-anim-demo`，只在仓库里
+作为可复现示例，不进包）：
 
 | 类别 | crate |
 |------|-------|
@@ -177,7 +236,9 @@ cargo xtest
 cargo test -p prism-core --release
 ```
 
-- 全量测试：**3714 passed / 0 failed / 0 ignored**（本版已在**解包树**上实跑：166 个测试块)
+- 全量测试：**3929 passed / 0 failed / 0 ignored**（仓库内 release 实跑，179 个测试段，
+  全核并行 171.5 秒）；分发包与仓库**逐文件逐字节一致**，差异仅演示 crate
+  `prism-anim-demo` 不进包（其测试块为空，用例数相同）。
 - CI：**6 个 job**——幽灵写入防御（ghost-guard）/ 编译 + 全量测试（native）/ wasm32 构建（wasm）/
   WGSL 静态检查（wasm-verify）/ 与官方 OpenEXR 跨实现比特流对拍（interop）/ node 宿主交叉判对（lint）。
 - 本地门禁脚本 3 个（全零依赖、只用 `node`，下）+ 打包脚本 1 个；
@@ -209,6 +270,33 @@ node tools/compliance_check.mjs --self-test   # 反向自证：应判红，证�
 
 > 注：本仓库分发的是**源码**。字体资产（Prism Sans SC 子集）以 SIL OFL 1.1 许可，**许可证全文随字体置于** `src/prism-text/font_data/LICENSE`；资产来源与许可登记见 `Compliance/assets/资产登记.md`。
 
+---
+
+## 确定性打包（发布方）
+
+如需从完整仓库重新生成分发 TXT（版本号可传，默认出版当前版本 v2.1）：
+
+```bash
+node tools/pack_source_txt.mjs          # 默认 → dist/prism-engine-v2.1-source.txt
+node tools/pack_source_txt.mjs 2.1      # 等价写法（显式传版本号）
+node tools/pack_source_txt.mjs 1.0      # 回到 v1.0 时代产物名（在 v1.0 源码上跑即逐字节复现旧包）
+node tools/pack_source_txt.mjs --verify # 打包后立刻解包回环校验（逐文件逐字节比对源码树）
+# 连跑两次，输出 SHA-256 一致即证明确定性打包成立
+```
+
+打包范围严格限定为：`crates/`（→ `src/`）、`docs/合规/`（→ `Compliance/`）、`docs/开发者指南.md`、`tools/`、`.github/`、`.cargo/`、`examples/`、`Cargo.toml`、`Cargo.lock`。刻意**排除** `docs/设计/`、`target/`、`node_modules/`、`dist/` 本身及一切中间产物。
+
+---
+
+## 贡献
+
+欢迎 Issue 与 Pull Request。提交前请保持：
+
+- `cargo test --workspace --release` 全绿；
+- `node tools/hygiene_scan.mjs` **不新增**内部用语（脚本会列出全部命中，含存量）；
+- `node tools/compliance_check.mjs` 9/9 通过。
+
+更详细的架构与扩展指南见解包后的 `开发者指南.md`。
 
 ---
 
@@ -217,5 +305,3 @@ node tools/compliance_check.mjs --self-test   # 反向自证：应判红，证�
 本项目以 **Apache License 2.0** 发布。详见 [`LICENSE`](LICENSE) 文件。
 
 > 合规提示：Apache-2.0 要求保留版权与许可声明；基于本引擎再行分发时，请保留 `Compliance/` 下的归属声明与资产登记。
-
-**注:其他版本如有翻译错误，请以此版简体中文为准。**
