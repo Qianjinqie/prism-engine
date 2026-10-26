@@ -423,7 +423,7 @@ fn scene_render_refuses_extreme_sizes_without_panicking() {
         assert!(fb.pixels.is_empty(), "({w},{h}) 被拒缓冲不含像素");
         assert_eq!((fb.width, fb.height), (w, h), "尺寸须原样回显");
     }
-    // 空场景（0 球 0 灯）仍是一张合法帧：全背景色。
+    // 空场景（0 球 0 灯）仍是一张合法帧：**全帧**背景色（16×16 = 256 像素逐一断言）。
     if device_ready(&backend) {
         let mut req = scene_request(16, 16, aesthetic_off());
         req.spheres.clear();
@@ -431,9 +431,13 @@ fn scene_render_refuses_extreme_sizes_without_panicking() {
         let fb = backend.render_scene(&req);
         assert!(fb.is_valid(), "空场景也须出有效帧（背景色）");
         // 背景色 (0.04, 0.05, 0.08) → 量化 (10, 13, 20)。
-        let px = &fb.pixels[..4];
-        assert_eq!(px, &[10, 13, 20, 255], "空场景须为背景色");
-        println!("[empty-scene] 16×16 全背景帧：{:?}", px);
+        assert_eq!(fb.pixels.len(), 16 * 16 * 4, "16×16 RGBA8 帧长须为 1024");
+        let bad = fb
+            .pixels
+            .chunks_exact(4)
+            .position(|px| px != [10, 13, 20, 255]);
+        assert!(bad.is_none(), "空场景须全帧背景色，首个不一致像素 = {:?}", bad);
+        println!("[empty-scene] 16×16 全背景帧：256/256 像素一致");
     }
 }
 

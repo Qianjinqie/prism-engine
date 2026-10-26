@@ -257,6 +257,32 @@ impl Grid3 {
     }
 }
 
+/// 空碰撞后派生下一对均匀（确定性、强去相关）。
+///
+/// # 为什么不用 `(u·π).fract()` 这类乘法链
+/// QA 轮实测：乘法链派生的相邻步均匀**强相关**（同一初值的轨道点），
+/// 使 `shadow_transmittance` 在变化 σt 场上产生 **+1.08% 正偏（4.7σ）**
+/// （tracked 版喂独立均匀仅 +0.13%）。改为 splitmix64 雪崩混合：以
+/// `(u_step, u_accept, step)` 三者为种子，输出两个独立 24-bit 均匀。
+/// 确定性不变（同输入同输出，逐位可复现），仅去相关。
+#[inline]
+fn derive_uniforms(us: f32, ua: f32, step: u32) -> (f32, f32) {
+    #[inline]
+    fn mix(mut z: u64) -> u64 {
+        z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+    let seed = ((us.to_bits() as u64) << 32)
+        ^ (ua.to_bits() as u64)
+        ^ ((step as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+    let h1 = mix(seed);
+    let h2 = mix(seed ^ 0xA5A5_A5A5_A5A5_A5A5);
+    let to_unit = |h: u64| ((h >> 40) as f32) * (1.0 / 16_777_216.0); // 24-bit → [0,1)
+    (to_unit(h1), to_unit(h2))
+}
+
 /// 异质 HG 介质（σt 空间变化，C2）。
 ///
 /// 在 [`HomogeneousMedium`] 的均匀设定上扩展 σt 为空间变化场（`Grid3`），
@@ -324,6 +350,7 @@ impl HeterogeneousMedium {
         let mut t = 0.0f32;
         let mut us = u_step;
         let mut ua = u_accept;
+        let mut step_ix = 0u32;
         loop {
             let step = -det_ln(clamp(us, U_EPS, 1.0 - U_EPS)) / majorant;
             t += step;
@@ -332,9 +359,11 @@ impl HeterogeneousMedium {
             if ua <= sigma / majorant {
                 return t;
             }
-            // 空碰撞，继续步进；派生下一对均匀（确定性哈希，仅用于空碰撞后续）。
-            us = (us * std::f32::consts::PI).fract();
-            ua = (ua * std::f32::consts::E).fract();
+            // 空碰撞，继续步进；派生下一对均匀（splitmix64 去相关，见 [`derive_uniforms`]）。
+            step_ix += 1;
+            let (ns, na) = derive_uniforms(us, ua, step_ix);
+            us = ns;
+            ua = na;
         }
     }
 
@@ -353,6 +382,7 @@ impl HeterogeneousMedium {
         let mut t = 0.0f32;
         let mut us = u_step;
         let mut ua = u_accept;
+        let mut step_ix = 0u32;
         loop {
             let step = -det_ln(clamp(us, U_EPS, 1.0 - U_EPS)) / majorant;
             t += step;
@@ -364,8 +394,11 @@ impl HeterogeneousMedium {
             if ua <= sigma / majorant {
                 return 0.0;
             }
-            us = (us * std::f32::consts::PI).fract();
-            ua = (ua * std::f32::consts::E).fract();
+            // 空碰撞：splitmix64 去相关派生（QA-F1：乘法链 +1.08% 正偏的修复）。
+            step_ix += 1;
+            let (ns, na) = derive_uniforms(us, ua, step_ix);
+            us = ns;
+            ua = na;
         }
     }
 

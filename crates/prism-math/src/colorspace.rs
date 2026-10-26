@@ -41,7 +41,7 @@ pub enum ColorSpace {
 /// Bradford(D65→D60) 适配**推导值重录（与 W1 R-2026-xx-02 同款口径），
 /// 取代此前沿用的 Stephen Hill 拟合件。重录后本常量与
 /// [`crate::colorspace_registry::legacy_vs_derived_delta`] 推导侧逐元素差
-/// < 1e-6（实测 ~1e-8），即「官方推导口径」；逆阵 [`ACESCG_TO_SRGB`] 由本
+/// < 1e-6（**实测 4.53e-7**，QA V2.1 轮复核口径），即「官方推导口径」；逆阵 [`ACESCG_TO_SRGB`] 由本
 /// 矩阵经 **f64 精确求逆**后收窄到 f32（测试 `srgb_to_acescg_is_recomputed_inverse`，
 /// 容差 5e-7）。
 ///
@@ -201,7 +201,7 @@ mod tests {
     /// # 结清判据（每次运行重算复核）
     /// - **新主常量 = 官方推导口径**：`SRGB_TO_ACESCG` 与注册表推导阵
     ///   `legacy_vs_derived_delta().derived` 逐元素差 f32/f64 双口径 ≤ 1e-2
-    ///   （实测 ~1e-8，与官方公布矩阵差 < 1e-6）。
+    ///   （**实测 4.53e-7**；容差取 1e-2 只作域界，不作为精度宣称）。
     /// - **逆阵可重算**：`ACESCG_TO_SRGB` 是 `SRGB_TO_ACESCG` 的 f64 精确逆
     ///   收窄（容差 5e-7，先例 `aces2065_to_acescg_is_recomputed_inverse`）。
     /// - **旧 Hill 拟合件保留为显式可选口径**：`_FITTED_HILL` 数值一字不改，

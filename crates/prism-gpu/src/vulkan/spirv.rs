@@ -25,12 +25,13 @@
 //!
 //! # 供给边界（不撒谎）
 //!
-//! * [`MODULES`] 只有 `spv_mul2_probe` 一个模块，供 compute pipeline 装配
-//!   路径的**真机 smoke** 使用；
-//! * RT 语义 kernel（主射线发射 / wavefront 求交）的 SPIR-V **待真机工具链
-//!   生成**，`KernelDesc::spv_module` 留空并由
-//!   `crate::compute::kernel_spv_status` 如实报 `pending-toolchain`；
-//! * 本模块**不做**完整 SPIR-V 语义验证（那需要 `spirv-val`，本环境没有），
+//! * 静态 [`MODULES`] 只有 `spv_mul2_probe` 一个模块（compute smoke 用）；
+//!   背景帧与光追场景 kernel 由自研发射器**运行期生成一次**
+//!   （[`generated_modules`]，`OnceLock` 缓存，纯函数 ⇒ 同输入同字节）；
+//! * 光追场景 kernel（`spirv_rt.rs` 的 `spv_scene`）已完成：主射线发射 +
+//!   动态实体/光源循环，经官方 `spirv-val --target-env vulkan1.0` 校验通过
+//!   （本环境**有**该工具，QA 轮实测 exit 0 无诊断）；
+//! * 本模块**不做**完整 SPIR-V 语义验证（语义验证走官方 `spirv-val`），
 //!   只做**结构验证**：[`validate`] 检查 magic/version/schema/bound、指令
 //!   字长自洽、OpCode 白名单、入口名、`LocalSize`、描述符绑定数——足以拦截
 //!   「字节被误改/截断/顺序错乱」一类回归。

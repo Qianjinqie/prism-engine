@@ -137,6 +137,65 @@ fn shadow_transmittance_unbiased_vs_beer() {
     );
 }
 
+/// 生产入口无偏性（QA-F1 回归钉子）：`shadow_transmittance` 的 2-uniform 签名
+/// 在空碰撞后自行派生后续均匀。旧实现用 `(u·π).fract()` / `(u·e).fract()`
+/// 乘法链，实测 **+1.08% 正偏（4.7σ）**；本测试钉死修复后的入口在 Beer 定律
+/// 2% 容差内无偏，防止派生链回退为强相关形式。
+#[test]
+fn shadow_transmittance_production_entry_unbiased_vs_beer() {
+    let nx = 8usize;
+    let (s0, s1) = (0.4f32, 1.6f32);
+    let mut data = Vec::with_capacity(nx);
+    for i in 0..nx {
+        let frac = (i as f32 + 0.5) / nx as f32;
+        data.push(s0 + (s1 - s0) * frac);
+    }
+    let grid = Grid3::new(
+        nx,
+        1,
+        1,
+        Vec3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.25, 1.0, 1.0),
+        data.clone(),
+    );
+    let m = HeterogeneousMedium::new(grid, 0.8, 0.0);
+    let o = Vec3::new(0.0, 0.0, 0.0);
+    let dir = Vec3::new(1.0, 0.0, 0.0);
+    let dist = 2.0f32;
+    let integral: f64 = data.iter().map(|&v| v as f64 * 0.25).sum();
+    let beer = (-integral).exp();
+
+    let ctx = EvalCtx::new(123, 7, 3);
+    let n = 200_000u32;
+    let mut ones = 0u32;
+    for k in 0..n {
+        let si_us = SampleIndex {
+            frame: 3,
+            pixel: (7, 7),
+            sample: k,
+            dimension: 60,
+            node_id: 7,
+        };
+        let si_ua = SampleIndex {
+            frame: 3,
+            pixel: (7, 7),
+            sample: k,
+            dimension: 61,
+            node_id: 7,
+        };
+        let us = sampler::sample_1d(&ctx, &si_us);
+        let ua = sampler::sample_1d(&ctx, &si_ua);
+        let t = m.shadow_transmittance(o, dir, dist, us, ua);
+        assert!(t == 0.0 || t == 1.0, "二值估计出现非二值 {t}");
+        ones += t as u32;
+    }
+    let est = ones as f64 / n as f64;
+    assert!(
+        (est - beer).abs() / beer < 0.02,
+        "生产入口无偏性失败（派生均匀回退为强相关？）：E[T̂]={est}，Beer={beer}"
+    );
+}
+
 /// 相函数归一化（异质介质 g 空间不变，与均匀同款 HG）。
 #[test]
 fn heterogeneous_phase_integrates_to_one() {

@@ -32,7 +32,7 @@
 
   | # | 测试名 | 旧 → 新 | 性质 |
   |---|--------|---------|------|
-  | 1 | `c2_color_golden::aces_fitted_fingerprint` | `ACES_FINGERPRINT` 27 字全量重录：18% 灰 `3DD8_403D/3A/3B`→`3DD8_402C/3D/44`；中灰 `3EBF_A557/A556/A556`→`3EBF_A558/A556/A554`；白 `3F1E_7E5A/59/5B`→`3F1E_7E63/59/54`；红 `3F41_0AF6`→`3F3F_786E`；绿 `3D6A_D79F/3F24_5E27`→`3D52_E8EA/3F23_F4F4`；蓝 `3F2B_7813`→`3F28_D13F`；超亮 `3F68_B522/20/21`→`3F68_B53A/21/12`；混合 `3D1A_CC7B/3E5B_0065/3F02_9C41`→`3D1B_8FA0/3E5A_E656/3F01_D3D0` | 真实输出位移 |
+  | 1 | `c2_color_golden::aces_golden_file_stable`（指纹常量 `ACES_FINGERPRINT`） | `ACES_FINGERPRINT` 27 字全量重录：18% 灰 `3DD8_403D/3A/3B`→`3DD8_402C/3D/44`；中灰 `3EBF_A557/A556/A556`→`3EBF_A558/A556/A554`；白 `3F1E_7E5A/59/5B`→`3F1E_7E63/59/54`；红 `3F41_0AF6`→`3F3F_786E`；绿 `3D6A_D79F/3F24_5E27`→`3D52_E8EA/3F23_F4F4`；蓝 `3F2B_7813`→`3F28_D13F`；超亮 `3F68_B522/20/21`→`3F68_B53A/21/12`；混合 `3D1A_CC7B/3E5B_0065/3F02_9C41`→`3D1B_8FA0/3E5A_E656/3F01_D3D0` | 真实输出位移 |
   | 2 | `qa_edge_attack_math::aces_fitted_vs_independent_reference` | 测试内独立参考矩阵常量同步重录为新口径 | 测试装置同步（无输出位移） |
   | 3 | `aces::tests::reference_aces_fitted` | 同上 | 测试装置同步（无输出位移） |
   | 4 | `colorspace::tests::legacy_srgb_acescg_matrices_debt_t4_is_named` | 结清锁更名 `..._settled_t4_is_named`：判定由「偏差必须 > 1e-2（债务存在）」翻转为「偏差 ≤ 1e-2（已收敛）+ 逆阵可重算 + Hill 旧值未改」 | 债务锁 → 结清锁 |
@@ -128,13 +128,13 @@
 - **扩容内容**：
   1. **Vulkan 光追管线真实化**（#11）：`render_scene` 由「恒返回空帧、调用方
      回退 CPU」升级为 **lavapipe 实机真实出图**（自研发射器 `vulkan/spirv_rt.rs`
-     光追 megakernel + `vulkan/scene.rs` dispatch 编排）。实测 64×48 / 113×47 /
-     16×16 三种尺寸 GPU vs `CpuRefBackend` **max_channel_delta=0、
-     differing_pixels=0（逐字节一致）**，GPU 双跑逐位一致。`is_available()`
-     升级为 **compute ∧ render 双自检**（可用却出空帧的组合被测试排除）。
-     Metal 同构移植（设备无关部分 + MSL kernel 源）+ 编译门控，`is_available()`
-     保持 false（**未实机验证、不点亮**，诚实留名）；WebGPU 可行性结论见
-     `docs/v2.1-webgpu-feasibility.md`。
+     光追 megakernel + `vulkan/scene.rs` dispatch 编排）。实测 64×48 / 113×47
+     与 `CpuRefBackend` **max_channel_delta=0、differing_pixels=0（逐字节
+     一致）**，GPU 双跑逐位一致；16×16 空场景全帧背景色 256/256 像素一致。
+     `is_available()` 升级为 **compute ∧ render 双自检**（可用却出空帧的组合
+     被测试排除）。Metal 同构移植（设备无关部分 + MSL kernel 源）+ 编译门控，
+     `is_available()` 保持 false（**未实机验证、不点亮**，诚实留名）；WebGPU
+     可行性结论见 `docs/v2.1-webgpu-feasibility.md`。
   2. **USD 资产 R1/R3 判据**（#9）：新增「同构保持」（表示签名等价）与
      「保真度界」（Hausdorff `≤ √3/2·h`）的形式化与测试；R2 字节往返不动点
      不回归。
@@ -143,7 +143,11 @@
      `mode=None` 时逐字节退化为旧 `cache_key`（零回归）。
   4. **异质体积**（#10）：`HeterogeneousMedium`（Woodcock delta tracking，
      σt 空间变化）+ 格心采样口径修正；σt 恒定场与均匀实现**逐位一致**
-     （退化一致性），阴影透射率对 Beer 定律无偏（300k 样本内 < 1%）。
+     （退化一致性）。无偏性口径如实分述：`shadow_transmittance_tracked`
+     （调用方喂独立均匀）300k 样本内对 Beer 定律偏差 < 1%；生产入口
+     `shadow_transmittance`（2-uniform 签名）的空碰撞派生链已由乘法链改为
+     splitmix64 去相关（QA-F1：旧链实测 +1.08% 正偏），修复后由测试
+     `shadow_transmittance_production_entry_unbiased_vs_beer` 钉在 2% 内。
 - **为何非 C15**：全部为新增能力；既有可渲染工程输出逐字节不变（GPU 出帧与
   CPU 参考 0 差异；新增签名键只在带模式调用时生效）。R3 修复本身另有
   C15 条目（R-2026-xx-04）。
