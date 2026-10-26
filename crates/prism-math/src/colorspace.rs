@@ -200,8 +200,8 @@ mod tests {
     ///
     /// # 结清判据（每次运行重算复核）
     /// - **新主常量 = 官方推导口径**：`SRGB_TO_ACESCG` 与注册表推导阵
-    ///   `legacy_vs_derived_delta().derived` 逐元素差 f32/f64 双口径 ≤ 1e-2
-    ///   （**实测 4.53e-7**；容差取 1e-2 只作域界，不作为精度宣称）。
+    ///   `legacy_vs_derived_delta().derived` 逐元素差 f32/f64 双口径 ≤ 1e-6
+    ///   （实测 4.53e-7，QA-F4 后容差已按实收紧，留 ~2.2× 余量）。
     /// - **逆阵可重算**：`ACESCG_TO_SRGB` 是 `SRGB_TO_ACESCG` 的 f64 精确逆
     ///   收窄（容差 5e-7，先例 `aces2065_to_acescg_is_recomputed_inverse`）。
     /// - **旧 Hill 拟合件保留为显式可选口径**：`_FITTED_HILL` 数值一字不改，
@@ -242,13 +242,15 @@ mod tests {
                 worst_f32 = worst_f32.max((rep.derived[r][c] as f32 - SRGB_TO_ACESCG[r][c]).abs());
             }
         }
+        // 容差按实测 4.53e-7 收紧到 1e-6（QA-F4：1e-2 比实测松 4 个数量级，
+        // 无法分辨「重录偏了小数点后第 4 位」这类回归）。约 2.2× 余量。
         assert!(
-            worst_f64 < 1e-2,
-            "T4 结清后主常量应已重录为官方推导口径，f64 偏差 {worst_f64:e} 超 1e-2"
+            worst_f64 < 1e-6,
+            "T4 结清后主常量应已重录为官方推导口径，f64 偏差 {worst_f64:e} 超 1e-6"
         );
         assert!(
-            worst_f32 < 1e-2,
-            "T4 结清后主常量应已重录为官方推导口径，f32 偏差 {worst_f32:e} 超 1e-2"
+            worst_f32 < 1e-6,
+            "T4 结清后主常量应已重录为官方推导口径，f32 偏差 {worst_f32:e} 超 1e-6"
         );
 
         // —— 结清锁（逆阵）：ACESCG_TO_SRGB 必须是 SRGB_TO_ACESCG 的 f64 精确逆 ——

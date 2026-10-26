@@ -454,6 +454,86 @@ impl HeterogeneousMedium {
 }
 
 // ---------------------------------------------------------------------------
+// 场景介质统一入口（QA-F2：设计承诺的 Medium::{Homogeneous, Heterogeneous}）
+// ---------------------------------------------------------------------------
+
+/// 场景介质（`MediumRegion::medium` 的统一类型）。
+///
+/// 两个变体共享同一组渲染接口：自由程 / 阴影透射率 / 相函数 / 反照率。
+/// **均匀介质语义逐位不变**：`Medium::Homogeneous` 的自由程直接委托
+/// [`HomogeneousMedium::free_path`]，不消费 `origin`/`dir`/`u_accept`，故
+/// 既有场景的采样流消耗与像素输出与接线前**逐字节一致**（回归钉子见
+/// `integrator` 的介质测试与 `qa_heterogeneous_volume`）。
+///
+/// 异质介质（[`HeterogeneousMedium`]）需要两个均匀（步进 + 接受）与射线
+/// 起点，渲染路径按 [`Medium::needs_accept_uniform`] 决定是否多抽一个
+/// ——均匀介质不多抽，保证旧基线不动。
+#[derive(Debug, Clone)]
+pub enum Medium {
+    /// 均匀介质（单 σt / albedo / g）。
+    Homogeneous(HomogeneousMedium),
+    /// 异质介质（σt 空间变化场，Woodcock delta tracking）。
+    Heterogeneous(HeterogeneousMedium),
+}
+
+impl Medium {
+    /// 单次散射反照率 σs/σt。
+    pub fn albedo(&self) -> f32 {
+        match self {
+            Medium::Homogeneous(m) => m.albedo,
+            Medium::Heterogeneous(m) => m.albedo,
+        }
+    }
+
+    /// 渲染路径是否需要第二个均匀（接受判定）。均匀介质恒 false。
+    pub fn needs_accept_uniform(&self) -> bool {
+        matches!(self, Medium::Heterogeneous(_))
+    }
+
+    /// 自由程抽样（统一签名）。
+    ///
+    /// 均匀变体忽略 `origin`/`dir`/`u_accept`（与 [`HomogeneousMedium::free_path`]
+    /// 逐位一致）；异质变体走 Woodcock delta tracking。
+    pub fn free_path(&self, origin: Vec3, dir: Vec3, u_step: f32, u_accept: f32) -> f32 {
+        match self {
+            Medium::Homogeneous(m) => m.free_path(u_step),
+            Medium::Heterogeneous(m) => m.free_path(origin, dir, u_step, u_accept),
+        }
+    }
+
+    /// 阴影透射率（二值估计，统一签名）。
+    pub fn shadow_transmittance(
+        &self,
+        origin: Vec3,
+        dir: Vec3,
+        dist: f32,
+        u_step: f32,
+        u_accept: f32,
+    ) -> f32 {
+        match self {
+            Medium::Homogeneous(m) => m.shadow_transmittance(u_step, dist),
+            Medium::Heterogeneous(m) => m.shadow_transmittance(origin, dir, dist, u_step, u_accept),
+        }
+    }
+
+    /// HG 相函数 pdf。
+    pub fn phase(&self, cos_theta: f32) -> f32 {
+        match self {
+            Medium::Homogeneous(m) => m.phase(cos_theta),
+            Medium::Heterogeneous(m) => m.phase(cos_theta),
+        }
+    }
+
+    /// HG 方向抽样。
+    pub fn sample_phase(&self, w: Vec3, u1: f32, u2: f32) -> Vec3 {
+        match self {
+            Medium::Homogeneous(m) => m.sample_phase(w, u1, u2),
+            Medium::Heterogeneous(m) => m.sample_phase(w, u1, u2),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 测试（关卡 4：HG 体积 vs Beer 定律解析值）
 // ---------------------------------------------------------------------------
 

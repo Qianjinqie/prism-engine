@@ -169,9 +169,19 @@ fn medium_collide(
         b.segment_interval(ro, rd, 0.0, t_max)?.0
     };
     let exit = b.segment_interval(ro, rd, t_enter, t_max)?.1;
-    let u = stream.aux_1d(aux_dim, *steps);
-    *steps += 1;
-    let t_free = region.medium.free_path(u);
+    // 与 integrator 同式：均匀介质单均匀；异质介质两均匀（步进 + 接受），
+    // 均匀路径的采样流消耗与接线前逐字节一致（QA-F2）。
+    let t_free = if region.medium.needs_accept_uniform() {
+        let us = stream.aux_1d(aux_dim, *steps);
+        *steps += 1;
+        let ua = stream.aux_1d(aux_dim, *steps);
+        *steps += 1;
+        region.medium.free_path(ro, rd, us, ua)
+    } else {
+        let u = stream.aux_1d(aux_dim, *steps);
+        *steps += 1;
+        region.medium.free_path(ro, rd, u, 0.0)
+    };
     if t_enter + t_free < exit && t_enter + t_free < t_max {
         Some(t_enter + t_free)
     } else {
@@ -215,7 +225,7 @@ fn advance_one(
             let p = st.ray.at(tc);
             let u_scatter = stream.aux_1d(aux_dim, st.aux_steps);
             st.aux_steps += 1;
-            if u_scatter >= region.medium.albedo {
+            if u_scatter >= region.medium.albedo() {
                 stats.terminated += 1;
                 return false; // 吸收
             }

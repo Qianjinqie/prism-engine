@@ -53,7 +53,7 @@ use crate::light::{ambient_background, nee_mis_weight, sample_nee};
 
 /// 光源（四族；对外沿用 integrator 命名，内部委托 [`crate::light`]）。
 pub use crate::light::Light;
-use crate::media::HomogeneousMedium;
+use crate::media::Medium;
 use crate::sampler::SampleStream;
 use crate::sss::random_walk;
 
@@ -506,13 +506,13 @@ fn material_subsurface(m: &MaterialKind) -> Option<(f32, Vec3, f32)> {
     }
 }
 
-/// 介质区域（B1：单一均匀介质盒；异质网格待后续扩展）。
+/// 介质区域（单一介质盒：均匀 σt 或异质 σt 场，统一 [`Medium`] 入口）。
 #[derive(Debug, Clone)]
 pub struct MediumRegion {
     /// 区域包围盒。
     pub bounds: Aabb,
-    /// 均匀介质。
-    pub medium: HomogeneousMedium,
+    /// 介质（均匀 / 异质）。
+    pub medium: Medium,
 }
 
 /// 最小场景。
@@ -1736,12 +1736,22 @@ fn medium_collide(
     } else {
         b.segment_interval(ro, rd, 0.0, t_max)?.0
     };
-    // B1 介质区域为单一凸盒：直线段至多穿越一次，介质内剩余段
-    // [t_enter, exit] 上单次自由程抽样即完备（异质/多区域后续扩展为循环）。
+    // B1 介质区域为单一凸盒：直线段至多穿越一次。均匀介质单次自由程抽样即完备
+    // （一次均匀）；异质介质走 Woodcock delta tracking（步进 + 接受两个均匀，
+    // 内部可能多步），故按 `needs_accept_uniform` 决定是否多抽一个——均匀
+    // 路径的采样流消耗与接线前**逐字节一致**。
     let exit = b.segment_interval(ro, rd, t_enter, t_max)?.1;
-    let u = stream.aux_1d(aux_dim, *steps);
-    *steps += 1;
-    let t_free = region.medium.free_path(u);
+    let t_free = if region.medium.needs_accept_uniform() {
+        let us = stream.aux_1d(aux_dim, *steps);
+        *steps += 1;
+        let ua = stream.aux_1d(aux_dim, *steps);
+        *steps += 1;
+        region.medium.free_path(ro, rd, us, ua)
+    } else {
+        let u = stream.aux_1d(aux_dim, *steps);
+        *steps += 1;
+        region.medium.free_path(ro, rd, u, 0.0)
+    };
     if t_enter + t_free < exit && t_enter + t_free < t_max {
         Some(t_enter + t_free)
     } else {
@@ -1836,7 +1846,7 @@ fn trace_one(
                 // T(t)·σs 与联合 pdf 相消，见 media 模块文档推导）。
                 let u_scatter = stream.aux_1d(aux_dim, aux_steps);
                 aux_steps += 1;
-                if u_scatter >= region.medium.albedo {
+                if u_scatter >= region.medium.albedo() {
                     break; // 吸收：终止（存活权重隐式）
                 }
                 // 体 NEE：相函数对光源方向；备择策略 = 相位抽样该方向。
@@ -2100,6 +2110,7 @@ pub fn cast_ray(camera: &Camera, stream: &SampleStream<'_>, resolution: (u32, u3
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::media::HomogeneousMedium;
     use prism_core::SampleIndex;
 
     /// Cornell 式最小场景（漫反盒 + Lambert 球 + 镜面球 + 球光）。
@@ -2430,7 +2441,7 @@ mod tests {
             }],
             medium: Some(MediumRegion {
                 bounds: Aabb::new(Vec3::new(-5.0, 0.0, -5.0), Vec3::new(5.0, height, 5.0)),
-                medium: HomogeneousMedium::new(sigma_t, 0.0, 0.0),
+                medium: Medium::Homogeneous(HomogeneousMedium::new(sigma_t, 0.0, 0.0)),
             }),
             paraboloids: vec![],
             meshes: Vec::new(),
@@ -2466,6 +2477,79 @@ mod tests {
             "介质衰减：实测 {mean}，Beer 解析 {expected}（相对 {rel}）"
         );
         println!("Beer 关卡：实测 = {mean:.6}，解析 = {expected:.6}（相对 {rel:.5}）");
+    }
+
+    /// QA-F2 回归钉子：异质介质必须**真实可达**渲染路径，且整画面衰减仍贴 Beer。
+    ///
+    /// 用 σt 恒定场（退化情形）走 `Medium::Heterogeneous`：渲染路径必须选择
+    /// 「步进 + 接受」两均匀分支（`needs_accept_uniform`），整画面均值与
+    /// 均匀介质同解析式（`base × e^(−2σt·h)`）在 MC 误差内一致。同场景两遍
+    /// 渲染还须逐位一致（确定性）。
+    #[test]
+    fn heterogeneous_medium_render_path_is_reachable_and_matches_beer() {
+        use crate::media::HeterogeneousMedium;
+        let sigma_t = 0.9f32;
+        let height = 1.6f32;
+        let cos_max = (3.0f32 * PI / 180.0).cos();
+        let scene = Scene {
+            boxes: vec![(
+                Aabb::new(Vec3::new(-10.0, -0.1, -10.0), Vec3::new(10.0, 0.0, 10.0)),
+                MaterialKind::Lambert { albedo: Vec3::splat(0.8) },
+            )],
+            spheres: vec![],
+            lights: vec![Light::Directional {
+                direction: Vec3::new(0.0, 1.0, 0.0),
+                radiance: Vec3::splat(10.0),
+                cos_theta_max: cos_max,
+            }],
+            medium: Some(MediumRegion {
+                bounds: Aabb::new(Vec3::new(-5.0, 0.0, -5.0), Vec3::new(5.0, height, 5.0)),
+                medium: Medium::Heterogeneous(HeterogeneousMedium::constant_sigma_t(
+                    sigma_t, 0.0, 0.0,
+                )),
+            }),
+            paraboloids: vec![],
+            meshes: Vec::new(),
+            planes: vec![],
+            ..Default::default()
+        };
+        // 可达性：渲染路径确实走异质分支（两均匀）。
+        assert!(
+            scene.medium.as_ref().unwrap().medium.needs_accept_uniform(),
+            "Medium::Heterogeneous 必须触发两均匀分支（否则异质从未被渲染路径消费）"
+        );
+        let cam = Camera::new(
+            Vec3::new(0.0, 40.0, 0.0),
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, -1.0),
+            5.0,
+            0.0,
+            40.0,
+            0.0,
+            1.0,
+        );
+        let ctx = EvalCtx::new(13, 7, 3);
+        let res = (8, 8);
+        let frame = render_frame(&scene, &cam, &ctx, res, &RenderParams::new(256, 2));
+        let frame2 = render_frame(&scene, &cam, &ctx, res, &RenderParams::new(256, 2));
+        assert_eq!(frame, frame2, "异质介质渲染必须确定性（两遍逐位一致）");
+
+        let base = 0.8f32 * 10.0f32 * 2.0 * (1.0 - cos_max);
+        let expected = base as f64 * (-(2.0 * sigma_t as f64) * height as f64).exp();
+        let mut mean = 0.0f64;
+        for px in &frame {
+            for c in 0..3 {
+                assert!(px[c].is_finite() && px[c] >= 0.0);
+                mean += px[c] as f64;
+            }
+        }
+        mean /= (frame.len() * 3) as f64;
+        let rel = (mean - expected).abs() / expected;
+        assert!(
+            rel < 0.05,
+            "异质介质衰减：实测 {mean}，Beer 解析 {expected}（相对 {rel}）"
+        );
+        println!("异质 Beer 关卡：实测 = {mean:.6}，解析 = {expected:.6}（相对 {rel:.5}）");
     }
 
     // ---- 关卡 5：端到端（金属粗糙度展宽 / 玻璃焦散能量 / SSS 厚度）----

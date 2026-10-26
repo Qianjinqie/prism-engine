@@ -362,3 +362,21 @@ $ Cargo.lock: 29 × [[package]]，其中 source 字段存在者 = 0
 **F2（异质体积未接入渲染链路）** 维持 QA 裁决：V2.2 首轮必修，本版不阻断。
 
 —— 齐活林（主理人），2026-10-26
+
+---
+
+## 附二：剩余审计项全部结清（主理人执行，2026-10-27 晨）
+
+作者指示「Bug/缺口不能留到 V2.2」。F2/F4/F5/F6/F7 已于交付后当轮结清：
+
+| 项 | 处置 | 证据 |
+|----|------|------|
+| **F2** 异质体积未接入渲染链路 | **已接线**：`crates/prism-rt/src/media.rs` 新增 `enum Medium { Homogeneous, Heterogeneous }`（统一 `free_path`/`shadow_transmittance`/`phase`/`sample_phase`/`albedo`）；`MediumRegion.medium` 改用该类型；`integrator::medium_collide` 与 `wavefront::medium_collide` 双路径消费。均匀路径仅抽 1 个均匀（采样流与像素逐字节不变），异质路径抽 2 个。新增钉子 `integrator::tests::heterogeneous_medium_render_path_is_reachable_and_matches_beer`（可达性断言 + 整画面 Beer 5% 内 + 两遍渲染逐位一致） | `cargo test -p prism-rt --release` → **194 passed / 0 failed**（+1）；`cargo check --workspace --release` 通过 |
+| **F4** 结清锁容差过松 | **已收紧**：1e-2 → **1e-6**（实测 4.53e-7，留 ~2.2× 余量）；文档同步改为「容差已按实收紧」 | `cargo test -p prism-math --release` 全绿 |
+| **F5** 设计文件清单 12 处偏离 | **已补录**：设计文档新增 §10「实施偏差登记」，逐条列明未登记文件、登记未改项与合规偏离 | `docs/v2.1-增量设计.md` §10 |
+| **F6** Q4「测试名勘误」本身误判 | **已撤回**：设计 §1.1 与 §9 均改为「两个测试都存在、双双升级为双自检」 | `docs/v2.1-增量设计.md` §1.1/§9 |
+| **F7** 删除/更名测试未进 commit 说明 | **已补正文**：本批提交正文点名被删除的 `..._alias_is_bit_identical_to_the_legacy_name`、更名的 `..._debt_t4_is_named` → `..._settled_t4_is_named`，并注明 CHANGELOG 对照表位置；设计 §10 同步留痕 | git log（本批提交正文） |
+
+至此 QA V2.1 轮的全部审计发现（F1–F9 + F13 风格项）均已处置，无遗留到 V2.2 的 Bug/缺口。
+
+—— 齐活林（主理人），2026-10-27

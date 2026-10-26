@@ -143,7 +143,10 @@
      `mode=None` 时逐字节退化为旧 `cache_key`（零回归）。
   4. **异质体积**（#10）：`HeterogeneousMedium`（Woodcock delta tracking，
      σt 空间变化）+ 格心采样口径修正；σt 恒定场与均匀实现**逐位一致**
-     （退化一致性）。无偏性口径如实分述：`shadow_transmittance_tracked`
+     （退化一致性）。**已接入渲染链路**（QA-F2 结清）：场景介质盒统一为
+     `enum Medium { Homogeneous, Heterogeneous }`，integrator 与 wavefront
+     双路径均可消费；均匀路径的采样流消耗与像素输出**逐字节不变**（单均匀
+     分支），异质路径按需多抽一个接受均匀。无偏性口径如实分述：`shadow_transmittance_tracked`
      （调用方喂独立均匀）300k 样本内对 Beer 定律偏差 < 1%；生产入口
      `shadow_transmittance`（2-uniform 签名）的空碰撞派生链已由乘法链改为
      splitmix64 去相关（QA-F1：旧链实测 +1.08% 正偏），修复后由测试
@@ -154,7 +157,9 @@
 - **是否有开关**：无（新增能力，不改变既有路径行为）。
 - **验收**：`prism-gpu/tests/qa_render_scene.rs`、`prism-io/tests/qa_r1_representation_signature.rs`、
   `prism-core/tests/qa_signature_s3_closure.rs`、`prism-render/tests/qa_incremental_s3.rs`、
-  `prism-rt/tests/qa_heterogeneous_volume.rs`。
+  `prism-rt/tests/qa_heterogeneous_volume.rs` +
+  `integrator::tests::heterogeneous_medium_render_path_is_reachable_and_matches_beer`
+  （渲染路径可达性 + 整画面 Beer + 两遍逐位确定性）。
 
 ### F-2026-xx-01：movie 成片路径新增 sim（S3 约束梯度流，cloth）节点渲染支持
 
