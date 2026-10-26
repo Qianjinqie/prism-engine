@@ -1,0 +1,185 @@
+// rt_scene.scene_main.msl —— 光追场景 kernel 的 Metal 双份源（手写，V2.1 T-A2）。
+//
+// ⚠️ **未实机验证**：本文件在 Linux 沙箱内无法编译（无 macOS 工具链 / 无 Metal
+// 运行时），因此它是**结构正确、待 macOS 实机验证**的源码，不是「已验证可用」
+// 的实现。Metal 后端 `MetalBackend::is_available()` 在**所有平台**恒返回 false
+// （探测到设备 ≠ 能出图）。「探测链就绪」与「真实 dispatch」是两件事：
+// 前者由 `metal::loader`（仅 macOS 编译）负责；后者**本文件尚未接入任何
+// command buffer / pipeline state**（缺 `objc_msgSend` 层，见 `metal/loader.rs`
+// 末尾的「下一步」清单）。V2.1 交付口径：**代码 + 编译门控，不点亮**。
+//
+// 对应关系（与 Vulkan 侧逐式同构）：
+//   对应 SPIR-V：crates/prism-gpu/src/vulkan/spirv_rt.rs（MODULE_SCENE = "spv_scene"）
+//   WGSL 侧类比：crates/prism-gpu/shaders/rt_scene.wgsl（场景访问层，**非本 kernel**；
+//                本 kernel 是「主射线 + 球面求交 + 直接光 + aesthetic」的整帧算子）
+//   入口：scene_main（与 SPIR-V 的 OpEntryPoint 同名）
+//   判对基准：crates/prism-gpu/src/lib.rs 的 CpuRefBackend::render_scene
+//             （`crates/prism-gpu/tests/qa_render_scene.rs` 在 Vulkan 上真机对拍，
+//              实测逐字节一致；Metal 侧尚未做同等验证）
+//
+// 绑定映射（WGSL `@group(g) @binding(b)` → MSL `[[buffer(g*31+b)]]`，g=0）：
+//   b0 Params  → [[buffer(0)]]  constant SceneParams&   （112 字节）
+//   b1 spheres → [[buffer(1)]]  constant Sphere*        （每球 32 字节）
+//   b2 lights  → [[buffer(2)]]  constant Light*         （每灯 32 字节）
+//   b3 output  → [[buffer(3)]]  device   uint*          （每像素一个打包 RGBA8）
+//   @builtin(global_invocation_id) → [[thread_position_in_grid]]（uint2）
+//
+// 布局对齐（关键，勿改）：
+//   * `Sphere` / `Light` 用 **packed_float3**（12 字节、align 4）而不是 `float3`
+//     （16 字节、align 16）。原因：Vulkan 侧的球/灯缓冲是**扁平 f32 数组**，
+//     每实体 8 个槽 = 32 字节；若此处用 `float3`，编译器会插入 4 字节填充，
+//     32 字节的槽就装不下 8 个 f32，两端 ABI 立刻错位。
+//     由此得到的偏移与 Vulkan 侧完全一致：
+//       Sphere: center@0..12  radius@12  albedo@16..28  pad@28   （共 32）
+//       Light : dir@0..12     color@12..24 intensity@24  pad@28  （共 32）
+//   * `SceneParams` 用 4 个 `float4`（各 16 字节）+ 12 个 4 字节标量 = 112 字节，
+//     与 `metal/render.rs::encode_scene_params` 逐字节对应（Rust 侧有单测钉住偏移）。
+//
+// 数值纪律（与 Vulkan 侧同源，勿「优化」）：
+//   * 同式：每个乘加都按 CPU 参考的求值树（左结合、先乘后加）书写，**不重排**；
+//   * 禁收缩：本文件**不出现** `fma(` / `fast::`——把 `a*b+c` 熔成 FMA 会改末位；
+//   * 无超越函数（D-29）：只用 `sqrt` / `floor` / `clamp` / `fmax`，
+//     半视角正切值由 CPU 用 det_trig 算好传入；
+//   * 归一化走 `scene_normalize`（与 `prism_math::Vec3::normalize` 同判定：
+//     `len < 1e-8 ⇒ 零向量`），不用内建 `normalize()`（无退化守卫）。
+
+#include <metal_stdlib>
+using namespace metal;
+
+struct SceneParams {
+    float4 eye;          // @0    xyz = 视点
+    float4 forward;      // @16   xyz = 前向单位向量
+    float4 right;        // @32   xyz = 右向单位向量
+    float4 up;           // @48   xyz = 上向单位向量
+    uint   width;        // @64
+    uint   height;       // @68
+    float  tan_half_fov; // @72   半视角正切（CPU 侧 det_trig 算好）
+    float  aspect;       // @76   width / height
+    uint   teal_orange;  // @80   0 / 1
+    float  contrast;     // @84   对比度（1.0 = 关闭）
+    uint   contrast_on;  // @88   contrast != 1.0 的预计算开关（0 / 1）
+    uint   filmic;       // @92   0 / 1（Reinhard filmic）
+    uint   num_spheres;  // @96
+    uint   num_lights;   // @100
+    uint   _pad0;        // @104  恒 0（结构体 16 字节对齐补齐）
+    uint   _pad1;        // @108  恒 0
+};
+
+struct Sphere {
+    packed_float3 center; // @0
+    float         radius; // @12
+    packed_float3 albedo; // @16
+    float         pad;    // @28（恒 0）
+};
+
+struct Light {
+    packed_float3 dir;       // @0   已归一化（CPU 侧 normalize 后传入）
+    packed_float3 color;     // @12
+    float         intensity; // @24
+    float         pad;       // @28（恒 0）
+};
+
+// 与 `prism_math::Vec3::normalize` 同判定：长度 < 1e-8 ⇒ 零向量。
+static inline float3 scene_normalize(float3 v)
+{
+    float len = sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+    if (len < 1e-8f) {
+        return float3(0.0f, 0.0f, 0.0f);
+    }
+    return v / len;
+}
+
+// 一通道量化：clamp01 → ×255 → floor(x + 0.5)
+// （= Rust 的 `(v.clamp(0,1) * 255.0).round() as u8`，非负域内两者等价）。
+static inline uint scene_quantize(float c)
+{
+    float clamped = clamp(c, 0.0f, 1.0f);
+    float scaled = clamped * 255.0f;
+    return uint(floor(scaled + 0.5f));
+}
+
+kernel void scene_main(
+    constant SceneParams& p        [[buffer(0)]],
+    constant Sphere*      spheres  [[buffer(1)]],
+    constant Light*       lights   [[buffer(2)]],
+    device   uint*        out      [[buffer(3)]],
+    uint2                 gid      [[thread_position_in_grid]])
+{
+    // 尾组守卫（与 SPIR-V 侧的 OpSelectionMerge 分支同义：越界调用不写内存）。
+    if (gid.x >= p.width || gid.y >= p.height) {
+        return;
+    }
+
+    // --- 主射线 ---------------------------------------------------------
+    // nx = (2*(x+0.5)/w - 1) * tan_half * aspect（左结合，与 CPU 同序）
+    float px = float(gid.x) + 0.5f;
+    float py = float(gid.y) + 0.5f;
+    float ndc_x = (2.0f * px / float(p.width) - 1.0f) * p.tan_half_fov * p.aspect;
+    float ndc_y = (1.0f - 2.0f * py / float(p.height)) * p.tan_half_fov;
+
+    float3 origin = p.eye.xyz;
+    float3 dir = scene_normalize(p.forward.xyz + p.right.xyz * ndc_x + p.up.xyz * ndc_y);
+
+    // --- 最近命中（球面求交）--------------------------------------------
+    float closest_t = INFINITY;
+    uint  hit = p.num_spheres;
+    for (uint i = 0u; i < p.num_spheres; ++i) {
+        float3 center = spheres[i].center;
+        float  radius = spheres[i].radius;
+        float3 oc = origin - center;
+        float  b = dot(oc, dir);
+        float  c = dot(oc, oc) - radius * radius;
+        float  disc = b * b - c;
+        if (disc >= 0.0f) {
+            float t = -b - sqrt(disc);
+            if (t > 0.0f && t < closest_t) {
+                closest_t = t;
+                hit = i;
+            }
+        }
+    }
+
+    // --- 着色（未命中 ⇒ 背景色）------------------------------------------
+    float3 color = float3(0.04f, 0.05f, 0.08f);
+    if (hit < p.num_spheres) {
+        float3 center = spheres[hit].center;
+        float3 albedo = spheres[hit].albedo;
+        float3 pos = origin + dir * closest_t;
+        float3 n = scene_normalize(pos - center);
+
+        float3 acc = float3(0.0f, 0.0f, 0.0f);
+        for (uint j = 0u; j < p.num_lights; ++j) {
+            float3 ldir = lights[j].dir;
+            float3 lcolor = lights[j].color;
+            float  lint = lights[j].intensity;
+            float  diff = fmax(dot(n, ldir), 0.0f);
+            float  scaled = diff * lint;
+            // acc += albedo * (0.08 + lcolor * (diff * intensity))（逐通道，同序）
+            acc.x = acc.x + albedo.x * (0.08f + lcolor.x * scaled);
+            acc.y = acc.y + albedo.y * (0.08f + lcolor.y * scaled);
+            acc.z = acc.z + albedo.z * (0.08f + lcolor.z * scaled);
+        }
+        color = acc;
+    }
+
+    // --- aesthetic -------------------------------------------------------
+    if (p.teal_orange != 0u) {
+        float luma = 0.299f * color.x + 0.587f * color.y + 0.114f * color.z;
+        float3 shadow_comp = float3(0.10f, 0.35f, 0.45f) * color * (1.0f - luma) * 0.5f;
+        float3 high_comp = float3(1.0f, 0.7f, 0.3f) * color * luma * 0.5f;
+        color = color * 0.6f + shadow_comp + high_comp;
+    }
+    if (p.contrast_on != 0u) {
+        color = (color - 0.5f) * p.contrast + 0.5f;
+    }
+    if (p.filmic != 0u) {
+        // Reinhard filmic（**不经 ACES**：与 CPU 参考同一口径）。
+        color = color / (color + 1.0f);
+    }
+
+    // --- 量化 + 打包 RGBA8（r | g<<8 | b<<16 | 255<<24）--------------------
+    uint r = scene_quantize(color.x);
+    uint g = scene_quantize(color.y);
+    uint b = scene_quantize(color.z);
+    out[gid.y * p.width + gid.x] = 0xFF000000u | (b << 16) | (g << 8) | r;
+}

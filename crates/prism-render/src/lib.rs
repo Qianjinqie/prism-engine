@@ -236,9 +236,10 @@ pub use movie::{render_movie, Deliverable, MovieResult, RenderError};
 pub mod incremental;
 
 pub use incremental::{
-    bytes_to_fbuf, decide, fbuf_to_bytes, reuse_stats_from_dirty, ChannelIntervals, ChannelKind,
-    DirtyDetector, DirtySet, FrameRange, IncrementalError, IncrementalSession, ParamChange,
-    ReuseCache, ReuseDecision, ReuseStats, ReuseVerdict, TileArtifact,
+    bytes_to_fbuf, decide, decide_with_mode, fbuf_to_bytes, reuse_stats_from_dirty,
+    ChannelIntervals, ChannelKind, DirtyDetector, DirtySet, FrameRange, IncrementalError,
+    IncrementalSession, ParamChange, ReuseCache, ReuseDecision, ReuseStats, ReuseVerdict,
+    TileArtifact,
 };
 
 // ---------------------------------------------------------------------------

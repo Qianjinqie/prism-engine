@@ -41,8 +41,8 @@ pub(crate) mod js {
     //! `env` 导入对象提供。约定所有 GPU 对象以 `u32` 句柄传递，宿主侧维持
     //! `Map<handle, GPUObject>`。返回 `0` 表示失败/空。
 
-    // 全部 13 个函数都由 [`abi`] 模块的导出测试项实际调用（D-16：不留死胶水）：
-    // 能力探测 3 个由 `detect_support`/`WebGpuBackend` 使用，资源创建与执行 9 个
+    // 全部 14 个函数都由 [`abi`] 模块的导出测试项实际调用（D-16：不留死胶水）：
+    // 能力探测 4 个由 `detect_support`/`WebGpuBackend` 使用，资源创建与执行 9 个
     // 由 `abi` 的 `submit_chain` 路径使用（`prism_create_bind_group` 支持 group
     // 索引 / `prism_dispatch` 支持多 bind group），错误上报由测试项收尾阶段轮询。
     extern "C" {

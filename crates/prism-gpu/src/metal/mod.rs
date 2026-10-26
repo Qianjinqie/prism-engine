@@ -1,12 +1,29 @@
 //! Metal 后端（D1，macOS/iOS 独有技术）。
 //!
-//! # ⚠️ 诚实边界（必读）
+//! # ⚠️ 诚实边界（必读，G4/Q5）
 //!
 //! Metal 是 Apple 平台的私有图形 API，**只在 macOS/iOS 上存在**；其他平台
 //! （Linux / wasm）上本模块编译为零或仅保留结构面。本模块的
 //! 收尾标准因此是：*在非 macOS 上编译为零，在 macOS 上编译为结构正确、
-//! 逻辑完备的探测链*。渲染路径未实装，[`MetalBackend::is_available`]
-//! 在**所有平台**都刻意返回 `false`（探测到设备 ≠ 能出图，见下）。
+//! 逻辑完备的探测链*。**渲染路径已按 A1 的 kernel 结构同构移植代码，但未点亮**：
+//! [`MetalBackend::is_available`] 在**所有平台**都刻意返回 `false`。
+//!
+//! ## 「探测链就绪」与「真实 dispatch」是两件事（不得混用）
+//!
+//! | 层 | 状态 | 位置 |
+//! |---|---|---|
+//! | 设备探测链（`dlopen` Metal 框架 + `MTLCreateSystemDefaultDevice`） | ✅ 代码就绪（**仅 macOS 编译**，Linux 上被 `#[cfg]` 剔除） | [`loader`] |
+//! | MSL 双份源（场景整帧 kernel） | ✅ 代码就绪（文本，全平台可见） | [`msl::RT_SCENE_MSL`] |
+//! | kernel 描述 + 参数 ABI 编码 | ✅ 代码就绪，偏移有单测钉死 | [`render`] |
+//! | 算法的 CPU 同构实现（与 `CpuRefBackend` 逐字节对拍的证据） | ✅ 已证明 | [`render::render_scene_msl_semantics`] |
+//! | **`MTLDevice` → queue → pipeline state → dispatch → 读回** | ❌ **未做**（需 `objc_msgSend` 层） | — |
+//!
+//! 结论：**macOS 实机验证未做**。V2.1 对 Metal 的交付口径是「代码 + 编译门控，
+//! 不点亮」（PRD A2 / Q5）。因此：
+//!
+//! * [`MetalBackend::is_available`] **恒 `false`**（所有平台）；
+//! * [`MetalBackend::render_scene`] **恒返回无效空缓冲**（绝不产假帧）；
+//! * 全仓无任何一处声称 Metal 可用——「有源码」≠「能编译」≠「能出图」。
 //!
 //! # 零第三方依赖（D-15）
 //!
@@ -35,16 +52,18 @@
 //!   `[[buffer(<index>)]]`，`index = g * 31 + b`（与 Metal 常规单级
 //!   `[[buffer(i)]]` 命名空间对齐；具体编号由后端实装时统一，见各 `.msl`
 //!   头注）。`@builtin(global_invocation_id)` → `[[thread_position_in_grid]]`。
-//! * **首样例**：本次落地**一个**真实样本
-//!   [`msl::CLOTH_PREDICT_MSL`]（`sim_cloth.wgsl::cloth_predict` 的手写 MSL
-//!   对应），作为「双份源」的规格示范。其余 kernel 待后续逐一手写，**不建空
-//!   文件充数**（D-16）。
+//! * **样本**：`cloth_predict`（首样例）、`primary_ray_gen`、`scene_main`
+//!   （V2.1 T-A2，`include_str!` 从真实 `.msl` 文件读入）。其余 kernel 待后续
+//!   逐一手写，**不建空文件充数**（D-16）。
 
 use crate::{Framebuffer, GpuDevice, SceneRenderRequest};
 
 // ---------------------------------------------------------------------------
 // 平台门禁：仅 macOS 编译真实探测链
 // ---------------------------------------------------------------------------
+//
+// 注意：即使 macOS 上探测链真的拿到了 `MTLDevice`，本模块也**没有** command
+// queue / pipeline state / 读回路径——`is_available()` 仍恒 `false`。
 
 #[cfg(target_os = "macos")]
 pub mod loader;
@@ -56,23 +75,35 @@ pub mod loader;
 pub mod msl;
 
 // ---------------------------------------------------------------------------
+// render 路径的**设备无关**部分（所有平台编译：编码 + 语义同构 + 描述）
+// ---------------------------------------------------------------------------
+//
+// 刻意**不用** `#[cfg(target_os = "macos")]` 包住：这部分是纯数据变换
+// （参数/球/灯编码 + MSL 语义的 CPU 同构实现），在 Linux 上也能编译与对拍，
+// 从而保证「移植没写错」这件事在沙箱内可验证。真正需要 macOS 的只有
+// `objc_msgSend` 那一层（**未实现**，见 `metal/loader.rs` 末尾清单）。
+
+pub mod render;
+
+// ---------------------------------------------------------------------------
 // Backend
 // ---------------------------------------------------------------------------
 
 /// Metal 后端把手。
 ///
 /// 这是一个**能力占位**而非可用渲染器：见模块头注的诚实边界。它的存在意义
-/// 有二：① 使 `lib.rs` / 上层能在所有平台统一引用 `MetalBackend`；② 在
-/// macOS 上提供真实的设备探测入口（[`MetalBackend::probe`]），为后续实装
-/// 渲染管线铺路。
+/// 有三：① 使 `lib.rs` / 上层能在所有平台统一引用 `MetalBackend`；② 在
+/// macOS 上提供真实的设备探测入口（[`MetalBackend::probe`]）；③ 承载 V2.1
+/// 的同构移植（MSL 双份源 + 参数 ABI 编码 + 语义对拍，见 [`render`]）。
 ///
 /// # 为什么 `is_available()` 恒为 `false`
 ///
 /// [`GpuDevice::is_available`] 的语义是「**能否 service `render_scene`**」。
-/// 本例即便在 macOS 上探测到 `MTLDevice`，也**没有** render pipeline /
-/// command queue / 读回路径，出一个真帧的最小闭环尚不存在。因此此处**不撒谎**
-/// ——探测成功不等于可用，恒返回 `false`，让上层安全降级到
-/// [`crate::CpuRefBackend`]。
+/// 本后端即便在 macOS 上探测到 `MTLDevice`，也**没有** pipeline state /
+/// command buffer 编码 / 读回路径——出一个真帧的最小闭环尚不存在
+/// （`objc_msgSend` 层未写，见 `loader.rs` 末尾清单）。因此此处**不撒谎**：
+/// 探测成功不等于可用，恒返回 `false`，让上层安全降级到
+/// [`crate::CpuRefBackend`]。**macOS 实机验证未做**（V2.1 非目标，Q5）。
 pub struct MetalBackend {
     /// 是否已在 macOS 上探测到 Metal 设备（仅供诊断；**不影响** `is_available`）。
     ///
@@ -136,17 +167,24 @@ impl Default for MetalBackend {
 }
 
 impl GpuDevice for MetalBackend {
-    /// Metal 渲染管线尚未实装：**返回空缓冲而非假帧**。
+    /// Metal 渲染管线**代码就绪但未点亮**：**返回空缓冲而非假帧**。
+    ///
+    /// V2.1 T-A2 交付的是「同构代码 + 编译门控」：MSL 源（[`msl::RT_SCENE_MSL`]）、
+    /// 参数 ABI（[`render::encode_scene_params`]）与语义同构实现
+    /// （[`render::render_scene_msl_semantics`]）都已落地并与 `CpuRefBackend`
+    /// 逐字节对拍通过；但**没有** `MTLDevice` → pipeline → dispatch 的闭环，
+    /// 所以这里仍如实返回空缓冲（`is_valid() == false`），调用方回退 CPU。
     ///
     /// 刻意不返回一个全黑的有效帧去冒充成功——那会污染上层判对逻辑。
-    /// [`Framebuffer::empty`] 的 `is_valid() == false`，调用方据此回退 CPU。
     /// 本函数在任何平台、任何输入下都不 panic（C18）。
     fn render_scene(&mut self, _req: &SceneRenderRequest) -> Framebuffer {
         Framebuffer::empty()
     }
 
-    /// 恒 `false`：能探测到设备不代表能出图（render pipeline 未实装）。
+    /// 恒 `false`：能探测到设备不代表能出图（render pipeline 未点亮）。
     ///
+    /// V2.1 T-A2 只交付代码 + 编译门控（Q5）：MSL/ABI/语义同构都已落地，
+    /// 但 **macOS 实机验证未做**，`MTLDevice` → dispatch → 读回的闭环不存在。
     /// 见 [`MetalBackend`] 类型文档的「为什么恒为 false」。
     fn is_available(&self) -> bool {
         false
@@ -316,5 +354,40 @@ mod tests {
             msl::CLOTH_PREDICT_MSL.contains("kernel void cloth_predict"),
             "MSL 须声明 kernel void cloth_predict 入口"
         );
+    }
+
+    /// **V2.1 T-A2 收口**：同构代码已落地，但可用性**不得**因此改变（G4/Q5）。
+    ///
+    /// 这条测试同时锁住两件相反方向的断言，避免「写了一堆代码就顺手点亮」：
+    /// * 代码确实在（MSL 源 / 入口 / 4 绑定 / CPU 语义实现可跑且与参考一致）；
+    /// * `is_available()` 仍恒 `false`、`render_scene` 仍返回无效帧
+    ///   （没有 `MTLDevice` → dispatch 闭环，就不能声称可用）。
+    #[test]
+    fn render_code_landed_without_claiming_availability() {
+        let mut be = MetalBackend::new();
+        // ① 代码在。
+        assert!(
+            msl::RT_SCENE_MSL.contains("kernel void scene_main"),
+            "MSL 场景 kernel 必须已登记"
+        );
+        assert_eq!(render::ENTRY_SCENE_MAIN, msl::RT_SCENE_ENTRY);
+        assert_eq!(render::BINDINGS.len(), 4, "四绑定（params/spheres/lights/out）");
+        // ② 语义同构真的能跑（纯 CPU，跨平台），且与 CpuRefBackend 一致。
+        let req = tiny_request();
+        let msl_fb = render::render_scene_on_cpu_via_msl_layout(&req);
+        assert!(msl_fb.is_valid(), "MSL 语义实现应能出帧（纯 CPU）");
+        let mut cpu = crate::CpuRefBackend;
+        let cpu_fb = cpu.render_scene(&req);
+        assert_eq!(
+            msl_fb.pixels, cpu_fb.pixels,
+            "MSL 语义实现必须与 CPU 参考逐字节一致"
+        );
+        // ③ 但能力位不因此改变：没有 dispatch 闭环就不许报可用。
+        assert!(
+            !be.is_available(),
+            "有源码/有语义对拍 ≠ 有 dispatch 闭环 ⇒ 不得谎报可用（G4）"
+        );
+        assert!(!be.render_scene(&req).is_valid(), "不得产假帧");
+        assert_eq!(be.backend_name(), "metal-stub");
     }
 }

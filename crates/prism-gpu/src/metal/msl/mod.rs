@@ -34,8 +34,14 @@
 //!
 //! # 落地范围（D-16：不建空文件充数）
 //!
-//! 本次**只落地一个真实样本**——[`CLOTH_PREDICT_MSL`]——作为规格示范。其余
-//! kernel 待后续按同一约定逐个手写；**不**预先创建几十个空 `.msl` 占位。
+//! 已落地三份**真实**样本，均为手写且各有判对基准：
+//!
+//! 1. [`CLOTH_PREDICT_MSL`] —— `sim_cloth.wgsl::cloth_predict`（规格示范）；
+//! 2. [`PRIMARY_RAY_GEN_MSL`] —— `rt_primary_ray_gen.wgsl::primary_ray_gen`；
+//! 3. [`RT_SCENE_MSL`] —— 光追场景整帧 kernel（V2.1 T-A2），
+//!    **以 `include_str!` 从 `.msl` 文件编译期读入**（源文件即权威）。
+//!
+//! 其余 kernel 待后续按同一约定逐个手写；**不**预先创建几十个空 `.msl` 占位。
 
 // ---------------------------------------------------------------------------
 // 首样例：sim_cloth.wgsl::cloth_predict 的手写 MSL 对应
@@ -214,7 +220,6 @@ kernel void primary_ray_gen(
 #[cfg(test)]
 mod v2g_tests {
     use super::*;
-
     /// 第二份 MSL 双份源在场且可查（三目标宿主表的 MSL 侧依赖它）。
     #[test]
     fn primary_ray_gen_msl_is_registered_and_well_formed() {
@@ -246,5 +251,120 @@ mod v2g_tests {
         let opens = PRIMARY_RAY_GEN_MSL.matches('{').count();
         let closes = PRIMARY_RAY_GEN_MSL.matches('}').count();
         assert_eq!(opens, closes, "MSL 括号不配平（疑似被截断）");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 第三份手写 MSL 双份源（V2.1 T-A2）：光追场景整帧 kernel
+// ---------------------------------------------------------------------------
+
+/// `rt_scene.scene_main.msl` 的入口名。
+pub const RT_SCENE_ENTRY: &str = "scene_main";
+
+/// `rt_scene.scene_main.msl` 的文件名（与 [`RT_SCENE_MSL`] 的 `include_str!` 同源）。
+pub const RT_SCENE_MSL_FILE: &str = "rt_scene.scene_main.msl";
+
+/// 光追场景 kernel（`vulkan::spirv_rt` 的 MSL 同构移植）的双份源。
+///
+/// **源文件即权威**：这里用 `include_str!` 把
+/// `crates/prism-gpu/src/metal/msl/rt_scene.scene_main.msl` 原样编进二进制——
+/// 「双份源」不再是一份 Rust 字符串常量 + 一份没人看过的 .msl，而是**同一份
+/// 文本**：改动必须落在 .msl 文件里，编译期即校验文件存在且为 UTF-8。
+///
+/// 归入「双份源」约定（`<wgsl 去扩展>.<entry>.msl`）：`rt_scene` + `scene_main`。
+///
+/// # 状态（G4/Q5 口径）
+///
+/// **未实机验证**：Linux 沙箱无 macOS 工具链与 Metal 运行时，本文件从未被
+/// Apple 编译器读过，也从未在 `MTLDevice` 上 dispatch 过。
+/// [`crate::metal::MetalBackend::is_available`] 因此**恒 `false`**——
+/// 「有源码」≠「能编译」≠「能出图」，三者不得混为一谈。
+pub const RT_SCENE_MSL: &str = include_str!("rt_scene.scene_main.msl");
+
+#[cfg(test)]
+mod v2a2_tests {
+    use super::*;
+
+    /// 第三份双份源在场、入口与绑定映射符合约定（跨平台文本检查）。
+    #[test]
+    fn rt_scene_msl_is_registered_and_well_formed() {
+        assert!(!RT_SCENE_MSL.trim().is_empty(), "MSL 源不得为空");
+        assert!(
+            RT_SCENE_MSL.contains("kernel void scene_main"),
+            "MSL 须声明 kernel void scene_main 入口"
+        );
+        assert_eq!(RT_SCENE_ENTRY, "scene_main");
+        assert_eq!(RT_SCENE_MSL_FILE, "rt_scene.scene_main.msl");
+        // 头注三项元信息：对应 SPIR-V / 判对基准 / 绑定映射。
+        assert!(RT_SCENE_MSL.contains("vulkan/spirv_rt.rs"));
+        assert!(RT_SCENE_MSL.contains("CpuRefBackend::render_scene"));
+        for b in ["[[buffer(0)]]", "[[buffer(1)]]", "[[buffer(2)]]", "[[buffer(3)]]"] {
+            assert!(RT_SCENE_MSL.contains(b), "MSL 缺绑定声明：{b}");
+        }
+        assert!(RT_SCENE_MSL.contains("[[thread_position_in_grid]]"));
+        // G4：头注必须显式留名「未实机验证」。
+        assert!(
+            RT_SCENE_MSL.contains("未实机验证"),
+            "MSL 头注必须写明未实机验证（G4/Q5）"
+        );
+    }
+
+    /// 数值纪律：禁 `fma`（会改末位）/ 禁超越函数（D-29）/ 括号配平。
+    ///
+    /// 扫描前先剥掉 `//` 行注释——头注里**提到**这些被禁符号是合规的
+    /// （正是为了让后来者知道它们为什么被禁），真正的约束在代码本体上。
+    #[test]
+    fn rt_scene_msl_respects_numeric_discipline() {
+        let code: String = RT_SCENE_MSL
+            .lines()
+            .map(|l| match l.find("//") {
+                Some(i) => &l[..i],
+                None => l,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        for banned in [
+            "fma(", "fast::", "sin(", "cos(", "tan(", "exp(", "pow(", "log(", "rsqrt(",
+        ] {
+            assert!(
+                !code.contains(banned),
+                "MSL 代码体出现被禁调用：{banned}（fma 改末位；超越函数违 D-29）"
+            );
+        }
+        // 归一化必须走带退化守卫的本地函数，不用内建 normalize(。
+        assert!(
+            code.contains("scene_normalize"),
+            "MSL 须使用带退化守卫的 scene_normalize"
+        );
+        assert_eq!(
+            code.matches("normalize(").count(),
+            code.matches("scene_normalize(").count(),
+            "MSL 不得调用无退化守卫的内建 normalize(（只允许 scene_normalize）"
+        );
+        let opens = RT_SCENE_MSL.matches('{').count();
+        let closes = RT_SCENE_MSL.matches('}').count();
+        assert_eq!(opens, closes, "MSL 括号不配平（疑似被截断）");
+        // 两层循环必须在场（球 / 灯）。
+        assert_eq!(code.matches("for (uint ").count(), 2, "应有球/灯两层循环");
+        // 量化口径：floor(x + 0.5)，与 CPU 的 round 等价。
+        assert!(code.contains("floor(scaled + 0.5f)"));
+        // 打包字节序：r | g<<8 | b<<16 | 255<<24。
+        assert!(code.contains("0xFF000000u | (b << 16) | (g << 8) | r"));
+    }
+
+    /// 与 Rust 侧编码器声明的槽位布局一致（`packed_float3` 是 32 字节槽的前提）。
+    #[test]
+    fn rt_scene_msl_slot_layout_matches_encoder() {
+        assert!(
+            RT_SCENE_MSL.contains("packed_float3 center"),
+            "球心必须是 packed_float3（12 字节），否则 32 字节槽装不下"
+        );
+        assert!(RT_SCENE_MSL.contains("packed_float3 albedo"));
+        assert!(RT_SCENE_MSL.contains("packed_float3 dir"));
+        assert!(RT_SCENE_MSL.contains("packed_float3 color"));
+        for decl in ["float  tan_half_fov", "float  aspect", "uint   num_spheres", "uint   num_lights"]
+        {
+            assert!(RT_SCENE_MSL.contains(decl), "SceneParams 缺字段：{decl}");
+        }
     }
 }

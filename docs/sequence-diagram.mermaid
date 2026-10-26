@@ -1,0 +1,33 @@
+sequenceDiagram
+    participant Caller
+    participant VB as VulkanBackend
+    participant Ctx as VulkanContext
+    participant Disp as compute::dispatch_scene
+    participant Pipe as Vulkan 9-step (compute.rs:1-52)
+    participant CPU as CpuRefBackend (对拍基准)
+
+    Caller->>VB: render_scene(req)
+    alt 无设备(ctx=None)
+        VB-->>Caller: Framebuffer::empty()  %% 调用方回退 CPU（诚实，不假帧）
+    else 有设备
+        VB->>VB: 尺寸契约检查(lib.rs:171-233)
+        VB->>VB: encode_scene(req) → (params,spheres,lights)
+        VB->>Disp: dispatch_scene(ctx, scene_kernel, [w,h,1], inputs)
+        Disp->>Pipe: shaderModule→descriptor→pipeline→cmd→fence→readback
+        Pipe-->>Disp: ByteRunReport{output: w*h*4 bytes RGBA8}
+        Disp-->>VB: output
+        VB->>VB: Framebuffer::new(w,h); pixels=output
+        VB-->>Caller: Framebuffer{is_valid()=true}
+    end
+
+    Note over VB,CPU: 对拍测试（qa_render_scene.rs，运行期自门控）
+    VB->>VB: render 两次 → output_A, output_B
+    VB->>VB: assert output_A == output_B (逐字节, G3 硬判据)
+    Caller->>CPU: render_scene(req)  %% 同算法基准
+    CPU-->>VB: cpu_fb
+    VB->>VB: max_channel_delta ≤ 16/255 && differing_pixels ≤ 5% (Q1 统计线)
+
+    Note over VB: is_available 双自检（Q4）
+    Caller->>VB: is_available()
+    VB->>VB: compute_available() && render_available()
+    VB-->>Caller: bool

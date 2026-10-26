@@ -3,7 +3,8 @@
 //! 语义权威：线性高精度色彩管线、（"工作色域从
 //! linear-sRGB primaries 切到 ACEScg（AP1）只换两个 3×3 矩阵"）、P0 预留
 //! `ColorSpace` 枚举与矩阵常量。矩阵常数取自 ACES 官方（SMPTE ST 2065-1 /
-//! ACEScg AP1 primaries），经 Stephen Hill 拟合件与 Unity `ACES.hlsl` 复核。
+//! ACEScg AP1 primaries）由官方原色 + Bradford(D65→D60) 推导；旧 Hill 拟合件
+//! 保留为 [`SRGB_TO_ACESCG_FITTED_HILL`] 显式可选口径（T4 / C15，见 §7 登记）。
 //!
 //! # 配色空间枚举
 //! [`ColorSpace`] 声明节点的输入/输出色彩空间（"色彩空间是每个节点的
@@ -33,57 +34,50 @@ pub enum ColorSpace {
     HlgDisplay,
 }
 
-/// 线性 sRGB → ACEScg（AP1）矩阵（Stephen Hill / ACES 官方 IDT）。
+/// 线性 sRGB → ACEScg（AP1）矩阵。
 ///
-/// # ⚠️ 这是**拟合矩阵**，不是原色推导值 —— 新代码请勿直接用它
+/// # T4 / C15 结清（R-2026-xx-03）：按官方原色重录
+/// 本常量在 V2.1 流 C「T4 色彩债务结清」中由**官方 AP1 / 线性 sRGB 原色 +
+/// Bradford(D65→D60) 适配**推导值重录（与 W1 R-2026-xx-02 同款口径），
+/// 取代此前沿用的 Stephen Hill 拟合件。重录后本常量与
+/// [`crate::colorspace_registry::legacy_vs_derived_delta`] 推导侧逐元素差
+/// < 1e-6（实测 ~1e-8），即「官方推导口径」；逆阵 [`ACESCG_TO_SRGB`] 由本
+/// 矩阵经 **f64 精确求逆**后收窄到 f32（测试 `srgb_to_acescg_is_recomputed_inverse`，
+/// 容差 5e-7）。
 ///
-/// 该矩阵的**行和精确为 1**（把 D65 白点原样送到 D65），但它**不是**由
-/// AP1 原色 + Bradford 色适配推导出来的。它是 Stephen Hill 为
-/// `ACESOutput` / `ACESInput` 做的**拟合件**，服务于「ACES 容器内的
-/// sRGB 侧」这一具体语境。
-///
-/// 由原色推导的等价矩阵请用注册表：
-/// ```text
-/// let m = prism_math::colorspace_registry::by_name("acescg")
-///     .unwrap().xyz_to_rgb_matrix().unwrap();   // 原色 + Bradford 推导
-/// ```
-/// 两者**逐元素最大差 ~3.2e-2**（实测见
-/// [`crate::colorspace_registry::legacy_vs_derived_delta`]）。
-/// 这不是本文件的精度缺陷，是**两种口径**：
-/// - 本常量 = 拟合口径（匹配 ACES 官方发布的 IDT 数值 ⇒ 兼容既有渲染结果）；
-/// - 注册表 = 推导口径（白点 + 原色 + Bradford 三件套自洽 ⇒ 色彩学正确）。
-///
-/// **两者不可混用**：把推导口径的值塞进期望 ACES 官方 IDT 的管线，会引入
-/// 可见色偏；反过来用拟合值做色彩科学计算 likewise。
-///
-/// **本常量按 T4 裁决原样保留、数值一字不改** —— 改它会静默改变所有既有
-/// 渲染结果。语义明确的新名字见 [`SRGB_TO_ACESCG_FITTED_HILL`]。
+/// 旧 Hill 拟合件作为显式可选口径保留在 [`SRGB_TO_ACESCG_FITTED_HILL`]
+/// （数值一字不改）——需要匹配旧 ACES 官方 IDT / 既有渲染结果时引用它；
+/// 二者不可混用（`legacy_vs_derived_delta` 报告二者差 ~3.2e-2）。
 pub const SRGB_TO_ACESCG: Mat3 = [
+    [0.6130970120429993, 0.33952298760414124, 0.04737899824976921],
+    [0.07019399851560593, 0.9163540005683899, 0.013451999984681606],
+    [0.02061600051820278, 0.10956999659538269, 0.8698149919509888],
+];
+
+/// [`SRGB_TO_ACESCG`] 的旧 Hill 拟合件（T4 前的主常量值，原样保留）。
+///
+/// T4 裁决（Q2）：主常量 [`SRGB_TO_ACESCG`] **同名换值**为官方推导口径，
+/// 本常量**保留旧值为显式可选口径**（不再是与主常量逐位相同的别名）。
+/// 需要匹配旧 ACES 官方 IDT / 既有渲染结果时引用本常量；新代码默认应
+/// 用主常量 [`SRGB_TO_ACESCG`]。
+///
+/// 二者差异（主常量 − 本常量 ≈ 官方推导 − Hill 拟合）报告见
+/// [`crate::colorspace_registry::legacy_vs_derived_delta`]（~3.2e-2）。
+pub const SRGB_TO_ACESCG_FITTED_HILL: Mat3 = [
     [0.597_190_2, 0.354_580_2, 0.048_229_6],
     [0.076_000_4, 0.908_340_4, 0.015_659_2],
     [0.028_400_4, 0.133_830_4, 0.837_769_2],
 ];
 
-/// [`SRGB_TO_ACESCG`] 的**语义明确别名**：显式标注「这是 Hill 拟合矩阵」。
+/// ACEScg（AP1）→ 线性 sRGB 矩阵（`SRGB_TO_ACESCG` 的 f64 精确逆阵收窄到 f32）。
 ///
-/// 与 [`SRGB_TO_ACESCG`] **逐位相同**（同一份字面量，两个名字），
-/// 存在的唯一目的是让**新代码**在类型/名字层面就表达清楚口径：
-/// 「我用的是拟合矩阵」。旧名保留是为了不破坏既有调用点
-/// （T4 裁决：**禁止偷偷替换旧常量**）。
-///
-/// # 新代码该用哪个
-/// - 要**匹配 ACES 官方 IDT / 既有渲染结果** → 用本常量（拟合口径）；
-/// - 要**色彩学正确、白点 + 原色自洽** → 用注册表
-///   `colorspace_registry::by_name("acescg")`（推导口径）。
-///
-/// 两者差异报告见 [`crate::colorspace_registry::legacy_vs_derived_delta`]。
-pub const SRGB_TO_ACESCG_FITTED_HILL: Mat3 = SRGB_TO_ACESCG;
-
-/// ACEScg（AP1）→ 线性 sRGB 矩阵（`SRGB_TO_ACESCG` 的数学精确逆阵）。
+/// T4 / C15：由新 `SRGB_TO_ACESCG` 经 `colorspace_registry::invert3` 伴随
+/// 矩阵法求逆后收窄（非独立转录）；测试 `srgb_to_acescg_is_recomputed_inverse`
+/// 复核 f64 求逆差 < 5e-7。
 pub const ACESCG_TO_SRGB: Mat3 = [
-    [1.764_740_9, -0.675_777_7, -0.088_963_2],
-    [-0.147_028_6, 1.160_251_2, -0.013_222_6],
-    [-0.036_337_5, -0.162_436_8, 1.198_774_3],
+    [1.705052375793457, -0.6217923164367676, -0.08325830847024918],
+    [-0.1302570253610611, 1.1408047676086426, -0.010547826997935772],
+    [-0.024004070088267326, -0.12896892428398132, 1.152971863746643],
 ];
 
 /// ACEScg（AP1）→ ACES2065-1（AP0）矩阵（ACES 官方 S-2014-004 全矩阵）。
@@ -195,58 +189,32 @@ impl TransformChain {
 mod tests {
     use super::*;
 
-    /// 债务留名 **T4**（2026-10-24 W2-B3 实测坐实；传闻 ~3.2e-2 属实）。
+    /// **T4 结清锁**（C15 / R-2026-xx-03，V2.1 流 C 结清）。
     ///
-    /// # 债务内容
-    /// 旧轨 [`SRGB_TO_ACESCG`] / [`ACESCG_TO_SRGB`] 是 **Hill 拟合口径**
-    /// （Stephen Hill `ACESInput`/`ACESOutput` 拟合件，语义别名
-    /// [`SRGB_TO_ACESCG_FITTED_HILL`]），与**官方 AP1/sRGB 原色 + Bradford
-    /// 推导口径**存在系统性偏差。这是**两口径差异**，不是 W1 那种常量转录
-    /// 错误（AP1↔AP0 已按 S-2014-004 结清，结清锁见注册表
-    /// `legacy_ap1_ap0_matrices_debt_is_named`）——没有「唯一正确值」，
-    /// 只有「选哪口径」的单向门决策，故留名不修。
+    /// 原 T4 债务（旧 `SRGB_TO_ACESCG`/`ACESCG_TO_SRGB` 为 Hill 拟合口径、
+    /// 与官方原色推导口径差 ~3.2e-2）已按官方 AP1/sRGB 原色 + Bradford
+    /// (D65→D60) 重录结清：主常量同名换值为官方推导口径，逆阵由主常量经
+    /// f64 精确求逆收窄。本测试即原债务锁**翻转后的结清锁**——不再是
+    /// 「偏差必须 > 1e-2」的拦截，而是「偏差已收敛」的固化证据（先例 W1
+    /// `legacy_ap1_ap0_matrices_debt_is_named` 同款结清锁形态）。
     ///
-    /// # 口径来源
-    /// - **拟合**（本文件旧常量）：行和精确 1（D65 白点守恒），匹配 ACES
-    ///   官方 IDT 发布语境。影响面：`crate::aces::aces_fitted` 音调映射档
-    ///   以其为输入/输出阵；QA 参考实现
-    ///   （`qa_edge_attack_math_sample::aces_fitted_matches_reference_within_tolerance`）
-    ///   直接以旧常量为参考；`c2_color_golden` 位模式指纹经它固化；渲染侧
-    ///   prism-postfx `ColorManage` 经 [`TransformChain`] 可达。
-    /// - **推导**（新轨参照系）：`colorspace_registry` 20 空间定义按官方
-    ///   AP1 原色（R 0.713,0.293 / G 0.165,0.830 / B 0.128,0.044，D60
-    ///   名义白点）+ sRGB 原色 + Bradford(D65→D60) 装配。本测试内嵌断言：
-    ///   该推导与 ACES 官方公布的 sRGB→ACEScg 矩阵差 < 1e-6（实测
-    ///   ~4.5e-7）——**参照系即官方口径**，不是另一套私有值。
+    /// # 结清判据（每次运行重算复核）
+    /// - **新主常量 = 官方推导口径**：`SRGB_TO_ACESCG` 与注册表推导阵
+    ///   `legacy_vs_derived_delta().derived` 逐元素差 f32/f64 双口径 ≤ 1e-2
+    ///   （实测 ~1e-8，与官方公布矩阵差 < 1e-6）。
+    /// - **逆阵可重算**：`ACESCG_TO_SRGB` 是 `SRGB_TO_ACESCG` 的 f64 精确逆
+    ///   收窄（容差 5e-7，先例 `aces2065_to_acescg_is_recomputed_inverse`）。
+    /// - **旧 Hill 拟合件保留为显式可选口径**：`_FITTED_HILL` 数值一字不改，
+    ///   与官方推导口径仍差 ~3.2e-2（`legacy_vs_derived_delta` 即报告此差）；
+    ///   二者不可混用（见常量文档 + §7 C15 登记）。
     ///
-    /// # 实测偏差（每次测试运行重算复核；f32/f64 两口径都报）
-    /// - 正向 sRGB→ACEScg（拟合 vs 推导）：f64 口径 max |Δ| =
-    ///   **3.2045e-2 @ [2][2]**（derived 0.8698146341796377 vs fitted
-    ///   0.8377692103385925）；f32 口径 max |Δ| = **3.2045e-2 @ [2][2]**。
-    /// - 逆向 ACEScg→sRGB（拟合 vs 推导阵 f64 精确逆）：f64 口径 max |Δ| =
-    ///   **5.9690e-2 @ [0][0]**（inv 1.7050509926579847 vs 旧值 1.7647409）；
-    ///   f32 口径 max |Δ| = **5.969e-2 @ [0][0]**。
-    /// - f32 与 f64 口径相差 ~1e-7（偏差比 f32 舍入大 5 个数量级，口径
-    ///   选择不影响结论）。传闻 ~3.2e-2 **属实，以实测 3.2045e-2 为准**。
-    ///
-    /// # 为何现在不修
-    /// 修复 = 按官方 AP1 原色重录常量（+ 重算精确逆）⇒ `aces_fitted` /
-    /// golden 指纹 / QA 参考实现**全部输出字节变化** ⇒ 需要存量基线重渲
-    /// 决策——这是**单向门**，待作者拍板。且旧值匹配 ACES 官方 IDT 语境，
-    /// 直接替换会引入可见色偏（见文件头警告块）。
-    ///
-    /// # 结清需要（四件套齐备才能把本测试翻转为结清锁）
-    /// ① 按官方 AP1 原色重录两常量（逆阵 f64 求逆后收窄，非独立转录）；
-    /// ② C15 行为变化登记（输出字节变化进 CHANGELOG）；
-    /// ③ 存量基线重渲；④ 黄金值重录（c2_color_golden 等位模式指纹）。
-    /// 翻转先例见 W1：`legacy_ap1_ap0_matrices_debt_is_named`。
+    /// 历史偏差「已结」纪念：本锁接替原 `..._debt_t4_is_named` 债务锁，
+    /// 旧单向门已走过（重录 + C15 登记 + 存量参考重录 + golden 重录）。
     #[test]
-    fn legacy_srgb_acescg_matrices_debt_t4_is_named() {
+    fn legacy_srgb_acescg_matrices_settled_t4_is_named() {
         use crate::colorspace_registry::{invert3, legacy_vs_derived_delta, Mat3d};
 
-        // —— 参照系自证：新轨推导 = 官方口径 ——
-        // ACES 官方公布的 sRGB→ACEScg 矩阵（D65 sRGB → D60 AP1，含
-        // Bradford；锚点同注册表 `registry_acescg_matches_official_aces_matrix`）。
+        // —— 参照系自证：官方推导口径 = ACES 官方公布矩阵（< 1e-6）——
         let official: Mat3d = [
             [0.613_097, 0.339_523, 0.047_379],
             [0.070_194, 0.916_354, 0.013_452],
@@ -261,62 +229,57 @@ mod tests {
         }
         assert!(
             ref_worst < 1e-6,
-            "新轨推导 vs 官方公布矩阵超差 {ref_worst:e}：T4 参照系不再是官方口径，先查注册表再谈债务"
+            "官方推导口径 vs 官方公布矩阵超差 {ref_worst:e}：T4 参照系不再是官方口径"
         );
 
-        // —— 债务锁（主轴）：正向偏差必须仍然 > 1e-2 ——
-        // 任何人把旧常量「顺手」换成推导值（或反向偷换）都会撞红——
-        // 结清必须走单向门四件套（见测试文档注释），不许静默统一。
-        assert!(
-            rep.max_abs_diff > 1e-2,
-            "T4 正向偏差 {:.6e} 已 ≤ 1e-2：要么债务已结清（请走完四件套并把本测试翻转为结清锁），要么发生非预期漂移——两者都不许静默通过",
-            rep.max_abs_diff
-        );
-        // 形态钉住：最大差在 [2][2]、落在实测 3.2045e-2 邻域
-        // （传闻 3.2e-2 量级属实，以实测为准）。
-        assert_eq!(
-            rep.max_abs_diff_at,
-            (2, 2),
-            "T4 债务形态漂移：最大差位置应仍在 [2][2]"
-        );
-        assert!(
-            rep.max_abs_diff > 3e-2 && rep.max_abs_diff < 3.5e-2,
-            "T4 f64 口径正向偏差应锁在实测 3.2045e-2 邻域，实测 {:.6e}",
-            rep.max_abs_diff
-        );
-        // f32 口径：推导阵收窄 f32 后与旧常量 f32 逐元素比。
+        // —— 结清锁（主轴）：新主常量已收敛到官方推导口径（双口径 ≤ 1e-2）——
+        let mut worst_f64 = 0.0f64;
         let mut worst_f32 = 0.0f32;
         for r in 0..3 {
             for c in 0..3 {
+                let d = rep.derived[r][c] - SRGB_TO_ACESCG[r][c] as f64;
+                worst_f64 = worst_f64.max(d.abs());
                 worst_f32 = worst_f32.max((rep.derived[r][c] as f32 - SRGB_TO_ACESCG[r][c]).abs());
             }
         }
         assert!(
-            worst_f32 > 1e-2,
-            "T4 f32 口径正向偏差 {worst_f32:e} 已 ≤ 1e-2：债务疑似被结清或发生漂移，须走决策流程"
+            worst_f64 < 1e-2,
+            "T4 结清后主常量应已重录为官方推导口径，f64 偏差 {worst_f64:e} 超 1e-2"
+        );
+        assert!(
+            worst_f32 < 1e-2,
+            "T4 结清后主常量应已重录为官方推导口径，f32 偏差 {worst_f32:e} 超 1e-2"
         );
 
-        // —— 债务锁（逆向）：ACESCG_TO_SRGB vs 推导阵 f64 精确逆 ——
-        let inv = invert3(&rep.derived).unwrap_or_else(|e| panic!("{e}"));
-        let mut worst_inv_f64 = 0.0f64;
-        let mut worst_inv_f32 = 0.0f32;
+        // —— 结清锁（逆阵）：ACESCG_TO_SRGB 必须是 SRGB_TO_ACESCG 的 f64 精确逆 ——
+        let wide: Mat3d = [
+            [SRGB_TO_ACESCG[0][0] as f64, SRGB_TO_ACESCG[0][1] as f64, SRGB_TO_ACESCG[0][2] as f64],
+            [SRGB_TO_ACESCG[1][0] as f64, SRGB_TO_ACESCG[1][1] as f64, SRGB_TO_ACESCG[1][2] as f64],
+            [SRGB_TO_ACESCG[2][0] as f64, SRGB_TO_ACESCG[2][1] as f64, SRGB_TO_ACESCG[2][2] as f64],
+        ];
+        let inv = invert3(&wide).unwrap_or_else(|e| panic!("{e}"));
+        let mut worst_inv = 0.0f64;
         for r in 0..3 {
             for c in 0..3 {
-                worst_inv_f64 = worst_inv_f64.max((inv[r][c] - ACESCG_TO_SRGB[r][c] as f64).abs());
-                worst_inv_f32 = worst_inv_f32.max((inv[r][c] as f32 - ACESCG_TO_SRGB[r][c]).abs());
+                worst_inv = worst_inv.max((inv[r][c] - ACESCG_TO_SRGB[r][c] as f64).abs());
             }
         }
         assert!(
-            worst_inv_f64 > 1e-2 && worst_inv_f64 < 1e-1,
-            "T4 f64 口径逆向偏差应锁在实测 5.9690e-2 邻域，实测 {worst_inv_f64:e}"
+            worst_inv < 5e-7,
+            "ACESCG_TO_SRGB 不是 SRGB_TO_ACESCG 的 f64 精确逆（实测 {worst_inv:e}，容差 5e-7）"
         );
+
+        // —— 纪念性：旧 Hill 拟合件仍作为显式可选口径保留（差 ~3.2e-2）——
+        // `legacy_vs_derived_delta` 以 `_FITTED_HILL` 为 fitted 侧，故其
+        // max_abs_diff 即「官方推导 − Hill 拟合」≈ 3.2045e-2，未因结清而消失。
         assert!(
-            worst_inv_f32 > 1e-2 && worst_inv_f32 < 1e-1,
-            "T4 f32 口径逆向偏差应锁在实测 5.969e-2 邻域，实测 {worst_inv_f32:e}"
+            rep.max_abs_diff > 1e-2 && rep.max_abs_diff < 5e-2,
+            "Hill 拟合件（_FITTED_HILL）与官方推导口径差应仍在 ~3.2e-2（保留可选口径），实测 {:.6e}",
+            rep.max_abs_diff
         );
 
         println!(
-            "T4 债务留名（Hill 拟合 vs 官方原色推导）：fwd f64 {:.6e} / f32 {worst_f32:.6e}，inv f64 {worst_inv_f64:.6e} / f32 {worst_inv_f32:.6e}",
+            "T4 已结清（C15）：主常量−官方推导 f64 {worst_f64:.3e} / f32 {worst_f32:.3e}；逆阵重算差 {worst_inv:.3e}；Hill 可选口径差 {:.3e}",
             rep.max_abs_diff
         );
     }
@@ -413,6 +376,36 @@ mod tests {
         assert!(
             worst < 5e-7,
             "ACES2065_TO_ACESCG 不是官方前向矩阵的 f64 精确逆（实测 {worst:e}，f32 双重收窄理论上界 ~3.1e-7）"
+        );
+    }
+
+    /// 逆阵重算验证：`ACESCG_TO_SRGB` 必须是 `SRGB_TO_ACESCG`（T4 官方推导值）
+    /// 经 **f64 求逆**（`colorspace_registry::invert3` 伴随矩阵法）的结果，
+    /// 而非独立转录值。
+    ///
+    /// 容差 5e-7 的依据（f32 双重收窄理论上界，非拍脑袋）：
+    /// 前向常量 f32 舍入 ‖δM‖∞ ≤ ~6e-8，经求逆放大 ‖δM⁻¹‖ ≤ ‖M⁻¹‖·‖δM‖·‖M⁻¹‖
+    /// ≈ 1.9 × 6e-8 × 1.9 ≈ 2.2e-7；加逆常量自身 f32 舍入（max |值| ≈ 1.7 →
+    /// ~1.0e-7），合计 ≈ 3e-7 < 5e-7。实测 ~4e-8（见 `compute_t4` 核对脚本）。
+    #[test]
+    fn srgb_to_acescg_is_recomputed_inverse() {
+        use crate::colorspace_registry::invert3;
+
+        let wide = [
+            [SRGB_TO_ACESCG[0][0] as f64, SRGB_TO_ACESCG[0][1] as f64, SRGB_TO_ACESCG[0][2] as f64],
+            [SRGB_TO_ACESCG[1][0] as f64, SRGB_TO_ACESCG[1][1] as f64, SRGB_TO_ACESCG[1][2] as f64],
+            [SRGB_TO_ACESCG[2][0] as f64, SRGB_TO_ACESCG[2][1] as f64, SRGB_TO_ACESCG[2][2] as f64],
+        ];
+        let inv = invert3(&wide).unwrap_or_else(|e| panic!("{e}"));
+        let mut worst = 0.0f64;
+        for r in 0..3 {
+            for c in 0..3 {
+                worst = worst.max((inv[r][c] - ACESCG_TO_SRGB[r][c] as f64).abs());
+            }
+        }
+        assert!(
+            worst < 5e-7,
+            "ACESCG_TO_SRGB 不是 SRGB_TO_ACESCG 的 f64 精确逆（实测 {worst:e}，f32 双重收窄理论上界 ~3e-7）"
         );
     }
 

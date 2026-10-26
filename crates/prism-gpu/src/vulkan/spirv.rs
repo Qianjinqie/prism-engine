@@ -90,6 +90,11 @@ pub const OP_CONVERT_F_TO_U: u32 = 109;
 pub const OP_CONVERT_U_TO_F: u32 = 112;
 /// `OpBitcast`（位型重解释；f32 ↔ u32 零开销，无舍入）。
 pub const OP_BITCAST: u32 = 124;
+/// `OpFNegate`（浮点取负；**逐位等于** Rust 的一元 `-x`，含 ±0 与 NaN 符号位）。
+///
+/// 光追 kernel 的 `-b - sqrt(disc)` 若写成 `0.0 - b - sqrt` 会在 `b == ±0.0`
+/// 时改动零的符号（`0.0 - 0.0 = +0.0`，而 `-0.0` 是 `-0.0`），故显式取负。
+pub const OP_F_NEGATE: u32 = 127;
 /// `OpIAdd`（整数加，模 2^32 回绕）。
 pub const OP_I_ADD: u32 = 128;
 /// 指令 `OpFAdd`（浮点加）。
@@ -109,14 +114,32 @@ pub const OP_F_MUL: u32 = 133;
 pub const OP_F_DIV: u32 = 136;
 /// `OpLogicalOr`。
 pub const OP_LOGICAL_OR: u32 = 166;
+/// `OpLogicalAnd`（布尔与；组合「disc ≥ 0 ∧ t > 0 ∧ t < closest」三重判据）。
+pub const OP_LOGICAL_AND: u32 = 167;
+/// `OpLogicalNot`（布尔取反）。
 /// `OpSelect`（条件选择；无分支，故不需要结构化控制流）。
 pub const OP_SELECT: u32 = 169;
 /// `OpUGreaterThanEqual`（无符号 ≥）。
 pub const OP_U_GREATER_THAN_EQUAL: u32 = 174;
+/// `OpULessThan`（无符号 <；用于 ray/sphere 与 light 动态循环的上界判断、
+/// 以及「命中下标 < 球数」= 是否命中的判据）。
+///
+/// ⚠️ **编号勘误（V2.1 T-A1）**：上一轮中断施工遗留的值 `170` 实为
+/// `OpIEqual`（整数相等），用它会得到「球数 == 循环下标」这一**完全不同**的
+/// 谓词——类型仍合法（u32 比 u32），驱动不报错，只会静默算错图。
+/// 本值经 `spirv-as`/`spirv-dis`（SPIR-V 1.0 官方工具链）实测复核为 `176`。
+pub const OP_U_LESS_THAN: u32 = 176;
+/// `OpINotEqual`（整数 ≠；用于把 u32 标志位（0/1）转成布尔谓词）。
+pub const OP_I_NOT_EQUAL: u32 = 171;
 /// `OpFOrdLessThan`（有序浮点 <；NaN 为假）。
 pub const OP_F_ORD_LESS_THAN: u32 = 184;
 /// `OpFOrdGreaterThan`（有序浮点 >；NaN 为假）。
 pub const OP_F_ORD_GREATER_THAN: u32 = 186;
+/// `OpFOrdGreaterThanEqual`（有序浮点 ≥；NaN 为假）。
+///
+/// 与 Rust 的 `a >= b` 语义逐位一致（NaN 参与时两边都为 `false`）——这是
+/// 光追 kernel「`disc >= 0` 才算相交」与 CPU 参考对拍的前提。
+pub const OP_F_ORD_GREATER_THAN_EQUAL: u32 = 190;
 /// `OpShiftRightLogical`（逻辑右移，高位补 0）。
 pub const OP_SHIFT_RIGHT_LOGICAL: u32 = 194;
 /// `OpShiftLeftLogical`。
@@ -127,6 +150,19 @@ pub const OP_BITWISE_OR: u32 = 197;
 pub const OP_BITWISE_XOR: u32 = 198;
 /// `OpSelectionMerge`（结构化选择头；**必须紧邻**其后的分支指令）。
 pub const OP_SELECTION_MERGE: u32 = 247;
+/// `OpLoopMerge`（结构化循环头；**必须紧邻**其后的分支指令）。
+///
+/// 光追 megakernel 用它对球体 / 光源做**动态循环**（循环次数 = 实体个数，
+/// 运行时取自参数块，不能展开），是背景 kernel（纯逐点、无循环）之外的第二
+/// 种结构化控制流。lavapipe 实机真实执行。
+pub const OP_LOOP_MERGE: u32 = 246;
+/// `OpLogicalNot`（布尔取反；把 `a >= 0` 类的判据改写成 `!(a < 0)` 时用）。
+///
+/// ⚠️ **编号勘误（V2.1 T-A1）**：上一轮中断施工遗留的值 `167` 实为
+/// `OpLogicalAnd`——把 `!(a < b)` 发射成 `a && b` 是**类型合法但语义全错**的
+/// 指令（两者都接两个 bool），驱动不会报错，只会静默算错。本值经
+/// `spirv-as`/`spirv-dis`（SPIR-V 1.0 官方工具链）实测复核为 `168`。
+pub const OP_LOGICAL_NOT: u32 = 168;
 /// `OpBranch`。
 pub const OP_BRANCH: u32 = 249;
 /// `OpBranchConditional`。
@@ -165,6 +201,7 @@ const ALLOWED_OPCODES: &[u32] = &[
     OP_CONVERT_F_TO_U,
     OP_CONVERT_U_TO_F,
     OP_BITCAST,
+    OP_F_NEGATE,
     OP_I_ADD,
     OP_F_ADD,
     OP_F_SUB,
@@ -172,15 +209,21 @@ const ALLOWED_OPCODES: &[u32] = &[
     OP_F_MUL,
     OP_F_DIV,
     OP_LOGICAL_OR,
+    OP_LOGICAL_AND,
+    OP_LOGICAL_NOT,
     OP_SELECT,
     OP_U_GREATER_THAN_EQUAL,
+    OP_U_LESS_THAN,
+    OP_I_NOT_EQUAL,
     OP_F_ORD_LESS_THAN,
     OP_F_ORD_GREATER_THAN,
+    OP_F_ORD_GREATER_THAN_EQUAL,
     OP_SHIFT_RIGHT_LOGICAL,
     OP_SHIFT_LEFT_LOGICAL,
     OP_BITWISE_OR,
     OP_BITWISE_XOR,
     OP_SELECTION_MERGE,
+    OP_LOOP_MERGE,
     OP_LABEL,
     OP_BRANCH,
     OP_BRANCH_CONDITIONAL,
@@ -219,6 +262,7 @@ pub fn opcode_name(op: u32) -> &'static str {
         OP_CONVERT_F_TO_U => "OpConvertFToU",
         OP_CONVERT_U_TO_F => "OpConvertUToF",
         OP_BITCAST => "OpBitcast",
+        OP_F_NEGATE => "OpFNegate",
         OP_I_ADD => "OpIAdd",
         OP_F_ADD => "OpFAdd",
         OP_F_SUB => "OpFSub",
@@ -226,15 +270,21 @@ pub fn opcode_name(op: u32) -> &'static str {
         OP_F_MUL => "OpFMul",
         OP_F_DIV => "OpFDiv",
         OP_LOGICAL_OR => "OpLogicalOr",
+        OP_LOGICAL_AND => "OpLogicalAnd",
+        OP_LOGICAL_NOT => "OpLogicalNot",
         OP_SELECT => "OpSelect",
         OP_U_GREATER_THAN_EQUAL => "OpUGreaterThanEqual",
+        OP_U_LESS_THAN => "OpULessThan",
+        OP_I_NOT_EQUAL => "OpINotEqual",
         OP_F_ORD_LESS_THAN => "OpFOrdLessThan",
         OP_F_ORD_GREATER_THAN => "OpFOrdGreaterThan",
+        OP_F_ORD_GREATER_THAN_EQUAL => "OpFOrdGreaterThanEqual",
         OP_SHIFT_RIGHT_LOGICAL => "OpShiftRightLogical",
         OP_SHIFT_LEFT_LOGICAL => "OpShiftLeftLogical",
         OP_BITWISE_OR => "OpBitwiseOr",
         OP_BITWISE_XOR => "OpBitwiseXor",
         OP_SELECTION_MERGE => "OpSelectionMerge",
+        OP_LOOP_MERGE => "OpLoopMerge",
         OP_LABEL => "OpLabel",
         OP_BRANCH => "OpBranch",
         OP_BRANCH_CONDITIONAL => "OpBranchConditional",
@@ -266,6 +316,14 @@ pub const STORAGE_CLASS_UNIFORM: u32 = 2;
 /// 旧版误用 `Uniform`+`BufferBlock`（OpenGL 口味）导致 lavapipe
 /// `vkCreateComputePipelines` 返回 `VK_ERROR_INVALID_SHADER_NV`）。
 pub const STORAGE_CLASS_STORAGE_BUFFER: u32 = 12;
+/// 存储类：`Function`（函数局部变量）。
+///
+/// 光追 kernel 的循环携带值（最近命中距离、命中下标、循环计数器、颜色累加器）
+/// 用 `OpVariable %ptr_Function_*` + `OpStore`/`OpLoad` 存取，**刻意不用
+/// `OpPhi`**：不需要为每个循环头维护前驱列表（少一整类「前驱写错 ⇒ 驱动崩溃」
+/// 的缺陷面），且与 CPU 参考的「可变局部量」逐句对应，可读性更好。
+/// 函数局部变量必须位于函数**首块**且在所有其它指令之前（SPIR-V 规范）。
+pub const STORAGE_CLASS_FUNCTION: u32 = 7;
 /// 装饰：`Block`（Vulkan SSBO 结构体装饰；配对 `StorageBuffer` 存储类）。
 pub const DECORATION_BLOCK: u32 = 2;
 /// 装饰：`BufferBlock`（OpenGL 口味 UBO/SSBO 装饰；Vulkan 路径不用）。
@@ -547,14 +605,22 @@ pub static MODULES: &[(&str, &[u32])] = &[("spv_mul2_probe", MUL2)];
 ///
 /// 生成是纯函数（同输入必得同字节流），因此「运行期生成」不等于「不确定」：
 /// [`build_is_deterministic`](super::spirv_bg) 直接断言两次构建逐字相同。
+///
+/// 表内顺序 = 注册顺序（确定性）：背景帧 kernel 在前，光追场景 kernel 在后。
 pub fn generated_modules() -> &'static [(&'static str, &'static [u32])] {
     static GENERATED: std::sync::OnceLock<Vec<(&'static str, &'static [u32])>> =
         std::sync::OnceLock::new();
     GENERATED.get_or_init(|| {
-        vec![(
-            super::spirv_bg::MODULE_BACKGROUND,
-            super::spirv_bg::background_words(),
-        )]
+        vec![
+            (
+                super::spirv_bg::MODULE_BACKGROUND,
+                super::spirv_bg::background_words(),
+            ),
+            (
+                super::spirv_rt::MODULE_SCENE,
+                super::spirv_rt::scene_words(),
+            ),
+        ]
     })
 }
 
@@ -696,6 +762,16 @@ pub enum SpvError {
         /// 结构体成员数。
         count: usize,
     },
+    /// 结构化控制流被破坏：块未以终结指令收尾、块终结后仍有指令、
+    /// `OpLoopMerge`/`OpSelectionMerge` 未紧邻其后的分支、或分支目标不是 label。
+    ///
+    /// 光追 megakernel 引入动态循环（`OpLoopMerge` + 回边）后，这类缺陷的
+    /// 驱动侧表现是**进程级崩溃**（lavapipe 建管线时 SIGSEGV），故必须在
+    /// 无设备阶段静态拦下。
+    MalformedControlFlow {
+        /// 指令起始字下标。
+        at: usize,
+    },
 }
 
 impl SpvError {
@@ -718,6 +794,7 @@ impl SpvError {
             SpvError::BadFunctionSection { .. } => "bad-function-section",
             SpvError::AccessChainNotComposite { .. } => "access-chain-not-composite",
             SpvError::AccessChainMemberOutOfRange { .. } => "access-chain-member-out-of-range",
+            SpvError::MalformedControlFlow { .. } => "malformed-control-flow",
         }
     }
 }
@@ -845,10 +922,122 @@ fn check_access_chains(words: &[u32]) -> Result<(), SpvError> {
     Ok(())
 }
 
+/// **结构化控制流静态校验**：块终结性 + merge 指令位置 + 分支目标存在性。
+///
+/// 光追 megakernel 是**本仓第一个含动态循环**的模块（`OpLoopMerge` + 回边 +
+/// 嵌套选择）。这类模块的一处结构性错误（少一条 `OpBranch`、merge 指令后
+/// 直接跟 label、分支指向不存在的 id）在 lavapipe 上的表现不是「管线创建
+/// 失败」而是**建管线时进程崩溃**——整个测试二进制被带走。故把「块是否
+/// 以终结指令收尾」「merge 是否紧邻分支」「分支目标是否是已声明 label」
+/// 这三条最容易写错的结构契约静态钉死。
+///
+/// 只查结构，不查支配关系/嵌套合法性（完整验证需 `spirv-val`，本环境无）。
+fn check_control_flow(words: &[u32]) -> Result<(), SpvError> {
+    // ① 收集全部 label id（分支目标必须落在集合内）。
+    let mut labels: Vec<u32> = Vec::new();
+    let mut i = 5usize;
+    while i < words.len() {
+        let wc = (words[i] >> 16) as usize;
+        if wc == 0 || i + wc > words.len() {
+            break;
+        }
+        if words[i] & 0xFFFF == OP_LABEL && wc >= 2 {
+            labels.push(words[i + 1]);
+        }
+        i += wc;
+    }
+
+    // ② 逐块检查终结性。
+    let mut i = 5usize;
+    let mut in_block = false;
+    let mut terminated = true;
+    let mut prev_op: u32 = 0;
+    while i < words.len() {
+        let wc = (words[i] >> 16) as usize;
+        if wc == 0 || i + wc > words.len() {
+            break;
+        }
+        let op = words[i] & 0xFFFF;
+        let next = i + wc;
+        match op {
+            OP_LABEL => {
+                // 上一块必须以终结指令收尾（否则控制流会「掉进」下一块）。
+                if in_block && !terminated {
+                    return Err(SpvError::MalformedControlFlow { at: i });
+                }
+                in_block = true;
+                terminated = false;
+            }
+            OP_FUNCTION => {
+                in_block = false;
+                terminated = true;
+            }
+            OP_FUNCTION_END => {
+                if !terminated {
+                    return Err(SpvError::MalformedControlFlow { at: i });
+                }
+                in_block = false;
+                terminated = true;
+            }
+            OP_LOOP_MERGE | OP_SELECTION_MERGE => {
+                // merge 指令必须是块的倒数第二条：紧跟一条分支。
+                if next >= words.len() {
+                    return Err(SpvError::MalformedControlFlow { at: i });
+                }
+                let next_op = words[next] & 0xFFFF;
+                if next_op != OP_BRANCH && next_op != OP_BRANCH_CONDITIONAL {
+                    return Err(SpvError::MalformedControlFlow { at: i });
+                }
+                // 目标 label（LoopMerge: continue + merge；SelectionMerge: merge）必须存在。
+                let mut targets: &[u32] = &words[i + 1..i + 2];
+                if op == OP_LOOP_MERGE {
+                    if wc < 4 {
+                        return Err(SpvError::MalformedControlFlow { at: i });
+                    }
+                    targets = &words[i + 1..i + 3];
+                }
+                for &t in targets {
+                    if !labels.contains(&t) {
+                        return Err(SpvError::MalformedControlFlow { at: i });
+                    }
+                }
+            }
+            OP_BRANCH => {
+                if wc < 2 || !labels.contains(&words[i + 1]) {
+                    return Err(SpvError::MalformedControlFlow { at: i });
+                }
+                terminated = true;
+            }
+            OP_BRANCH_CONDITIONAL => {
+                // 操作数序：条件 + 真 label + 假 label（可选权重）。
+                if wc < 4 || !labels.contains(&words[i + 2]) || !labels.contains(&words[i + 3]) {
+                    return Err(SpvError::MalformedControlFlow { at: i });
+                }
+                // 条件分支的前一条必须是 merge 指令（结构化控制流的硬要求）。
+                if prev_op != OP_LOOP_MERGE && prev_op != OP_SELECTION_MERGE {
+                    return Err(SpvError::MalformedControlFlow { at: i });
+                }
+                terminated = true;
+            }
+            OP_RETURN => terminated = true,
+            _ => {
+                // 终结指令之后不得再有普通指令（块已结束）。
+                if in_block && terminated {
+                    return Err(SpvError::MalformedControlFlow { at: i });
+                }
+            }
+        }
+        prev_op = op;
+        i = next;
+    }
+    Ok(())
+}
+
 /// 结构验证：`words` 是完整模块（含 5 字头部）。
 ///
 /// 只做**结构**校验（不做类型/语义验算——那需 `spirv-val`）；额外检查
-/// `OpAccessChain` 的索引链形状（见私有函数 `check_access_chains`）。
+/// `OpAccessChain` 的索引链形状（见私有函数 `check_access_chains`）与
+/// 结构化控制流的块终结性（见私有函数 `check_control_flow`）。
 pub fn validate(words: &[u32], expect: &SpvExpect) -> Result<SpvSummary, SpvError> {
     if words.len() < 5 {
         return Err(SpvError::TooShort);
@@ -954,6 +1143,9 @@ pub fn validate(words: &[u32], expect: &SpvExpect) -> Result<SpvSummary, SpvErro
     }
     // 索引链形状：最后一道（也是最像驱动的一道）静态门禁。
     check_access_chains(words)?;
+    // 结构化控制流（循环/选择）：本仓首个含动态循环的模块即光追 megakernel，
+    // 结构错在驱动上表现为崩溃，故同样在无设备阶段拦下。
+    check_control_flow(words)?;
     opcodes.sort_unstable();
     opcodes.dedup();
 
@@ -1315,15 +1507,19 @@ mod tests {
         assert!(module("no_such_module").is_none());
         assert_eq!(
             module_names(),
-            vec!["spv_mul2_probe", "spv_background"],
+            vec!["spv_mul2_probe", "spv_background", "spv_scene"],
             "静态模块 + 发射器模块，顺序固定"
         );
-        // 手写字流只有一个；背景 kernel 由发射器生成 —— 两张表口径不混。
+        // 手写字流只有一个；两个发射器产物（背景帧 / 光追场景）——两张表口径不混。
         assert_eq!(MODULES.len(), 1);
-        assert_eq!(generated_modules().len(), 1);
+        assert_eq!(generated_modules().len(), 2);
         // 生成表指向 `OnceLock` 中的同一实例（指针稳定，FFI 传得出去）。
         let a = module("spv_background").expect("背景模块已注册");
         let b = module("spv_background").expect("背景模块已注册");
         assert_eq!(a.as_ptr(), b.as_ptr(), "同一模块须全程序唯一实例");
+        let c = module("spv_scene").expect("场景模块已注册");
+        let d = module("spv_scene").expect("场景模块已注册");
+        assert_eq!(c.as_ptr(), d.as_ptr(), "同一模块须全程序唯一实例");
+        assert_ne!(a.as_ptr(), c.as_ptr(), "两个模块不得共享同一字流");
     }
 }

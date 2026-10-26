@@ -13,15 +13,21 @@
 //! （`tests/vulkan_background_gpu.rs` 全像素对拍）。无窗口、无 swapchain、
 //! 无 graphics pipeline——本沙箱无显示器，也不需要一个逐点算子走光栅路。
 //!
-//! **光追场景管线仍未实装**：swapchain / render pass / graphics pipeline 全部
-//! 缺失，[`VulkanBackend::render_scene`] 如实返回 [`Framebuffer::empty`]
-//! （`is_valid() == false`），**绝不返回假帧**冒充成功。上层据此安全回退
-//! [`crate::CpuRefBackend`]。
+//! **光追场景帧已能出图（V2.1 T-A1）**：[`scene`] 用 4 绑定的 compute
+//! megakernel（[`spirv_rt`] 发射，含球/灯两层**动态循环**）离屏渲染
+//! [`crate::SceneRenderRequest`]，读回 RGBA8；与
+//! [`crate::CpuRefBackend::render_scene`] 的对拍判据分两层：① GPU **自跑双次
+//! 逐位一致**（确定性硬判据）；② 与 CPU 参考的**统计 diff**（光追含
+//! sqrt/除法/归一化，末位差异属预期，故跨后端只承诺视觉等价——C15 口径）。
+//! 仍然没有 swapchain / render pass / graphics pipeline：这是一个逐像素独立
+//! 算子，走光栅路只会引入格式转换与插值误差，对正确性毫无收益。
 //!
-//! [`VulkanBackend::is_available`] 的口径 = **compute 闭环自检通过**：
-//! 探测到设备但自检失败（无 ICD / 管线被拒 / 读回不符）一律 `false`。
-//! 它是「compute 可用」，**不是**「能渲染场景」；「能出背景帧」由
-//! [`VulkanBackend::frame_available`] 单独回答（真跑一帧 16×16 后缓存）。
+//! [`VulkanBackend::is_available`] 的口径 = **compute 自检 ∧ 渲染自检**：
+//! 探测到设备但任一自检失败（无 ICD / 管线被拒 / 读回不符）一律 `false`。
+//! 三条独立能力位各有自检、互不冒充：
+//! * [`VulkanBackend::compute_available`]：mul2 探针闭环；
+//! * [`VulkanBackend::frame_available`]：背景帧真跑一帧 16×16；
+//! * [`VulkanBackend::render_available`]：场景帧真跑一帧 4×4（V2.1 新增）。
 //!
 //! # 零第三方依赖（D-15）
 //!
@@ -82,16 +88,30 @@ pub mod spirv;
 /// [`crate::background`] 的语义发射）。产物经 [`spirv::module`] 统一取用。
 pub mod spirv_bg;
 
+/// 光追场景 kernel 的 **SPIR-V 生成**（含**动态循环**的 megakernel）。
+///
+/// 与 [`spirv_bg`] 同级：同一套发射器纪律，区别在本模块含两层 `OpLoopMerge`
+/// （球/灯循环，上界来自参数块，不展开）与两个 `Function` 局部变量块。
+/// 语义逐式对应 [`crate::CpuRefBackend::render_scene`]（球面求交 → 直接光 →
+/// aesthetic），产物经 [`spirv::module`] 以 `spv_scene` 取用。
+pub mod spirv_rt;
+
 /// compute pipeline 装配 + 队列提交（真机路径；有设备真跑，无设备如实报
 /// `DeviceUnavailable`，不假装跑过）。
 pub mod compute;
 
 /// **背景帧的 GPU 出图**：compute 离屏 → 字节读回 RGBA8（无窗口/swapchain）。
 ///
-/// 这是本后端第一条**真能出图**的路径（`render_scene` 的光追场景仍未实装）：
 /// SPIR-V（[`spirv_bg`]）→ compute pipeline → dispatch → fence → 读回，
 /// 输出与 [`crate::background::render_background_cpu`] 逐字节对拍。
 pub mod background;
+
+/// **光追场景帧的 GPU 出图**：同一套 compute 闭环，4 个绑定（参数/球/灯/输出）。
+///
+/// SPIR-V（[`spirv_rt`]）→ compute pipeline → dispatch → fence → 读回 RGBA8；
+/// 输出与 [`crate::CpuRefBackend::render_scene`] 做**统计对拍**（GPU 自跑双次
+/// 逐位一致是硬判据，跨后端视觉等价走统计阈值——见 `tests/qa_render_scene.rs`）。
+pub mod scene;
 
 // ---------------------------------------------------------------------------
 // 探测结果（跨平台可见的诊断结构）
@@ -258,8 +278,11 @@ impl Drop for VulkanContext {
 
 /// Vulkan 后端把手。
 ///
-/// 这是 **compute 路径的真机装配 + 真实设备探测**：它能真跑 kernel（含
-/// 背景帧出图），但**不是场景渲染器**——`render_scene` 仍未实装，见模块头注。
+/// 这是 **compute 路径的真机装配 + 真实设备探测**：它能真跑 kernel，并且
+/// **两条出图路径都已实装**——背景帧（[`background`]）与光追场景帧
+/// （[`scene`]，V2.1 T-A1）。没有图形管线（swapchain / render pass /
+/// graphics pipeline），因为这两条路径都是**逐点/逐像素独立算子**，走光栅路
+/// 只会引入格式转换与插值误差。
 ///
 /// # 手写 FFI + 运行期探测（硬要求直面）
 ///
@@ -273,19 +296,19 @@ impl Drop for VulkanContext {
 /// 5. `vkCreateDevice`（选一个 graphics 队列族，队列数 1，优先级 1.0）；
 /// 6. 成功 → 缓存 instance/device/queue/deviceName，`probed_device()` 返回 `true`。
 ///
-/// # `is_available()` 的口径：完整 dispatch 闭环，不是「有设备」
+/// # `is_available()` 的口径：**compute 自检 ∧ 渲染自检**，不是「有设备」
 ///
 /// 探测到设备只说明可枚举，不说明 SPIR-V 能被接受、描述符能绑、队列能提交、
-/// 读回值正确。[`VulkanBackend::is_available`] 因此委托
-/// [`VulkanBackend::compute_available`]：**首次调用真跑一遍 mul2 探针**并与
-/// CPU 参考逐位比对，结果缓存。任一环节失败 ⇒ `false`，无设备平台同样
-/// `false`（优雅降级，不 panic）。
+/// 读回值正确。V2.1（Q4 裁定）起本标志是**两项真跑自检的合取**：
 ///
-/// ⚠️ 语义边界（W4 收口）：`is_available() == true` 表示 **compute 可用**
-/// （以及随之而来的背景帧能力，由 [`VulkanBackend::frame_available`] 单独
-/// 自检）。它**不代表** `render_scene` 能出图——光追场景管线未实装，恒返回
-/// 空帧。需要场景帧的调用方仍应以返回帧的 `is_valid()` 为准回退
-/// [`crate::CpuRefBackend`]。
+/// * [`VulkanBackend::compute_available`]：mul2 探针闭环（首次调用真跑一次）；
+/// * [`VulkanBackend::render_available`]：`spv_scene` 真渲染一帧 4×4 并读回。
+///
+/// 任一环节失败 ⇒ `false`，无设备平台同样 `false`（优雅降级，不 panic）。
+///
+/// ⚠️ 语义边界：`is_available() == true` **蕴含** `render_scene` 能出有效帧
+/// （这正是 Q4 要闭合的组合：不再允许「报可用却出空帧」）。背景帧是另一条
+/// 独立能力位（[`VulkanBackend::frame_available`]），一条通过不替另一条背书。
 pub struct VulkanBackend {
     /// 探测会话结果（成功后持有 `VulkanContext`，`Drop` 时释放句柄）。
     ///
@@ -313,6 +336,15 @@ pub struct VulkanBackend {
     /// 读回长度 = `w*h*4`。二者都过才说明「GPU 能出这张图」。
     #[cfg(not(target_arch = "wasm32"))]
     frame_self_test: std::cell::Cell<Option<bool>>,
+    /// **光追场景帧路径**自检结果缓存（`None` = 尚未自检，V2.1 新增）。
+    ///
+    /// 语义：首次调用时真渲染一帧 4×4 单球（SPIR-V `spv_scene` → pipeline →
+    /// dispatch → 读回），确认读回长度恰为 `4*4*4` **且至少有一个非零字节**
+    /// （驱动若返回全零/半截缓冲，自检判失败——不把「空跑一趟」当能力）。
+    /// 与 `frame_self_test` 并列：背景帧与场景帧是两条**独立的** kernel 路径，
+    /// 一条通过不能替另一条背书。
+    #[cfg(not(target_arch = "wasm32"))]
+    render_self_test: std::cell::Cell<Option<bool>>,
 }
 
 impl VulkanBackend {
@@ -329,6 +361,7 @@ impl VulkanBackend {
                 probed_device,
                 compute_self_test: std::cell::Cell::new(None),
                 frame_self_test: std::cell::Cell::new(None),
+                render_self_test: std::cell::Cell::new(None),
             }
         }
         #[cfg(target_arch = "wasm32")]
@@ -436,7 +469,8 @@ impl VulkanBackend {
     }
 
     /// 探测成功时缓存的 `VkQueue` 句柄（以整数形式返回，便于诊断打印）；
-    /// 否则 `None`。**不用于渲染**（渲染管线未实装）。
+    /// 否则 `None`。**不用于图形渲染**：本后端的两条出图路径都走 compute
+    /// （同一个 compute 队列），没有 swapchain / graphics pipeline 需要它。
     #[cfg(not(target_arch = "wasm32"))]
     pub fn graphics_queue_handle(&self) -> Option<usize> {
         self.context
@@ -453,8 +487,8 @@ impl VulkanBackend {
     /// **不 panic、不返回假输出**。
     ///
     /// 注意：本方法与 [`GpuDevice::is_available`] 语义不同——后者刻画的是
-    /// 「能否 service `render_scene`」（渲染管线仍未实装，恒 `false`），
-    /// compute 派发是**另一条独立路径**。
+    /// 「能否 service `render_scene`」（compute 自检 ∧ 渲染自检），而本方法是
+    /// **任意 kernel 的通用 compute 派发**入口（探针 / 自定义 kernel）。
     pub fn compute_dispatch(
         &mut self,
         kernel: &crate::compute::KernelDesc,
@@ -476,11 +510,14 @@ impl VulkanBackend {
     /// 语义：首次调用时真渲染一帧 16×16 背景（SPIR-V → pipeline → dispatch →
     /// 读回），并检查读回长度恰为 `16*16*4`。结果缓存，失败不重试。
     ///
-    /// 与 [`GpuDevice::is_available`] 的分工是**本波契约收口的核心**：
-    /// * `is_available()` ≡ [`Self::compute_available`]：**compute 能用**
-    ///   （mul2 探针闭环），这是「设备侧计算能力」的口径；
-    /// * `frame_available()`：**能出背景帧**（真跑 kernel + 读回长度自洽）；
-    /// * `render_scene()`：光追场景，仍未实装（恒空帧）。
+    /// 三条能力位的分工（V2.1 起）：
+    /// * `is_available()` ≡ [`Self::compute_available`] ∧ [`Self::render_available`]
+    ///   ——「能否 service `render_scene`」；
+    /// * `frame_available()`：**能出背景帧**（真跑 16×16 kernel + 读回长度自洽）；
+    /// * [`Self::render_available`]：**能出光追场景帧**（真跑 4×4 探针帧）。
+    ///
+    /// 三条各自独立自检、互不背书：背景 kernel 与场景 kernel 是两份不同的
+    /// SPIR-V，绑定数与循环结构都不同。
     #[cfg(not(target_arch = "wasm32"))]
     pub fn frame_available(&self) -> bool {
         if let Some(v) = self.frame_self_test.get() {
@@ -501,6 +538,52 @@ impl VulkanBackend {
     #[cfg(target_arch = "wasm32")]
     pub fn frame_available(&self) -> bool {
         false
+    }
+
+    /// **光追场景帧路径**是否已在本设备上真跑通（V2.1 T-A1；`frame_available`
+    /// 的**场景侧**对应物）。
+    ///
+    /// 语义：首次调用时真渲染一帧 4×4 单球（`spv_scene` → pipeline → dispatch →
+    /// 读回），并检查两件事——① 读回长度恰为 `4*4*4`；② 至少有一个非零字节
+    /// （否则说明 kernel 根本没写出东西，不能算「能出图」）。结果缓存，失败不重试。
+    ///
+    /// 与 [`GpuDevice::is_available`] 的关系：`is_available()` =
+    /// `compute_available() && render_available()`（Q4 裁定的双自检），因此
+    /// 「报可用」等价于「compute 闭环通过**且**这一帧真的出得来」——
+    /// 杜绝「`is_available()==true` 但 `render_scene` 恒空帧」的组合。
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn render_available(&self) -> bool {
+        if let Some(v) = self.render_self_test.get() {
+            return v;
+        }
+        let v = match self.context.as_deref() {
+            Some(ctx) => verify_render_path(ctx),
+            None => false,
+        };
+        self.render_self_test.set(Some(v));
+        v
+    }
+
+    /// wasm32：无原生 Vulkan，恒 `false`。
+    #[cfg(target_arch = "wasm32")]
+    pub fn render_available(&self) -> bool {
+        false
+    }
+
+    /// **出场景帧**（compute 离屏 → 读回 RGBA8；诊断/测试入口）。
+    ///
+    /// 有设备上下文时真跑 kernel；无设备 / wasm / 超限尺寸时如实返回非 `Ok`
+    /// 报告（**不 panic、不返回假帧**）。[`GpuDevice::render_scene`] 是本方法
+    /// 的 `Framebuffer` 视图：失败时它返回空缓冲，让调用方回退 CPU。
+    pub fn render_scene_frame(&mut self, req: &SceneRenderRequest) -> scene::SceneFrameReport {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            scene::dispatch(self.context.as_deref(), req)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            scene::dispatch((), req)
+        }
     }
 
     /// **出背景帧**（compute 离屏 → 读回 RGBA8）。
@@ -807,44 +890,79 @@ fn verify_compute_path(ctx: &VulkanContext) -> bool {
         .all(|(e, g)| e.to_bits() == g.to_bits())
 }
 
+/// 在已建立的上下文中真跑一遍**场景帧探针**（4×4 单球），确认渲染路径可用。
+///
+/// 这是 [`VulkanBackend::render_available`] 的唯一判据。两条断言缺一不可：
+/// 1. **读回长度自洽**：恰为 `4*4*4` 字节（绑定/布局/读回口径对得上）；
+/// 2. **确有内容**：至少一个字节非零——`spv_scene` 会把未命中像素写成背景色
+///    `(0.04, 0.05, 0.08)`（量化后 (10, 13, 20)），全零只可能意味着 kernel
+///    根本没执行（或驱动返回了未写入的缓冲），那不是「能出图」。
+///
+/// 任一不满足 ⇒ `false`（上层回退 CPU），**不 panic**。
+#[cfg(not(target_arch = "wasm32"))]
+fn verify_render_path(ctx: &VulkanContext) -> bool {
+    let req = scene::self_test_request();
+    let expected = (req.width as usize) * (req.height as usize) * crate::BYTES_PER_PIXEL;
+    let report = scene::dispatch(Some(ctx), &req);
+    report.is_ok() && report.pixels.len() == expected && report.pixels.iter().any(|&b| b != 0)
+}
+
 impl Default for VulkanBackend {
     fn default() -> Self {
         Self::new()
     }
 }
-
 impl GpuDevice for VulkanBackend {
-    /// Vulkan 渲染管线尚未实装：**返回空缓冲而非假帧**。
+    /// **光追场景渲染**（V2.1 T-A1：从「恒空帧」改为真实出图）。
     ///
-    /// 刻意不返回一个全黑的有效帧去冒充成功——那会污染上层判对逻辑。
-    /// [`Framebuffer::empty`] 的 `is_valid() == false`，调用方据此回退 CPU。
+    /// 路径：[`scene::dispatch`]（4 绑定 compute megakernel → fence → 读回 RGBA8），
+    /// 输出与 [`crate::CpuRefBackend::render_scene`] 同构算法（球面求交 + 直接光
+    /// + Reinhard filmic，**全程不消费 ACES 矩阵**，故对拍基准不随 T4 移动）。
+    ///
+    /// # 诚实边界（三态，互不冒充）
+    ///
+    /// * **有设备且派发成功** ⇒ 返回 `is_valid()` 帧（`len == w*h*4`）；
+    /// * **无设备 / wasm** ⇒ [`Framebuffer::empty`]（`is_valid() == false`），
+    ///   调用方据此回退 [`crate::CpuRefBackend`]——**不返回全黑假帧**；
+    /// * **尺寸被拒**（零轴、维度 > [`crate::MAX_FRAMEBUFFER_DIM`]、字节 >
+    ///   [`crate::MAX_FRAMEBUFFER_BYTES`]）⇒ 原样回显尺寸的**拒绝缓冲**
+    ///   （零分配、秒回，与 CPU 参考同一 `Framebuffer` 契约）。
+    ///
     /// 本函数在任何平台、任何输入下都不 panic（C18）。
-    fn render_scene(&mut self, _req: &SceneRenderRequest) -> Framebuffer {
-        Framebuffer::empty()
+    fn render_scene(&mut self, req: &SceneRenderRequest) -> Framebuffer {
+        // 先按 Framebuffer 的尺寸契约分配：被拒时立即返回（不发起 dispatch，
+        // 也不按 u32::MAX² 空转）。
+        let mut fb = Framebuffer::new(req.width, req.height);
+        if !fb.is_valid() {
+            return fb;
+        }
+        let report = self.render_scene_frame(req);
+        if !report.is_ok() || report.pixels.len() != fb.pixels.len() {
+            // 无设备 / 派发失败 / 读回长度不符：诚实空帧（调用方回退 CPU）。
+            return Framebuffer::empty();
+        }
+        fb.pixels = report.pixels;
+        fb
     }
 
-    /// **如实**报告「**compute 可用**」——见
-    /// [`VulkanBackend::compute_available`]（首次调用真跑一次 mul2 探针并逐位
-    /// 比对 CPU 参考，结果缓存）。
+    /// **如实**报告「**compute 可用 ∧ 场景渲染可用**」（Q4 裁定的双自检）。
     ///
-    /// # 契约（W4 收口 W3 遗留 1）
+    /// # 契约（V2.1 T-A1 起）
     ///
-    /// 本值的语义是 **compute 可用**，不是「能渲染场景」。二者在本后端是
-    /// 不同路径，各自有独立的能力位：
-    /// * `is_available()` = compute 闭环自检（本函数）；
-    /// * [`Self::frame_available`] = 背景帧真跑通过（更强，独立缓存）；
-    /// * [`Self::render_scene`] = 光追场景，**仍未实装**（恒空帧）。
+    /// 本值的语义是「**能否 service [`GpuDevice::render_scene`]**」：
+    /// * [`Self::compute_available`]：mul2 探针的完整 dispatch 闭环真跑通过；
+    /// * [`Self::render_available`]：`spv_scene` 真渲染一帧 4×4 并读回长度自洽。
     ///
-    /// 选择「改文档 + 新增显式能力位」而不是改名/改语义：现有调用面（traits
-    /// 实现、上层 compute 消费方、测试）都把 `is_available` 当作「设备侧
-    /// 计算可用」消费，改名会波及全仓；而把它改成恒 `false` 又会丢掉真实
-    /// 能力信息。需要帧的调用方判据始终是返回帧的
-    /// [`Framebuffer::is_valid`]，不是本函数。
+    /// 两者都过才 `true`。这消灭了「`is_available()==true` 但 `render_scene`
+    /// 出空帧」的组合：渲染路径一旦被驱动拒绝（管线不兼容 / 读回不符），
+    /// 本标志立即塌成 `false`，上层据此回退 CPU。
+    ///
+    /// 无设备平台的每个分支都是 `false`（不 panic、不假装）。
     fn is_available(&self) -> bool {
-        self.compute_available()
+        self.compute_available() && self.render_available()
     }
 
-    /// 稳定标识：`vulkan-compute`（compute 路径已真跑；渲染管线未实装）。
+    /// 稳定标识：`vulkan-compute`（compute 路径 + 背景帧 + 光追场景帧均已真跑）。
     fn backend_name(&self) -> &'static str {
         "vulkan-compute"
     }
@@ -917,48 +1035,96 @@ mod tests {
         }
     }
 
-    /// 后端标识跨平台稳定；可用性**严格等同**完整 dispatch 自检结果。
+    /// 后端标识跨平台稳定；可用性 = **compute 自检 ∧ 渲染自检**（Q4 裁定）。
     ///
-    /// **非恒真自证**：无设备的机器断言 `false`（诚实降级），有设备且闭环
-    /// 跑通的机器断言 `true`（本沙箱的 lavapipe 即此分支）。两个分支都是
-    /// 对当前环境真实能力的刻画——若把自检换成「探测到设备就算可用」，
-    /// 无 ICD 的机器上仍会红。
+    /// **非恒真自证**：无设备的机器断言三者全 `false`（诚实降级），有设备且两条
+    /// 闭环都跑通的机器断言全 `true`（本沙箱的 lavapipe 即此分支）。两个分支都是
+    /// 对当前环境真实能力的刻画——若把自检换成「探测到设备就算可用」，无 ICD
+    /// 的机器上仍会红；若把渲染自检去掉，`is_available` 与 `render_available`
+    /// 的一致性断言会红。
     #[test]
     fn backend_availability_follows_verified_compute_path() {
         let be = VulkanBackend::new();
         assert_eq!(be.backend_name(), "vulkan-compute", "后端标识须跨平台稳定");
+        // 双自检：is_available ≡ compute ∧ render（不是任一单项，也不是「有设备」）。
         assert_eq!(
             be.is_available(),
-            be.compute_available(),
-            "is_available 必须严格等同完整 dispatch 路径自检"
+            be.compute_available() && be.render_available(),
+            "is_available 必须严格等同 compute + render 双自检"
+        );
+        assert!(
+            !be.render_available() || be.probed_device(),
+            "渲染自检不可能在无设备时为真（防御性自洽检查）"
         );
         if be.probed_device() {
             assert!(
-                be.is_available(),
-                "有设备且自检跑通 ⇒ 必须报可用（否则 W3 闭环不成立）"
+                be.compute_available(),
+                "有设备 ⇒ mul2 探针闭环必须跑通（否则 W3 闭环不成立）"
             );
+            assert!(
+                be.render_available(),
+                "有设备 ⇒ 场景帧探针（4×4 单球）必须真跑通（否则 T-A1 闭环不成立）"
+            );
+            assert!(be.is_available(), "双自检通过 ⇒ 必须报可用");
             assert!(
                 be.device_name().is_some_and(|n| !n.is_empty()),
                 "可用却拿不到设备名 = 无法证明在哪个设备上跑过"
             );
         } else {
+            assert!(!be.compute_available(), "无设备 ⇒ compute 自检必须为假");
+            assert!(!be.render_available(), "无设备 ⇒ 渲染自检必须为假");
             assert!(!be.is_available(), "无设备 ⇒ 不得报可用");
             assert!(be.device_name().is_none(), "无设备 ⇒ 无设备名");
         }
     }
 
-    /// `render_scene` 返回**无效**空缓冲（而非 panic 或假帧）。
+    /// **可用性语义闭合**：`render_scene` 的帧有效性与渲染自检**严格一致**。
     ///
-    /// **非恒真自证**：同 metal 测试——若实装渲染，此断言须改为断言有效帧。
+    /// 禁止的组合是「`render_available() == true` 但 `render_scene` 出空帧」
+    /// （PRD A1 验收 3）。两个分支都被真实执行到：
+    /// * 自检通过（本沙箱 lavapipe）⇒ 必须出 `w*h*4` 有效帧；
+    /// * 自检失败 / 无设备 ⇒ 必须返回无效空缓冲，**不得冒充成功**。
     #[test]
-    fn render_scene_returns_invalid_frame_without_panic() {
+    fn render_scene_validity_matches_render_self_test() {
         let req = tiny_request();
         let mut be = VulkanBackend::new();
+        let verified = be.render_available();
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| be.render_scene(&req)));
         let fb = r.expect("Vulkan render_scene 不得 panic");
-        assert!(!fb.is_valid(), "未实装渲染须返回无效缓冲，不得冒充成功");
-        assert_eq!(fb.pixels.len(), 0, "空缓冲不含像素");
-        assert_eq!((fb.width, fb.height), (0, 0), "empty() 为 0x0");
+        assert_eq!(
+            fb.is_valid(),
+            verified,
+            "帧有效性必须严格等同渲染自检结论（可用性与出图能力不得脱钩）"
+        );
+        if verified {
+            assert_eq!(
+                fb.pixels.len(),
+                (req.width * req.height) as usize * 4,
+                "有效帧必须铺满 w*h*4 字节"
+            );
+            assert!((fb.width, fb.height) == (req.width, req.height));
+        } else {
+            assert_eq!(fb.pixels.len(), 0, "空缓冲不含像素");
+            assert_eq!((fb.width, fb.height), (0, 0), "empty() 为 0x0");
+        }
+    }
+
+    /// 极端尺寸**秒回拒绝缓冲**（不 dispatch、不 panic、尺寸原样回显）。
+    ///
+    /// 与 `CpuRefBackend` 同一 `Framebuffer` 尺寸契约（A1 验收 4）。
+    #[test]
+    fn render_scene_refuses_extreme_sizes_without_panicking() {
+        let mut be = VulkanBackend::new();
+        for (w, h) in [(u32::MAX, u32::MAX), (0, 8), (8, 0), (65_536, 65_536)] {
+            let mut req = tiny_request();
+            req.width = w;
+            req.height = h;
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| be.render_scene(&req)));
+            let fb = r.expect("超限尺寸不得 panic");
+            assert!(!fb.is_valid(), "({w},{h}) 应被拒绝");
+            assert!(fb.pixels.is_empty(), "被拒缓冲不含像素");
+            assert_eq!((fb.width, fb.height), (w, h), "尺寸须原样回显");
+        }
     }
 
     /// 反复构造 / 析构后端不 panic、不泄漏（`Drop` 释放 loader 与句柄）。
@@ -974,8 +1140,8 @@ mod tests {
             let be = VulkanBackend::new();
             assert_eq!(
                 be.is_available(),
-                be.compute_available(),
-                "可用性口径在反复构造后不得漂移"
+                be.compute_available() && be.render_available(),
+                "可用性口径（compute ∧ render）在反复构造后不得漂移"
             );
         }
     }
@@ -996,8 +1162,12 @@ mod tests {
                 "probe() 报设备已创建，则 probed_device() 必须为 true"
             );
             assert!(
+                be.compute_available() && be.render_available(),
+                "设备已创建且两条自检都跑通 ⇒ 双自检必须为 true"
+            );
+            assert!(
                 be.is_available(),
-                "设备已创建且自检跑通 ⇒ is_available() 须为 true"
+                "设备已创建且双自检跑通 ⇒ is_available() 须为 true"
             );
             assert!(
                 be.device_name().is_some_and(|n| !n.is_empty()),

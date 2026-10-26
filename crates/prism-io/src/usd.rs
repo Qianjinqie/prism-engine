@@ -2578,6 +2578,97 @@ impl Scene {
 }
 
 // ===========================================================================
+//  资产表示签名（R1 同构保持判据）
+// ===========================================================================
+
+/// 域分离标签：资产表示签名的独立命名空间。
+///
+/// 与 #8 缓存签名（[`crate::sha256`] / `prism-core::signature` 的
+/// `CACHE_KEY_TAG` 等）**同 SHA-256 原语、不同标签**——两用途同原语不同标签，
+/// 禁止混用（`docs/设计/研究/能力对齐的数学分层.md:480` 合流点纪律；PRD B1）。
+const REPR_TAG: &[u8; 13] = b"PRISM/REPR/v1";
+
+/// 资产表示签名（R1「同构保持判据」的落地）。
+///
+/// 把 USD 导入产物 [`Scene`] 规范化为与文档书写顺序**无关**的字节串并求
+/// SHA-256：每个网格先按 `path` 升序排序（消除「组合层级两种写法 / 实例化
+/// prim 顺序 / 同名引用书写差异」导致的 `meshes` 遍历序差异），再逐字段定长
+/// / 长度前缀序列化（f64 按位大端、与 `prism-core::signature` 同风格）。
+///
+/// # R1 判据
+/// 同一逻辑资产的不同表示（格式内等价：同名引用 / 实例化 prim / 组合层级的
+/// 两种写法），导入后表示签名相等；不等价源签名不等。签名等价即「可复用 /
+/// 可互替换」的判据——这正是 R1「转换器 `T_f` 保持同构类」在签名空间的表述。
+///
+/// # 确定性
+/// 同 `Scene` 同字节；排序 + 定长编码保证与 prim 源顺序无关。
+pub fn representation_signature(scene: &Scene) -> [u8; 32] {
+    // 按 path 排序消除遍历序依赖（canonical 化）。
+    let mut ordered: Vec<&Mesh> = scene.meshes.iter().collect();
+    ordered.sort_by(|a, b| a.path.cmp(&b.path));
+
+    let mut buf: Vec<u8> = Vec::new();
+    buf.extend_from_slice(REPR_TAG);
+    buf.extend_from_slice(&(scene.version.len() as u64).to_be_bytes());
+    buf.extend_from_slice(scene.version.as_bytes());
+    buf.extend_from_slice(&(ordered.len() as u64).to_be_bytes());
+    buf.extend_from_slice(&(scene.non_mesh_prims as u64).to_be_bytes());
+
+    for m in ordered {
+        // 源 prim 路径（长度前缀）。
+        buf.extend_from_slice(&(m.path.len() as u64).to_be_bytes());
+        buf.extend_from_slice(m.path.as_bytes());
+        // 顶点（定长 [f64;3] 大端位模式）。
+        buf.extend_from_slice(&(m.points.len() as u64).to_be_bytes());
+        for p in &m.points {
+            for c in p {
+                buf.extend_from_slice(&c.to_be_bytes());
+            }
+        }
+        // 面顶点数（faceVertexCounts，u32 大端）。
+        buf.extend_from_slice(&(m.face_counts.len() as u64).to_be_bytes());
+        for c in &m.face_counts {
+            buf.extend_from_slice(&c.to_be_bytes());
+        }
+        // 展平顶点索引（faceVertexIndices，u32 大端）。
+        buf.extend_from_slice(&(m.face_indices.len() as u64).to_be_bytes());
+        for i in &m.face_indices {
+            buf.extend_from_slice(&i.to_be_bytes());
+        }
+        // 法线（定长 [f64;3] 大端位模式）。
+        buf.extend_from_slice(&(m.normals.len() as u64).to_be_bytes());
+        for n in &m.normals {
+            for c in n {
+                buf.extend_from_slice(&c.to_be_bytes());
+            }
+        }
+        // UV（定长 [f64;2] 大端位模式）。
+        buf.extend_from_slice(&(m.uvs.len() as u64).to_be_bytes());
+        for u in &m.uvs {
+            for c in u {
+                buf.extend_from_slice(&c.to_be_bytes());
+            }
+        }
+        // 材质绑定（Option<String> 判别式 + 长度前缀）。
+        match &m.material {
+            None => buf.push(0),
+            Some(s) => {
+                buf.push(1);
+                buf.extend_from_slice(&(s.len() as u64).to_be_bytes());
+                buf.extend_from_slice(s.as_bytes());
+            }
+        }
+        // 世界变换（Mat4 4×4 行优先，f64 大端位模式）。
+        for i in 0..4 {
+            for j in 0..4 {
+                buf.extend_from_slice(&m.world_transform.m[i][j].to_be_bytes());
+            }
+        }
+    }
+    crate::sha256::sha256(&buf)
+}
+
+// ===========================================================================
 //  场景构建（prim 树 → 网格，Xform 链累加 + 烘焙）
 // ===========================================================================
 

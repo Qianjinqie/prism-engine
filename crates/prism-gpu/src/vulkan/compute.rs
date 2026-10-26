@@ -52,7 +52,9 @@
 //!   多 pass 依赖由 `crate::sync::BarrierPlanner` 推导（后续 pass 图接入点）。
 
 use super::ProbeFailure;
-use crate::compute::{BindingAccess, DispatchShape, KernelDesc};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::compute::BindingAccess;
+use crate::compute::{DispatchShape, KernelDesc};
 #[cfg(not(target_arch = "wasm32"))]
 use super::loader::{self as vk};
 #[cfg(not(target_arch = "wasm32"))]
@@ -399,10 +401,12 @@ fn raw_unavailable(status: DispatchStatus, detail: &str) -> RawRun {
 
 /// **真机路径**：在已建立的 `VulkanContext` 上装配并派发一个 compute kernel。
 ///
-/// `input_bytes` 原样写入 binding 0（若其字节数足够），其余绑定填 0；派发后
-/// **按字节读回最后一个绑定**（`bytes` 语义，调用方决定再解释成 f32 还是 RGBA8）。
-/// 字节口径是背景帧出图的必要条件：像素是 u32 打包值，走 f32 中转会引入
-/// 「读成 f32 再 bitcast」的额外假设。
+/// `inputs[i]` 原样写入**按 binding 升序的第 i 个只读绑定**（字节不足时按绑定
+/// 容量截断，超出的部分保持派发前的全零），其余绑定填 0；派发后**按字节读回
+/// 最后一个绑定**（`bytes` 语义，调用方决定再解释成 f32 还是 RGBA8）。
+///
+/// 单输入（探针 / 背景帧）与多输入（光追场景：参数 + 球 + 灯）走**同一条**
+/// 装配路径——新增输入只是多给几个切片，不引入第二套装配代码。
 ///
 /// # Safety
 /// 调用方须保证 `ctx` 的 device/queue 有效（由 [`VulkanContext`] 的类型不变量
@@ -413,7 +417,7 @@ unsafe fn run_on_device(
     ctx: &VulkanContext,
     kernel: &KernelDesc,
     plan: &DispatchPlan,
-    input_bytes: &[u8],
+    inputs: &[&[u8]],
 ) -> RawRun {
     let device = ctx.device;
     let fns = &ctx.device_fns;
@@ -737,28 +741,27 @@ unsafe fn run_on_device(
         buffers.push((buffer, memory));
     }
 
-    // 填输入数据（binding 0；只读绑定按访问方向判定）。按**字节**拷贝，
-    // 不做 f32 解释——背景 kernel 的参数块是 4 个 u32（含 f32 位型）。
-    if let (Some(&(first_buf, first_mem)), Some(first_item)) = (buffers.first(), layout_items.first())
-    {
-        if first_item.access == BindingAccess::ReadOnly && !input_bytes.is_empty() {
-            let mut mapped: *mut std::ffi::c_void = std::ptr::null_mut();
-            if map_memory(
-                device,
-                first_mem,
-                0,
-                vk::VK_WHOLE_SIZE,
-                0,
-                &mut mapped,
-            ) == vk::VK_SUCCESS
-                && !mapped.is_null()
-            {
-                let dst = mapped as *mut u8;
-                let n = input_bytes.len().min(first_item.bytes as usize);
-                std::ptr::copy_nonoverlapping(input_bytes.as_ptr(), dst, n);
-                unmap_memory(device, first_mem);
-            }
-            let _ = first_buf;
+    // 填输入数据：按 binding 升序，逐个只读绑定写入对应的输入切片。
+    // 按**字节**拷贝，不做 f32 解释——背景 kernel 的参数块是 u32（含 f32 位型），
+    // 光追场景的参数块 / 球 / 灯也是「f32 位型 + u32 混合」的同一口径。
+    for (i, item) in layout_items.iter().enumerate() {
+        let Some(input_bytes) = inputs.get(i) else {
+            continue;
+        };
+        if item.access != BindingAccess::ReadOnly || input_bytes.is_empty() {
+            continue;
+        }
+        let Some(&(_buf, mem)) = buffers.get(i) else {
+            continue;
+        };
+        let mut mapped: *mut std::ffi::c_void = std::ptr::null_mut();
+        if map_memory(device, mem, 0, vk::VK_WHOLE_SIZE, 0, &mut mapped) == vk::VK_SUCCESS
+            && !mapped.is_null()
+        {
+            let dst = mapped as *mut u8;
+            let n = input_bytes.len().min(item.bytes as usize);
+            std::ptr::copy_nonoverlapping(input_bytes.as_ptr(), dst, n);
+            unmap_memory(device, mem);
         }
     }
 
@@ -988,12 +991,15 @@ unsafe fn run_on_device(
 /// * 无上下文（平台无 Vulkan ICD）：`DeviceUnavailable` + `detail = "no-vulkan-icd"`；
 /// * wasm32：`UnsupportedPlatform`；
 /// * 有上下文（如 lavapipe 软件 ICD）：走 [`run_on_device`] 真跑。
+///
+/// `inputs[i]` 对应按 binding 升序的第 i 个只读绑定：单输入（探针 / 背景帧）
+/// 传 `&[input]`，多输入（光追场景）传 `&[params, spheres, lights]`。
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn dispatch_bytes(
+pub(crate) fn dispatch_inputs(
     ctx: Option<&VulkanContext>,
     kernel: &KernelDesc,
     extent: [u32; 3],
-    input: &[u8],
+    inputs: &[&[u8]],
 ) -> ByteRunReport {
     let plan = plan(kernel, extent);
     // 反越界守卫先于任何设备/FFI 分支（纯布局检查，环境无关）。
@@ -1016,7 +1022,7 @@ pub(crate) fn dispatch_bytes(
         ),
         Some(ctx) => {
             // SAFETY: `ctx` 由 `VulkanBackend` 持有，device/queue 遵循类型不变量。
-            let raw = unsafe { run_on_device(ctx, kernel, &plan, input) };
+            let raw = unsafe { run_on_device(ctx, kernel, &plan, inputs) };
             ByteRunReport {
                 status: raw.status,
                 kernel: kernel.name,
@@ -1031,6 +1037,31 @@ pub(crate) fn dispatch_bytes(
             }
         }
     }
+}
+
+/// 单输入入口（探针 / 背景帧的既有口径；语义与 [`dispatch_inputs`] 完全一致）。
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn dispatch_bytes(
+    ctx: Option<&VulkanContext>,
+    kernel: &KernelDesc,
+    extent: [u32; 3],
+    input: &[u8],
+) -> ByteRunReport {
+    dispatch_inputs(ctx, kernel, extent, &[input])
+}
+
+/// **多输入入口**（光追场景：参数块 + 球体 + 光源）。
+///
+/// 只读绑定按 binding 升序与 `inputs` 一一对应；写绑定（输出）由读回路径处理。
+/// 与 `dispatch_bytes` 共用同一条装配/提交/读回闭环——新增输入不新增代码路径。
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn dispatch_scene(
+    ctx: Option<&VulkanContext>,
+    kernel: &KernelDesc,
+    extent: [u32; 3],
+    inputs: &[&[u8]],
+) -> ByteRunReport {
+    dispatch_inputs(ctx, kernel, extent, inputs)
 }
 
 /// f32 入口：探针路径的兼容视图（内部走同一条字节路径）。
@@ -1070,6 +1101,17 @@ pub(crate) fn dispatch_bytes(
         "wasm32 无原生 Vulkan（走 WebGPU 后端）",
         String::new(),
     )
+}
+
+/// wasm32 的多输入入口：与单输入同一口径（先守卫，再如实报平台不支持）。
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn dispatch_scene(
+    _ctx: (),
+    kernel: &KernelDesc,
+    extent: [u32; 3],
+    _inputs: &[&[u8]],
+) -> ByteRunReport {
+    dispatch_bytes((), kernel, extent, &[])
 }
 
 #[cfg(target_arch = "wasm32")]

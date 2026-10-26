@@ -562,10 +562,18 @@ impl ShaderTarget {
 /// MSL 双份源注册表：入口名 → 源码。
 ///
 /// 入口名与 WGSL `fn`、SPIR-V `OpEntryPoint` 同名（三目标唯一口径）。
-/// 目前两份：`cloth_predict`（既有）与 `primary_ray_gen`。
+/// 目前三份：`cloth_predict`（既有）、`primary_ray_gen`（compute-first 主射线）
+/// 与 `scene_main`（V2.1 T-A2 光追场景整帧 kernel）。
+///
+/// 注：`scene_main` 的 SPIR-V 宿主是**发射器产物** `spv_scene`
+/// （[`crate::vulkan::spirv_rt`]，经 `OnceLock` 生成，不在静态
+/// [`crate::vulkan::spirv::MODULES`] 表里），故 [`spv_kernels`] 不含它；
+/// 两端一致性由 `metal::render::tests` 的入口名断言与
+/// `vulkan::spirv_rt` 的结构校验分别把守。
 pub static MSL_KERNELS: &[(&str, &str)] = &[
     ("cloth_predict", crate::metal::msl::CLOTH_PREDICT_MSL),
     ("primary_ray_gen", crate::metal::msl::PRIMARY_RAY_GEN_MSL),
+    ("scene_main", crate::metal::msl::RT_SCENE_MSL),
 ];
 
 /// 按入口名取 MSL 源。

@@ -144,6 +144,7 @@ const CANON_MAGIC: &[u8; 10] = b"PRISMCANON";
 const NODE_TAG: &[u8; 14] = b"PRISM-SIG-NODE";
 const GRAPH_TAG: &[u8; 15] = b"PRISM-SIG-GRAPH";
 const CACHE_KEY_TAG: &[u8; 15] = b"PRISM-CACHE-KEY";
+const CACHE_KEY_MODE_TAG: &[u8; 16] = b"PRISM-CACHE-MODE";
 const SNAPSHOT_TAG: &[u8; 14] = b"PRISM-SNAPSHOT";
 
 // ---------------------------------------------------------------------------
@@ -483,6 +484,49 @@ pub fn cache_key(subgraph: &Hash256, dims: &CacheDims) -> Hash256 {
     buf.extend_from_slice(&dims.tile.1.to_be_bytes());
     buf.extend_from_slice(&dims.frame.to_be_bytes());
     sha256(&buf)
+}
+
+/// 迭代节点缓存键附加重载（S3 分类表行 3：迭代节点**键必须含 `(ε, n)`**）。
+///
+/// 在既有五元组 + tile + 帧 + 引擎/ schema 版本基础上，**附加**迭代模式参数
+/// `(ε, n)` 的通道定义哈希——与 [`crate::fixpoint::loop_frame_signature`] 共用
+/// 同一 `ChannelDef`（tag = [`SOLVE_MODE_CHANNEL_TAG`] = `0x5333`）编码，保证
+/// 快照键与缓存键一致地反映模式变更（改 `iterations`/`residual_eps`/`substeps`
+/// 任一 ⇒ 键变更 ⇒ 既有无误复用、旧结果只静默失效重建）。
+///
+/// # 非破坏性
+/// 不改 [`CacheDims`] 字面量构造（消费面 crate 以字面量构造，禁止加必填字段）；
+/// `mode = None` 时**逐字节退化为 [`cache_key`](Self::cache_key)，保证既有调用
+/// 零回归**。
+///
+/// # 域分隔
+/// 模式感知键用独立标签 `CACHE_KEY_MODE_TAG`，与无模式键族（`CACHE_KEY_TAG`）
+/// 输出互异——同一 `subgraph` + `dims` 在「带模式」与「不带模式」两族下是不同
+/// 键，杜绝跨族误命中。
+pub fn cache_key_with_mode(
+    subgraph: &Hash256,
+    dims: &CacheDims,
+    mode: Option<&ChannelDef>,
+) -> Hash256 {
+    match mode {
+        None => cache_key(subgraph, dims),
+        Some(def) => {
+            let mode_hash = channel_definition_hash(def);
+            let mut buf = Vec::with_capacity(8 + 32 + 28 + 32);
+            buf.extend_from_slice(CACHE_KEY_MODE_TAG);
+            buf.extend_from_slice(&SIGNATURE_SCHEMA_VERSION.to_be_bytes());
+            buf.extend_from_slice(&dims.engine_version.to_be_bytes());
+            buf.extend_from_slice(subgraph);
+            buf.extend_from_slice(&dims.width.to_be_bytes());
+            buf.extend_from_slice(&dims.height.to_be_bytes());
+            buf.extend_from_slice(&dims.spp_tier.to_be_bytes());
+            buf.extend_from_slice(&dims.tile.0.to_be_bytes());
+            buf.extend_from_slice(&dims.tile.1.to_be_bytes());
+            buf.extend_from_slice(&dims.frame.to_be_bytes());
+            buf.extend_from_slice(&mode_hash);
+            sha256(&buf)
+        }
+    }
 }
 
 /// 模拟节点快照键的签名位（/ D-28）：hash(子图签名 ++ 自起点以来

@@ -35,7 +35,8 @@ use std::collections::VecDeque;
 use std::fmt;
 
 use prism_core::signature::{
-    cache_key, graph_signatures, CacheDims, ChannelDefs, SignatureError,
+    cache_key, cache_key_with_mode, graph_signatures, CacheDims, ChannelDef, ChannelDefs,
+    SignatureError,
 };
 use prism_core::node::{EvalCtx, Hash256, SnapshotStore};
 use prism_core::{
@@ -551,6 +552,28 @@ pub fn decide(
     dims: &CacheDims,
 ) -> ReuseDecision {
     let key = cache_key(subgraph, dims);
+    let verdict = if store.contains(&key) {
+        ReuseVerdict::Reuse
+    } else {
+        ReuseVerdict::Recompute
+    };
+    ReuseDecision { key, verdict }
+}
+
+/// 模式感知复用判定（S3 表行 3：迭代节点 M2/M3 缓存键必须含 `(ε, n)`）。
+///
+/// 与 [`decide`] 同判定逻辑，但键经 [`cache_key_with_mode`] 注入迭代模式参数的
+/// 通道定义哈希（`0x5333`）。**判定只**看键是否相等：键相等 ⇒ 输入逐字节相同
+/// ⇒ 输出逐字节相同（公理）；模式参数不同 ⇒ 键不同 ⇒ 绝不跨模式误复用。
+///
+/// `mode = None` 时退化为 [`decide`]（同一键），保证既有调用零回归。
+pub fn decide_with_mode(
+    store: &ReuseCache,
+    subgraph: &Hash256,
+    dims: &CacheDims,
+    mode: Option<&ChannelDef>,
+) -> ReuseDecision {
+    let key = cache_key_with_mode(subgraph, dims, mode);
     let verdict = if store.contains(&key) {
         ReuseVerdict::Reuse
     } else {

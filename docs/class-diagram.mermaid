@@ -1,0 +1,93 @@
+classDiagram
+    class GpuDevice {
+        <<trait>>
+        +render_scene(req: &SceneRenderRequest): Framebuffer
+        +is_available(): bool
+        +backend_name(): &str
+    }
+    class VulkanBackend {
+        -ctx: Option~VulkanContext~
+        -compute_ok: OnceLock~bool~
+        -render_ok: OnceLock~bool~
+        +compute_available(): bool
+        +render_available(): bool   %% 新增（Q4 双自检）
+        +is_available(): bool       %% 改：compute && render
+        +render_scene(req): Framebuffer  %% 改：实装（替 mod.rs:822）
+    }
+    class CpuRefBackend {
+        +render_scene(req): Framebuffer  %% 不变，仍兜底+对拍基准
+    }
+    class MetalBackend {
+        +is_available(): bool   %% 恒 false（不点亮，Q5）
+        +render_scene(req): Framebuffer  %% 恒 empty（A2 不点亮）
+    }
+    class SceneRenderRequest {
+        +width: u32
+        +height: u32
+        +camera: CameraReq
+        +lights: Vec~LightReq~
+        +spheres: Vec~SphereReq~
+        +aesthetic: AestheticReq
+    }
+    class Framebuffer {
+        +width: u32
+        +height: u32
+        +pixels: Vec~u8~
+        +is_valid(): bool
+        +empty(): Framebuffer
+    }
+    class SceneKernelDesc {
+        <<SPIR-V megakernel 描述>>
+        +MODULE_SCENE: &str
+        +ENTRY_SCENE: &str
+        +WORKGROUP_SCENE: [u32;3]
+        +scene_kernel(w,h): KernelDesc  %% 4 binding: params/spheres/lights/output
+    }
+    class SceneParams {
+        +eye: [f32;3]
+        +basis: (forward,right,up)
+        +tan_half_fov: f32
+        +aspect: f32
+        +aesthetic_bits: (teal_orange,contrast,filmic)
+        +num_spheres: u32
+        +num_lights: u32
+    }
+    GpuDevice <|.. VulkanBackend
+    GpuDevice <|.. CpuRefBackend
+    GpuDevice <|.. MetalBackend
+    VulkanBackend ..> SceneKernelDesc : dispatch
+    SceneKernelDesc ..> SceneParams : encode
+    VulkanBackend ..> Framebuffer : build from readback
+    GpuDevice ..> SceneRenderRequest
+
+    class SignatureCacheKey {
+        <<B2 S3 键扩充>>
+        +schema: u64
+        +engine: u64
+        +sig: u64
+        +resolution: u64
+        +spp: u64
+        +tile: u64
+        +frame: Option~u64~   %% S3 新增：流节点(ConstraintFlow)
+        +mode_meta: Option~(eps,f64,n,u64)~  %% S3 新增：迭代节点(M2/M3)
+    }
+    class HeterogeneousMedium {
+        <<C2>>
+        +sigma_t_field: Grid3   %% σt 空间变化
+        +albedo: f32
+        +g: f32
+        +sample_free_flight(u): f32
+    }
+    class HomogeneousMedium {
+        +sigma_t: f32
+        +albedo: f32
+        +g: f32
+    }
+    HeterogeneousMedium ..|> Medium : 退化(σt恒定)=Homogeneous 逐位一致
+    note for HeterogeneousMedium "C2 核心判据：恒定σt ⇒ 与HomogeneousMedium逐位相同"
+
+    class Mat3 {
+        +SRGB_TO_ACESCG   %% T4 重录官方原色推导值
+        +ACESCG_TO_SRGB   %% T4 f64精确逆重算
+        +SRGB_TO_ACESCG_FITTED_HILL  %% Q2 保留旧值(显式可选)
+    }

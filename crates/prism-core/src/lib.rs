@@ -81,9 +81,9 @@ pub use fixpoint::{
     RESIDUAL_EPS_DEFAULT, SOLVE_MODE_CHANNEL_TAG,
 };
 pub use signature::{
-    cache_key, channel_definition_hash, graph_canonical_bytes, graph_signature, graph_signatures,
-    node_canonical_bytes, node_signature, snapshot_signature, CacheDims, ChannelDef, ChannelDefs,
-    SignatureError, SIGNATURE_SCHEMA_VERSION,
+    cache_key, cache_key_with_mode, channel_definition_hash, graph_canonical_bytes,
+    graph_signature, graph_signatures, node_canonical_bytes, node_signature, snapshot_signature,
+    CacheDims, ChannelDef, ChannelDefs, SignatureError, SIGNATURE_SCHEMA_VERSION,
 };
 
 use prism_math::Vec3;

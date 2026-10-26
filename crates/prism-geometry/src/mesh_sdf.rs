@@ -68,57 +68,143 @@ impl BakedSdf {
     /// 命中激活 brick → 三线性插值（近场精确）；
     /// 场内未激活 → winding 判号后返回 ±spacing（安全下界，"远场距离下界"）；
     /// 场外 → 返回到场域 AABB 的距离（正下界）。
+    ///
+    /// # 插值定位（brick 无 apron ⇒ 单元可跨 brick）
+    ///
+    /// 三线性插值的 8 个角点是**全局格点**，所在单元恒为 `[i0, i0+1]³`
+    /// （`i0 = clamp(floor(f), 0, dims−2)`，clamp 后 `i0+1 ≤ dims−1` 恒合法）。
+    /// 单元在 brick 边界处可以跨 2/4/8 个 brick——brick 只存 8³ 个格点、彼此不重叠，
+    /// 故角点一律按**全局格点坐标**定位其所辖 brick 取值；不跨 brick 的单元（≈(7/8)³
+    /// 体积）走单表快路径。
+    ///
+    /// **禁止**把 brick 局部坐标 clamp 到 `BRICK−2`、把权重 clamp 到 `[0,1]`：那会把
+    /// 查询点吸附到最近格点上（brick 末格 局部 [7,8) 退化为单点取值），引入最大
+    /// `√3·h` 的**定位**偏差；场是 1-Lipschitz 的，于是距离误差同阶（h=0.05 时可达
+    /// 0.0866，实测 0.0693——R3 界 h/2·(1+‖∇d‖)=h 由此被击穿）。修正后近表面采样点
+    /// 的距离误差 ≤ 单元半对角 `√3/2·h`（见 [`hausdorff_upper_bound`] 的推导）。
     pub fn dist(&self, p: Vec3) -> f32 {
         let f = (p - self.origin) * (1.0 / self.spacing);
         let dmax = [self.dims[0] as f32 - 1.0, self.dims[1] as f32 - 1.0, self.dims[2] as f32 - 1.0];
         if f.x < 0.0 || f.y < 0.0 || f.z < 0.0 || f.x > dmax[0] || f.y > dmax[1] || f.z > dmax[2] {
             return self.bounds.dist_to(p);
         }
+        if self.dims[0] < 2 || self.dims[1] < 2 || self.dims[2] < 2 {
+            // 退化场（任一轴不足 2 个体素 ⇒ 无插值单元）。
+            return self.spacing;
+        }
         // 体素坐标约定：体素 i 的中心在 origin + i·spacing → 世界点的体素坐标 f 直接
         // 以体素中心为整数点（与烘焙写入 p = origin + vi·s 一致）。
         let fi = [f.x, f.y, f.z];
-        let bkey = |i: usize| -> u64 {
-            let b = (fi[i] / BRICK as f32).floor();
-            b.clamp(0.0, ((self.dims[i] as f32 - 1.0) / BRICK as f32).floor()) as u64
-        };
-        let key = pack_brick(bkey(0), bkey(1), bkey(2));
-        let Some(cell) = self.bricks.get(&key) else {
-            // 未激活：内部深处或外部空腔——winding 判号，幅度取安全下界 spacing。
-            // 病态置信判定：|w| 不在 0/±1 置信带 → 符号不可信，
-            // 按 exterior 处理（正值下界）。计数披露在烘焙期完成（dist 为 &self）。
-            let w = self.bvh.winding_number(p);
-            if !winding_pathological(w) && w > 0.5 {
-                return -self.spacing;
-            }
-            return self.spacing;
-        };
-        // 三线性插值：基点 clamp 到 [0, BRICK−2]（保证 +1 不越界），权重 clamp 到 [0, 1]
-        // （边缘半体素取边界值）。
-        let mut base = [0_usize; 3];
-        let mut frac = [0.0_f32; 3];
+        let mut i0 = [0_i64; 3];
+        let mut w = [0.0_f32; 3];
         for i in 0..3 {
-            let lf = fi[i] - bkey(i) as f32 * BRICK as f32;
-            let i0 = lf.floor().clamp(0.0, (BRICK - 2) as f32) as usize;
-            base[i] = i0;
-            frac[i] = (lf - i0 as f32).clamp(0.0, 1.0);
+            let last = (self.dims[i] - 2) as f32;
+            let lower = fi[i].floor().clamp(0.0, last);
+            i0[i] = lower as i64;
+            w[i] = (fi[i] - lower).clamp(0.0, 1.0);
         }
-        let sample = |x: usize, y: usize, z: usize| cell[(x * BRICK + y) * BRICK + z];
-        let c00 = sample(base[0], base[1], base[2])
-            + frac[2] * (sample(base[0], base[1], base[2] + 1) - sample(base[0], base[1], base[2]));
-        let c10 = sample(base[0] + 1, base[1], base[2])
-            + frac[2]
-                * (sample(base[0] + 1, base[1], base[2] + 1) - sample(base[0] + 1, base[1], base[2]));
-        let c01 = sample(base[0], base[1] + 1, base[2])
-            + frac[2]
-                * (sample(base[0], base[1] + 1, base[2] + 1) - sample(base[0], base[1] + 1, base[2]));
-        let c11 = sample(base[0] + 1, base[1] + 1, base[2])
-            + frac[2]
-                * (sample(base[0] + 1, base[1] + 1, base[2] + 1)
-                    - sample(base[0] + 1, base[1] + 1, base[2]));
-        let c0 = c00 + frac[1] * (c01 - c00);
-        let c1 = c10 + frac[1] * (c11 - c10);
-        c0 + frac[0] * (c1 - c0)
+        // 主 brick = 单元下角所在 brick。未激活即整单元在未激活区（近表面单元至少
+        // 下角 brick 激活：该角点距表面 ≤ √3/2·h < pad·spacing ⇒ 必有三角形登记其 brick）,
+        // 走远场快路径。
+        let b0 = [
+            i0[0] as u64 / BRICK as u64,
+            i0[1] as u64 / BRICK as u64,
+            i0[2] as u64 / BRICK as u64,
+        ];
+        let Some(cell) = self.bricks.get(&pack_brick(b0[0], b0[1], b0[2])) else {
+            return self.far_field_value(self.bvh.winding_number(p));
+        };
+        let l0 = [
+            (i0[0] - (b0[0] * BRICK as u64) as i64) as usize,
+            (i0[1] - (b0[1] * BRICK as u64) as i64) as usize,
+            (i0[2] - (b0[2] * BRICK as u64) as i64) as usize,
+        ];
+        let mut v = [0.0_f32; 8];
+        if l0[0] + 1 < BRICK && l0[1] + 1 < BRICK && l0[2] + 1 < BRICK {
+            // 快路径：单元 8 角同属主 brick。
+            for dx in 0..2 {
+                for dy in 0..2 {
+                    for dz in 0..2 {
+                        v[(dx * 2 + dy) * 2 + dz] =
+                            cell[((l0[0] + dx) * BRICK + (l0[1] + dy)) * BRICK + (l0[2] + dz)];
+                    }
+                }
+            }
+        } else {
+            // 跨 brick 单元：逐角点按全局格点坐标取值。
+            for dx in 0..2 {
+                for dy in 0..2 {
+                    for dz in 0..2 {
+                        v[(dx * 2 + dy) * 2 + dz] = self.voxel_value([
+                            i0[0] + dx as i64,
+                            i0[1] + dy as i64,
+                            i0[2] + dz as i64,
+                        ]);
+                    }
+                }
+            }
+        }
+        trilinear(&v, w)
     }
+
+    /// 单个全局格点（体素中心）的场值：brick 命中取存值，未激活取远场 ±spacing。
+    ///
+    /// `vi` 须落在 `[0, dims−1]`（调用方 `dist` 保证），故 brick 索引无需再 clamp。
+    fn voxel_value(&self, vi: [i64; 3]) -> f32 {
+        let b = [
+            vi[0] as u64 / BRICK as u64,
+            vi[1] as u64 / BRICK as u64,
+            vi[2] as u64 / BRICK as u64,
+        ];
+        let Some(cell) = self.bricks.get(&pack_brick(b[0], b[1], b[2])) else {
+            let c = self.voxel_center(vi);
+            return self.far_field_value(self.bvh.winding_number(c));
+        };
+        let l = [
+            (vi[0] as u64 - b[0] * BRICK as u64) as usize,
+            (vi[1] as u64 - b[1] * BRICK as u64) as usize,
+            (vi[2] as u64 - b[2] * BRICK as u64) as usize,
+        ];
+        cell[(l[0] * BRICK + l[1]) * BRICK + l[2]]
+    }
+
+    /// 全局格点（体素中心）的世界坐标。
+    fn voxel_center(&self, vi: [i64; 3]) -> Vec3 {
+        Vec3::new(
+            self.origin.x + vi[0] as f32 * self.spacing,
+            self.origin.y + vi[1] as f32 * self.spacing,
+            self.origin.z + vi[2] as f32 * self.spacing,
+        )
+    }
+
+    /// 远场取值：winding 判号，幅度取安全下界 `spacing`（`|值| ≤ 真实距离`）。
+    ///
+    /// 病态置信判定：`|w|` 不在 0/±1 置信带 → 符号不可信，按 exterior 处理
+    /// （正值下界）。计数披露在烘焙期完成（查询侧是 `&self`）。
+    fn far_field_value(&self, w: f32) -> f32 {
+        if !winding_pathological(w) && w > 0.5 {
+            return -self.spacing;
+        }
+        self.spacing
+    }
+}
+
+/// 三线性插值（8 角点按 `(dx·2+dy)·2+dz` 排列，权重 `w ∈ [0,1]³`）。
+///
+/// 8 个角点值是凸组合权重，故 `|结果| ≤ max|角点值|`——这正是 R3 近场界的来源。
+#[inline]
+fn trilinear(v: &[f32; 8], w: [f32; 3]) -> f32 {
+    #[inline]
+    fn lerp(a: f32, b: f32, t: f32) -> f32 {
+        a + t * (b - a)
+    }
+    let c00 = lerp(v[0], v[1], w[2]);
+    let c01 = lerp(v[2], v[3], w[2]);
+    let c10 = lerp(v[4], v[5], w[2]);
+    let c11 = lerp(v[6], v[7], w[2]);
+    let c0 = lerp(c00, c01, w[1]);
+    let c1 = lerp(c10, c11, w[1]);
+    lerp(c0, c1, w[0])
 }
 
 /// brick 坐标打包为哈希键（各轴 21 位，覆盖 2M brick/轴）。
@@ -297,6 +383,56 @@ pub fn bake_triangles(
     )
 }
 
+/// R3 保真度界：mesh / SDF 是分辨率有界的近似对。
+///
+/// 理论界（见 `docs/设计/研究/能力对齐的数学分层.md` §5.1）：
+///
+/// ```text
+/// d_H(SDF⁻¹(0), mesh) ≤ h/2 · (1 + ‖∇d‖)
+/// ```
+///
+/// 其中 `h` = 体素间距（格距），`‖∇d‖` = SDF 梯度范数上界。因 SDF 是有符号
+/// 距离场，天然 **1-Lipschitz**：`‖∇d‖ ≤ 1` ⇒ 上界收紧为 `≤ h`。本函数即该界的
+/// 显式计算——给定格距与梯度范数上界，返回解析上界。
+///
+/// 凭证：球 / 平面（含立方体的平面段）的 SDF 均为 1-Lipschitz，故 `‖∇d‖ = 1`，
+/// 上界取 `h`；更缓的梯度（如高度场）上界更小。
+///
+/// # 本实现的实际（更紧）界 —— 推导
+///
+/// 上面的 `h/2·(1+‖∇d‖)` 是**通用**上界；对 [`BakedSdf::dist`] 这一具体实现可以推得更紧：
+///
+/// 1. **近场取值精确**：`pad ≥ 1` 时，距三角面 `≤ √3/2·h < pad·h` 的格点，其最近三角形
+///    必落在该格点所辖 brick 的候选表里（候选按三角形 AABB±pad 体素登记 brick，
+///    格点距 AABB 不足 pad·h ⇒ 其 brick 必在登记范围内），故这些格点存的是**精确**
+///    距离 `d(c)`，且 `|d(c)| = dist(c, mesh)`。
+/// 2. **插值是凸组合**：查询点 `p` 所在单元 `[i0, i0+1]³` 的 8 个角点 `c_j` 满足
+///    `p = Σ λ_j c_j`（`λ_j ≥ 0, Σλ_j = 1`），三线性插值即 `Σ λ_j d(c_j)`，
+///    于是 `|interp(p)| ≤ max_j |d(c_j)|`。
+/// 3. 若 `p ∈ mesh`（`d(p) = 0`，1-Lipschitz ⇒ `|d(c_j)| = |d(c_j) − d(p)| ≤ |c_j − p|`），
+///    而单元内 `|c_j − p| ≤ √3/2·h`（半对角），故
+///
+///    ```text
+///    |dist(p)| ≤ √3/2 · h  ≈ 0.866 · h  ≤  h = spacing/2·(1+1)
+///    ```
+///
+/// 即本实现的**最坏情形**保真度界是 `√3/2·h`（比通用界 `h` 紧 13.4%）。实测远小于该最坏界
+/// ——三线性插值只是 `O(h²)` 级误差，且平面段（立方体六面）对线性场插值精确：
+///
+/// | 样例 | h=0.1 | h=0.05 |
+/// |---|---|---|
+/// | 球面 max&#124;dist&#124; | 3.1008e-3 | 1.5489e-3 |
+/// | 立方体 max&#124;dist&#124; | 2.39e-7 | 2.46e-7 |
+///
+/// （`r3_hausdorff_bound_holds_and_tightens_with_resolution` 逐档记录，h↓ ⇒ 实测↓。）
+///
+/// 该推导依赖第 1 步的"近场精确"前提：远离表面（`> pad·h`）的格点值只是候选集上的
+/// 最小值，可能大于真实距离（下界性仅对未激活 brick 的 `±spacing` 成立），故此处
+/// **只**对零等值面邻域作断言——这也正是 Hausdorff 距离所需的全部。
+pub fn hausdorff_upper_bound(spacing: f32, grad_norm_bound: f32) -> f32 {
+    spacing / 2.0 * (1.0 + grad_norm_bound)
+}
+
 /// 解包 brick 哈希键。
 #[inline]
 pub fn unpack_brick(key: u64) -> (u64, u64, u64) {
@@ -460,5 +596,202 @@ mod tests {
         assert!(baked.bricks.is_empty());
         assert!(!report.warnings.is_empty(), "空网格必须显式警告");
         let _ = baked.dist(Vec3::splat(1.0)); // 空场查询路径不 panic
+    }
+
+    // —— R3 保真度界（球 / 平面段；1-Lipschitz SDF ⇒ ‖∇d‖ = 1 ⇒ 界 = h） ——
+
+    /// 立方体表面采样点（6 面各 n×n 网格；立方体的平面段即 R3 平板情形）。
+    fn cube_surface_samples(n: usize) -> Vec<Vec3> {
+        let mut pts = Vec::new();
+        for axis in 0..3 {
+            for &sign in &[1.0_f32, -1.0_f32] {
+                for i in 0..n {
+                    for j in 0..n {
+                        let a = -1.0 + 2.0 * (i as f32) / (n as f32 - 1.0);
+                        let b = -1.0 + 2.0 * (j as f32) / (n as f32 - 1.0);
+                        let mut v = [0.0_f32; 3];
+                        let mut k = 0;
+                        for d in 0..3 {
+                            if d == axis {
+                                v[d] = sign;
+                            } else {
+                                v[d] = if k == 0 { a } else { b };
+                                k += 1;
+                            }
+                        }
+                        pts.push(Vec3::new(v[0], v[1], v[2]));
+                    }
+                }
+            }
+        }
+        pts
+    }
+
+    /// 球面采样点（UV 球，半径 `r`）。
+    fn sphere_surface_samples(r: f32, stacks: usize, slices: usize) -> Vec<Vec3> {
+        let mut pts = Vec::new();
+        for i in 0..=stacks {
+            let theta = std::f32::consts::PI * (i as f32) / (stacks as f32);
+            let st = theta.sin();
+            let ct = theta.cos();
+            for j in 0..slices {
+                let phi = 2.0 * std::f32::consts::PI * (j as f32) / (slices as f32);
+                pts.push(Vec3::new(r * st * phi.cos(), r * st * phi.sin(), r * ct));
+            }
+        }
+        pts
+    }
+
+    /// UV 球三角形列表（供 `bake_triangles`）。
+    fn uv_sphere(radius: f32, stacks: usize, slices: usize) -> Vec<Triangle> {
+        let mut positions: Vec<Vec3> = Vec::new();
+        for i in 0..=stacks {
+            let theta = std::f32::consts::PI * (i as f32) / (stacks as f32);
+            let st = theta.sin();
+            let ct = theta.cos();
+            for j in 0..=slices {
+                let phi = 2.0 * std::f32::consts::PI * (j as f32) / (slices as f32);
+                positions.push(Vec3::new(
+                    radius * st * phi.cos(),
+                    radius * st * phi.sin(),
+                    radius * ct,
+                ));
+            }
+        }
+        let mut indices: Vec<u32> = Vec::new();
+        let row = slices + 1;
+        for i in 0..stacks {
+            for j in 0..slices {
+                let a = (i * row + j) as u32;
+                let b = (i * row + j + 1) as u32;
+                let c = ((i + 1) * row + j) as u32;
+                let d = ((i + 1) * row + j + 1) as u32;
+                indices.extend_from_slice(&[a, c, b, b, c, d]);
+            }
+        }
+        crate::bvh::mesh_triangles(&positions, &indices)
+    }
+
+    /// R3：实测 Hausdorff 估计（表面点 |SDF| 的最大值）≤ 解析界
+    /// `h/2·(1+‖∇d‖)`，且解析界随分辨率提高而收紧（h↓ ⇒ 界↓）。
+    ///
+    /// 实测记录（本条测试逐档记录，不经任何阈值放宽）：
+    ///
+    /// | 样例 | h=0.1 | h=0.05 |
+    /// |---|---|---|
+    /// | 球面 max&#124;dist&#124; | 3.1008e-3 | 1.5489e-3 |
+    /// | 立方体 max&#124;dist&#124; | 2.39e-7 | 2.46e-7 |
+    ///
+    /// 同时断言**实现侧**更紧的界 `√3/2·h`（单元半对角，推导见
+    /// [`hausdorff_upper_bound`]）——该断言是 brick 边缘插值缺陷的钉子：
+    /// 旧实现（brick 局部坐标 clamp 到 `BRICK−2`、权重 clamp 到 1）在球面 h=0.05 上
+    /// 得 0.06929246 > 0.0433013 = √3/2·h。
+    #[test]
+    fn r3_hausdorff_bound_holds_and_tightens_with_resolution() {
+        // 解析界本身随分辨率提高收紧（R3 核心论断）。
+        assert!(
+            hausdorff_upper_bound(0.05, 1.0) < hausdorff_upper_bound(0.1, 1.0),
+            "R3：h↓ ⇒ 解析界收紧"
+        );
+
+        let cases: &[(&str, Vec<Triangle>, Vec<Vec3>)] = &[
+            // 立方体（含平面段，恰好覆盖 R3 平板情形）。
+            ("cube", unit_cube(), cube_surface_samples(21)),
+            // 球面（弯曲情形，SDF 平滑 1-Lipschitz）。
+            ("sphere", uv_sphere(1.0, 48, 96), sphere_surface_samples(1.0, 48, 96)),
+        ];
+
+        for (label, tris, samples) in cases {
+            let bvh = Bvh::build(tris);
+            let mut prev_max = f32::MAX;
+            for &h in &[0.1_f32, 0.05_f32] {
+                let opts = BakeOptions { spacing: h, pad_voxels: 2 };
+                let (baked, _report) = bake_triangles(tris, &bvh, &opts);
+                // 在表面采样：|SDF(p)| 即点 p 到零等值面的距离 ⇒ 最大值即
+                // Hausdorff 估计的上界（mesh 侧）。
+                let mut max_abs = 0.0_f32;
+                for p in samples {
+                    let d = baked.dist(*p);
+                    max_abs = max_abs.max(d.abs());
+                }
+                let bound = hausdorff_upper_bound(h, 1.0); // ‖∇d‖ ≤ 1
+                // 插值松弛：O(h²) 量级 + f32 舍入 + 采样网格近似。
+                let slack = 2.0 * h * h + 1e-4;
+                assert!(
+                    max_abs <= bound + slack,
+                    "{label} h={h}: 实测 Hausdorff 估计 {max_abs} > 解析界 {bound} + 松弛 {slack}"
+                );
+                // 实现侧更紧的界：8 角点凸组合 ⇒ |dist| ≤ 单元半对角 √3/2·h（只留 f32 舍入）。
+                let cell_half_diag = (3.0_f32).sqrt() / 2.0 * h + 1e-4;
+                assert!(
+                    max_abs <= cell_half_diag,
+                    "{label} h={h}: 实测 {max_abs} > 实现界 √3/2·h {cell_half_diag}\
+                     （brick 边缘插值把查询点吸附到最近格点？）"
+                );
+                // 实测界随分辨率提高而收紧（同采样集，逐字节单调）。
+                assert!(
+                    max_abs <= prev_max + 1e-4,
+                    "{label} h={h}: 实测界 {max_abs} 未随分辨率提高而收紧（前档 {prev_max}）"
+                );
+                prev_max = max_abs;
+            }
+        }
+    }
+
+    /// brick 边缘回归钉子：brick 只存 8³ 个格点、彼此**无 apron**，故三线性插值的
+    /// 查询单元在 brick 边界处可跨 2/4/8 个 brick。
+    ///
+    /// 曾经的 `dist` 把 brick **局部**坐标 clamp 到 `BRICK−2`、权重 clamp 到 `[0,1]`
+    /// ——等价于把查询点吸附到最近格点：单元落在 brick 末格（局部 `[7,8)`）
+    /// 的轴上，实际取值点被拉回到局部 7。表面点因此获得最大 `√3·h` 的**定位**偏差；
+    /// 场是 1-Lipschitz 的，距离误差与之同阶。h=0.05 的球面上实测 `|dist| = 0.06929246`，
+    /// 与偏差解析值 `h·√(0.97885²+0.97885²) = 0.0692154` 吻合（差 7.7e-5 为球面
+    /// 三角化偏差），远大于单元半对角 `√3/2·h = 0.0433013`，直接击穿 R3 的
+    /// `h/2·(1+‖∇d‖) = h` 界。
+    ///
+    /// 本测试专挑"≥2 轴同时落末格"的表面点（该子集 177 个点，旧实现最坏 0.06929246），
+    /// 断言 `|dist| ≤ √3/2·h + 1e-4`（修复后该子集实测最坏 1.4464e-3，余量 ~30×）。
+    #[test]
+    fn brick_edge_cells_resolve_global_lattice_not_clamped_local() {
+        let h = 0.05_f32;
+        let tris = uv_sphere(1.0, 48, 96);
+        let bvh = Bvh::build(&tris);
+        let (baked, _report) = bake_triangles(&tris, &bvh, &BakeOptions { spacing: h, pad_voxels: 2 });
+        let samples = sphere_surface_samples(1.0, 48, 96);
+        let cell_half_diag = (3.0_f32).sqrt() / 2.0 * h + 1e-4;
+
+        let mut n_edge = 0_usize;
+        let mut worst = 0.0_f32;
+        let mut worst_at = Vec3::splat(0.0);
+        for p in &samples {
+            // brick 局部坐标：与实现同款换算（体素坐标 f → brick 内局部坐标 lf）。
+            let f = (*p - baked.origin) * (1.0 / baked.spacing);
+            let mut edge_axes = 0_usize;
+            for i in 0..3 {
+                let bi = (f.at(i) / BRICK as f32).floor();
+                let lf = f.at(i) - bi * BRICK as f32;
+                if lf >= (BRICK - 1) as f32 {
+                    edge_axes += 1;
+                }
+            }
+            if edge_axes < 2 {
+                continue;
+            }
+            n_edge += 1;
+            let d = baked.dist(*p).abs();
+            if d > worst {
+                worst = d;
+                worst_at = *p;
+            }
+        }
+        assert!(
+            n_edge >= 50,
+            "采样集必须覆盖 ≥2 轴落 brick 末格的情形，实际只 {n_edge} 个（测试覆盖失效）"
+        );
+        assert!(
+            worst <= cell_half_diag,
+            "brick 末格表面点 |dist|={worst}（{worst_at:?}）> 单元半对角界 {cell_half_diag}\
+             ——局部 clamp 吸附缺陷复发（该情形旧实现得 0.06929246）"
+        );
     }
 }

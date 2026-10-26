@@ -243,24 +243,25 @@ fn g7_trait_defaults_present_and_non_panicking() {
     let c = CpuRefBackend;
     assert!(c.is_available(), "CpuRefBackend 恒可用");
     assert_eq!(c.backend_name(), "cpu-ref");
-    // VulkanBackend：**不得 panic**；可用性严格等同「完整 compute dispatch
-    // 自检」，渲染管线仍未实装 ⇒ 恒返回空帧。
+    // VulkanBackend：**不得 panic**；可用性 = compute 自检 ∧ 渲染自检（V2.1 Q4）。
     // 注：W3 起 `is_available()` 的口径从「恒 false（渲染未接）」改为
-    // 「mul2 探针真跑通且读回与 CPU 参考逐位一致才 true」——本机有 lavapipe
-    // 时该值为 true，无设备时为 false；两种环境都由下面的等式/蕴含断言刻画。
+    // 「mul2 探针真跑通且读回与 CPU 参考逐位一致才 true」；V2.1 T-A1 起再叠加
+    // 「场景渲染自检真跑通」。本机有 lavapipe 时该值为 true，无设备时为 false；
+    // 两种环境都由下面的等式/蕴含断言刻画。
     let mut v = prism_gpu::vulkan::VulkanBackend::new();
     assert_eq!(
         v.is_available(),
-        v.compute_available(),
-        "is_available() 必须严格等同完整 dispatch 自检结果"
+        v.compute_available() && v.render_available(),
+        "is_available() 必须严格等同 compute + render 双自检结果"
     );
     assert_eq!(v.backend_name(), "vulkan-compute");
     if v.device_name().is_none() {
         assert!(!v.is_available(), "无设备 ⇒ 必须诚实报不可用");
+        assert!(!v.render_available(), "无设备 ⇒ 渲染自检必须为假");
     } else {
         assert!(
             v.is_available(),
-            "探测到了设备 ⇒ 完整 dispatch 闭环必须跑通（跑不通即真 bug，不许静默降级）"
+            "探测到了设备 ⇒ 两条自检闭环必须跑通（跑不通即真 bug，不许静默降级）"
         );
     }
     let t0 = Instant::now();
@@ -268,11 +269,19 @@ fn g7_trait_defaults_present_and_non_panicking() {
     let e = t0.elapsed();
     assert!(r.is_ok(), "VulkanBackend::render_scene 不得 panic（修前为 unimplemented!()）");
     let fb = r.expect("不应 panic");
-    assert!(
-        !fb.is_valid(),
-        "渲染管线仍未实装 ⇒ 即便 compute 可用也须返回空帧（不得伪造出图）"
-    );
-    assert!(fb.pixels.is_empty() && fb.width == 0 && fb.height == 0);
+    // V2.1 T-A1：渲染路径实装后，帧有效性必须与渲染自检**严格一致**——
+    // 自检通过 ⇒ 出 `64*64*4` 有效帧；自检不通过/无设备 ⇒ 空缓冲（不伪造出图）。
+    if v.render_available() {
+        assert!(fb.is_valid(), "渲染自检通过 ⇒ render_scene 必须出图");
+        assert_eq!(fb.pixels.len(), 64 * 64 * 4);
+        assert_eq!((fb.width, fb.height), (64, 64));
+    } else {
+        assert!(
+            !fb.is_valid(),
+            "渲染路径不可用 ⇒ 须返回空帧（不得伪造出图）"
+        );
+        assert!(fb.pixels.is_empty() && fb.width == 0 && fb.height == 0);
+    }
     println!("G7 VulkanBackend::render_scene 未 panic，耗时 = {e:?}");
 }
 

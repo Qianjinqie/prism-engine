@@ -207,22 +207,34 @@ fn real_dispatch_matches_cpu_reference_bitwise() {
     );
 }
 
-/// **可知性**：`is_available()` 只在完整 dispatch 路径自检通过时为真。
+/// **可知性**：`is_available()` = **compute 自检 ∧ 渲染自检**（V2.1 Q4 裁定）。
 ///
-/// 这条测试同时锁住两件事：
-/// 1. 有设备 ⇒ 自检真跑并成功（本机必须走到 `true` 分支）；
-/// 2. `is_available()==true` **不代表**渲染可用——`render_scene` 仍返回空帧，
-///    渲染管线未实装这一事实不被 compute 的成功掩盖。
+/// 这条测试锁住三件事：
+/// 1. 有设备 ⇒ 两条自检都真跑通（本机必须走到 `true` 分支）；
+/// 2. `is_available()` **严格等同** `compute_available() && render_available()`——
+///    既不是「探测到设备」，也不是任一单项；
+/// 3. **可用性与出图能力不脱钩**：`render_available()` 为真 ⇒ `render_scene`
+///    必须给出 `w*h*4` 的有效帧；为假 ⇒ 必须是无效空缓冲。
+///    （V2.1 之前 `render_scene` 恒空帧，本条曾是「可用 ⇒ 仍空帧」；
+///    T-A1 实装后语义翻转为「可用 ⇔ 出图」，这正是 Q4 要闭合的组合。）
 #[test]
 fn availability_requires_verified_dispatch_not_just_a_device() {
     let mut backend = VulkanBackend::new();
     let report = VulkanBackend::probe();
+
+    // 双自检口径（与设备有无无关，恒成立）。
+    assert_eq!(
+        backend.is_available(),
+        backend.compute_available() && backend.render_available(),
+        "is_available 必须严格等同 compute + render 双自检"
+    );
 
     if !report.device_created {
         assert!(
             !backend.is_available(),
             "无设备时 is_available() 必须为 false（不得靠探测撒谎）"
         );
+        assert!(!backend.render_available(), "无设备 ⇒ 渲染自检必须为假");
         assert!(backend.device_name().is_none());
         println!("[skip] 无设备：is_available() 诚实为 false");
         return;
@@ -232,19 +244,18 @@ fn availability_requires_verified_dispatch_not_just_a_device() {
     let name = backend.device_name().unwrap_or("<unnamed>").to_string();
     assert!(!name.is_empty(), "探测成功却拿不到设备名");
 
-    // 本机有设备：自检必须真跑通，否则 W3 的闭环不成立。
+    // 本机有设备：两条自检都必须真跑通，否则闭环不成立。
     assert!(
         backend.compute_available(),
         "设备 {name} 存在但 compute 自检失败 —— 闭环未打通"
     );
-    assert_eq!(
-        backend.is_available(),
-        backend.compute_available(),
-        "is_available 必须严格等同完整 dispatch 路径自检"
+    assert!(
+        backend.render_available(),
+        "设备 {name} 存在但场景渲染自检失败 —— 光追闭环未打通"
     );
     assert_eq!(backend.backend_name(), "vulkan-compute");
 
-    // 渲染仍未实装：可用性不得伪造出图能力。
+    // 可用 ⇔ 出图：4×4 请求必须给出有效帧（不再允许「可用却空帧」）。
     let req = prism_gpu::SceneRenderRequest {
         width: 4,
         height: 4,
@@ -264,11 +275,12 @@ fn availability_requires_verified_dispatch_not_just_a_device() {
     };
     let fb = backend.render_scene(&req);
     assert!(
-        !fb.is_valid(),
-        "渲染管线未实装 ⇒ render_scene 必须返回无效帧（不得冒充出图）"
+        fb.is_valid(),
+        "渲染自检为真 ⇒ render_scene 必须出图（不得再返回无效帧）"
     );
+    assert_eq!(fb.pixels.len(), 4 * 4 * 4, "有效帧须铺满 w*h*4 字节");
 
-    println!("[available] device={name} compute=true render=false（如实二分）");
+    println!("[available] device={name} compute=true render=true（双自检）");
 }
 
 /// 同一设备上重复派发逐位稳定（确定性：不是「偶尔对一次」）。

@@ -10,15 +10,19 @@
 //!   run-time device-probe chain (hand-written `dlopen`/`dlsym` FFI, zero
 //!   third-party crates). The **compute dispatch path is real and verified**
 //!   (SPIR-V → pipeline → dispatch → fence → readback → bitwise CPU parity),
-//!   and [`GpuDevice::is_available`] reports `true` only when that full path
-//!   self-tests successfully. Since W4 the backend also **produces real
-//!   frames**: [`background::render_background_gpu`] runs the background
-//!   kernel offscreen and reads back RGBA8 that is byte-identical to the CPU
-//!   reference (`VulkanBackend::frame_available` reports that path after a
-//!   real 16×16 self-test). The **ray-traced scene pipeline is still not
-//!   implemented**, so `render_scene` returns an invalid
-//!   [`Framebuffer::empty`]; callers fall back to [`CpuRefBackend`] based on
-//!   the returned frame's validity.
+//!   and [`GpuDevice::is_available`] reports `true` only when **both** the
+//!   compute self-test **and** the scene-render self-test pass
+//!   (`compute_available() && render_available()`). Since W4 the backend also
+//!   **produces real frames**: [`background::render_background_gpu`] runs the
+//!   background kernel offscreen and reads back RGBA8 that is byte-identical
+//!   to the CPU reference. Since V2.1 **the ray-traced scene pipeline is
+//!   real too**: [`vulkan::scene`] dispatches a 4-binding compute megakernel
+//!   (emitted by [`vulkan::spirv_rt`], with dynamic sphere/light loops) and
+//!   reads back RGBA8 for [`GpuDevice::render_scene`]; GPU-vs-CPU parity is
+//!   statistical (bitwise identity is guaranteed *across GPU runs*, not
+//!   across backends — see `tests/qa_render_scene.rs`). When no device is
+//!   present both paths degrade honestly: `render_scene` returns an invalid
+//!   [`Framebuffer::empty`] and callers fall back to [`CpuRefBackend`].
 //! * [`web::device::WebGpuBackend`] — the WebGPU path (hand-written browser
 //!   bindings) used by the wasm/mobile test link.
 //!
@@ -63,10 +67,12 @@ pub mod web;
 // （不引 `ash`/`vulkano`/`libloading`；D-15）。编译期不链接 `libvulkan`——
 // loader 在**运行期**探测，拿不到就不可用。compute 闭环已真跑通：SPIR-V →
 // compute pipeline → 描述符 → dispatch → fence → 读回 → 与 CPU 参考逐位比对；
-// `is_available()` 只在**该闭环自检通过**时为 `true`（探测到设备不够）。
-// **渲染管线尚未实装**：`render_scene` 恒返回无效空缓冲（不撒谎），调用方
-// 仍须按返回帧的 `is_valid()` 回退 CPU。wasm32 下 `loader` 被门禁剔除，
-// `VulkanBackend` 恒报不可用。
+// `is_available()` 只在**compute 自检 ∧ 场景渲染自检**都为真时为 `true`
+// （探测到设备不够，单条闭环通过也不够）。两条出图路径都已实装：背景帧
+// （与 CPU 逐字节一致）与光追场景帧（与 CPU 统计等价、GPU 双跑逐位一致）。
+// 无设备时 `render_scene` 返回无效空缓冲（不撒谎），调用方按返回帧的
+// `is_valid()` 回退 CPU。wasm32 下 `loader` 被门禁剔除，`VulkanBackend` 恒报
+// 不可用。
 
 pub mod vulkan;
 
@@ -74,10 +80,14 @@ pub mod vulkan;
 // Metal 后端（D1，macOS/iOS 独有；非 macOS 编译为空 stub）
 // ----------------------------------------------------------------------------
 //
-// [`metal::MetalBackend`] 在所有平台可见，但 `is_available()` 恒 `false`
-// （渲染管线未实装，探测到设备 ≠ 能出图）。macOS 上的设备探测链走
-// `dlopen` + `dlsym`（零第三方 crate）；Linux/wasm 上该子模块被 `#[cfg]`
-// 整体剔除，仅保留可编译的降级 stub，绝不影响 Linux 与 wasm 构建。
+// [`metal::MetalBackend`] 在所有平台可见，但 `is_available()` 恒 `false`：
+// V2.1 T-A2 只交付「同构代码 + 编译门控」——MSL 源、参数 ABI 与语义同构实现
+// 都已落地（并与 CPU 参考逐字节对拍通过），但 `MTLDevice` → pipeline →
+// dispatch → 读回的闭环**未接**（缺 `objc_msgSend` 层），**macOS 实机验证未做**。
+// 故「有源码」≠「能出图」：`render_scene` 恒返回无效空缓冲，调用方回退 CPU。
+// macOS 上的设备探测链走 `dlopen` + `dlsym`（零第三方 crate）；Linux/wasm 上
+// 该子模块被 `#[cfg]` 整体剔除，仅保留可编译的降级 stub，绝不影响 Linux 与
+// wasm 构建。
 
 pub mod metal;
 
@@ -373,25 +383,26 @@ pub trait GpuDevice {
 
     /// Whether this backend can actually perform **verified real-device work**.
     ///
-    /// # 语义（W4 收口，W3 遗留 1）
+    /// # 语义（V2.1 T-A1 收口）
     ///
-    /// 本标志回答的是「**该后端申报的设备路径是否真的跑通过**」——
-    /// 对 [`vulkan::VulkanBackend`] 而言就是 **compute 可用**：`true` 仅当
-    /// mul2 探针的完整闭环（SPIR-V → pipeline → submit → fence → 读回）
-    /// 真跑一次且与 CPU 参考逐位一致。
+    /// 本标志回答的是「**能否 service [`GpuDevice::render_scene`]**」——
+    /// 对 [`vulkan::VulkanBackend`] 而言就是 **compute 自检 ∧ 渲染自检**：
+    /// `true` 仅当 mul2 探针的完整闭环（SPIR-V → pipeline → submit → fence →
+    /// 读回 → 与 CPU 逐位一致）**和**场景 kernel 的 4×4 探针帧（读回长度自洽
+    /// 且确有内容）都真跑通过。
     ///
-    /// 它**不是**「能渲染场景」的承诺：
-    /// * 光追场景 [`GpuDevice::render_scene`] 仍未实装，Vulkan 恒返回
-    ///   [`Framebuffer::empty`]；需要场景帧的调用方只能按返回帧的
-    ///   [`Framebuffer::is_valid`] 回退，**不能**按本标志回退；
-    /// * 背景帧能力是另一条可查询的路径（`VulkanBackend::frame_available`，
-    ///   真跑一次背景 kernel 并确认读回长度），它比本标志更强。
+    /// 两个方向都被钉死（不再有中间态）：
+    /// * `true` ⇒ [`GpuDevice::render_scene`] 会给出 `w*h*4` 的有效帧；
+    /// * `false` ⇒ `render_scene` 返回无效空缓冲，调用方回退
+    ///   [`CpuRefBackend`]——**不存在**「报可用却出空帧」的组合。
     ///
-    /// 之所以保持「compute 可用」这一口径而不改成 `false`：本 crate 的
-    /// backend 是 compute-first 的（scan/sort/kernel 语义层都建立在 dispatch
-    /// 之上），把「设备侧计算不可用」谎报成 `false` 会让所有 compute 消费方
-    /// 失去能力信息。选择与现有调用面兼容：**不改名、改文档 + 增加
-    /// `frame_available` 显式能力位**。
+    /// 背景帧是另一条可查询的独立能力位（`VulkanBackend::frame_available`，
+    /// 真跑一次背景 kernel 并确认读回长度），一条通过不替另一条背书。
+    ///
+    /// 之所以保留「能力位」而非恒 `true`/恒 `false`：本 crate 的 backend 是
+    /// compute-first 的（scan/sort/kernel 语义层都建立在 dispatch 之上），
+    /// 谎报 `false` 会让所有 compute 消费方失去能力信息；谎报 `true` 则会让
+    /// 上层拿到假帧。
     ///
     /// 默认 `true` 表示「纯软件后端恒可用」（对 [`CpuRefBackend`] 正确）。
     fn is_available(&self) -> bool {
@@ -910,20 +921,21 @@ mod framebuffer_bounds {
         );
     }
 
-    /// 后端能力查询：Vulkan 的可用性 = **完整 compute dispatch 自检**，
-    /// 渲染管线未实装 ⇒ 恒返回空帧。
+    /// 后端能力查询：Vulkan 的可用性 = **compute 自检 ∧ 渲染自检**（双自检），
+    /// 且 `render_scene` 的有效性与渲染自检严格一致。
     ///
-    /// 语义（W3 起）：`is_available()` 只有在「mul2 探针真跑通且读回与 CPU
-    /// 参考逐位一致」时才为 `true`——有设备但管线被拒/读回不符仍为 `false`。
-    /// 无论真假，`render_scene` 都不得出图（渲染路径未接），也不得 panic。
+    /// 语义（V2.1 T-A1 起，Q4 裁定）：`is_available()` 只有在「mul2 探针闭环
+    /// 跑通」**且**「`spv_scene` 真渲染一帧 4×4 并读回自洽」时才为 `true`。
+    /// 无论真假，`render_scene` 都不得 panic；自检没通过时返回无效缓冲
+    /// （调用方回退 CPU），自检通过时必须给出 `w*h*4` 的有效帧。
     #[test]
-    fn vulkan_backend_capability_is_verified_and_render_stays_empty() {
+    fn vulkan_backend_capability_is_verified_and_render_follows_self_test() {
         use crate::GpuDevice;
         let mut be = crate::vulkan::VulkanBackend::new();
         assert_eq!(
             be.is_available(),
-            be.compute_available(),
-            "is_available 必须严格等同完整 dispatch 自检"
+            be.compute_available() && be.render_available(),
+            "is_available 必须严格等同 compute + render 双自检"
         );
         assert_eq!(be.backend_name(), "vulkan-compute");
         if !be.probed_device() {
@@ -932,10 +944,20 @@ mod framebuffer_bounds {
         }
 
         let req = tiny_request();
+        let verified = be.render_available();
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             be.render_scene(&req).pixels.len()
         }));
-        assert_eq!(r.unwrap(), 0, "未实现的后端应返回空缓冲而非 panic");
+        let len = r.expect("render_scene 不得 panic");
+        if verified {
+            assert_eq!(
+                len,
+                (req.width * req.height) as usize * 4,
+                "渲染自检通过 ⇒ 必须出 w*h*4 字节的真帧"
+            );
+        } else {
+            assert_eq!(len, 0, "渲染路径不可用 ⇒ 返回空缓冲（不冒充成功）");
+        }
 
         // CpuRefBackend 恒可用。
         let cpu = CpuRefBackend;

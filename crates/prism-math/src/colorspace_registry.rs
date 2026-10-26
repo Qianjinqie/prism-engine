@@ -3304,10 +3304,10 @@ mod tests {
 
     #[test]
     fn legacy_constant_is_a_fitted_matrix_not_a_primaries_derivation() {
-        // ⚠️ 见**文件头「⚠️⚠️⚠️ 警告」块**（第 24~44 行）：既有
-        // `colorspace::SRGB_TO_ACESCG` 是**拟合矩阵**（行和 = 1，但并非
-        // 由 AP1 原色推导），与本注册表的推导值口径不同，两者**不可混用**。
-        // 本测试**锁定这个已知差异**，防止后人误以为其中之一算错了。
+        // T4 / C15：主常量 `colorspace::SRGB_TO_ACESCG` 已重录为官方推导口径；
+        // 旧 Hill 拟合矩阵保留在 `colorspace::SRGB_TO_ACESCG_FITTED_HILL`
+        // （行和 = 1，但并非由 AP1 原色推导），与本注册表的推导值口径不同，
+        // 两者**不可混用**。本测试**锁定这个已知差异**，防止后人误以为其中之一算错了。
         let registry = mat3_mul(
             &by_name("acescg")
                 .unwrap_or_else(|e| panic!("{e}"))
@@ -3322,7 +3322,7 @@ mod tests {
                     .unwrap_or_else(|e| panic!("{e}")),
             ),
         );
-        let legacy = crate::colorspace::SRGB_TO_ACESCG;
+        let legacy = crate::colorspace::SRGB_TO_ACESCG_FITTED_HILL;
         let mut worst = 0.0f64;
         for r in 0..3 {
             for c in 0..3 {
@@ -3341,24 +3341,17 @@ mod tests {
     }
 
     #[test]
-    fn srgb_to_acescg_fitted_hill_alias_is_bit_identical_to_the_legacy_name() {
-        // T4 裁决落地：旧名 `SRGB_TO_ACESCG` **原样保留**（数值一字不改），
-        // 新名 `SRGB_TO_ACESCG_FITTED_HILL` 是**同一份字面量的别名**。
-        // 本测试用 `to_bits()` 逐位锁定等价性 —— 这是「没偷换数值」的
-        // 可执行证据：任何一方被改动都会红。
-        for r in 0..3 {
-            for c in 0..3 {
-                assert_eq!(
-                    crate::colorspace::SRGB_TO_ACESCG[r][c].to_bits(),
-                    crate::colorspace::SRGB_TO_ACESCG_FITTED_HILL[r][c].to_bits(),
-                    "[{r}][{c}] 两个名字必须逐位相同（拟合矩阵不得被偷换成推导值）"
-                );
-            }
-        }
-        // 旧常量仍是**已发布**的 ACES 官方 IDT 数值（锚点，防静默漂移）。
-        assert_eq!(crate::colorspace::SRGB_TO_ACESCG[0][0], 0.597_190_2);
-        assert_eq!(crate::colorspace::SRGB_TO_ACESCG[1][1], 0.908_340_4);
-        assert_eq!(crate::colorspace::SRGB_TO_ACESCG[2][2], 0.837_769_2);
+    fn srgb_to_acescg_fitted_hill_preserved_and_diverged_from_recut_main() {
+        // T4 / C15（Q2 裁定）：主常量 `SRGB_TO_ACESCG` 同名换值为官方推导口径，
+        // `SRGB_TO_ACESCG_FITTED_HILL` 保留旧 Hill 拟合值（显式可选口径）。
+        // 二者**不再逐位相同**——这正是 T4 的预期结果：旧「别名即同值」断言
+        // 已随债务结清而撤销（原 `..._alias_is_bit_identical_to_the_legacy_name`
+        // 测试删除，登记见 §7 C15 / R-2026-xx-03）。本测试锁定：
+        // ① 旧 Hill 拟合件数值一字未改；② 二者已分流（不得再静默统一）。
+        // 旧 Hill 拟合件仍是**已发布**的 ACES 官方 IDT 数值（锚点，防静默漂移）。
+        assert_eq!(crate::colorspace::SRGB_TO_ACESCG_FITTED_HILL[0][0], 0.597_190_2);
+        assert_eq!(crate::colorspace::SRGB_TO_ACESCG_FITTED_HILL[1][1], 0.908_340_4);
+        assert_eq!(crate::colorspace::SRGB_TO_ACESCG_FITTED_HILL[2][2], 0.837_769_2);
         // 拟合口径的「白点守恒」特征：行和精确为 1。
         for r in 0..3 {
             let s: f32 = crate::colorspace::SRGB_TO_ACESCG_FITTED_HILL[r][0]
@@ -3366,6 +3359,21 @@ mod tests {
                 + crate::colorspace::SRGB_TO_ACESCG_FITTED_HILL[r][2];
             assert!((s - 1.0).abs() < 1e-6, "拟合矩阵行和应精确为 1：{s}");
         }
+        // T4 后二者已分流：主常量（官方推导）与旧 Hill 拟合件不再逐位相同。
+        let mut diverged = false;
+        for r in 0..3 {
+            for c in 0..3 {
+                if crate::colorspace::SRGB_TO_ACESCG[r][c].to_bits()
+                    != crate::colorspace::SRGB_TO_ACESCG_FITTED_HILL[r][c].to_bits()
+                {
+                    diverged = true;
+                }
+            }
+        }
+        assert!(
+            diverged,
+            "T4 后主常量与 _FITTED_HILL 应已分流（旧别名同值关系已撤销）；若二者仍逐位相同，说明重录未生效"
+        );
     }
 
     #[test]
