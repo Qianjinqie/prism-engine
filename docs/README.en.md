@@ -3,13 +3,13 @@
 
 # Prism Engine
 
-> A zero-dependency, deterministic Rust media engine — delivered as a **single-file TXT**: download one 17 MB text file, run the unpack script, and you get the complete source tree (28 crates), with no npm / pip / ffmpeg / OpenEXR.
+> A zero-dependency, deterministic Rust media engine — delivered as a **single-file TXT**: download one 18 MB text file, run the unpack script, and you get the complete source tree (28 crates), with no npm / pip / ffmpeg / OpenEXR.
 
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 ![Language](https://img.shields.io/badge/language-Rust-orange.svg)
 ![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)
 ![Distribution](https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg)
-![Tests](https://img.shields.io/badge/tests-3714%20passed-brightgreen.svg)
+![Tests](https://img.shields.io/badge/tests-3929%20passed-brightgreen.svg)
 ![Crates](https://img.shields.io/badge/crates-28-blue.svg)
 
 ---
@@ -18,7 +18,7 @@
 
 Prism Engine is a media engine written in Rust with zero third-party code dependencies: reading images, laying out, drawing frames, cutting timelines, and delivering finished cuts — all inside one deterministic engine. All 110 runtime dependencies (plus 20 test dependencies) are `path` dependencies within this repository — no network, no package manager, no supply-chain risk.
 
-It uses a **single-file source distribution**: the entire engine (622 files, 28 crates) is merged into a single UTF-8 text file, `prism-engine-v2.0-source.txt`. With that file in hand, you can restore locally a directory tree identical to the repository.
+It uses a **single-file source distribution**: the entire engine (642 files, 28 crates) is merged into a single UTF-8 text file, `prism-engine-v2.1-source.txt`. With that file in hand, you can restore locally a directory tree identical to the repository.
 
 ---
 
@@ -75,6 +75,53 @@ In one sentence: **an image is what a frame looks like at one moment, and a vide
 
 ---
 
+---
+
+## In-Engine Capabilities (Beyond the Feature List)
+
+Some capabilities don't fit the "read / lay out / draw / deliver / integrate" list — they are the engine's deeper assets. This chapter keeps the main feature list uncluttered.
+
+### Audio: a built-in DAW kernel
+
+`prism-audio` is not an edge module that "can read WAV" — it is a complete pipeline from composition to mixing, and every function is a pure function of its parameters (same input ⇒ bit-identical across platforms):
+
+- **Synthesis**: PolyBLEP anti-aliased oscillator family + closed-form ADSR envelopes + 4 mood presets;
+- **Music theory**: scale library (major/minor, pentatonic, modes), 12-TET pitch↔frequency, a functional-grammar chord-progression state machine + voice leading;
+- **Sequencing**: arpeggiator (pattern/rate/octave), step drum machine, bar/beat-grid score arrangement;
+- **Material**: hand-written SMF parser (MIDI import), SFZ sampler, granular synthesis;
+- **Sound design**: physical modeling, spatial panning, FX chain;
+- **Mixing**: multi-track linear mix + fades + peak limiting;
+- **Analysis & linkage**: beat/onset detection, FFT spectrum, envelope extraction, AudioReactive baking (frame N reads a fixed window; frame-level pure function, seek-equivalent), loudness normalization.
+
+> Boundary: AAC/mp3 are not self-developed (patent history + effort); general audio goes through external ffmpeg.
+
+### Definable kernel library (special-solution registry)
+
+Every node type is a **special solution** of a "kernel + lattice + duality" triple. Third parties (or you) can register new solutions with `registry!` without touching the engine core:
+
+- Static collection (the macro expands inside the defining crate; no `inventory`/proc-macro, zero dependencies);
+- **Three-question validation** at registration (kernel form / lattice / duality): incomplete answers are rejected with a three-part error;
+- Official and custom solutions share the same registry; no runtime difference;
+- Mathematically this is the operator equation `f = g + Kf` with six inversion strategies — exact / stochastic / local / regularized / iterative / spectral. Adding a capability means declaring a triple, not patching the render loop.
+
+### Determinism and reproducibility infrastructure
+
+- **Signature closure**: node graphs / cache keys / snapshot keys / frame signatures all reduce to a "four-dimensional configuration hash"; changing a parameter changes the key, so nothing is wrongly reused; iterative nodes key on `(ε, n)`, streaming nodes key on the frame number;
+- **Byte fixed points**: USD export→import→export is byte-identical; WAV 16/24/32-bit round-trips exactly; EXR is compared bit-for-bit against the official implementation;
+- **Deterministic single-file packaging**: the same source packs to the same SHA-256 twice; the unpack round-trip compares every file byte by byte.
+
+### GPU backends (stated honestly)
+
+- **Vulkan**: the compute and ray-traced scene pipelines really run (verifiable without a GPU on the lavapipe software ICD); `render_scene` output is **byte-identical to the CPU reference** (0 differing pixels); `is_available()` requires both compute and render self-tests;
+- **Metal**: isomorphic port + compile gating ready, **not verified on hardware, not lit** (`is_available()` is always false);
+- **WebGPU**: feasibility conclusion only (4–6 person-days); no render path yet.
+
+### Anti-false-green gates
+
+Four local gate scripts (zero dependencies, `node` only): ghost-write defense (with reverse self-proof), open-source hygiene scan, compliance self-check (9/9, reverse self-proof 8/8 red), and packaging round-trip verification. A gate yields only "pass" or "red" — "looks fine" is not an accepted result. **False green is more dangerous than failure.**
+
+---
+
 ## Why Single-File Distribution
 
 - **Auditable**: a single text file, human-readable, `diff`-able, hash-verifiable; publishing freezes it.
@@ -89,14 +136,14 @@ In one sentence: **an image is what a frame looks like at one moment, and a vide
 Prerequisites: install [Rust](https://www.rust-lang.org/) (including `cargo`) and [Node.js](https://nodejs.org/) 18+.
 
 ```bash
-# 1. Download prism-engine-v2.0-source.txt from the repository and save it as a local file
+# 1. Download prism-engine-v2.1-source.txt from the repository and save it as a local file
 # 2. Open it in a text editor and save the Node.js script between "UNPACK SCRIPT BEGIN" and
 #    "UNPACK SCRIPT END" as unpack.cjs in the same directory
-# 3. Run the unpack (a few seconds; restores 622 files)
+# 3. Run the unpack (a few seconds; restores 642 files)
 node unpack.cjs
 # 4. Run the full test suite in the restored directory (i.e. the workspace root)
 cargo test --workspace --release
-# expected: 3714 passed / 0 failed
+# expected: 3929 passed / 0 failed
 ```
 
 After unpacking you get a standard Cargo workspace (28 crates under `src/`), and subsequent `cargo` commands are the same as for any regular Rust project.
@@ -146,7 +193,7 @@ cargo xtest
 cargo test -p prism-core --release
 ```
 
-- Full test suite: **3714 passed / 0 failed / 0 ignored** (this version has been actually run on the **unpacked tree**: 166 test blocks)
+- Full test suite: **3929 passed / 0 failed / 0 ignored** (release run in the repository: 179 test suites, 171.5 s all-core; the package is byte-identical to the repository — only the demo crate is excluded)
 - CI: **6 jobs** — ghost-write defense (ghost-guard) / compile + full test suite (native) / wasm32 build (wasm) / WGSL static checks (wasm-verify) / cross-implementation bitstream comparison against official OpenEXR (interop) / node host cross-validation (lint).
 - 3 local gate scripts (fully zero-dependency, using only `node`, below) + 1 packaging script; among them, the compliance self-check passes **9/9** and the negative self-test goes red **8/8**.
 

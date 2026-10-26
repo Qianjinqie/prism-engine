@@ -3,13 +3,13 @@
 
 # Prism Engine
 
-> Mecanismo de mídia em Rust, determinístico e sem dependências — distribuído como **arquivo TXT único**: baixe um texto de 17 MB, execute o script de desempacotamento e obtenha a árvore de código-fonte completa (28 crates), sem npm / pip / ffmpeg / OpenEXR.
+> Mecanismo de mídia em Rust, determinístico e sem dependências — distribuído como **arquivo TXT único**: baixe um texto de 18 MB, execute o script de desempacotamento e obtenha a árvore de código-fonte completa (28 crates), sem npm / pip / ffmpeg / OpenEXR.
 
 ![Licença](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 ![Linguagem](https://img.shields.io/badge/language-Rust-orange.svg)
 ![Dependências](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)
 ![Distribuição](https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg)
-![Testes](https://img.shields.io/badge/tests-3714%20passed-brightgreen.svg)
+![Testes](https://img.shields.io/badge/tests-3929%20passed-brightgreen.svg)
 ![Crates](https://img.shields.io/badge/crates-28-blue.svg)
 
 ---
@@ -20,8 +20,8 @@ Prism Engine é um mecanismo de mídia escrito em Rust, sem nenhuma dependência
 (mais 20 dependências de teste) são dependências `path` deste repositório — sem depender da rede, sem gerenciador de pacotes,
 sem risco de cadeia de suprimentos.
 
-Adota **distribuição de código-fonte em arquivo único**: o motor inteiro (622 arquivos, 28 crates) é consolidado em um único
-texto UTF-8 `prism-engine-v2.0-source.txt`. Com esse arquivo em mãos, é possível restaurar localmente uma árvore de diretórios
+Adota **distribuição de código-fonte em arquivo único**: o motor inteiro (642 arquivos, 28 crates) é consolidado em um único
+texto UTF-8 `prism-engine-v2.1-source.txt`. Com esse arquivo em mãos, é possível restaurar localmente uma árvore de diretórios
 idêntica à do repositório.
 
 ---
@@ -106,6 +106,53 @@ A seguir, dividido em cinco blocos por "o que você quer fazer": **ler → compo
 
 ---
 
+---
+
+## Capacidades internas (além da lista de recursos)
+
+Algumas capacidades não cabem na lista "ler / compor / desenhar / entregar / integrar" — são os ativos profundos do motor. Este capítulo mantém a lista principal enxuta.
+
+### Áudio: um núcleo de DAW embutido
+
+`prism-audio` não é um módulo periférico "que sabe ler WAV", mas uma cadeia completa da composição à mixagem; cada função é uma função pura de seus parâmetros (mesma entrada ⇒ bits idênticos entre plataformas):
+
+- **Síntese**: família de osciladores PolyBLEP sem aliasing + envelopes ADSR em forma fechada + 4 presets de clima;
+- **Teoria musical**: biblioteca de escalas (maior/menor, pentatônica, modos), 12-TET altura↔frequência, máquina de estados de gramática funcional para progressões + condução de vozes;
+- **Sequenciamento**: arpejador (padrão/velocidade/oitava), caixa de ritmos por passos, partitura em grade de compassos/pulsos;
+- **Material**: parser SMF escrito à mão (importação MIDI), sampler SFZ, síntese granular;
+- **Design de som**: modelagem física, panning espacial, cadeia de efeitos;
+- **Mixagem**: mixagem linear multipista + fades + limitação de picos;
+- **Análise e vínculo**: detecção de batida/onset, espectro FFT, extração de envelopes, bake AudioReactive (o quadro N lê uma janela fixa; função pura por quadro, equivalente a seek), normalização de loudness.
+
+> Limite: AAC/mp3 não são desenvolvidos aqui (histórico de patentes + esforço); áudio geral passa por ffmpeg externo.
+
+### Biblioteca de kernels definíveis (registro de soluções especiais)
+
+Cada tipo de nó é uma **solução especial** de uma tripla "kernel + reticulado + dualidade". Terceiros (ou você) podem registrar novas soluções com `registry!`, sem tocar no núcleo:
+
+- Coleta estática (a macro expande no crate que define; sem `inventory`/proc-macro, zero dependências);
+- **Validação de três perguntas** no registro (forma do kernel / reticulado / dualidade): respostas incompletas são rejeitadas com erro em três partes;
+- Soluções oficiais e personalizadas compartilham o mesmo registro; sem diferença em tempo de execução;
+- Matematicamente é a equação de operador `f = g + Kf` com seis estratégias de inversão — exata / estocástica / local / regularizada / iterativa / espectral. Adicionar uma capacidade é declarar uma tripla, não remendar o laço de renderização.
+
+### Infraestrutura de determinismo e reprodutibilidade
+
+- **Fechamento de assinatura**: grafos de nós / chaves de cache / chaves de snapshot / assinaturas de quadro reduzem-se a um "hash de configuração quadridimensional"; mudar um parâmetro muda a chave, nada é reutilizado por engano; nós iterativos usam `(ε, n)`, nós de fluxo usam o número do quadro;
+- **Pontos fixos de bytes**: USD exportar→importar→exportar é idêntico byte a byte; WAV 16/24/32 bits faz ida e volta exata; EXR é comparado bit a bit com a implementação oficial;
+- **Empacotamento determinístico em arquivo único**: o mesmo código gera o mesmo SHA-256 duas vezes; o round-trip de desempacotamento compara cada arquivo byte a byte.
+
+### Backends de GPU (declarados com honestidade)
+
+- **Vulkan**: os pipelines de compute e de cena com ray tracing rodam de verdade (verificável sem GPU no ICD de software lavapipe); a saída de `render_scene` é **idêntica byte a byte à referência de CPU** (0 pixels diferentes); `is_available()` exige autoteste de compute E render;
+- **Metal**: port isomórfico + compilação condicional prontos, **não verificado em hardware, não aceso** (`is_available()` sempre false);
+- **WebGPU**: apenas conclusão de viabilidade (4–6 pessoas-dia), sem caminho de renderização.
+
+### Portões anti-verde-falso
+
+Quatro scripts locais (zero dependências, apenas `node`): defesa contra escrita fantasma (com autoprova reversa), varredura de higiene open source, autoverificação de conformidade (9/9, autoprova reversa 8/8 vermelho) e verificação de round-trip do empacotamento. Um portão só dá "passa" ou "vermelho"; "parece bom" não vale. **Verde falso é mais perigoso que falha.**
+
+---
+
 ## Por que distribuição em arquivo único
 
 - **Auditável**: um arquivo de texto, legível a olho nu, sujeito a `diff` e à verificação por hash; publicado, congelado.
@@ -120,14 +167,14 @@ A seguir, dividido em cinco blocos por "o que você quer fazer": **ler → compo
 Pré-requisitos: instalar [Rust](https://www.rust-lang.org/) (com `cargo`) e [Node.js](https://nodejs.org/) 18+.
 
 ```bash
-# 1. Baixe o prism-engine-v2.0-source.txt do repositório e salve como arquivo local
+# 1. Baixe o prism-engine-v2.1-source.txt do repositório e salve como arquivo local
 # 2. Abra-o em um editor de texto e salve o script Node.js entre "UNPACK SCRIPT BEGIN" e "UNPACK SCRIPT END"
 #    como unpack.cjs no mesmo diretório
-# 3. Execute o desempacotamento (cerca de alguns segundos, restaura 622 arquivos)
+# 3. Execute o desempacotamento (cerca de alguns segundos, restaura 642 arquivos)
 node unpack.cjs
 # 4. No diretório restaurado (a raiz do workspace), execute a suíte completa de testes
 cargo test --workspace --release
-# Esperado: 3714 passed / 0 failed
+# Esperado: 3929 passed / 0 failed
 ```
 
 Após desempacotar obtém-se um Cargo workspace padrão (28 crates em `src/`); os comandos `cargo` seguintes são os mesmos de um projeto Rust comum.
@@ -177,7 +224,7 @@ cargo xtest
 cargo test -p prism-core --release
 ```
 
-- Suíte completa: **3714 passed / 0 failed / 0 ignored** (esta versão foi executada de fato na **árvore desempacotada**: 166 blocos de teste)
+- Suíte completa: **3929 passed / 0 failed / 0 ignored** (executado em release no repositório: 179 suítes, 171,5 s com todos os núcleos; o pacote é idêntico byte a byte ao repositório — apenas o crate de demonstração é excluído)
 - CI: **6 jobs** — defesa contra escrita fantasma (ghost-guard) / compilação + suíte completa (native) / build wasm32 (wasm) /
   verificação estática de WGSL (wasm-verify) / comparação de bitstream entre implementações com o OpenEXR oficial (interop) / verificação cruzada no host node (lint).
 - 3 scripts locais de gate (totalmente zero dependências, apenas `node`, abaixo) + 1 script de empacotamento;

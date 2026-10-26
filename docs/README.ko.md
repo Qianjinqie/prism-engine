@@ -2,13 +2,13 @@
 
 # Prism Engine
 
-> 의존성 제로, 결정론적 Rust 미디어 엔진 — **단일 파일 TXT로 배포**: 17 MB짜리 텍스트 하나를 내려받아 압축 해제 스크립트를 실행하면 완전한 소스 트리(28개 crate)를 얻는다. npm / pip / ffmpeg / OpenEXR이 필요 없다.
+> 의존성 제로, 결정론적 Rust 미디어 엔진 — **단일 파일 TXT로 배포**: 18 MB짜리 텍스트 하나를 내려받아 압축 해제 스크립트를 실행하면 완전한 소스 트리(28개 crate)를 얻는다. npm / pip / ffmpeg / OpenEXR이 필요 없다.
 
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 ![Language](https://img.shields.io/badge/language-Rust-orange.svg)
 ![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)
 ![Distribution](https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg)
-![Tests](https://img.shields.io/badge/tests-3714%20passed-brightgreen.svg)
+![Tests](https://img.shields.io/badge/tests-3929%20passed-brightgreen.svg)
 ![Crates](https://img.shields.io/badge/crates-28-blue.svg)
 
 ---
@@ -20,8 +20,8 @@ Prism Engine은 Rust로 작성된 서드파티 코드 의존성 제로의 미디
 전체 110개의 런타임 의존성(추가로 20개의 테스트 의존성)이 모두 이 저장소의 `path` 의존성이다 —
 네트워크에 의존하지 않고, 패키지 관리자가 필요 없으며, 공급망 위험이 없다.
 
-**단일 파일 소스 배포** 방식을 쓴다. 엔진 전체(622개 파일, 28개 crate)가 하나의 UTF-8
-텍스트 `prism-engine-v2.0-source.txt`로 병합된다. 이 파일 하나만 있으면 저장소와 완전히 동일한
+**단일 파일 소스 배포** 방식을 쓴다. 엔진 전체(642개 파일, 28개 crate)가 하나의 UTF-8
+텍스트 `prism-engine-v2.1-source.txt`로 병합된다. 이 파일 하나만 있으면 저장소와 완전히 동일한
 디렉터리 트리를 로컬에서 복원할 수 있다.
 
 ---
@@ -122,6 +122,53 @@ Prism Engine은 Rust로 작성된 서드파티 코드 의존성 제로의 미디
 
 ---
 
+---
+
+## 엔진 내부 특수 능력 (기능 목록 바깥)
+
+"읽기 / 배치 / 그리기 / 출력 / 통합" 목록에 담기지 않는 능력들 — 엔진의 심층 자산입니다. 이 장에서 본 목록을 깔끔하게 유지합니다.
+
+### 오디오: 내장 DAW 커널
+
+`prism-audio`는 "WAV를 읽을 줄 아는" 주변 모듈이 아니라 작곡부터 믹싱까지 전 과정을 갖춘 **결정론적 DAW 커널**입니다. 모든 함수는 매개변수의 순수 함수(같은 입력이면 플랫폼 간 비트 동일)입니다.
+
+- **합성**: PolyBLEP 앤티앨리어싱 오실레이터군 + 폐형식 ADSR 엔벨로프 + 4가지 무드 프리셋;
+- **음악 이론**: 음계 라이브러리(장단조/5음계/교회 선법), 12-TET 음높이↔주파수, 화성 진행의 **기능 문법 상태 기계** + 성부 진행;
+- **시퀀싱**: 아르페지에이터(패턴/속도/옥타브), 스텝 드럼 머신, 마디·박자 그리드 스코어 편곡;
+- **소재**: 직접 작성한 SMF 파서(MIDI 가져오기), SFZ 샘플러, 그래뉼러 합성;
+- **사운드 디자인**: 물리 모델링, 공간 패닝, 이펙트 체인;
+- **믹싱**: 멀티트랙 선형 믹스 + 페이드 + 피크 리미팅;
+- **분석과 연동**: 비트/온셋 검출, FFT 스펙트럼, 엔벨로프 추출, AudioReactive 베이킹(N번째 프레임은 고정 창을 읽음; 프레임 단위 순수 함수, seek 등가), 라우드니스 정규화.
+
+> 경계: AAC/mp3는 자체 개발하지 않습니다(특허 이력 + 공수). 일반 오디오는 외부 ffmpeg를 경유합니다.
+
+### 정의 가능한 커널 라이브러리 (특해 레지스트리)
+
+모든 노드 유형은 "커널 + 격자 + 쌍대" 삼중항의 **특해**입니다. 제3자(또는 당신)는 `registry!`로 새 특해를 등록할 수 있고, 엔진 코어를 고칠 필요가 없습니다.
+
+- 정적 일괄 등록(매크로는 정의한 crate 안에서 전개; `inventory`/proc-macro 금지, 의존성 제로);
+- 등록 시 **세 가지 질문 검증**(커널 형식/격자/쌍대). 답이 빠지면 3단 오류로 거부;
+- 공식 특해와 사용자 특해는 같은 레지스트리를 공유하며 런타임 차이가 없습니다;
+- 수학적으로는 연산자 방정식 `f = g + Kf`의 여섯 가지 역전 전략 — 정확/확률/국소/정규화/반복/스펙트럼. 능력 추가는 삼중항 선언이지, 렌더 루프에 덧대는 일이 아닙니다.
+
+### 결정론과 재현성 기반
+
+- **서명 폐포**: 노드 그래프/캐시 키/스냅샷 키/프레임 서명을 "4차원 구성 해시"로 통일. 매개변수를 바꾸면 키가 바뀌어 잘못된 재사용이 없습니다. 반복 노드는 `(ε, n)`, 스트림 노드는 프레임 번호를 키에 포함;
+- **바이트 고정점**: USD는 export→import→export가 바이트 동일. WAV 16/24/32비트 왕복 일치. EXR은 공식 구현과 비트 단위 대조;
+- **단일 파일 배포 결정성**: 같은 소스는 두 번 패키징해도 SHA-256이 같습니다. 압축 해제 왕복은 모든 파일을 바이트 단위로 비교합니다.
+
+### GPU 백엔드 (정직한 분리 표기)
+
+- **Vulkan**: compute와 레이트레이싱 장면 파이프라인이 실제 동작(lavapipe 소프트웨어 ICD에서 GPU 없이 검증 가능). `render_scene` 출력은 CPU 참조와 **바이트 동일(차이 픽셀 0)**. `is_available()`은 compute ∧ render 이중 자체 검사;
+- **Metal**: 동형 이식 + 컴파일 게이트만 완료. **실기 검증 없음, 점등 없음**(`is_available()` 항상 false);
+- **WebGPU**: 타당성 결론만(4–6인일). 렌더 경로 미구현.
+
+### 가짜 초록 방지 게이트
+
+로컬 게이트 4개(의존성 제로, `node`만 사용): 고스트 쓰기 방어(역방향 자기 증명 포함), 오픈소스 위생 스캔, 컴플라이언스 자체 점검(9/9, 역방향 자기 증명 8/8 레드), 패키징 왕복 검증. 게이트는 "통과" 또는 "레드"만 인정합니다. "괜찮아 보인다"는 안 됩니다. **가짜 초록은 실패보다 위험합니다.**
+
+---
+
 ## 왜 단일 파일 배포인가
 
 - **감사 가능**: 텍스트 파일 하나로, 사람이 읽을 수 있고, `diff` 가능하며, 해시 검증이 가능하다.
@@ -140,14 +187,14 @@ Prism Engine은 Rust로 작성된 서드파티 코드 의존성 제로의 미디
 사전 준비: [Rust](https://www.rust-lang.org/)(`cargo` 포함)와 [Node.js](https://nodejs.org/) 18+를 설치한다.
 
 ```bash
-# 1. 저장소의 prism-engine-v2.0-source.txt를 내려받아 로컬 파일로 저장한다
+# 1. 저장소의 prism-engine-v2.1-source.txt를 내려받아 로컬 파일로 저장한다
 # 2. 텍스트 편집기로 열어 "UNPACK SCRIPT BEGIN"과 "UNPACK SCRIPT END"
 #    사이의 Node.js 스크립트를 같은 디렉터리의 unpack.cjs로 따로 저장한다
-# 3. 압축 해제 실행 (수 초 소요, 622개 파일 복원)
+# 3. 압축 해제 실행 (수 초 소요, 642개 파일 복원)
 node unpack.cjs
 # 4. 복원된 디렉터리(즉 workspace 루트)에서 전체 테스트 실행
 cargo test --workspace --release
-# 예상: 3714 passed / 0 failed
+# 예상: 3929 passed / 0 failed
 ```
 
 압축을 풀면 표준 Cargo workspace(`src/` 아래 28개 crate)가 나오며, 이후의 `cargo` 명령은 일반
@@ -198,7 +245,7 @@ cargo xtest
 cargo test -p prism-core --release
 ```
 
-- 전체 테스트: **3714 passed / 0 failed / 0 ignored** (이번 버전은 **압축 해제 트리**에서 실제 실행: 166개 테스트 블록)
+- 전체 테스트: **3929 passed / 0 failed / 0 ignored** (저장소에서 release 실주행: 179개 테스트 스위트, 전 코어 병렬 171.5초. 패키지는 저장소와 바이트 단위로 동일하며 데모 crate만 제외)
 - CI: **6개 job** — 고스트 쓰기 방어(ghost-guard) / 컴파일 + 전체 테스트(native) / wasm32 빌드(wasm) /
   WGSL 정적 검사(wasm-verify) / 공식 OpenEXR과 교차 구현 비트스트림 대조(interop) / node 호스트 교차 판정(lint).
 - 로컬 게이트 스크립트 3개(전부 제로 의존성, `node`만 사용, 아래) + 패키징 스크립트 1개;

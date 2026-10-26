@@ -2,13 +2,13 @@
 
 # Prism Engine
 
-> Ein abhängigkeitsfreier, deterministischer Media-Engine in Rust — verteilt als **einzelne TXT-Datei**: eine 17 MB große Textdatei herunterladen, das Entpack-Skript ausführen und schon liegt der vollständige Quellbaum vor (28 Crates) — ohne npm / pip / ffmpeg / OpenEXR.
+> Ein abhängigkeitsfreier, deterministischer Media-Engine in Rust — verteilt als **einzelne TXT-Datei**: eine 18 MB große Textdatei herunterladen, das Entpack-Skript ausführen und schon liegt der vollständige Quellbaum vor (28 Crates) — ohne npm / pip / ffmpeg / OpenEXR.
 
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
 ![Language](https://img.shields.io/badge/language-Rust-orange.svg)
 ![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)
 ![Distribution](https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg)
-![Tests](https://img.shields.io/badge/tests-3714%20passed-brightgreen.svg)
+![Tests](https://img.shields.io/badge/tests-3929%20passed-brightgreen.svg)
 ![Crates](https://img.shields.io/badge/crates-28-blue.svg)
 
 ---
@@ -19,8 +19,8 @@ Prism Engine ist ein in Rust geschriebener Media-Engine ohne Abhängigkeiten von
 (dazu 20 Testabhängigkeiten) sind `path`-Abhängigkeiten dieses Repositorys — kein Netzwerk, kein Paketmanager,
 kein Supply-Chain-Risiko.
 
-Verteilt wird als **Single-File-Quellcode**: die gesamte Engine (622 Dateien, 28 Crates) ist in eine einzige UTF-8-Textdatei
-`prism-engine-v2.0-source.txt` zusammengeführt. Wer diese Datei besitzt, kann daraus lokal einen Verzeichnisbaum
+Verteilt wird als **Single-File-Quellcode**: die gesamte Engine (642 Dateien, 28 Crates) ist in eine einzige UTF-8-Textdatei
+`prism-engine-v2.1-source.txt` zusammengeführt. Wer diese Datei besitzt, kann daraus lokal einen Verzeichnisbaum
 rekonstruieren, der dem Repository exakt entspricht.
 
 ---
@@ -105,6 +105,53 @@ Im Folgenden fünf Blöcke entlang dessen, was man tun will: **einlesen → anor
 
 ---
 
+---
+
+## Engine-Interna (jenseits der Funktionsliste)
+
+Manche Fähigkeiten passen nicht in die Liste „Lesen / Anordnen / Zeichnen / Ausliefern / Integrieren" — sie sind die tieferen Assets der Engine. Dieses Kapitel hält die Hauptliste übersichtlich.
+
+### Audio: ein eingebauter DAW-Kern
+
+`prism-audio` ist kein Randmodul, das „WAV lesen kann", sondern eine vollständige Kette vom Komponieren bis zum Mixing; jede Funktion ist eine reine Funktion ihrer Parameter (gleiche Eingabe ⇒ plattformübergreifend bit-identisch):
+
+- **Synthese**: PolyBLEP-aliasingfreie Oszillatorfamilie + geschlossene ADSR-Hüllkurven + 4 Stimmungs-Presets;
+- **Musiktheorie**: Skalenbibliothek (Dur/Moll, pentatonisch, Kirchentonarten), 12-TET Tonhöhe↔Frequenz, ein Zustandsautomat funktionaler Grammatik für Akkordfolgen + Stimmführung;
+- **Sequencing**: Arpeggiator (Muster/Rate/Oktave), Step-Drum-Machine, Takt-/Beat-Raster-Partitur;
+- **Material**: handgeschriebener SMF-Parser (MIDI-Import), SFZ-Sampler, Granularsynthese;
+- **Sounddesign**: physikalische Modellierung, räumliches Panning, FX-Kette;
+- **Mixing**: linearer Mehrspur-Mix + Fades + Peak-Begrenzung;
+- **Analyse & Kopplung**: Beat-/Onset-Erkennung, FFT-Spektrum, Hüllkurvenextraktion, AudioReactive-Backen (Frame N liest ein festes Fenster; reine Funktion pro Frame, seek-äquivalent), Loudness-Normalisierung.
+
+> Grenze: AAC/mp3 werden nicht selbst entwickelt (Patenthistorie + Aufwand); allgemeines Audio läuft über externes ffmpeg.
+
+### Definierbare Kernel-Bibliothek (Registry der Speziallösungen)
+
+Jeder Knotentyp ist eine **Speziallösung** eines Tripels „Kernel + Gitter + Dualität". Dritte (oder Sie) können mit `registry!` neue Lösungen registrieren, ohne den Engine-Kern zu ändern:
+
+- Statische Einsammlung (das Makro expandiert im definierenden Crate; kein `inventory`/Proc-Macro, null Abhängigkeiten);
+- **Drei-Fragen-Prüfung** bei der Registrierung (Kernform / Gitter / Dualität): unvollständige Antworten werden mit einem dreiteiligen Fehler abgelehnt;
+- Offizielle und eigene Lösungen teilen dieselbe Registry — zur Laufzeit kein Unterschied;
+- Mathematisch ist das die Operatorgleichung `f = g + Kf` mit sechs Inversionsstrategien — exakt / stochastisch / lokal / regularisiert / iterativ / spektral. Eine Fähigkeit hinzuzufügen heißt, ein Tripel zu deklarieren, nicht die Render-Schleife zu patchen.
+
+### Infrastruktur für Determinismus und Reproduzierbarkeit
+
+- **Signaturabschluss**: Knotengraphen / Cache-Schlüssel / Snapshot-Schlüssel / Frame-Signaturen sind ein „vierdimensionaler Konfigurations-Hash"; eine Parameteränderung ändert den Schlüssel, nichts wird falsch wiederverwendet; iterative Knoten schlüsseln auf `(ε, n)`, streamende Knoten auf die Frame-Nummer;
+- **Byte-Fixpunkte**: USD Export→Import→Export ist byte-identisch; WAV 16/24/32 Bit läuft exakt zurück; EXR wird bitweise gegen die offizielle Implementierung verglichen;
+- **Deterministisches Einzeldatei-Packaging**: derselbe Quellstand ergibt zweimal dieselbe SHA-256; der Entpack-Roundtrip vergleicht jede Datei Byte für Byte.
+
+### GPU-Backends (ehrlich getrennt)
+
+- **Vulkan**: Compute- und Raytracing-Szenen-Pipeline laufen wirklich (auf dem lavapipe-Software-ICD auch ohne GPU prüfbar); die `render_scene`-Ausgabe ist **byte-identisch zur CPU-Referenz** (0 abweichende Pixel); `is_available()` verlangt Compute- und Render-Selbsttest;
+- **Metal**: isomorphe Portierung + Compile-Gating fertig, **nicht auf Hardware verifiziert, nicht aktiviert** (`is_available()` immer false);
+- **WebGPU**: nur Machbarkeitsaussage (4–6 Personentage), kein Renderpfad.
+
+### Anti-False-Green-Gates
+
+Vier lokale Gate-Skripte (null Abhängigkeiten, nur `node`): Ghost-Write-Schutz (mit Gegenprobe), Open-Source-Hygiene-Scan, Compliance-Selbstprüfung (9/9, Gegenprobe 8/8 rot), Packaging-Roundtrip. Ein Gate kennt nur „bestanden" oder „rot" — „sieht gut aus" zählt nicht. **Falsches Grün ist gefährlicher als ein Fehlschlag.**
+
+---
+
 ## Warum Single-File-Verteilung
 
 - **Auditierbar**: eine Textdatei, für Menschen lesbar, `diff`-fähig, per Hash prüfbar — Veröffentlichung heißt Einfrieren.
@@ -119,14 +166,14 @@ Im Folgenden fünf Blöcke entlang dessen, was man tun will: **einlesen → anor
 Voraussetzung: [Rust](https://www.rust-lang.org/) (mit `cargo`) und [Node.js](https://nodejs.org/) 18+ installieren.
 
 ```bash
-# 1. die prism-engine-v2.0-source.txt aus dem Repository herunterladen und als lokale Datei speichern
+# 1. die prism-engine-v2.1-source.txt aus dem Repository herunterladen und als lokale Datei speichern
 # 2. in einem Texteditor öffnen und das Node.js-Skript zwischen "UNPACK SCRIPT BEGIN" und "UNPACK SCRIPT END"
 #    als unpack.cjs im selben Verzeichnis speichern
-# 3. Entpacken ausführen (wenige Sekunden, stellt 622 Dateien wieder her)
+# 3. Entpacken ausführen (wenige Sekunden, stellt 642 Dateien wieder her)
 node unpack.cjs
 # 4. im wiederhergestellten Verzeichnis (also der workspace-Wurzel) die vollständigen Tests laufen lassen
 cargo test --workspace --release
-# Erwartet: 3714 passed / 0 failed
+# Erwartet: 3929 passed / 0 failed
 ```
 
 Nach dem Entpacken liegt ein standardmäßiger Cargo workspace vor (28 Crates unter `src/`); alle weiteren `cargo`-Befehle sind wie bei einem üblichen Rust-Projekt.
@@ -176,7 +223,7 @@ cargo xtest
 cargo test -p prism-core --release
 ```
 
-- Vollständige Tests: **3714 passed / 0 failed / 0 ignored** (diese Fassung wurde tatsächlich auf dem **entpackten Baum** ausgeführt: 166 Testblöcke)
+- Vollständige Tests: **3929 passed / 0 failed / 0 ignored** (Release-Lauf im Repository: 179 Test-Suiten, 171,5 s auf allen Kernen; das Paket ist datei- und byte-identisch zum Repository — nur die Demo-Crate ist ausgenommen)
 - CI: **6 jobs** — Schutz vor Ghost-Writes (ghost-guard) / Kompilieren + vollständige Tests (native) / wasm32-Build (wasm) /
   WGSL-Statikprüfung (wasm-verify) / Bitstrom-Abgleich über Implementierungsgrenzen mit dem offiziellen OpenEXR (interop) / Kreuzabgleich des node-Hosts (lint).
 - Lokale Gate-Skripte: 3 (vollständig abhängigkeitsfrei, nur `node`, siehe unten) + 1 Packskript;
