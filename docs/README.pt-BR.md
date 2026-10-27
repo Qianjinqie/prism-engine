@@ -10,6 +10,7 @@
 ![Dependências](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)
 ![Distribuição](https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg)
 ![Testes](https://img.shields.io/badge/tests-3929%20passed-brightgreen.svg)
+[![Release](https://img.shields.io/badge/release-v2.1-blue.svg)](https://github.com/Qianjinqie/prism-engine/releases)
 ![Crates](https://img.shields.io/badge/crates-28-blue.svg)
 
 ---

@@ -7,6 +7,7 @@
 ![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)
 ![Distribution](https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg)
 ![Tests](https://img.shields.io/badge/tests-3929%20passed-brightgreen.svg)
+[![Release](https://img.shields.io/badge/release-v2.1-blue.svg)](https://github.com/Qianjinqie/prism-engine/releases)
 ![Crates](https://img.shields.io/badge/crates-28-blue.svg)
 
 （徽章为静态事实徽章，数字口径见下文；`crates-28` = **分发包内**的 crate 数，
