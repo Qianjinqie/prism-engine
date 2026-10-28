@@ -270,7 +270,13 @@ fn alpha_interp(alpha: f32) -> (usize, f32) {
     (i, (alpha - E_ALPHA[i]) / span)
 }
 
-/// 表插值：E_dir(μ, α, f0v)。μ 均匀格 + α 格双线性 + f0 两端点线性。
+/// 表插值：E_dir(μ, α, f0v)。
+///
+/// 返回**域约束到 [0,1]**：方向反照率按定义是能量比，必然 ∈ [0,1]。
+/// LUT 由有限样本蒙特卡洛建成，在 α 小、f0≈1 的格点可能估计出略大于 1 的
+/// 值（镜面瓣极窄时估计量方差大）；越界会让调用方的 `1−E` 变负，使多散射
+/// 补偿**反向抽走**该通道能量——表现是高饱和金属（金/铜）的强通道被抵消，
+/// 整体偏成补色（青绿）。域约束在此统一执行，不依赖 LUT 精度。
 fn energy_dir(mu: f32, alpha: f32, f0v: f32) -> f32 {
     let t = energy_table();
     let mx = clamp(mu, 0.0, 1.0) * (E_MU as f32 - 1.0);
@@ -281,16 +287,16 @@ fn energy_dir(mu: f32, alpha: f32, f0v: f32) -> f32 {
         + (t.e0[mi + 1][ai] * (1.0 - af) + t.e0[mi + 1][ai + 1] * af) * mf;
     let e1 = (t.e1[mi][ai] * (1.0 - af) + t.e1[mi][ai + 1] * af) * (1.0 - mf)
         + (t.e1[mi + 1][ai] * (1.0 - af) + t.e1[mi + 1][ai + 1] * af) * mf;
-    e0 * (1.0 - f0v) + e1 * f0v
+    (e0 * (1.0 - f0v) + e1 * f0v).clamp(0.0, 1.0)
 }
 
-/// 表插值：E_avg(α, f0v)。
+/// 表插值：E_avg(α, f0v)。域约束理由同 [`energy_dir`]。
 fn energy_avg(alpha: f32, f0v: f32) -> f32 {
     let t = energy_table();
     let (ai, af) = alpha_interp(alpha);
     let a0 = t.avg0[ai] * (1.0 - af) + t.avg0[ai + 1] * af;
     let a1 = t.avg1[ai] * (1.0 - af) + t.avg1[ai + 1] * af;
-    a0 * (1.0 - f0v) + a1 * f0v
+    (a0 * (1.0 - f0v) + a1 * f0v).clamp(0.0, 1.0)
 }
 
 // ---------------------------------------------------------------------------
@@ -431,28 +437,23 @@ impl Bsdf {
         let alpha = self.alpha();
         f = f + spec_scatter(wo, wi, n, alpha, f0);
 
-        // 多散射补偿：单散射亏损 (1−E) 按 F0 比例回填（Kulla-Conty 2017 框架；
-        // 白 F0 时白炉积分严格回 1，彩色通道 ≤ 1——能量上界守恒）。
-        let e_o = Vec3::new(
-            energy_dir(cos_o, alpha, f0.x),
-            energy_dir(cos_o, alpha, f0.y),
-            energy_dir(cos_o, alpha, f0.z),
-        );
-        let e_i = Vec3::new(
-            energy_dir(cos_i, alpha, f0.x),
-            energy_dir(cos_i, alpha, f0.y),
-            energy_dir(cos_i, alpha, f0.z),
-        );
-        let e_avg = Vec3::new(
-            energy_avg(alpha, f0.x),
-            energy_avg(alpha, f0.y),
-            energy_avg(alpha, f0.z),
-        );
-        let ms = Vec3::new(
-            (1.0 - e_o.x) * (1.0 - e_i.x) * f0.x / (PI * (1.0 - e_avg.x).max(1e-3)),
-            (1.0 - e_o.y) * (1.0 - e_i.y) * f0.y / (PI * (1.0 - e_avg.y).max(1e-3)),
-            (1.0 - e_o.z) * (1.0 - e_i.z) * f0.z / (PI * (1.0 - e_avg.z).max(1e-3)),
-        );
+        // 多散射补偿（彩色 F0 形式）：幅度必须取**白炉表**（F0=1）——
+        // 那是「被单散射漏掉多少能量」的唯一正确度量；色相由平均 Fresnel
+        //   F_avg = f0 + (1−f0)/21（Schlick 的半球平均），
+        //   f_ms = (1−E_o)(1−E_i)/(π(1−E_avg)) · F_avg²·E_avg/(1−F_avg(1−E_avg))
+        // 承担。F_avg = 1 时逐字退化为白炉标准形（白金属能量严格回 1）。
+        //
+        // 为什么不能逐通道用 E(f0_ch) 线性回填：低 f0 通道的 (1−E) 更大，
+        // 回填量 ∝ f0·(1−f0) 在 f0→0 侧被放大 —— 高饱和金属的低通道被
+        // 过量补能，整球在掠射角偏成补色（金球发青）。此处按 Fdez-Agüera
+        // 2019 的彩色导体形式，补偿色相跟随 F0。
+        let e_o = energy_dir(cos_o, alpha, 1.0);
+        let e_i = energy_dir(cos_i, alpha, 1.0);
+        let e_avg = energy_avg(alpha, 1.0);
+        let ms_base = (1.0 - e_o) * (1.0 - e_i) / (PI * (1.0 - e_avg).max(1e-3));
+        let f_avg = f0 + (Vec3::splat(1.0) - f0) * (1.0 / 21.0);
+        let comp = |fa: f32| ms_base * fa * fa * e_avg / (1.0 - fa * (1.0 - e_avg)).max(1e-3);
+        let ms = Vec3::new(comp(f_avg.x), comp(f_avg.y), comp(f_avg.z));
         f + ms
     }
 
@@ -704,9 +705,9 @@ mod tests {
     fn energy_conservation_by_sampling() {
         // 单方向能量守恒（sample-based）：固定 ωo，E[weight] = ∫f(ωo,ωi)·cosθi dωi
         // = E(ωo)（方向反照率）。混合瓣采样的 weight 除以混合 pdf，联合分布下无偏。
-        // Kulla-Conty 线性回填结构 → E(ωo) = E_o + (1−E_o)·f0：
-        //   白金属（f0=1）每方向精确 = 1（最强守恒断言，对任意 α 成立）；
-        //   彩色电介质每通道 ≤ 1（diffuse 让位 + 补偿结构保证上界）。
+        // 补偿结构（彩色 F0 形式）→ 白金属（f0=1）每方向精确 = 1（最强守恒断言，
+        // 对任意 α 成立，因为 F_avg=1 时补偿项逐字退化为白炉标准形）；
+        // 彩色电介质每通道 ≤ 1（diffuse 让位 + 补偿色相跟随 F_avg 保证上界）。
         // 旧双向白炉（余弦采样 ωi）在低 α 严重欠采样，故弃用。
         let ctx = EvalCtx::new(0xF0_1D, 0, 0);
         let n = Vec3::new(0.0, 0.0, 1.0);
