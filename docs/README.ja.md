@@ -1,29 +1,64 @@
-**日本語** | [简体中文](../README.md) | [English](README.en.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [Français](README.fr.md) | [한국어](README.ko.md) | [Português (BR)](README.pt-BR.md) | [Русский](README.ru.md)
+<p align="center">
+  <img src="https://cdn.jsdelivr.net/gh/Qianjinqie/prism-engine@main/docs/assets/logo.png" width="132" alt="Prism Engine">
+</p>
 
-# Prism Engine
+<h1 align="center">Prism Engine</h1>
 
-**サードパーティ依存ゼロ · バイト単位で決定的 · 単一ファイル配布**
+<h3 align="center">メディアパイプライン全体を、ひとつのソースツリーに</h3>
 
-Rust でゼロから書かれたプロシージャル・メディアエンジン。デコード、組版、パストレーシング、物理シミュレーション、音声合成、動画エンコードまで、すべてが一つのソースツリーの中で完結します。サードパーティの crate も、システムライブラリへのリンクも、ビルド時のネットワーク接続もありません。
+<p align="center">
+  <sub>デコード · 組版 · パストレーシング · 物理シミュレーション · 音声合成 · エンコード ｜ 依存ゼロ · バイト単位で決定的</sub>
+</p>
 
-![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
-![Tests](https://img.shields.io/badge/tests-3929%20passed-brightgreen.svg)
-![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)
-![Crates](https://img.shields.io/badge/crates-28-blue.svg)
-![Distribution](https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg)
-[![Release](https://img.shields.io/badge/release-v2.1-blue.svg)](https://github.com/Qianjinqie/prism-engine/releases)
+<p align="center">
+  <a href="../README.md">中文</a>
+  · <a href="README.en.md">English</a>
+  · <a href="README.de.md">Deutsch</a>
+  · <a href="README.es.md">Español</a>
+  · <a href="README.fr.md">Français</a>
+  · <b><a href="README.ja.md">日本語</a></b>
+  · <a href="README.ko.md">한국어</a>
+  · <a href="README.pt-BR.md">Português</a>
+  · <a href="README.ru.md">Русский</a>
+</p>
 
-![Prism Engine がレンダリングした静物](assets/still-life.png)
+<p align="center">
+  <img src="https://img.shields.io/badge/license-Apache--2.0-3B82F6?style=for-the-badge" alt="License">
+  <img src="https://img.shields.io/badge/tests-3929%20passed-22C55E?style=for-the-badge" alt="Tests">
+  <img src="https://img.shields.io/badge/dependencies-zero-16A34A?style=for-the-badge" alt="Dependencies">
+  <img src="https://img.shields.io/badge/crates-28-8B5CF6?style=for-the-badge" alt="Crates">
+  <img src="https://img.shields.io/badge/size-18.9%20MB-64748B?style=for-the-badge" alt="Size">
+  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v2.1-6366F1?style=for-the-badge" alt="Release"></a>
+</p>
 
-<sub>イメージ図ではなく、エンジンの出力そのもの：1200×675 · 256 spp · パストレーシング + 物理ベース BSDF + ACES トーンマッピング · 4 スレッドで 158 秒。シーンのソースは [`docs/gallery/gallery.rs`](gallery/gallery.rs)。</sub>
+<p align="center">
+  <a href="https://github.com/Qianjinqie/prism-engine/releases/latest"><img src="https://img.shields.io/badge/DOWNLOAD-v2.1-6C5CE7?style=for-the-badge" alt="Download"></a>
+  <a href="#3-分で動かす"><img src="https://img.shields.io/badge/QUICK_START-3%20minutes-0EA5E9?style=for-the-badge" alt="Quick start"></a>
+  <a href="#アーキテクチャ"><img src="https://img.shields.io/badge/ARCHITECTURE-28%20crates-334155?style=for-the-badge" alt="Architecture"></a>
+</p>
 
-**642** ファイル · **28** crate · **26.1 万** 行の Rust · **3929** テスト · サードパーティ依存 **0** · **18.9 MB** の単一ファイル
+<p align="center">
+  <img src="https://cdn.jsdelivr.net/gh/Qianjinqie/prism-engine@main/docs/assets/still-life.png" width="880" alt="Prism Engine がレンダリングした静物">
+</p>
 
----
+<p align="center">
+  <sub>イメージ図ではなく、エンジンの出力そのもの：1200×675 · 256 spp · パストレーシング + 物理ベース BSDF + ACES トーンマッピング · 4 スレッドで 158 秒。シーンのソースは <a href="gallery/gallery.rs"><code>docs/gallery/gallery.rs</code></a>。</sub>
+</p>
+
+<p align="center">
+  <sub><b>642</b> ファイル · <b>28</b> crate · <b>26.1 万</b> 行の Rust · <b>3929</b> テスト · サードパーティ依存 <b>0</b> · <b>18.9 MB</b> の単一ファイル</sub>
+</p>
 
 ## このエンジンが存在する理由
 
 一般的なメディアパイプラインは寄せ集めです。ffmpeg がデコードし、Blender がレンダリングし、ImageMagick が静止画を書き、DAW が音を担当し、スクリプトが一時ファイルでそれらを接着します。どれも優れた道具ですが、継ぎ目では二つのものが失われます——**決定性**と**監査可能性**です。マシンを変えれば浮動小数点の経路が変わり、バージョンを変えれば既定値が動き、問題が起きれば五つのブラックボックスと中間ファイルの山が残ります。
+
+| | 一般的なパイプライン | Prism Engine |
+| --- | --- | --- |
+| 経路 | 五六のツール + 接着スクリプト + 一時ファイル | ひとつのソースツリー、一度のビルド |
+| 別のマシン | 浮動小数点の経路が変わり、ピクセルも変わる | 同じ入力なら同じバイト |
+| 障害時 | 五つのブラックボックスと中間ファイルの山 | すべてのピクセルがソース行まで追える |
+| 依存 | 数十のネイティブライブラリ、それぞれのバージョン行列 | 0 |
 
 Prism Engine はその鎖全体を一つのソースツリーに引き込みます。同じシーン記述、同じパラメータなら、どのマシンでも、何回目の実行でも、ピクセルもバイトも完全に同じです。それは約束ではなく、3929 のテストが一本ずつ留めた事実です。
 
@@ -38,8 +73,6 @@ ffmpeg や Blender を置き換えるつもりはありません。置き換え�
 | **サードパーティコード依存ゼロ** | 実行時 110 + テスト 20 の依存はすべてリポジトリ内の `path` 依存。`build.rs` なし、ネイティブリンクなし、ビルド時にネットワーク不要 | あらゆるフォーマット、アルゴリズム、フォント、コーデックを自前で書く |
 | **バイト単位の決定性** | 固定小数点 IDCT、固定サンプリング列、四次元設定ハッシュ。同一入力ならプラットフォームを跨いでビット一致 | 浮動小数点の高速経路を捨て、順序を持たないコンテナの反復順に依存しない |
 | **単一ファイル配布** | 642 ファイル・28 crate を 18.9 MB の UTF-8 テキスト一つに統合し、`node unpack.cjs` で復元 | GitHub 上でソースを直接開いて読む便利さを諦める |
-
----
 
 ## 3 分で動かす
 
@@ -62,8 +95,6 @@ cargo run -p prism-app --release     # 内蔵デモシーン
 ```
 
 展開後は通常の Cargo workspace（`src/` 以下に 28 crate）で、以降の `cargo` コマンドは普通の Rust プロジェクトと同じです。初回ビルドには数分かかります。
-
----
 
 ## 一つのショットを、一つのテキストで
 
@@ -120,11 +151,11 @@ cargo run -p prism-app --release -- render examples/w2d_showcase.prism \
 
 `render` は v2 の直行経路です。ノードグラフをコンパイル → フレームごとに評価 → コンテナへ符号化。中間フレームをディスクに残しません。未対応ノードは黙って飛ばさず、明示的な `R5xxx` エラーを返します。
 
-![DSL からレンダリングしたタイトルフレーム](assets/dsl-title.png)
-
-<sub>`examples/w2d_showcase.prism` の 10 フレーム目：3D 球体、テキストレイヤ、グレーディング、フェードトラックが同じタイムラインを共有しています。</sub>
-
----
+<p align="center">
+  <img src="https://cdn.jsdelivr.net/gh/Qianjinqie/prism-engine@main/docs/assets/dsl-title.png" width="760" alt="DSL からレンダリングしたタイトルフレーム">
+  <br>
+  <sub>`examples/w2d_showcase.prism` の 10 フレーム目：3D 球体、テキストレイヤ、グレーディング、フェードトラックが同じタイムラインを共有しています。</sub>
+</p>
 
 ## Rust API だけを使う
 
@@ -158,8 +189,6 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 
 `render_pixel` は純関数です。シーン、カメラ、サンプリング文脈、ピクセル座標を入力に、線形 RGB を返します。同じパラメータなら、どのスレッドから、どの順序で呼んでも結果はビット一致——だから並列レンダリングに同期は一切要りません。
 
----
-
 ## 能力の全体像
 
 | 層 | できること |
@@ -174,8 +203,6 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 | **繋ぐ** | MCP stdio の三ツール（`scene_check` / `render_submit` / `diagnose`）、ノード SDK（セマンティックバージョン交渉）、HTTP/1.1 レンダリングサービス、batch manifest の直積バッチレンダリング、三プラットフォームのハードウェアエンコーダ探査スケルトン |
 
 > 表は目次にすぎません。各能力の具体的なパラメータと「できないこと」は、パッケージ内の `开发者指南.md` にあります。
-
----
 
 ## 一覧に収まらない内部能力
 
@@ -216,8 +243,6 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 
 依存ゼロのゲートスクリプト四本（Node のみ）：幽霊書き込み防御（逆自己試験つき）、オープンソース衛生スキャン、コンプライアンス自己点検（9/9 通過 + 8/8 の反証で落ちることを確認）、パッケージ往復検証。ゲートの結果は「通過」か「失敗」の二つだけで、「たぶん大丈夫」は認めません——**偽のグリーンは失敗より危険です**。
 
----
-
 ## 決定性はスローガンではない
 
 パラメータからバイトまで、四層の仕組み：
@@ -226,8 +251,6 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 2. **バイト不動点**：USD のエクスポート→インポート→エクスポートがバイト一致。WAV 16/24/32 bit の往復が一致。EXR は公式 OpenEXR とビットストリーム単位で突き合わせる。
 3. **パッケージの決定性**：同じソースを二回パッケージすると SHA-256 が完全一致。展開の往復で全ファイルをバイト単位で比較する。
 4. **テストが判断基準**：3929 のテストの多くが黄金値を固定（許容差は 1e-2 から 1e-6 へ、実測残差 4.53e-7）。形状の忠実度は Hausdorff 距離で抑え、「だいたい合っている」では済ませない。
-
----
 
 ## アーキテクチャ
 
@@ -266,8 +289,6 @@ flowchart LR
 
 > 設計の正典（`docs/設計/`）は配布元の完全なリポジトリにのみ存在し、配布には含まれません。デモ crate `prism-anim-demo` も同様です。
 
----
-
 ## ビルド・テスト・ゲート
 
 ```bash
@@ -286,8 +307,6 @@ node tools/pack_source_txt.mjs --verify      # パッケージと展開の往復
 - CI は六つのジョブ：幽霊書き込み防御、ビルド + 全テスト、wasm32 ビルド、WGSL 静的検査、公式 OpenEXR とのビットストリーム相互検証、Node ホストのクロスチェック。
 - 衛生スキャンには依然ヒットが残ります。配布物のドキュメント層はクリア済みで、残りはソースコメントと配布対象外のリポジトリ内ファイルです。スクリプトの存在は、残存を**見える形で一件ずつ片付ける**ためであり、きれいなふりをするためではありません。
 
----
-
 ## 正直な境界
 
 | 境界 | 現状 | 道筋 |
@@ -303,8 +322,6 @@ node tools/pack_source_txt.mjs --verify      # パッケージと展開の往復
 
 これらは「後回し」ではなく、現時点で明確に対応していない事項です。issue に隠すより、ここに書くほうがよいと判断しました。
 
----
-
 ## コンプライアンス
 
 エンジンはサードパーティコード依存ゼロを掲げ、自己点検で検証しています：
@@ -313,14 +330,10 @@ node tools/pack_source_txt.mjs --verify      # パッケージと展開の往復
 - **C2 アセット登録の完備**：5 件のアセットの主表項目が揃っています。フォントは SIL OFL 1.1 で配布し、ライセンス全文を `src/prism-text/font_data/LICENSE` に同梱。
 - **C3 第三者帰属表示**：`Compliance/THIRD-PARTY-NOTICES.md` が「データ資産 ≠ コード依存」を明確に区別。
 
----
-
 ## ライセンス
 
 Apache License 2.0。[`LICENSE`](../LICENSE) を参照してください。
 
 再配布時は `Compliance/` 以下の帰属表示とアセット登録を保持してください。
-
----
 
 <sub>ヒーローイメージと DSL のスクリーンショットはどちらもエンジン自身がレンダリングしたものです。パラメータは図注と [`docs/gallery/gallery.rs`](gallery/gallery.rs) にあります。</sub>

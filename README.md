@@ -1,35 +1,70 @@
-# Prism Engine
+<p align="center">
+  <img src="https://cdn.jsdelivr.net/gh/Qianjinqie/prism-engine@main/docs/assets/logo.png" width="132" alt="Prism Engine">
+</p>
 
-**零第三方依赖 · 逐字节确定 · 单文件分发**
+<h1 align="center">Prism Engine</h1>
 
-一个用 Rust 从零写成的程序化媒体引擎：解码、排版、路径追踪、物理仿真、音频合成、成片编码，全部在同一棵源码树里完成。零第三方代码依赖——不下载 crate，不链接系统库，构建不联网。
+<h3 align="center">把整条媒体流水线，收进一棵源码树</h3>
 
-[中文](README.md) · [English](docs/README.en.md) · [Deutsch](docs/README.de.md) · [Español](docs/README.es.md) · [Français](docs/README.fr.md) · [日本語](docs/README.ja.md) · [한국어](docs/README.ko.md) · [Português](docs/README.pt-BR.md) · [Русский](docs/README.ru.md)
+<p align="center">
+  <sub>解码 · 排版 · 路径追踪 · 物理仿真 · 音频合成 · 成片编码 &nbsp;|&nbsp; 零第三方依赖 · 逐字节确定</sub>
+</p>
 
-![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
-![Tests](https://img.shields.io/badge/tests-3929%20passed-brightgreen.svg)
-![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)
-![Crates](https://img.shields.io/badge/crates-28-blue.svg)
-![Distribution](https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg)
-[![Release](https://img.shields.io/badge/release-v2.1-blue.svg)](https://github.com/Qianjinqie/prism-engine/releases)
+<p align="center">
+  <b><a href="README.md">中文</a></b>
+  · <a href="docs/README.en.md">English</a>
+  · <a href="docs/README.de.md">Deutsch</a>
+  · <a href="docs/README.es.md">Español</a>
+  · <a href="docs/README.fr.md">Français</a>
+  · <a href="docs/README.ja.md">日本語</a>
+  · <a href="docs/README.ko.md">한국어</a>
+  · <a href="docs/README.pt-BR.md">Português</a>
+  · <a href="docs/README.ru.md">Русский</a>
+</p>
 
-![Prism Engine 渲染的静物](docs/assets/still-life.png)
+<p align="center">
+  <img src="https://img.shields.io/badge/license-Apache--2.0-3B82F6?style=for-the-badge" alt="License">
+  <img src="https://img.shields.io/badge/tests-3929%20passed-22C55E?style=for-the-badge" alt="Tests">
+  <img src="https://img.shields.io/badge/dependencies-zero-16A34A?style=for-the-badge" alt="Dependencies">
+  <img src="https://img.shields.io/badge/crates-28-8B5CF6?style=for-the-badge" alt="Crates">
+  <img src="https://img.shields.io/badge/size-18.9%20MB-64748B?style=for-the-badge" alt="Size">
+  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v2.1-6366F1?style=for-the-badge" alt="Release"></a>
+</p>
 
-<sub>不是效果图，是引擎输出：1200×675 · 256 spp · 路径追踪 + 物理 BSDF + ACES 色调映射 · 4 线程 158 秒。场景源码见 [`docs/gallery/gallery.rs`](docs/gallery/gallery.rs)。</sub>
+<p align="center">
+  <a href="https://github.com/Qianjinqie/prism-engine/releases/latest"><img src="https://img.shields.io/badge/DOWNLOAD-v2.1-6C5CE7?style=for-the-badge" alt="Download"></a>
+  <a href="#三分钟跑起来"><img src="https://img.shields.io/badge/QUICK_START-3%20minutes-0EA5E9?style=for-the-badge" alt="Quick start"></a>
+  <a href="#架构"><img src="https://img.shields.io/badge/ARCHITECTURE-28%20crates-334155?style=for-the-badge" alt="Architecture"></a>
+</p>
 
-**642** 个文件 · **28** 个 crate · **26.1 万** 行 Rust · **3929** 条测试 · **0** 个第三方依赖 · **18.9 MB** 单文件包
+<p align="center">
+  <img src="https://cdn.jsdelivr.net/gh/Qianjinqie/prism-engine@main/docs/assets/still-life.png" width="880" alt="Prism Engine">
+</p>
 
----
+<p align="center">
+  <sub>不是效果图，是引擎输出：1200×675 · 256 spp · 路径追踪 + 物理 BSDF + ACES 色调映射 · 4 线程 158 秒<br>场景源码 <a href="docs/gallery/gallery.rs"><code>docs/gallery/gallery.rs</code></a></sub>
+</p>
+
+<p align="center">
+  <sub><b>642</b> 个文件 &nbsp;·&nbsp; <b>28</b> 个 crate &nbsp;·&nbsp; <b>26.1 万</b> 行 Rust &nbsp;·&nbsp; <b>3929</b> 条测试 &nbsp;·&nbsp; <b>0</b> 个第三方依赖 &nbsp;·&nbsp; <b>18.9 MB</b> 单文件</sub>
+</p>
 
 ## 为什么会有这个引擎
 
-一条常规的媒体流水线是这样搭的：ffmpeg 解码，Blender 渲染，ImageMagick 出图，DAW 做声音，中间用脚本和临时文件把它们粘起来。每一件都是好工具，但接缝处会丢两样东西——**确定性**和**可审计性**：换一台机器，浮点路径变了；换一个版本，默认参数变了；出了问题，你面对的是五个黑盒和一堆中间文件。
+一条常规的媒体流水线是这样搭的：ffmpeg 解码，Blender 渲染，ImageMagick 出图，DAW 做声音，中间用脚本和临时文件把它们粘起来。每一件都是好工具，但接缝处会丢两样东西——**确定性**和**可审计性**。
 
-Prism Engine 把整条链路收进同一棵源码树。同一份场景描述、同样的参数，无论跑在哪台机器、第几次运行，输出的像素和字节都完全一样。这不是一句承诺，是 3929 条测试逐条钉住的事实。
+| | 常规流水线 | Prism Engine |
+| --- | --- | --- |
+| 链路 | 五六个工具 + 胶水脚本 + 临时文件 | 一棵源码树，一次编译 |
+| 换台机器 | 浮点路径变了，像素跟着变 | 同输入跨平台逐位一致 |
+| 出了问题 | 面对五个黑盒和一堆中间产物 | 每个像素可追到具体源码行 |
+| 依赖 | 几十个原生库、各自的版本矩阵 | 0 |
 
-它不打算替代 ffmpeg 或 Blender。它替代的是把它们粘起来的那层胶水，以及胶水里悄悄丢掉的确定性。
+同一份场景描述、同样的参数，无论跑在哪台机器、第几次运行，输出的像素和字节都完全一样。这不是一句承诺，是 3929 条测试逐条钉住的事实。
 
-目标读者很明确：需要「同一份输入、任何机器、同一份输出」的人——批量出图的流水线、要做可复现实验的图形研究、想把渲染塞进 CI 的团队。
+它不替代 ffmpeg 或 Blender。它替代的是把它们粘起来的那层胶水，以及胶水里悄悄丢掉的确定性。
+
+**给谁用**：需要「同一份输入、任何机器、同一份输出」的人——批量出图的流水线、要做可复现实验的图形研究、想把渲染塞进 CI 的团队。
 
 ### 三条硬约束
 
@@ -38,8 +73,6 @@ Prism Engine 把整条链路收进同一棵源码树。同一份场景描述、�
 | **零第三方代码依赖** | 110 条运行期 + 20 条测试依赖全是仓内 `path` 依赖；无 `build.rs`、无原生链接、构建不联网 | 每种格式、每个算法、字体、编解码器全部自己写 |
 | **逐字节确定** | 定点 IDCT、固定采样序列、四维配置哈希；同输入跨平台逐位一致 | 放弃浮点快路径，不能依赖无序容器的遍历顺序 |
 | **单文件分发** | 642 个文件、28 个 crate 合并成一个 18.9 MB 的 UTF-8 文本，`node unpack.cjs` 还原 | 放弃「在 GitHub 上直接点开看源码」的便利 |
-
----
 
 ## 三分钟跑起来
 
@@ -63,11 +96,11 @@ cargo run -p prism-app --release     # 内置演示场景
 
 解包得到的是标准 Cargo workspace（`src/` 下 28 个 crate），后续与普通 Rust 项目无异。首次编译需要几分钟。
 
----
+> 只想要「能跑起来」的最短路径：跳过第 1、2 步，直接在发布方的完整仓库里 `cargo run -p prism-app --release`。
 
 ## 一个镜头，一段文本
 
-`.prism` 是引擎的场景描述语言。下面是一个完整可渲染的 3 秒镜头——球体、材质、环绕相机、方向光、时长、调色、输出规格，全部在这里：
+`.prism` 是引擎的场景描述语言。下面是一个完整可渲染的 3 秒镜头——球体、材质、环绕相机、方向光、时长、调色、输出规格，全在这里：
 
 ```prism
 scene "spin_red_ball" {
@@ -120,11 +153,11 @@ cargo run -p prism-app --release -- render examples/w2d_showcase.prism \
 
 `render` 走 v2 直达路径：编译节点图 → 逐帧求值 → 编码封装，中间不落临时帧；不支持的节点会得到明确的 `R5xxx` 错误，而不是静默跳过。
 
-![DSL 渲染的标题帧](docs/assets/dsl-title.png)
-
-<sub>`examples/w2d_showcase.prism` 的第 10 帧：同一个场景里，3D 球体、文字层、调色和淡入淡出轨道共用一条时间线。</sub>
-
----
+<p align="center">
+  <img src="https://cdn.jsdelivr.net/gh/Qianjinqie/prism-engine@main/docs/assets/dsl-title.png" width="760" alt="DSL 渲染的标题帧">
+  <br>
+  <sub><code>examples/w2d_showcase.prism</code> 的第 10 帧：同一个场景里，3D 球体、文字层、调色与淡入淡出轨道共用一条时间线</sub>
+</p>
 
 ## 也可以只用 Rust API
 
@@ -158,8 +191,6 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 
 `render_pixel` 是纯函数：输入场景、相机、采样上下文和像素坐标，输出线性 RGB。同样的参数，任意线程、任意顺序调用，结果逐位相同——所以并行渲染不需要任何同步。
 
----
-
 ## 能力全景
 
 | 层 | 能做什么 |
@@ -175,8 +206,6 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 
 > 表格只是目录。每条能力的具体参数和「做不到什么」，见解包后的 `开发者指南.md`。
 
----
-
 ## 引擎内特能力
 
 有些东西塞不进上面那张表——它们不是「多支持一种格式」，而是引擎内部自己长出来的基础设施。
@@ -185,13 +214,13 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 
 `prism-audio` 不是「能读 WAV」的边缘模块。从作曲到混音是一条完整链路，每个函数都是参数的纯函数（同输入跨平台逐位一致）：
 
-- **合成**：PolyBLEP 防混叠振荡器族、ADSR 闭式包络、4 种情绪预设；
-- **乐理**：音阶库（大小调 / 五声 / 中古调式）、12-TET 音级↔频率、和弦进行的功能语法状态机 + 声部引导；
-- **编排**：琶音器（模式 / 速率 / 八度）、step 鼓机、小节与节拍网格；
-- **素材**：手写 SMF 解析（MIDI 导入）、SFZ 采样器、颗粒合成；
-- **声音设计**：物理建模、空间声像、效果器链；
-- **混音**：多轨线性混合、淡入淡出、峰值防削波；
-- **分析与联动**：节拍 / onset 检测、FFT 频谱、包络提取、响度归一；AudioReactive 烘焙第 N 帧读固定窗，帧级纯函数，seek 等价。
+- **合成**：PolyBLEP 防混叠振荡器族、ADSR 闭式包络、4 种情绪预设
+- **乐理**：音阶库（大小调 / 五声 / 中古调式）、12-TET 音级↔频率、和弦进行的功能语法状态机 + 声部引导
+- **编排**：琶音器（模式 / 速率 / 八度）、step 鼓机、小节与节拍网格
+- **素材**：手写 SMF 解析（MIDI 导入）、SFZ 采样器、颗粒合成
+- **声音设计**：物理建模、空间声像、效果器链
+- **混音**：多轨线性混合、淡入淡出、峰值防削波
+- **分析与联动**：节拍 / onset 检测、FFT 频谱、包络提取、响度归一；AudioReactive 烘焙第 N 帧读固定窗，帧级纯函数，seek 等价
 
 > 边界：AAC / mp3 编码不自研（专利历史包袱 + 工程量），走外部 ffmpeg 协作。
 
@@ -199,10 +228,10 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 
 引擎里每个节点类型，都是一个「核 + 格 + 对偶」三元组的**特解**。第三方（或你自己）可以用 `registry!` 静态注册新特解，**不改引擎核心**：
 
-- 静态汇入：宏在定义 crate 内展开，禁 `inventory` / proc-macro，保持零依赖；
-- 注册时**三问校验**（核形式 / 格 / 对偶），答不齐直接拒绝并给三段式报错；
-- 官方特解与自定义特解走同一张注册表，运行时无差别；
-- 数学上对应算子方程 `f = g + Kf` 的六种求逆策略（精确 / 随机 / 局部 / 正则化 / 迭代 / 谱）——接新特性是声明三元组，而不是往渲染循环里打补丁。
+- 静态汇入：宏在定义 crate 内展开，禁 `inventory` / proc-macro，保持零依赖
+- 注册时**三问校验**（核形式 / 格 / 对偶），答不齐直接拒绝并给三段式报错
+- 官方特解与自定义特解走同一张注册表，运行时无差别
+- 数学上对应算子方程 `f = g + Kf` 的六种求逆策略（精确 / 随机 / 局部 / 正则化 / 迭代 / 谱）——接新特性是声明三元组，而不是往渲染循环里打补丁
 
 ### GPU：三条路径，三种状态
 
@@ -216,8 +245,6 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 
 四个零依赖门禁脚本（只用 `node`）：幽灵写入防御（含反向自证）、开源卫生扫描、合规自检（9/9 通过 + 8/8 反证判红）、打包回环校验。门禁只有「通过」和「判红」两种结果，不接受「看起来过了」——**假绿比失败更危险**。
 
----
-
 ## 确定性不是口号
 
 四层机制，从参数一路管到字节：
@@ -226,8 +253,6 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 2. **字节不动点**：USD 导出→导入→导出逐字节一致；WAV 16/24/32 bit 往返一致；EXR 与官方 OpenEXR 做跨实现比特流对拍。
 3. **打包确定性**：同一份源码两次打包，SHA-256 完全一致；解包回环逐文件逐字节比对。
 4. **测试即判据**：3929 条测试里大量黄金值锁定（容差从 1e-2 收到 1e-6，实测残差 4.53e-7）；形状保真度用 Hausdorff 界，而不是「看着差不多」。
-
----
 
 ## 架构
 
@@ -266,8 +291,6 @@ flowchart LR
 
 > 设计权威文档（`docs/设计/`）只在发布方的完整仓库中，不随分发；演示 crate `prism-anim-demo` 同样不进包。
 
----
-
 ## 构建、测试与门禁
 
 ```bash
@@ -286,8 +309,6 @@ node tools/pack_source_txt.mjs --verify      # 打包并解包回环校验（逐
 - CI 六个 job：幽灵写入防御、编译 + 全量测试、wasm32 构建、WGSL 静态检查、与官方 OpenEXR 跨实现对拍、Node 宿主交叉判对。
 - 卫生扫描仍有存量命中：随包分发的文档层已清零，余下在源码注释与不随包分发的仓库文件中。脚本的存在是为了让残留**可见、可逐条清**，而不是假装干净。
 
----
-
 ## 诚实的边界
 
 | 边界 | 现状 | 出路 |
@@ -303,9 +324,7 @@ node tools/pack_source_txt.mjs --verify      # 打包并解包回环校验（逐
 
 这些不是「以后再说」，是当前状态下明确不支持的。写在这里，比藏在 issue 里好。
 
----
-
-## 合规
+## 合规与许可
 
 引擎承诺零第三方代码依赖，并经自检核验：
 
@@ -313,14 +332,8 @@ node tools/pack_source_txt.mjs --verify      # 打包并解包回环校验（逐
 - **C2 资产登记完备**：5 项资产主表字段齐全；字体以 SIL OFL 1.1 分发，许可证全文随字体置于 `src/prism-text/font_data/LICENSE`。
 - **C3 第三方归属声明**：`Compliance/THIRD-PARTY-NOTICES.md` 明确区分「数据资产 ≠ 代码依赖」。
 
----
+Apache License 2.0，见 [`LICENSE`](LICENSE)。再分发时请保留 `Compliance/` 下的归属声明与资产登记。
 
-## 许可证
-
-Apache License 2.0，见 [`LICENSE`](LICENSE)。
-
-再分发时请保留 `Compliance/` 下的归属声明与资产登记。
-
----
-
-<sub>门面图与 DSL 截图均由引擎自身渲染；参数写在图注与 [`docs/gallery/gallery.rs`](docs/gallery/gallery.rs) 里。</sub>
+<p align="center">
+  <sub>门面图与 DSL 截图均由引擎自身渲染，参数写在各图图注与 <a href="docs/gallery/gallery.rs"><code>docs/gallery/gallery.rs</code></a> 中</sub>
+</p>

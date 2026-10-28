@@ -1,29 +1,64 @@
-**한국어** | [简体中文](../README.md) | [English](README.en.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [Français](README.fr.md) | [日本語](README.ja.md) | [Português (BR)](README.pt-BR.md) | [Русский](README.ru.md)
+<p align="center">
+  <img src="https://cdn.jsdelivr.net/gh/Qianjinqie/prism-engine@main/docs/assets/logo.png" width="132" alt="Prism Engine">
+</p>
 
-# Prism Engine
+<h1 align="center">Prism Engine</h1>
 
-**서드파티 의존성 제로 · 바이트 단위 결정성 · 단일 파일 배포**
+<h3 align="center">미디어 파이프라인 전체를 하나의 소스 트리에</h3>
 
-Rust로 처음부터 작성한 프로시저럴 미디어 엔진입니다. 디코딩, 조판, 패스 트레이싱, 물리 시뮬레이션, 오디오 합성, 인코딩까지 모두 하나의 소스 트리 안에서 끝납니다. 서드파티 crate도, 시스템 라이브러리 링크도, 빌드 시 네트워크 연결도 없습니다.
+<p align="center">
+  <sub>디코드 · 조판 · 패스트레이싱 · 물리 시뮬레이션 · 오디오 합성 · 인코딩 | 의존성 제로 · 바이트 단위 결정적</sub>
+</p>
 
-![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
-![Tests](https://img.shields.io/badge/tests-3929%20passed-brightgreen.svg)
-![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)
-![Crates](https://img.shields.io/badge/crates-28-blue.svg)
-![Distribution](https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg)
-[![Release](https://img.shields.io/badge/release-v2.1-blue.svg)](https://github.com/Qianjinqie/prism-engine/releases)
+<p align="center">
+  <a href="../README.md">中文</a>
+  · <a href="README.en.md">English</a>
+  · <a href="README.de.md">Deutsch</a>
+  · <a href="README.es.md">Español</a>
+  · <a href="README.fr.md">Français</a>
+  · <a href="README.ja.md">日本語</a>
+  · <b><a href="README.ko.md">한국어</a></b>
+  · <a href="README.pt-BR.md">Português</a>
+  · <a href="README.ru.md">Русский</a>
+</p>
 
-![Prism Engine이 렌더링한 정물](assets/still-life.png)
+<p align="center">
+  <img src="https://img.shields.io/badge/license-Apache--2.0-3B82F6?style=for-the-badge" alt="License">
+  <img src="https://img.shields.io/badge/tests-3929%20passed-22C55E?style=for-the-badge" alt="Tests">
+  <img src="https://img.shields.io/badge/dependencies-zero-16A34A?style=for-the-badge" alt="Dependencies">
+  <img src="https://img.shields.io/badge/crates-28-8B5CF6?style=for-the-badge" alt="Crates">
+  <img src="https://img.shields.io/badge/size-18.9%20MB-64748B?style=for-the-badge" alt="Size">
+  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v2.1-6366F1?style=for-the-badge" alt="Release"></a>
+</p>
 
-<sub>목업이 아니라 엔진 출력입니다: 1200×675 · 256 spp · 패스 트레이싱 + 물리 기반 BSDF + ACES 톤 매핑 · 4 스레드 158초. 장면 소스는 [`docs/gallery/gallery.rs`](gallery/gallery.rs).</sub>
+<p align="center">
+  <a href="https://github.com/Qianjinqie/prism-engine/releases/latest"><img src="https://img.shields.io/badge/DOWNLOAD-v2.1-6C5CE7?style=for-the-badge" alt="Download"></a>
+  <a href="#3분-만에-실행하기"><img src="https://img.shields.io/badge/QUICK_START-3%20minutes-0EA5E9?style=for-the-badge" alt="Quick start"></a>
+  <a href="#아키텍처"><img src="https://img.shields.io/badge/ARCHITECTURE-28%20crates-334155?style=for-the-badge" alt="Architecture"></a>
+</p>
 
-**642** 파일 · **28** crate · **26.1만** 줄의 Rust · **3929** 테스트 · 서드파티 의존성 **0** · **18.9 MB** 단일 파일
+<p align="center">
+  <img src="https://cdn.jsdelivr.net/gh/Qianjinqie/prism-engine@main/docs/assets/still-life.png" width="880" alt="Prism Engine이 렌더링한 정물">
+</p>
 
----
+<p align="center">
+  <sub>목업이 아니라 엔진 출력입니다: 1200×675 · 256 spp · 패스 트레이싱 + 물리 기반 BSDF + ACES 톤 매핑 · 4 스레드 158초. 장면 소스는 <a href="gallery/gallery.rs"><code>docs/gallery/gallery.rs</code></a>.</sub>
+</p>
+
+<p align="center">
+  <sub><b>642</b> 파일 · <b>28</b> crate · <b>26.1만</b> 줄의 Rust · <b>3929</b> 테스트 · 서드파티 의존성 <b>0</b> · <b>18.9 MB</b> 단일 파일</sub>
+</p>
 
 ## 이 엔진이 존재하는 이유
 
 일반적인 미디어 파이프라인은 조립품입니다. ffmpeg가 디코딩하고, Blender가 렌더링하고, ImageMagick이 정지 이미지를 쓰고, DAW가 소리를 맡고, 스크립트가 임시 파일로 이들을 붙입니다. 각각 훌륭한 도구지만, 이음새에서 두 가지가 사라집니다——**결정성**과 **감사 가능성**입니다. 기계를 바꾸면 부동소수점 경로가 달라지고, 버전을 바꾸면 기본값이 움직이며, 문제가 생기면 다섯 개의 블랙박스와 중간 파일 더미가 남습니다.
+
+| | 일반적인 파이프라인 | Prism Engine |
+| --- | --- | --- |
+| 체인 | 대여섯 개 도구 + 접착 스크립트 + 임시 파일 | 하나의 소스 트리, 한 번의 빌드 |
+| 다른 머신 | 부동소수점 경로가 바뀌면 픽셀도 바뀜 | 같은 입력이면 같은 바이트 |
+| 문제 발생 | 다섯 개의 블랙박스와 중간 파일 더미 | 모든 픽셀이 소스 라인까지 추적됨 |
+| 의존성 | 수십 개 네이티브 라이브러리, 각자의 버전 매트릭스 | 0 |
 
 Prism Engine은 그 사슬 전체를 하나의 소스 트리로 끌어들입니다. 같은 장면 서술, 같은 파라미터라면 어느 기계에서든, 몇 번째 실행이든 픽셀과 바이트가 완전히 같습니다. 그것은 약속이 아니라 3929개의 테스트가 하나씩 못 박은 사실입니다.
 
@@ -38,8 +73,6 @@ ffmpeg나 Blender를 대체하려는 것이 아닙니다. 대체하는 것은 �
 | **서드파티 코드 의존성 제로** | 런타임 110 + 테스트 20 의존성이 모두 저장소 내 `path` 의존성. `build.rs` 없음, 네이티브 링크 없음, 빌드 시 네트워크 불필요 | 모든 포맷, 알고리즘, 폰트, 코덱을 직접 작성 |
 | **바이트 단위 결정성** | 고정소수점 IDCT, 고정 샘플링 시퀀스, 4차원 설정 해시. 같은 입력이면 플랫폼을 넘어 비트 단위로 일치 | 부동소수점 고속 경로를 포기하고, 순서 없는 컨테이너의 반복 순서에 의존하지 않음 |
 | **단일 파일 배포** | 642개 파일·28개 crate를 18.9 MB UTF-8 텍스트 하나로 합치고 `node unpack.cjs`로 복원 | GitHub에서 소스를 바로 열어 보는 편의를 포기 |
-
----
 
 ## 3분 만에 실행하기
 
@@ -62,8 +95,6 @@ cargo run -p prism-app --release     # 내장 데모 장면
 ```
 
 복원 결과는 평범한 Cargo workspace(`src/` 아래 28개 crate)이며, 이후 `cargo` 명령은 일반 Rust 프로젝트와 같습니다. 첫 빌드에는 몇 분이 걸립니다.
-
----
 
 ## 한 장면을, 한 편의 텍스트로
 
@@ -120,11 +151,11 @@ cargo run -p prism-app --release -- render examples/w2d_showcase.prism \
 
 `render`는 v2 직행 경로입니다. 노드 그래프 컴파일 → 프레임별 평가 → 컨테이너 인코딩까지, 중간 프레임을 디스크에 남기지 않습니다. 지원하지 않는 노드는 조용히 건너뛰지 않고 명시적인 `R5xxx` 오류를 냅니다.
 
-![DSL로 렌더링한 타이틀 프레임](assets/dsl-title.png)
-
-<sub>`examples/w2d_showcase.prism`의 10번째 프레임: 3D 구체, 텍스트 레이어, 그레이딩, 페이드 트랙이 하나의 타임라인을 공유합니다.</sub>
-
----
+<p align="center">
+  <img src="https://cdn.jsdelivr.net/gh/Qianjinqie/prism-engine@main/docs/assets/dsl-title.png" width="760" alt="DSL로 렌더링한 타이틀 프레임">
+  <br>
+  <sub>`examples/w2d_showcase.prism`의 10번째 프레임: 3D 구체, 텍스트 레이어, 그레이딩, 페이드 트랙이 하나의 타임라인을 공유합니다.</sub>
+</p>
 
 ## Rust API만 쓰기
 
@@ -158,8 +189,6 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 
 `render_pixel`은 순수 함수입니다. 장면, 카메라, 샘플링 컨텍스트, 픽셀 좌표를 받아 선형 RGB를 돌려줍니다. 같은 파라미터라면 어느 스레드에서, 어떤 순서로 호출해도 결과 비트가 같습니다——그래서 병렬 렌더링에 동기화가 전혀 필요 없습니다.
 
----
-
 ## 기능 전경
 
 | 층 | 할 수 있는 일 |
@@ -174,8 +203,6 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 | **연결** | MCP stdio 세 도구(`scene_check` / `render_submit` / `diagnose`), 노드 SDK(시맨틱 버전 협상), HTTP/1.1 렌더 서비스, batch manifest 직곱 배치 렌더링, 세 플랫폼 하드웨어 인코더 탐색 골격 |
 
 > 표는 목차일 뿐입니다. 각 기능의 구체적 파라미터와 "무엇을 못 하는지"는 패키지 안의 `开发者指南.md`에 있습니다.
-
----
 
 ## 목록에 담기지 않는 내부 능력
 
@@ -216,8 +243,6 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 
 의존성 제로 게이트 스크립트 네 개(Node만 사용): 유령 쓰기 방어(역 자체 시험 포함), 오픈소스 위생 스캔, 컴플라이언스 자체 점검(9/9 통과 + 8/8 반증 판정), 패키지 왕복 검증. 게이트 결과는 "통과"와 "실패" 둘뿐이며, "아마 괜찮을 것"은 인정하지 않습니다——**가짜 초록은 실패보다 위험합니다**.
 
----
-
 ## 결정성은 구호가 아니다
 
 파라미터에서 바이트까지, 네 층의 장치:
@@ -226,8 +251,6 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 2. **바이트 고정점**: USD 내보내기→가져오기→내보내기가 바이트 단위로 일치. WAV 16/24/32 bit 왕복 일치. EXR은 공식 OpenEXR과 비트스트림 단위로 대조.
 3. **패키징 결정성**: 같은 소스를 두 번 패키징하면 SHA-256이 완전히 일치. 언팩 왕복에서 모든 파일을 바이트 단위로 비교.
 4. **테스트가 판정 기준**: 3929개 테스트 중 다수가 황금값을 고정(허용 오차 1e-2에서 1e-6으로, 실측 잔차 4.53e-7). 형상 충실도는 Hausdorff 거리로 억제하며 "대충 맞는다"로 끝내지 않습니다.
-
----
 
 ## 아키텍처
 
@@ -266,8 +289,6 @@ flowchart LR
 
 > 설계 정본(`docs/设计/`)은 배포자의 전체 저장소에만 있으며 배포에는 포함되지 않습니다. 데모 crate `prism-anim-demo`도 마찬가지입니다.
 
----
-
 ## 빌드, 테스트, 게이트
 
 ```bash
@@ -286,8 +307,6 @@ node tools/pack_source_txt.mjs --verify      # 패키징과 언팩 왕복을 바
 - CI는 여섯 job: 유령 쓰기 방어, 빌드 + 전체 테스트, wasm32 빌드, WGSL 정적 검사, 공식 OpenEXR과 비트스트림 상호 검증, Node 호스트 교차 판정.
 - 위생 스캔에는 여전히 적중이 남아 있습니다. 배포 문서 층은 정리되었고, 나머지는 소스 주석과 배포 대상이 아닌 저장소 파일에 있습니다. 스크립트의 존재는 잔여물을 **보이게 두고 하나씩 정리**하기 위함이며, 깨끗한 척하기 위함이 아닙니다.
 
----
-
 ## 정직한 경계
 
 | 경계 | 현황 | 출로 |
@@ -303,8 +322,6 @@ node tools/pack_source_txt.mjs --verify      # 패키징과 언팩 왕복을 바
 
 이것들은 "나중에"가 아니라 현재 명확히 지원하지 않는 항목입니다. 이슈에 숨기는 것보다 여기 적는 편이 낫다고 판단했습니다.
 
----
-
 ## 컴플라이언스
 
 엔진은 서드파티 코드 의존성 제로를 표방하며 자체 점검으로 검증합니다:
@@ -313,14 +330,10 @@ node tools/pack_source_txt.mjs --verify      # 패키징과 언팩 왕복을 바
 - **C2 에셋 등록 완비**: 5개 에셋의 주표 항목이 모두 채워져 있습니다. 폰트는 SIL OFL 1.1로 배포하며 라이선스 전문을 `src/prism-text/font_data/LICENSE`에 동봉.
 - **C3 서드파티 귀속 고지**: `Compliance/THIRD-PARTY-NOTICES.md`가 "데이터 자산 ≠ 코드 의존성"을 명확히 구분.
 
----
-
 ## 라이선스
 
 Apache License 2.0, [`LICENSE`](../LICENSE)를 참고하세요.
 
 재배포 시 `Compliance/` 아래의 귀속 고지와 에셋 등록을 유지해 주세요.
-
----
 
 <sub>히어로 이미지와 DSL 스크린샷은 모두 엔진 자체가 렌더링한 것입니다. 파라미터는 그림 설명과 [`docs/gallery/gallery.rs`](gallery/gallery.rs)에 있습니다.</sub>
