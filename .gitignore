@@ -39,3 +39,5 @@ Thumbs.db
 # ---- 私有本地覆盖（若有）----
 .env
 .env.local
+# 本地预览临时文件
+_preview*.html

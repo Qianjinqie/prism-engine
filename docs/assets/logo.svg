@@ -43,4 +43,7 @@
     <!-- 出射点光斑 -->
     <circle cx="318" cy="246" r="11" fill="#FFFFFF" fill-opacity="0.55"/>
   </g>
+
+  <!-- 深色主题下也留出图标边界 -->
+  <rect x="0.5" y="0.5" width="511" height="511" rx="115.5" fill="none" stroke="#FFFFFF" stroke-opacity="0.12"/>
 </svg>
