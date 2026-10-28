@@ -264,7 +264,7 @@ flowchart LR
 | `examples/` | `.prism` 예제와 노드 패키지(`include_str!`로 읽으므로 없으면 빌드 실패) |
 | `.github/workflows/` | CI 설정 |
 
-> 저장소의 `docs/设计/`는 설계 정본으로 배포에 포함되지 않습니다. 데모 crate `prism-anim-demo`도 마찬가지입니다.
+> 설계 정본(`docs/设计/`)은 배포자의 전체 저장소에만 있으며 배포에는 포함되지 않습니다. 데모 crate `prism-anim-demo`도 마찬가지입니다.
 
 ---
 

@@ -264,7 +264,7 @@ flowchart LR
 | `examples/` | `.prism` 示例与节点包（`include_str!` 读取，缺了编译不过） |
 | `.github/workflows/` | CI 配置 |
 
-> 仓库内的 `docs/设计/` 是设计权威文档，不随分发；演示 crate `prism-anim-demo` 同样不进包。
+> 设计权威文档（`docs/设计/`）只在发布方的完整仓库中，不随分发；演示 crate `prism-anim-demo` 同样不进包。
 
 ---
 

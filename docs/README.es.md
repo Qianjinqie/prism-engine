@@ -264,7 +264,7 @@ Estructura tras desempaquetar:
 | `examples/` | Ejemplos `.prism` y paquetes de nodos (leídos con `include_str!`; si falta uno, no compila) |
 | `.github/workflows/` | Configuración de CI |
 
-> `docs/设计/` (documentos de diseño) permanece en el repositorio y no se distribuye; el crate de demostración `prism-anim-demo` tampoco va en el paquete.
+> Los documentos de diseño (`docs/设计/`) solo existen en el repositorio completo del editor y no se distribuyen; el crate de demostración `prism-anim-demo` tampoco va en el paquete.
 
 ---
 

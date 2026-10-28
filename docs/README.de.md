@@ -264,7 +264,7 @@ Verzeichnisstruktur nach dem Entpacken:
 | `examples/` | `.prism`-Beispiele und Node-Pakete (per `include_str!` gelesen, fehlt eine Datei, bricht der Build) |
 | `.github/workflows/` | CI-Konfiguration |
 
-> `docs/设计/` (Designdokumente) bleibt im Repo und wird nicht verteilt; die Demo-Crate `prism-anim-demo` ist ebenfalls nicht im Paket.
+> Designdokumente (`docs/设计/`) liegen nur im vollständigen Repository des Herausgebers und werden nicht verteilt; die Demo-Crate `prism-anim-demo` ist ebenfalls nicht im Paket.
 
 ---
 

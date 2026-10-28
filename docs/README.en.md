@@ -264,7 +264,7 @@ Layout after unpacking:
 | `examples/` | `.prism` samples and node packages (read via `include_str!`, so a missing file breaks the build) |
 | `.github/workflows/` | CI configuration |
 
-> `docs/设计/` (design documents) stays in the repository and is not distributed; the demo crate `prism-anim-demo` is not packaged either.
+> Design documents (`docs/设计/`) live only in the publisher's full repository and are not distributed; the demo crate `prism-anim-demo` is not packaged either.
 
 ---
 
