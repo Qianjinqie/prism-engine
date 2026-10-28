@@ -4,34 +4,12 @@
 <h3 align="center">Prozedurale Medien-Engine</h3>
 
 <p align="center">
-  <sub>Dekodieren · Setzen · Path-Tracing · Simulieren · Synthese · Kodieren &nbsp;|&nbsp; Standbild · Sequenz · Fertiger Schnitt &nbsp;|&nbsp; CPU + Vulkan</sub>
-</p>
-
-<p align="center">
-  <a href="../README.md">中文</a>
-  · <a href="README.en.md">English</a>
-  · <b><a href="README.de.md">Deutsch</a></b>
-  · <a href="README.es.md">Español</a>
-  · <a href="README.fr.md">Français</a>
-  · <a href="README.ja.md">日本語</a>
-  · <a href="README.ko.md">한국어</a>
-  · <a href="README.pt-BR.md">Português</a>
-  · <a href="README.ru.md">Русский</a>
-</p>
-
-<p align="center">
-  <img src="https://img.shields.io/badge/license-Apache--2.0-3B82F6?style=for-the-badge" alt="License">
-  <img src="https://img.shields.io/badge/tests-3929%20passed-22C55E?style=for-the-badge" alt="Tests">
-  <img src="https://img.shields.io/badge/dependencies-zero-16A34A?style=for-the-badge" alt="Dependencies">
-  <img src="https://img.shields.io/badge/crates-28-8B5CF6?style=for-the-badge" alt="Crates">
-  <img src="https://img.shields.io/badge/size-18.9%20MB-64748B?style=for-the-badge" alt="Size">
-  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v2.1-6366F1?style=for-the-badge" alt="Release"></a>
-</p>
-
-<p align="center">
-  <a href="https://github.com/Qianjinqie/prism-engine/releases/latest"><img src="https://img.shields.io/badge/DOWNLOAD-v2.1-6C5CE7?style=for-the-badge" alt="Download"></a>
-  <a href="#in-drei-minuten-lauffähig"><img src="https://img.shields.io/badge/QUICK_START-3%20minutes-0EA5E9?style=for-the-badge" alt="Quick start"></a>
-  <a href="#architecture"><img src="https://img.shields.io/badge/ARCHITECTURE-28%20crates-334155?style=for-the-badge" alt="Architecture"></a>
+  <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License">
+  <img src="https://img.shields.io/badge/tests-3929%20passed-brightgreen.svg" alt="Tests">
+  <img src="https://img.shields.io/badge/dependencies-zero-brightgreen.svg" alt="Dependencies">
+  <img src="https://img.shields.io/badge/crates-28-blue.svg" alt="Crates">
+  <img src="https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg" alt="Distribution">
+  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v2.1-blue.svg" alt="Release"></a>
 </p>
 
 <p align="center">
