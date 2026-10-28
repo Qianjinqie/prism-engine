@@ -1,292 +1,326 @@
-[English](README.en.md) | [简体中文](../README.md) | [日本語](README.ja.md) | **한국어** | [Español](README.es.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Português (BR)](README.pt-BR.md) | [Русский](README.ru.md)
+**한국어** | [简体中文](../README.md) | [English](README.en.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [Français](README.fr.md) | [日本語](README.ja.md) | [Português (BR)](README.pt-BR.md) | [Русский](README.ru.md)
 
 # Prism Engine
 
-> 의존성 제로, 결정론적 Rust 미디어 엔진 — **단일 파일 TXT로 배포**: 18 MB짜리 텍스트 하나를 내려받아 압축 해제 스크립트를 실행하면 완전한 소스 트리(28개 crate)를 얻는다. npm / pip / ffmpeg / OpenEXR이 필요 없다.
+**서드파티 의존성 제로 · 바이트 단위 결정성 · 단일 파일 배포**
+
+Rust로 처음부터 작성한 프로시저럴 미디어 엔진입니다. 디코딩, 조판, 패스 트레이싱, 물리 시뮬레이션, 오디오 합성, 인코딩까지 모두 하나의 소스 트리 안에서 끝납니다. 서드파티 crate도, 시스템 라이브러리 링크도, 빌드 시 네트워크 연결도 없습니다.
 
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
-![Language](https://img.shields.io/badge/language-Rust-orange.svg)
-![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)
-![Distribution](https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg)
 ![Tests](https://img.shields.io/badge/tests-3929%20passed-brightgreen.svg)
-[![Release](https://img.shields.io/badge/release-v2.1-blue.svg)](https://github.com/Qianjinqie/prism-engine/releases)
+![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)
 ![Crates](https://img.shields.io/badge/crates-28-blue.svg)
+![Distribution](https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg)
+[![Release](https://img.shields.io/badge/release-v2.1-blue.svg)](https://github.com/Qianjinqie/prism-engine/releases)
+
+![Prism Engine이 렌더링한 정물](assets/still-life.png)
+
+<sub>목업이 아니라 엔진 출력입니다: 1200×675 · 256 spp · 패스 트레이싱 + 물리 기반 BSDF + ACES 톤 매핑 · 4 스레드 158초. 장면 소스는 [`docs/gallery/gallery.rs`](gallery/gallery.rs).</sub>
+
+**642** 파일 · **28** crate · **26.1만** 줄의 Rust · **3929** 테스트 · 서드파티 의존성 **0** · **18.9 MB** 단일 파일
 
 ---
 
-## 이것은 무엇인가
+## 이 엔진이 존재하는 이유
 
-Prism Engine은 Rust로 작성된 서드파티 코드 의존성 제로의 미디어 엔진이다. 이미지 읽기, 조판,
-화면 그리기, 타임라인 편집, 최종 영상 출력까지 전부 하나의 결정론적 엔진 안에서 완료된다.
-전체 110개의 런타임 의존성(추가로 20개의 테스트 의존성)이 모두 이 저장소의 `path` 의존성이다 —
-네트워크에 의존하지 않고, 패키지 관리자가 필요 없으며, 공급망 위험이 없다.
+일반적인 미디어 파이프라인은 조립품입니다. ffmpeg가 디코딩하고, Blender가 렌더링하고, ImageMagick이 정지 이미지를 쓰고, DAW가 소리를 맡고, 스크립트가 임시 파일로 이들을 붙입니다. 각각 훌륭한 도구지만, 이음새에서 두 가지가 사라집니다——**결정성**과 **감사 가능성**입니다. 기계를 바꾸면 부동소수점 경로가 달라지고, 버전을 바꾸면 기본값이 움직이며, 문제가 생기면 다섯 개의 블랙박스와 중간 파일 더미가 남습니다.
 
-**단일 파일 소스 배포** 방식을 쓴다. 엔진 전체(642개 파일, 28개 crate)가 하나의 UTF-8
-텍스트 `prism-engine-v2.1-source.txt`로 병합된다. 이 파일 하나만 있으면 저장소와 완전히 동일한
-디렉터리 트리를 로컬에서 복원할 수 있다.
+Prism Engine은 그 사슬 전체를 하나의 소스 트리로 끌어들입니다. 같은 장면 서술, 같은 파라미터라면 어느 기계에서든, 몇 번째 실행이든 픽셀과 바이트가 완전히 같습니다. 그것은 약속이 아니라 3929개의 테스트가 하나씩 못 박은 사실입니다.
 
----
+ffmpeg나 Blender를 대체하려는 것이 아닙니다. 대체하는 것은 이들을 붙이는 접착층과, 그 접착층이 조용히 버리던 결정성입니다.
 
-## 엔진이 할 수 있는 것
+대상 독자는 의도적으로 좁습니다. "같은 입력, 어느 기계에서든, 같은 출력"이 필요한 사람——배치 렌더링 파이프라인, 재현 가능한 실험을 하는 그래픽스 연구, 렌더링을 CI에 넣으려는 팀.
 
-한 문장으로 요약하면 이렇다. **이미지는 화면이 어느 한 시점에 보이는 모습이고, 영상은 화면이
-일정 시간 동안 이어지는 연속된 모습이다** — 동일한 장면 기술에서 어느 한 순간을 고정하면 단일
-프레임이 되고, 연속적으로 진행하며 기록하면 영상이 된다. 정지 이미지와 동영상은 하나의 능력
-집합을 공유한다. 아래는 "당신이 하려는 일"을 기준으로 다섯 블록으로 나눈 것이다.
-**읽어 들이기 → 배치하기 → 그리기 → 최종 영상 출력 → 당신의 툴체인에 연결하기**.
+### 세 가지 단단한 제약
 
-### 무엇을 읽는가 (입력)
-
-- **통합 디코딩 파사드**: `decode_image(bytes, ext)` 진입점 하나가 정지 이미지를 분기 처리한다 —
-  PNG(비인터레이스 8/16bit), 베이스라인 JPEG(고정소수점 IDCT, 크로스 플랫폼 비트 단위 결정론),
-  **매직 넘버 우선, 확장자는 폴백**(확장자를 잘못 써도 디코딩 가능). 매트릭스 외이거나 외부
-  협력이 필요한 포맷은 일괄 3단계 오류 보고(어디서 / 무엇이 / 어떻게 고칠지)와 함께 ffmpeg
-  협력 제안을 내놓으며, **결코 조용히 실패하지 않는다**.
-- **애니메이션 / 오디오 / 컨테이너**: GIF, APNG 네이티브 프레임 단위 디코딩(`prism-media`); WAV
-  내장 디코딩, mp3/aac/FLAC은 ffmpeg 프로브 경로(`prism-audio`); MP4-MJPEG 리드백
-  (`decode_mp4_video`).
-- **EXR 풀 세트**: 읽기/쓰기, 압축, DWA를 지원하며, 공식 OpenEXR과 **교차 구현 비트스트림
-  대조**를 수행한다(자체 작성-자체 판독이 아니다).
-- **카메라 RAW**: 베이스라인 RAW 디코딩. **경계**: 실제 DNG의 `Compression=7`(lossless JPEG)은
-  구현되지 않아 실제 카메라로 촬영한 DNG는 읽을 수 없다 — 「정직한 경계」에 적어 두었으며
-  숨기지 않는다.
-- **3D 에셋**: glTF / OBJ 가져오기, USD(`.usda`) 파싱과 MaterialX 파라미터 패키지, mesh는
-  렌더링 장면에 투입할 수 있다.
-- **외부 폰트**: `load_font_file`로 서드파티 TTF/OTF를 직접 로드하고, 폴백 체인이 단계별로
-  해석하며, 글리프가 없으면 두부 블록 대신 명확한 진단을 제공한다.
-
-### 무엇을 배치하는가 (창작 문법)
-
-- **DSL v2 전체 블록 문법**: 하나의 `.prism` 파일이 "무엇을 원하는지, 어떻게 배치하는지, 어떻게
-  움직이는지, 어떻게 보이는지, 무엇으로 내보내는지"를 기술하며, 컴파일 산출물은 노드 그래프 +
-  속성 채널 + 타임라인이다.
-- **다섯 가지 컴비네이터**: `title_card` / `lower_third` / `split_screen` / `ken_burns` /
-  `morph_between` 고수준 컴비네이터가 노드 그래프로 전개되어, "90초 완성 영상"이 수작업 장면
-  코드에서 조립 작업으로 내려온다.
-- **전환과 morph**: Fade / Wipe / Dissolve / Push 완전 파라미터화(길이, 이징, 방향),
-  Morph 폴리라인 변형, 장면 시퀀스는 임의 시점에서 샘플링할 수 있다.
-- **수식 조판**: `math_ast` + `math_layout`이 위첨자/아래첨자 / 분수 / 근호 / 대형 연산자 /
-  행렬을 조판하고, DSL `formula` 블록으로 바로 조판되며 본문과 같은 베이스라인을 쓴다.
-
-### 무엇을 그리는가 (렌더링과 시뮬레이션)
-
-- **오프라인 포토리얼 렌더링**: 경로 추적 + 물리적으로 올바른 BSDF(난반사 / 정반사 / 유리 / 금속),
-  유리와 금속은 확률적 역변환(Neumann 급수 몬테카를로)을 사용하며, 볼류메트릭 매질과 서브서피스
-  산란을 지원한다.
-- **곡선 프리미티브 4종**: 원기둥 / 원뿔 / 토러스 / 회전 곡면, 전부 해석적 교차 계산(4차 방정식은
-  Ferrari 폐형해로 정확한 근); 임의 삼각형 mesh + SAH-BVH, 이중 경로 parity 대조.
-- **GPU compute**: 장치 독립적 compute 시맨틱 계층 + Vulkan dispatch + 직접 작성한 최소 SPIR-V;
-  Mesa lavapipe 소프트웨어 ICD 아래에서 GPU 없는 플랫폼도 완전히 실행된다(headless 검증 가능).
-- **물리와 파티클**: XPBD 통합 솔버(강체 / 연체 / 천 / 조인트 / 유체 / 파괴), 연기 FLIP,
-  파티클 시스템(AudioReactive가 오디오 엔벨로프와 연동).
-- **제너러티브 아트와 후처리**: 흐름장 / L 시스템 / 세포 자동자 / 반응-확산 / 프랙털 / Voronoi;
-  blur / bloom / halation / 필름 그레인 / NPR 4스타일(toon / watercolor / halftone / oil) /
-  3-in-1 노이즈 제거.
-- **컬러 그레이딩과 벡터**: 2차 컬러 그레이딩(HSL 셀렉션 + RGB 커브), cinematic / film / anime
-  스타일 프리셋과 드래프트/표준/시네마 3단계 화질(품질은 파라미터이지 미신이 아니다);
-  벡터 패스 래스터화, 패스 draw-on과 morph.
-- **오디오 처리**: 라우드니스 정규화(loudnorm), 비트 검출, 스펙트럼 분석, 엔벨로프 추출 —
-  화면과 연동할 수 있다(파티클 AudioReactive가 오디오 엔벨로프를 따라간다).
-- **CPU 참조 백엔드는 일등 시민**: GPU가 없는 기기에서도 올바른 이미지를 내놓으며, 동시에
-  GPU의 정답 판정 기준이 된다.
-
-### 무엇을 내놓는가 (전달)
-
-- **`render_movie` 직행**: DSL v2 컴파일 산출물이 한 번의 호출로 "프레임별 평가 → tile 렌더링 →
-  전달"까지 끝낸다. `.prism` 파일 하나로 단일 명령 완성 영상(`prism-app render demo.prism`);
-  커버되지 않는 노드는 조용히 근사하지 않고 사실대로 오류를 보고한다.
-- **프리뷰 폐루프**: `prism-app preview`로 프리뷰 서비스를 띄운다; 에디터의 Draft 단계(기하 패턴으로
-  프레임레이트 유지) / Real 단계(낮은 spp의 실제 렌더링, 비동기 갱신) 두 단계 프리뷰.
-- **자체 인코더 + 레이트 컨트롤**: I/P 프레임 JPEG 도메인 시계열 인코더가 사설 `PRMV` 컨테이너
-  (v2/v3 두 세대 schema)를 사용하고, water-filling 레이트 컨트롤 + qpel 서브픽셀 움직임 추정
-  (실측 PSNR +2.577 dB, 용량 −21.6%).
-- **ffmpeg 협력 체인**: ffmpeg이 있으면 → stdin rawvideo 파이프로 H.264/HEVC 변환;
-  ffmpeg이 없으면 → 자동으로 MJPEG로 강등, **엔진은 언제나 영상을 출력할 수 있다**;
-  어떤 바이너리도 번들하지 않는다.
-- **EXR 시퀀스 전달**: 프레임 시퀀스를 EXR로 직접 기록해 후반 파이프라인에 투입한다.
-- **분산 팜**: 프레임 단위 분배 + N 프로세스 worker + 결정론적 병합 — 병렬 MD5 == 직렬 MD5,
-  중단 지점부터 이어서 계산하는 것을 지원한다.
-
-### 어떻게 통합하는가 (생태계)
-
-- **MCP 도구 표면**: stdio JSON-RPC 세 가지 도구 — `scene_check`(컴파일 + 시험 렌더 + 프레임 수
-  예측), `render_submit`(결정론적 job id + 프레임별 MD5 요약), `diagnose`(3단계 오류 위치 파악).
-- **노드 SDK**: 시맨틱 버전 협상(0.x 특례 포함), 패키지에 예제 노드 패키지 동봉
-  (`examples/sdk-nodes/cinematic-basic/`, 컴파일 가능 / 로드 가능 / 협상 가능).
-- **하드웨어 인코딩 탐지 골격**: `prism-ffi-hwenc` 3개 플랫폼(VideoToolbox / NVENC / VAAPI)
-  탐지 체인 + feature gate 매트릭스, 플랫폼이 맞지 않으면 명확히 미지원을 보고한다.
-
-> 자세한 능력 경계(무엇이 **불가능한지**)는 패키지 압축을 풀고 `开发者指南.md`의 「정직한 경계」
-> 절을 참고하라 — 그곳에는 현재의 실제 상태(곡선 프리미티브는 CPU만 사용, GPU 가속비는 대상
-> 하드웨어에서 실측 필요, 하드웨어 인코딩은 대상 플랫폼별 연결…)가 기록되어 있다. 이 문서는
-> 전체 조감도만 제시하며 과장하지 않는다.
+| 제약 | 구현 방식 | 치르는 비용 |
+| --- | --- | --- |
+| **서드파티 코드 의존성 제로** | 런타임 110 + 테스트 20 의존성이 모두 저장소 내 `path` 의존성. `build.rs` 없음, 네이티브 링크 없음, 빌드 시 네트워크 불필요 | 모든 포맷, 알고리즘, 폰트, 코덱을 직접 작성 |
+| **바이트 단위 결정성** | 고정소수점 IDCT, 고정 샘플링 시퀀스, 4차원 설정 해시. 같은 입력이면 플랫폼을 넘어 비트 단위로 일치 | 부동소수점 고속 경로를 포기하고, 순서 없는 컨테이너의 반복 순서에 의존하지 않음 |
+| **단일 파일 배포** | 642개 파일·28개 crate를 18.9 MB UTF-8 텍스트 하나로 합치고 `node unpack.cjs`로 복원 | GitHub에서 소스를 바로 열어 보는 편의를 포기 |
 
 ---
 
+## 3분 만에 실행하기
+
+```bash
+# 1. 단일 파일 소스 패키지를 받고 SHA-256 검증
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.1/prism-engine-v2.1-source.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.1/SHA256SUMS.txt
+sha256sum -c SHA256SUMS.txt
+
+# 2. 패키지에 들어 있는 언팩 스크립트 추출 (Node 18+ 만 필요, npm install 불필요)
+awk '/^UNPACK SCRIPT BEGIN$/{f=1;next} /^UNPACK SCRIPT END$/{f=0} f' \
+  prism-engine-v2.1-source.txt > unpack.cjs
+node unpack.cjs                    # 642개 파일 복원
+
+# 3. 빌드하고 전체 테스트 실행
+cargo test --workspace --release     # 3929 passed / 0 failed
+
+# 4. 아무것도 쓰지 말고, 먼저 영상을 봅니다
+cargo run -p prism-app --release     # 내장 데모 장면
+```
+
+복원 결과는 평범한 Cargo workspace(`src/` 아래 28개 crate)이며, 이후 `cargo` 명령은 일반 Rust 프로젝트와 같습니다. 첫 빌드에는 몇 분이 걸립니다.
+
 ---
 
-## 엔진 내부 특수 능력 (기능 목록 바깥)
+## 한 장면을, 한 편의 텍스트로
 
-"읽기 / 배치 / 그리기 / 출력 / 통합" 목록에 담기지 않는 능력들 — 엔진의 심층 자산입니다. 이 장에서 본 목록을 깔끔하게 유지합니다.
+`.prism`은 엔진의 장면 서술 언어입니다. 아래는 완전히 렌더링 가능한 3초 장면입니다——구체, 재질, 궤도 카메라, 방향광, 길이, 그레이딩, 출력 사양까지 전부:
+
+```prism
+scene "spin_red_ball" {
+    sphere ball {
+        radius 1.0
+        material {
+            albedo #c0392b
+            roughness 0.3
+            metalness 0.05
+        }
+    }
+
+    camera main {
+        orbit {
+            center 0,0,0
+            radius 8.0
+        }
+        fov 45
+    }
+
+    light sun {
+        direction (1.0, -1.0, -0.5)
+        color #fff4e6
+        intensity 3.0
+    }
+}
+
+timeline {
+    duration 3s
+    fps 12
+}
+
+aesthetic {
+    teal-orange
+    contrast 1.12
+    filmic
+}
+
+output {
+    resolution 480x270
+    format frames
+}
+```
+
+```bash
+cargo run -p prism-app --release -- examples/spin_red_ball.prism          # 프레임 시퀀스
+cargo run -p prism-app --release -- render examples/w2d_showcase.prism \
+    --out out/demo.mp4                                                     # 한 번에 완성 영상
+```
+
+`render`는 v2 직행 경로입니다. 노드 그래프 컴파일 → 프레임별 평가 → 컨테이너 인코딩까지, 중간 프레임을 디스크에 남기지 않습니다. 지원하지 않는 노드는 조용히 건너뛰지 않고 명시적인 `R5xxx` 오류를 냅니다.
+
+![DSL로 렌더링한 타이틀 프레임](assets/dsl-title.png)
+
+<sub>`examples/w2d_showcase.prism`의 10번째 프레임: 3D 구체, 텍스트 레이어, 그레이딩, 페이드 트랙이 하나의 타임라인을 공유합니다.</sub>
+
+---
+
+## Rust API만 쓰기
+
+DSL을 쓰지 않고 라이브러리를 직접 호출할 수 있습니다. 아래는 히어로 이미지의 골격입니다(전체 장면은 190줄, [`docs/gallery/gallery.rs`](gallery/gallery.rs)):
+
+```rust
+use prism_core::node::EvalCtx;
+use prism_math::Vec3;
+use prism_rt::camera::Camera;
+use prism_rt::integrator::{render_pixel, MaterialKind, RenderParams, Scene, Sphere};
+
+let scene = Scene {
+    spheres: vec![(
+        Sphere { center: Vec3::new(0.0, 0.6, 0.0), radius: 0.6 },
+        MaterialKind::Lambert { albedo: Vec3::new(0.8, 0.2, 0.15) },
+    )],
+    ..Default::default()
+};
+let cam = Camera::new(
+    Vec3::new(0.0, 1.2, 4.8),   // 시점
+    Vec3::new(0.0, 0.72, 0.0),  // 바라보는 점
+    Vec3::new(0.0, 1.0, 0.0),   // 위쪽
+    30.0, 0.05, 4.85, 0.0, 1.0 / 48.0,
+);
+let ctx = EvalCtx::new(20261028, 0, 0);
+let params = RenderParams::new(256, 10);  // 픽셀당 256 샘플, 최대 10회 바운스
+
+// 단일 픽셀: 장면, 카메라, 샘플링 컨텍스트, 픽셀 좌표, 해상도, 파라미터
+let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
+```
+
+`render_pixel`은 순수 함수입니다. 장면, 카메라, 샘플링 컨텍스트, 픽셀 좌표를 받아 선형 RGB를 돌려줍니다. 같은 파라미터라면 어느 스레드에서, 어떤 순서로 호출해도 결과 비트가 같습니다——그래서 병렬 렌더링에 동기화가 전혀 필요 없습니다.
+
+---
+
+## 기능 전경
+
+| 층 | 할 수 있는 일 |
+| --- | --- |
+| **읽기** | PNG(8/16 bit), 베이스라인 JPEG(고정소수점 IDCT), GIF/APNG 프레임 단위, EXR(DWA 포함), 베이스라인 RAW, WAV. glTF / OBJ / USDA 3D 에셋, MaterialX 파라미터, 외부 TTF/OTF 폰트 |
+| **짜기** | DSL v1/v2 컴파일, 다섯 가지 고수준 컴비네이터(타이틀 카드 / 로어 서드 / 분할 화면 / 켄 번스 / 장면 간 모프), 네 가지 전환 + 모프, 수식 조판(위·아래첨자 / 분수 / 근호 / 행렬 / 대형 연산자), 타임라인 임의 시각 샘플링 |
+| **그리기** | 패스 트레이싱 + 물리 기반 BSDF(확산 / 경면 / 유리 / 금속 / 표면하 산란), Woodcock 이질 매질, 원기둥 / 원뿔 / 토러스 / 회전면 해석적 교차(4차 방정식을 Ferrari 폐형해로), SAH-BVH 삼각 메시, CPU 참조 백엔드, Vulkan compute + 레이트레이싱 이중 파이프라인 |
+| **움직이기** | 통합 XPBD 솔버(강체 / 연체 / 천 / 관절 / 유체 / 파괴), FLIP 연기, 파티클(오디오 엔벨로프 연동 가능), 유동장 / L 시스템 / 세포 오토마타 / 반응 확산 / 프랙털 / Voronoi |
+| **다듬기** | 세컨더리 그레이딩(HSL 선택 + RGB 커브), cinematic / film / anime 프리셋, blur / bloom / halation / 필름 그레인, NPR 네 스타일(toon / watercolor / halftone / oil), 삼중 디노이즈, 벡터 패스 래스터화와 draw-on |
+| **소리** | PolyBLEP 신시사이저, ADSR, 음계와 코드 진행 상태 기계, 아르페지에이터, 스텝 드럼, SMF 파싱, SFZ 샘플러, 그래뉼러 합성, 멀티트랙 믹싱, 라우드니스 정규화, 비트 / onset / FFT 분석 |
+| **출력** | 자체 `PRMV` 컨테이너(v2/v3) + I/P 프레임 JPEG 도메인 부호화 + water-filling 레이트 제어 + qpel 움직임 추정, ffmpeg 파이프라인(있으면 H.264/HEVC, 없으면 자동 MJPEG 강등), EXR 시퀀스, 멀티프로세스 프레임 팜(이어서 계산, 병렬 MD5 == 직렬 MD5) |
+| **연결** | MCP stdio 세 도구(`scene_check` / `render_submit` / `diagnose`), 노드 SDK(시맨틱 버전 협상), HTTP/1.1 렌더 서비스, batch manifest 직곱 배치 렌더링, 세 플랫폼 하드웨어 인코더 탐색 골격 |
+
+> 표는 목차일 뿐입니다. 각 기능의 구체적 파라미터와 "무엇을 못 하는지"는 패키지 안의 `开发者指南.md`에 있습니다.
+
+---
+
+## 목록에 담기지 않는 내부 능력
+
+위 표에 들어가지 않는 것들이 있습니다. 그것들은 "포맷이 하나 더 늘었다"는 이야기가 아니라, 엔진이 스스로를 위해 키운 기반입니다.
 
 ### 오디오: 내장 DAW 커널
 
-`prism-audio`는 "WAV를 읽을 줄 아는" 주변 모듈이 아니라 작곡부터 믹싱까지 전 과정을 갖춘 **결정론적 DAW 커널**입니다. 모든 함수는 매개변수의 순수 함수(같은 입력이면 플랫폼 간 비트 동일)입니다.
+`prism-audio`는 "WAV를 읽을 수 있다" 수준의 주변 모듈이 아닙니다. 작곡에서 믹싱까지 하나의 사슬이며, 모든 함수가 파라미터의 순수 함수입니다(같은 입력이면 플랫폼을 넘어 비트 단위로 일치):
 
-- **합성**: PolyBLEP 앤티앨리어싱 오실레이터군 + 폐형식 ADSR 엔벨로프 + 4가지 무드 프리셋;
-- **음악 이론**: 음계 라이브러리(장단조/5음계/교회 선법), 12-TET 음높이↔주파수, 화성 진행의 **기능 문법 상태 기계** + 성부 진행;
-- **시퀀싱**: 아르페지에이터(패턴/속도/옥타브), 스텝 드럼 머신, 마디·박자 그리드 스코어 편곡;
-- **소재**: 직접 작성한 SMF 파서(MIDI 가져오기), SFZ 샘플러, 그래뉼러 합성;
+- **합성**: PolyBLEP 안티에일리어싱 오실레이터군, 폐형 ADSR 엔벨로프, 4가지 무드 프리셋;
+- **음악 이론**: 음계 라이브러리(장단조 / 5음 음계 / 교회 선법), 12-TET 음급↔주파수, 코드 진행의 기능 문법 상태 기계 + 성부 진행;
+- **편곡**: 아르페지에이터(패턴 / 속도 / 옥타브), 스텝 드럼, 마디와 박자 그리드;
+- **소재**: 직접 작성한 SMF 파싱(MIDI 가져오기), SFZ 샘플러, 그래뉼러 합성;
 - **사운드 디자인**: 물리 모델링, 공간 패닝, 이펙트 체인;
-- **믹싱**: 멀티트랙 선형 믹스 + 페이드 + 피크 리미팅;
-- **분석과 연동**: 비트/온셋 검출, FFT 스펙트럼, 엔벨로프 추출, AudioReactive 베이킹(N번째 프레임은 고정 창을 읽음; 프레임 단위 순수 함수, seek 등가), 라우드니스 정규화.
+- **믹싱**: 멀티트랙 선형 믹스, 페이드, 피크 클리핑 방지;
+- **분석과 연동**: 비트 / onset 검출, FFT 스펙트럼, 엔벨로프 추출, 라우드니스 정규화. AudioReactive 베이킹은 프레임 N에서 고정 창을 읽어 프레임의 순수 함수가 되고 seek과 동등합니다.
 
-> 경계: AAC/mp3는 자체 개발하지 않습니다(특허 이력 + 공수). 일반 오디오는 외부 ffmpeg를 경유합니다.
+> 경계: AAC / mp3 인코딩은 직접 구현하지 않습니다(특허 역사적 부담 + 공수). 외부 ffmpeg와 협력합니다.
 
-### 정의 가능한 커널 라이브러리 (특해 레지스트리)
+### 정의 가능한 커널 레지스트리
 
-모든 노드 유형은 "커널 + 격자 + 쌍대" 삼중항의 **특해**입니다. 제3자(또는 당신)는 `registry!`로 새 특해를 등록할 수 있고, 엔진 코어를 고칠 필요가 없습니다.
+엔진의 각 노드 타입은 "커널 + 격자 + 쌍대" 삼중항의 **특수해**입니다. 서드파티는 `registry!`로 새 특수해를 정적으로 등록할 수 있고, **엔진 코어를 건드리지 않습니다**:
 
-- 정적 일괄 등록(매크로는 정의한 crate 안에서 전개; `inventory`/proc-macro 금지, 의존성 제로);
-- 등록 시 **세 가지 질문 검증**(커널 형식/격자/쌍대). 답이 빠지면 3단 오류로 거부;
-- 공식 특해와 사용자 특해는 같은 레지스트리를 공유하며 런타임 차이가 없습니다;
-- 수학적으로는 연산자 방정식 `f = g + Kf`의 여섯 가지 역전 전략 — 정확/확률/국소/정규화/반복/스펙트럼. 능력 추가는 삼중항 선언이지, 렌더 루프에 덧대는 일이 아닙니다.
+- 정적 포함: 매크로가 정의 crate 안에서 전개되며, `inventory`와 proc-macro를 금지해 의존성 제로를 유지;
+- 등록 시 **세 가지 질문**(커널 형식 / 격자 / 쌍대)을 검증하고, 답이 빠지면 세 단락 오류로 거부;
+- 공식 특수해와 사용자 특수해가 같은 레지스트리를 지나며 런타임에 구분되지 않음;
+- 수학적으로는 작용소 방정식 `f = g + Kf`의 여섯 가지 역해법(정확 / 확률 / 국소 / 정규화 / 반복 / 스펙트럼)에 대응하며, 새 기능 추가는 삼중항 선언이지 렌더 루프에 대한 패치가 아닙니다.
 
-### 결정론과 재현성 기반
+### GPU: 세 경로, 세 상태
 
-- **서명 폐포**: 노드 그래프/캐시 키/스냅샷 키/프레임 서명을 "4차원 구성 해시"로 통일. 매개변수를 바꾸면 키가 바뀌어 잘못된 재사용이 없습니다. 반복 노드는 `(ε, n)`, 스트림 노드는 프레임 번호를 키에 포함;
-- **바이트 고정점**: USD는 export→import→export가 바이트 동일. WAV 16/24/32비트 왕복 일치. EXR은 공식 구현과 비트 단위 대조;
-- **단일 파일 배포 결정성**: 같은 소스는 두 번 패키징해도 SHA-256이 같습니다. 압축 해제 왕복은 모든 파일을 바이트 단위로 비교합니다.
-
-### GPU 백엔드 (정직한 분리 표기)
-
-- **Vulkan**: compute와 레이트레이싱 장면 파이프라인이 실제 동작(lavapipe 소프트웨어 ICD에서 GPU 없이 검증 가능). `render_scene` 출력은 CPU 참조와 **바이트 동일(차이 픽셀 0)**. `is_available()`은 compute ∧ render 이중 자체 검사;
-- **Metal**: 동형 이식 + 컴파일 게이트만 완료. **실기 검증 없음, 점등 없음**(`is_available()` 항상 false);
-- **WebGPU**: 타당성 결론만(4–6인일). 렌더 경로 미구현.
+| 백엔드 | 상태 | 근거 |
+| --- | --- | --- |
+| **Vulkan** | 실제 동작 | compute + 레이트레이싱 이중 파이프라인. Mesa lavapipe 소프트웨어 ICD에서 GPU 없이 검증 가능. `render_scene` 출력이 CPU 참조와 **바이트 단위 0 차이**. `is_available()`은 compute ∧ render 이중 자체 점검 |
+| **Metal** | 컴파일 게이트 완료, 미점등 | 동형 이식 완료, 실기 검증 없음, `is_available()` 항상 false |
+| **WebGPU** | 결론만 | 타당성 평가 완료(이식량 4–6 인일), 렌더 경로 미구현 |
 
 ### 가짜 초록 방지 게이트
 
-로컬 게이트 4개(의존성 제로, `node`만 사용): 고스트 쓰기 방어(역방향 자기 증명 포함), 오픈소스 위생 스캔, 컴플라이언스 자체 점검(9/9, 역방향 자기 증명 8/8 레드), 패키징 왕복 검증. 게이트는 "통과" 또는 "레드"만 인정합니다. "괜찮아 보인다"는 안 됩니다. **가짜 초록은 실패보다 위험합니다.**
+의존성 제로 게이트 스크립트 네 개(Node만 사용): 유령 쓰기 방어(역 자체 시험 포함), 오픈소스 위생 스캔, 컴플라이언스 자체 점검(9/9 통과 + 8/8 반증 판정), 패키지 왕복 검증. 게이트 결과는 "통과"와 "실패" 둘뿐이며, "아마 괜찮을 것"은 인정하지 않습니다——**가짜 초록은 실패보다 위험합니다**.
 
 ---
 
-## 왜 단일 파일 배포인가
+## 결정성은 구호가 아니다
 
-- **감사 가능**: 텍스트 파일 하나로, 사람이 읽을 수 있고, `diff` 가능하며, 해시 검증이 가능하다.
-  배포 시점에 동결된다.
-- **재현 가능**: 패키징이 결정론적이어서 같은 입력으로 두 번 패키징하면 SHA-256이 완전히 일치한다.
-- **휴대 가능**: 거대한 저장소를 clone할 필요 없이 파일 하나를 메일이나 채팅으로 전송하면 되고,
-  오프라인에서도 복원과 빌드가 가능하다.
-- **트레이드오프 설명**: 단일 파일 배포는 "GitHub에서 코드를 직접 열람"하는 편의를 양보하는 대신
-  "파일 하나로 전부를 가져가고 바이트 단위로 검증 가능"이라는 결정성을 얻는다. 압축을 풀면
-  평범한 Cargo workspace가 나오며, 일반 Rust 프로젝트와 다를 바 없다.
+파라미터에서 바이트까지, 네 층의 장치:
+
+1. **서명 폐포**: 노드 그래프, 캐시 키, 스냅샷 키, 프레임 서명을 4차원 설정 해시로 통일. 파라미터 하나를 바꾸면 키가 반드시 바뀌어 잘못된 재사용이 없습니다. 반복 노드의 키에는 `(ε, n)`이, 스트림 노드의 키에는 프레임 번호가 들어가며, `None`일 때는 이전 동작으로 바이트 단위로 퇴화합니다.
+2. **바이트 고정점**: USD 내보내기→가져오기→내보내기가 바이트 단위로 일치. WAV 16/24/32 bit 왕복 일치. EXR은 공식 OpenEXR과 비트스트림 단위로 대조.
+3. **패키징 결정성**: 같은 소스를 두 번 패키징하면 SHA-256이 완전히 일치. 언팩 왕복에서 모든 파일을 바이트 단위로 비교.
+4. **테스트가 판정 기준**: 3929개 테스트 중 다수가 황금값을 고정(허용 오차 1e-2에서 1e-6으로, 실측 잔차 4.53e-7). 형상 충실도는 Hausdorff 거리로 억제하며 "대충 맞는다"로 끝내지 않습니다.
 
 ---
 
-## 빠른 시작
+## 아키텍처
 
-사전 준비: [Rust](https://www.rust-lang.org/)(`cargo` 포함)와 [Node.js](https://nodejs.org/) 18+를 설치한다.
-
-```bash
-# 1. 저장소의 prism-engine-v2.1-source.txt를 내려받아 로컬 파일로 저장한다
-# 2. 텍스트 편집기로 열어 "UNPACK SCRIPT BEGIN"과 "UNPACK SCRIPT END"
-#    사이의 Node.js 스크립트를 같은 디렉터리의 unpack.cjs로 따로 저장한다
-# 3. 압축 해제 실행 (수 초 소요, 642개 파일 복원)
-node unpack.cjs
-# 4. 복원된 디렉터리(즉 workspace 루트)에서 전체 테스트 실행
-cargo test --workspace --release
-# 예상: 3929 passed / 0 failed
+```mermaid
+flowchart LR
+    IN["입력<br/>PNG · JPEG · EXR · RAW<br/>GIF · APNG · WAV<br/>glTF · OBJ · USDA"] --> DSL["편성<br/>prism-dsl<br/>노드 그래프 · 채널 · 타임라인"]
+    DSL --> RT["평가<br/>2D 래스터 · 3D 패스 트레이싱<br/>물리 · 파티클 · 제너러티브"]
+    DSL --> AU["오디오<br/>prism-audio<br/>합성 · 편곡 · 믹싱"]
+    RT --> FX["후처리<br/>그레이딩 · bloom · 디노이즈 · NPR"]
+    FX --> OUT["출력<br/>PRMV · ffmpeg · EXR 시퀀스"]
+    AU --> OUT
 ```
 
-압축을 풀면 표준 Cargo workspace(`src/` 아래 28개 crate)가 나오며, 이후의 `cargo` 명령은 일반
-Rust 프로젝트와 같다.
-
-> 모바일 측 wasm 검증 경로: `rustup target add wasm32-unknown-unknown`, 이어서 `cargo build -p prism-core --target wasm32-unknown-unknown`.
-
----
-
-## 저장소 구조 (압축 해제 후)
-
-| 경로 | 설명 |
-|------|------|
-| `src/` | **28개 crate**의 소스(저장소 내 29개, 원래 이름 `crates/`, 배포 시 `src/`로 재구성) |
-| `Compliance/` | 컴플라이언스 선언: 제로 의존성 검증 / 서드파티 고지 / 에셋 등록(저장소 내 원래 이름 `docs/合规/`) |
-| `开发者指南.md` | 자체 완결형 개발자 문서: 시작하기 / 아키텍처 / 수학 커널 / 게이트 / 확장(저장소 내 원래 이름 `docs/开发者指南.md`) |
-| `tools/` | 게이트 스크립트(고스트 쓰기 방어, 위생 스캔, 컴플라이언스 자체 점검) |
-| `.github/workflows/` | CI 구성 |
-| `Cargo.toml` / `Cargo.lock` / `.cargo/` | 빌드 필수 요소(workspace members는 이미 `src/*`를 가리킴) |
-| `examples/` | `prism-dsl` 테스트용 샘플과 예제 노드 패키지(`include_str!`로 읽으므로 없으면 컴파일되지 않음) |
-
----
-
-## 모듈 개요
-
-배포 패키지 내 **28개 crate**를 역할별로 묶으면 다음과 같다:
+28개 crate를 책임별로:
 
 | 분류 | crate |
-|------|-------|
-| 커널 | prism-core · prism-math · prism-bytes · prism-geometry · prism-noise |
-| 미디어 I/O | prism-io · prism-media · prism-mux · prism-audio · prism-texture |
-| 렌더링 | prism-render · prism-raster · prism-gpu · prism-postfx · prism-vector · prism-particles |
-| 애니메이션/생성 | prism-anim · prism-genart · prism-aesthetic · prism-physics |
-| 텍스트/UI | prism-text · prism-rt · prism-app |
-| 고급 | prism-ai · prism-dsl · prism-infra · prism-author |
-| 우회(feature gate) | prism-ffi-hwenc |
+| --- | --- |
+| 코어 | `prism-core` · `prism-math` · `prism-bytes` · `prism-geometry` · `prism-noise` |
+| 미디어 I/O | `prism-io` · `prism-media` · `prism-mux` · `prism-audio` · `prism-texture` |
+| 렌더링 | `prism-render` · `prism-raster` · `prism-gpu` · `prism-postfx` · `prism-vector` · `prism-particles` |
+| 애니메이션 / 생성 | `prism-anim` · `prism-genart` · `prism-aesthetic` · `prism-physics` |
+| 텍스트 / UI | `prism-text` · `prism-rt` · `prism-app` |
+| 고급 | `prism-ai` · `prism-dsl` · `prism-infra` · `prism-author` |
+| 사이드카(feature gate) | `prism-ffi-hwenc` |
+
+언팩 후 디렉터리 구조:
+
+| 경로 | 내용 |
+| --- | --- |
+| `src/` | 28개 crate 소스(저장소에서는 `crates/`, 배포 시 재구성) |
+| `Compliance/` | 의존성 제로 검증, 서드파티 고지, 에셋 등록 |
+| `开发者指南.md` | 자기 완결형 개발자 가이드: 시작 / 아키텍처 / 수학 커널 / 게이트 / 확장 |
+| `tools/` | 게이트와 패키징 스크립트 |
+| `examples/` | `.prism` 예제와 노드 패키지(`include_str!`로 읽으므로 없으면 빌드 실패) |
+| `.github/workflows/` | CI 설정 |
+
+> 저장소의 `docs/设计/`는 설계 정본으로 배포에 포함되지 않습니다. 데모 crate `prism-anim-demo`도 마찬가지입니다.
 
 ---
 
-## 빌드와 테스트
+## 빌드, 테스트, 게이트
 
 ```bash
-# 전체 저장소 스모크 테스트 (release, 권장)
-cargo test --workspace --release
-# 동등한 별칭
-cargo xtest
-# 단일 crate 빠른 검증
-cargo test -p prism-core --release
+cargo test --workspace --release      # 3929 passed / 0 failed / 0 ignored
+cargo xtest                           # 동등한 별칭
+cargo test -p prism-core --release    # 단일 crate 스모크 테스트
+
+node tools/ghost_guard.mjs --check    # 유령 쓰기 방어: G1 중복 정의 / G2 엄격한 상위 집합 / G3 최상위 문서 / G4 빌드
+node tools/hygiene_scan.mjs           # 위생: 남은 내부 용어를 file:line으로 나열, 적중 시 exit 1
+node tools/compliance_check.mjs       # 컴플라이언스 자체 점검: 9/9 통과해야 함
+node tools/compliance_check.mjs --self-test  # 반증: 실패해야 하며, 판정 기준의 판별력을 보여줌
+node tools/pack_source_txt.mjs --verify      # 패키징과 언팩 왕복을 바이트 단위로 검증
 ```
 
-- 전체 테스트: **3929 passed / 0 failed / 0 ignored** (저장소에서 release 실주행: 179개 테스트 스위트, 전 코어 병렬 171.5초. 패키지는 저장소와 바이트 단위로 동일하며 데모 crate만 제외)
-- CI: **6개 job** — 고스트 쓰기 방어(ghost-guard) / 컴파일 + 전체 테스트(native) / wasm32 빌드(wasm) /
-  WGSL 정적 검사(wasm-verify) / 공식 OpenEXR과 교차 구현 비트스트림 대조(interop) / node 호스트 교차 판정(lint).
-- 로컬 게이트 스크립트 3개(전부 제로 의존성, `node`만 사용, 아래) + 패키징 스크립트 1개;
-  그중 컴플라이언스 자체 점검은 **9/9 통과**, 역방향 자기 증명은 **8/8 판정 red**.
+- 전체: **3929 passed / 0 failed / 0 ignored**, 179개 테스트 구간, 전 코어 병렬 171.5초(release).
+- CI는 여섯 job: 유령 쓰기 방어, 빌드 + 전체 테스트, wasm32 빌드, WGSL 정적 검사, 공식 OpenEXR과 비트스트림 상호 검증, Node 호스트 교차 판정.
+- 위생 스캔에는 여전히 적중이 남아 있습니다. 배포 문서 층은 정리되었고, 나머지는 소스 주석과 배포 대상이 아닌 저장소 파일에 있습니다. 스크립트의 존재는 잔여물을 **보이게 두고 하나씩 정리**하기 위함이며, 깨끗한 척하기 위함이 아닙니다.
 
-로컬 게이트 실행(Node 18+ 필요):
+---
 
-```bash
-node tools/ghost_guard.mjs --check        # 고스트 쓰기 방어: G1 중복 정의/G2 엄격 초집합/G3 최상단 문서/G4 컴파일
-node tools/hygiene_scan.mjs               # 오픈소스 위생: 잔존 내부 용어를 항목별로 나열(파일:줄번호), 적중 시 exit 1
-node tools/compliance_check.mjs           # 컴플라이언스 자체 점검: 9/9 통과해야 함
-node tools/compliance_check.mjs --self-test   # 역방향 자기 증명: red로 판정되어야 하며, 판정 기준의 판별력을 증명한다
-```
+## 정직한 경계
 
-> **오픈소스 위생 스캔에는 현재도 잔존 적중이 있다**: 저장소 안에 초기의 내부 용어가 남아 있으며,
-> 그중 **패키지와 함께 배포되는 문서 계층은 이미 0건**이다(README / 개발자 가이드 / Compliance).
-> 나머지는 **배포 패키지 내부의 소스 주석**과 **패키지와 함께 배포되지 않는 저장소 파일**에 있고,
-> 사실에 따라 분류하여 별도의 정리 항목으로 등록했다. 스크립트가 존재하는 이유는 잔존물을
-> **가시화하고 항목별로 정리**할 수 있게 하기 위함이지, 깨끗한 척하기 위함이 아니다 —
-> "적중 수가 0이 아님"을 게이트 실패로 해석하지 말라.
+| 경계 | 현황 | 출로 |
+| --- | --- | --- |
+| DNG `Compression=7`(lossless JPEG) | 미구현. 실제 카메라 DNG는 읽을 수 없음 | 16 bit TIFF / PNG로 변환 후 사용 |
+| mp3 / AAC / FLAC | 디코딩은 외부 ffmpeg 탐색 경로, 인코딩은 직접 구현하지 않음 | ffmpeg 설치, 또는 WAV만 사용 |
+| 곡선 프리미티브 GPU | CPU 경로만 | 삼각화 후 SAH-BVH로 |
+| Metal | 게이트 준비 완료, 실기 미검증, 미점등 | Apple 기기가 생기면 연결 |
+| WebGPU | 타당성 결론만, 렌더 미구현 | 4–6 인일 |
+| 하드웨어 인코딩 | 세 플랫폼 탐색 골격만 | 대상 플랫폼별로 구현 |
+| GPU 가속비 | lavapipe에서 정확성만 검증, 실제 GPU 미측정 | 대상 하드웨어에서 측정 필요 |
+| 위생 스캔 | 소스 주석에 기존 적중 | 하나씩 정리, 스크립트로 추적 |
+
+이것들은 "나중에"가 아니라 현재 명확히 지원하지 않는 항목입니다. 이슈에 숨기는 것보다 여기 적는 편이 낫다고 판단했습니다.
 
 ---
 
 ## 컴플라이언스
 
-엔진은 **서드파티 코드 의존성 제로**를 약속하며, 자체 점검으로 이를 검증했다:
+엔진은 서드파티 코드 의존성 제로를 표방하며 자체 점검으로 검증합니다:
 
-- **C1 서드파티 코드 의존성 제로**: 전체 130개 의존성(110개 런타임 + 20개 테스트)이 모두 이 저장소의 `path` 의존성이다; `build.rs` 없음, 네이티브 링크 지시자 없음, `Cargo.lock`이 저장소 내 29개 패키지를 고정한다.
-- **C2 에셋 등록 완비**: 5개 에셋 주표의 필드가 모두 채워져 있고, 자체 개발 전환 상태가 통제 어휘집 안에 있다; OFL 1.1 폰트 라이선스 전문이 폰트와 함께 `src/prism-text/font_data/LICENSE`에 위치한다.
-- **C3 서드파티 귀속 고지**: `Compliance/THIRD-PARTY-NOTICES.md`가 존재하며, "데이터 에셋 ≠ 코드 의존성"을 명확히 구분한다.
-
-> 참고: 이 저장소가 배포하는 것은 **소스**다. 폰트 에셋(Prism Sans SC 서브셋)은 SIL OFL 1.1로 라이선스되며, **라이선스 전문은 폰트와 함께** `src/prism-text/font_data/LICENSE`에 위치한다; 에셋 출처와 라이선스 등록은 `Compliance/assets/资产登记.md`를 참고하라.
-
+- **C1 서드파티 코드 의존성 제로**: 130개 의존성(런타임 110 + 테스트 20)이 모두 저장소 내 `path` 의존성. `build.rs` 없음, 네이티브 링크 지시 없음. `Cargo.lock`이 저장소 내 29개 패키지를 고정.
+- **C2 에셋 등록 완비**: 5개 에셋의 주표 항목이 모두 채워져 있습니다. 폰트는 SIL OFL 1.1로 배포하며 라이선스 전문을 `src/prism-text/font_data/LICENSE`에 동봉.
+- **C3 서드파티 귀속 고지**: `Compliance/THIRD-PARTY-NOTICES.md`가 "데이터 자산 ≠ 코드 의존성"을 명확히 구분.
 
 ---
 
 ## 라이선스
 
-이 프로젝트는 **Apache License 2.0**으로 배포된다. 자세한 내용은 [`LICENSE`](../LICENSE) 파일을 참고하라.
+Apache License 2.0, [`LICENSE`](../LICENSE)를 참고하세요.
 
-> 컴플라이언스 안내: Apache-2.0은 저작권과 라이선스 고지를 유지할 것을 요구한다; 이 엔진을 기반으로 재배포할 때에는 `Compliance/` 아래의 귀속 고지와 에셋 등록을 유지하라.
+재배포 시 `Compliance/` 아래의 귀속 고지와 에셋 등록을 유지해 주세요.
 
-**주: 다른 버전에 번역 오류가 있다면, 이 버전의 중국어 간체(the Simplified Chinese version)를 기준으로 하십시오.**
+---
+
+<sub>히어로 이미지와 DSL 스크린샷은 모두 엔진 자체가 렌더링한 것입니다. 파라미터는 그림 설명과 [`docs/gallery/gallery.rs`](gallery/gallery.rs)에 있습니다.</sub>
