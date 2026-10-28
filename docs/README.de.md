@@ -201,8 +201,9 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 | **Klingen** | PolyBLEP-Synthesizer, ADSR, Skalen- und Akkordfolge-Zustandsmaschinen, Arpeggiator, Step-Drummachine, SMF-Parser, SFZ-Sampler, Granularsynthese, Multitrack-Mixing, Loudness-Normalisierung, Beat-/Onset-/FFT-Analyse |
 | **Ausliefern** | Eigenes `PRMV`-Containerformat (v2/v3) mit I/P-Frame-JPEG-Domänencodierung, Water-Filling-Ratensteuerung, Qpel-Bewegungsschätzung; ffmpeg-Pipeline (H.264/HEVC falls vorhanden, sonst automatisch MJPEG); EXR-Sequenzen; Multi-Prozess-Frame-Farm (fortsetzbar, parallele MD5 == serielle MD5) |
 | **Integrieren** | Drei MCP-stdio-Werkzeuge (`scene_check` / `render_submit` / `diagnose`), Node-SDK mit semantischer Versionsaushandlung, HTTP/1.1-Renderdienst, Batch-Manifest mit kartesischem Rendering, Probe-Skelett für Hardware-Encoder auf drei Plattformen |
+| **Nebenweg** | Generative Kunst: Strömungsfelder / L-Systeme / zelluläre Automaten / Reaktions-Diffusion / Mandelbrot / Voronoi, Vektor-Draw-on und Diagramme. KI-Unterstützung: deterministische Mock-Inferenzschicht (Storyboard / Untertitel / Farbhinweise), Modellgewichte als Daten gelesen, Multiplikation-Addition selbst geschrieben, kein ML-Framework |
 
-> Die Tabelle ist nur ein Inhaltsverzeichnis. Exakte Parameter und das „was sie nicht kann“ jeder Fähigkeit stehen in `开发者指南.md` im Paket.
+> Die Tabelle listet nur Fähigkeiten. Was jede davon nicht kann, steht unter [Ehrliche Grenzen](#ehrliche-grenzen), nicht in der Tabelle.
 
 ## Fähigkeiten, die nicht in die Liste passen
 
