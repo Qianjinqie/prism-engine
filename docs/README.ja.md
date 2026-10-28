@@ -264,7 +264,7 @@ flowchart LR
 | `examples/` | `.prism` の例とノードパッケージ（`include_str!` で読むため、欠けるとビルドが通らない） |
 | `.github/workflows/` | CI 設定 |
 
-> リポジトリ内の `docs/設計/` は設計の正典で、配布には含まれません。デモ crate `prism-anim-demo` も同様です。
+> 設計の正典（`docs/設計/`）は配布元の完全なリポジトリにのみ存在し、配布には含まれません。デモ crate `prism-anim-demo` も同様です。
 
 ---
 

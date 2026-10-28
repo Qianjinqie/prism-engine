@@ -264,7 +264,7 @@ Structure après dépaquetage :
 | `examples/` | Exemples `.prism` et paquets de nœuds (lus par `include_str!` ; un fichier manquant casse la compilation) |
 | `.github/workflows/` | Configuration CI |
 
-> `docs/设计/` (documents de conception) reste dans le dépôt et n'est pas distribué ; le crate de démonstration `prism-anim-demo` n'est pas empaqueté non plus.
+> Les documents de conception (`docs/设计/`) ne vivent que dans le dépôt complet de l'éditeur et ne sont pas distribués ; le crate de démonstration `prism-anim-demo` n'est pas empaqueté non plus.
 
 ---
 
