@@ -4,6 +4,22 @@
 <h3 align="center">Procedural media engine</h3>
 
 <p align="center">
+  <sub>Decode · Typeset · Path-trace · Simulate · Synthesize · Encode &nbsp;|&nbsp; Still · Sequence · Finished cut &nbsp;|&nbsp; CPU + Vulkan backends</sub>
+</p>
+
+<p align="center">
+  <a href="../README.md">中文</a>
+  · <b><a href="README.en.md">English</a></b>
+  · <a href="README.de.md">Deutsch</a>
+  · <a href="README.es.md">Español</a>
+  · <a href="README.fr.md">Français</a>
+  · <a href="README.ja.md">日本語</a>
+  · <a href="README.ko.md">한국어</a>
+  · <a href="README.pt-BR.md">Português</a>
+  · <a href="README.ru.md">Русский</a>
+</p>
+
+<p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/tests-3929%20passed-brightgreen.svg" alt="Tests">
   <img src="https://img.shields.io/badge/dependencies-zero-brightgreen.svg" alt="Dependencies">
