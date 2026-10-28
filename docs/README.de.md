@@ -4,10 +4,10 @@
 
 <h1 align="center">Prism Engine</h1>
 
-<h3 align="center">Die gesamte Medien-Pipeline in einem Quellbaum</h3>
+<h3 align="center">Prozedurale Medien-Engine</h3>
 
 <p align="center">
-  <sub>Dekodieren · Setzen · Path-Tracing · Simulieren · Synthese · Kodieren &nbsp;|&nbsp; Keine Abhängigkeiten · Bit-genau deterministisch</sub>
+  <sub>Dekodieren · Setzen · Path-Tracing · Simulieren · Synthese · Kodieren &nbsp;|&nbsp; Standbild · Sequenz · Fertiger Schnitt &nbsp;|&nbsp; CPU + Vulkan</sub>
 </p>
 
 <p align="center">
@@ -49,30 +49,23 @@
   <sub><b>642</b> Dateien · <b>28</b> Crates · <b>261.000</b> Zeilen Rust · <b>3929</b> Tests · <b>0</b> Fremdabhängigkeiten · <b>18,9 MB</b> Einzeldatei</sub>
 </p>
 
-## Warum es diese Engine gibt
+## Funktionsübersicht
 
-Eine übliche Medien-Pipeline ist zusammengesetzt: ffmpeg dekodiert, Blender rendert, ImageMagick schreibt Standbilder, eine DAW macht den Ton, und Skripte kleben alles mit temporären Dateien zusammen. Jedes Werkzeug ist für sich hervorragend, doch an den Nahtstellen gehen zwei Dinge verloren — **Determinismus** und **Nachprüfbarkeit**. Ein anderer Rechner, ein anderer Gleitkommapfad; eine andere Version, andere Defaults; und im Fehlerfall stehen fünf Blackboxen und ein Haufen Zwischendateien da.
+Eine prozedurale Medien-Engine in Rust. Eingabe ist eine `.prism`-Szene oder ein Aufruf der Rust-API; Ausgabe ist ein Standbild, eine Bildsequenz oder ein fertiger Schnitt. Die Schichten folgen einer Medien-Pipeline; ein eingefrorener Zeitpunkt ergibt ein Standbild, fortlaufend aufgezeichnet ein Video — jede Schicht behandelt beides gleich.
 
-| | Konventionelle Pipeline | Prism Engine |
-| --- | --- | --- |
-| Kette | fünf oder sechs Werkzeuge + Klebeskripte + temporäre Dateien | ein Quellbaum, ein Build |
-| Anderer Rechner | Gleitkommapfade ändern sich, Pixel ändern sich | gleiche Eingabe, gleiche Bytes |
-| Etwas bricht | fünf Blackboxes und ein Haufen Zwischendateien | jedes Pixel lässt sich auf eine Quellzeile zurückführen |
-| Abhängigkeiten | Dutzende native Bibliotheken, jede mit eigener Versionsmatrix | 0 |
+| Schicht | Was sie tut |
+| --- | --- |
+| **Lesen** | PNG (8/16 Bit, Filter-Inversion), Baseline-JPEG (Festkomma-IDCT, plattformübergreifend bitgleich), EXR (Lesen/Schreiben, Kompressionsfamilie, DWA), Kamera-RAW, GIF / APNG Bild für Bild, WAV; glTF / OBJ / USDA-Import, MaterialX-Parameter; TTF/OTF-Laden mit vierstufiger Fallback-Kette (eingebaut → Benutzer → Mehrschrift-Subsets → mathematische Symbole) |
+| **Setzen** | OpenType-Parsing, GSUB/GPOS-Shaping, UAX #9 Bidirektionalität, vier arabische Formen, vertikaler Satz; Formelsatz (Hoch-/Tiefstellung, Brüche, Wurzeln, Matrizen, große Operatoren); DSL v1/v2 zu einem Tripel-Graph kompiliert; fünf High-Level-Kombinatoren (Titel / Bauchbinde / Splitscreen / Ken Burns / Szenen-Morph); vier Übergänge + Morph, zu jedem Zeitpunkt abtastbar |
+| **Rendern** | Path-Tracing + physikalisches BSDF (diffus / spiegelnd / Glas / Metall / Subsurface), Glas und Metall über stochastische Inversion (Neumann-Reihe, Monte Carlo); heterogene Woodcock-Volumen; analytische Schnitte für Zylinder / Kegel / Tori / Rotationsflächen (Quartik über Ferrari); Dreiecksnetze + SAH-BVH (stabile Sortierung, deterministischer Aufbau); Meshes zu SDF gebacken für Booleans / Domain-Warping / exakte Kollision; CpuRef als vollwertiges Backend + Vulkan-Compute- und Raytracing-Pipelines |
+| **Simulieren** | einheitlicher XPBD-Solver — Starrkörper / Soft Bodies / Tuch / Gelenke / Fluide / Bruch sind sechs Parametersätze einer Constraint-Projektionsschleife; FLIP-Rauch; Partikelsysteme + AudioReactive; Haar-Constraints und Shading; Strömungsfelder / L-Systeme / zelluläre Automaten / Reaktions-Diffusion / Fraktale / Voronoi; geschlossene Federlösung und Keyframes |
+| **Grading** | sekundäres Grading (HSL-Auswahl + RGB-Kurven); cinematic / film / anime-Presets, drei Stufen (Entwurf / Standard / Film) explizit bepreist; blur / bloom / vignette / chromatische Aberration / sharpen / glitch / dissolve; Halation + Filmkorn in zwei Skalen (im Pixelraum abgeleitet); dreifache Denoiser-Kombination; vier NPR-Stile (toon / watercolor / halftone / oil); PQ-/HLG-Transferfunktionen, lineares sRGB ↔ ACEScg, ACES-Ausgangstransformation |
+| **Ton** | PolyBLEP-antialiasing-Oszillator + geschlossene ADSR-Hüllkurve + 4 Stimmungs-Presets; Skalenbibliothek + 12-TET + funktionalgrammatische Akkordfolge-Zustandsmaschine + Stimmführung; Arpeggiator / Step-Drum-Machine / Takt-Raster; handgeschriebener SMF-Parser, SFZ-Sampler, Granularsynthese; physikalische Modellierung / räumliches Pannen / Effektketten; Mehrspur-Mixing + Peak-Limiting; Beat / Onset / FFT, AudioReactive-Baking, Loudness-Normalisierung; WAV 16/24/32 Bit bytegenauer Round-Trip |
+| **Ausliefern** | eigener PRMV-Container (v2/v3, v3 liest v1/v2) + I/P-Frame-Zeitkodierung; Water-Filling-Ratensteuerung + qpel-Subpixel-Bewegungsschätzung (gemessen PSNR +2,577 dB, Größe −21,6 %); ffmpeg zur Laufzeit erkannt — stdin-Pipe nach H.264/HEVC wenn vorhanden, sonst automatischer MJPEG-Fallback, es kommt immer eine Datei heraus; MP4- + MJPEG-Container, EXR-Sequenzen; Mehrprozess-Frame-Farm (fortsetzbar, parallele MD5 == serielle MD5); NLE-Zeitabbildung / Keyframes / Übergänge |
+| **Anbinden** | drei MCP-stdio-Werkzeuge (`scene_check` / `render_submit` / `diagnose`); Node-SDK mit semantischer Versionsaushandlung + Beispiel-Node-Paket; CLI (`render` / `preview` / `demo`); interaktiver Editor mit zwei Vorschau-Stufen (Draft geometrisch / Real niedrige spp) + Subgraph-Signatur-Inkremente; Batch-Manifest als kartesisches Produkt; Hardware-Encoder-Sonde für drei Plattformen (VideoToolbox / NVENC / VAAPI, kein Backend verdrahtet) |
+| **Nebenweg** | generative Kunst: Strömungsfelder / L-Systeme / zelluläre Automaten / Reaktions-Diffusion / Mandelbrot / Voronoi, Vektor-Draw-on und Diagramme. KI-Unterstützung: deterministische Mock-Inferenzschicht (Storyboard / Untertitel / Farbhinweise), Modellgewichte als Daten gelesen, Multiplikation-Addition selbst geschrieben, kein ML-Framework |
 
-Prism Engine zieht die ganze Kette in einen Quellbaum. Gleiche Szene, gleiche Parameter, egal welcher Rechner, egal welcher Lauf — identische Pixel und identische Bytes. Das ist kein Versprechen; 3929 Tests nageln es fest.
-
-Die Engine soll ffmpeg oder Blender nicht ersetzen. Sie ersetzt den Klebstoff dazwischen und den Determinismus, den dieser Klebstoff stillschweigend wegwirft.
-
-Die Zielgruppe ist bewusst eng: Pipelines, die „gleiche Eingabe, beliebiger Rechner, gleiche Ausgabe“ brauchen — Batch-Rendering, reproduzierbare Grafikforschung, Rendering in der CI.
-
-### Drei harte Randbedingungen
-
-| Randbedingung | Umsetzung | Preis |
-| --- | --- | --- |
-| **Kein Fremdcode** | Alle 110 Laufzeit- und 20 Test-Abhängigkeiten sind `path`-Abhängigkeiten im Repo; kein `build.rs`, keine nativen Linker-Direktiven, kein Netzwerk beim Bauen | Jedes Format, jeder Algorithmus, jede Schrift und jeder Codec muss hier entstehen |
-| **Bitgenaue Determinismus** | Festkomma-IDCT, feste Sampling-Folgen, ein vierdimensionaler Konfigurations-Hash; plattformübergreifend identisch bei gleicher Eingabe | Keine schnellen Gleitkomma-Abkürzungen, kein Verlass auf die Iterationsreihenfolge von Hash-Maps |
-| **Einzeldatei-Verteilung** | 642 Dateien aus 28 Crates in einem 18,9 MB großen UTF-8-Text, wiederhergestellt mit `node unpack.cjs` | Man verzichtet darauf, den Quellcode direkt auf GitHub durchzublättern |
+Die Tabelle listet nur Fähigkeiten. Was jede davon nicht kann, steht unter [Ehrliche Grenzen](#ehrliche-grenzen), nicht in der Tabelle.
 
 ## In drei Minuten lauffähig
 
@@ -189,39 +182,19 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 
 `render_pixel` ist eine reine Funktion: Szene, Kamera, Sampling-Kontext und Pixelkoordinate hinein, lineares RGB heraus. Bei gleichen Parametern sind die Bits identisch, unabhängig von Thread oder Aufrufreihenfolge — deshalb braucht paralleles Rendering keinerlei Synchronisation.
 
-## Funktionsübersicht
-
-| Schicht | Was sie leistet |
-| --- | --- |
-| **Lesen** | PNG (8/16 Bit), Baseline-JPEG (Festkomma-IDCT), GIF/APNG Bild für Bild, EXR (inkl. DWA), Baseline-RAW, WAV; glTF-/OBJ-/USDA-Assets, MaterialX-Parameter, externe TTF/OTF-Schriften |
-| **Komponieren** | DSL v1/v2-Kompilierung, fünf High-Level-Kombinatoren (Titelkarte / Bauchbinde / Splitscreen / Ken Burns / Morph zwischen Szenen), vier Übergänge + Morph, Formelsatz (Hoch-/Tiefstellung, Brüche, Wurzeln, Matrizen, große Operatoren), Abtastung der Timeline zu jedem Zeitpunkt |
-| **Rendern** | Raytracing + physikalisches BSDF (diffus / spiegelnd / Glas / Metall / Subsurface), heterogene Woodcock-Volumen, analytische Schnitte für Zylinder / Kegel / Tori / Rotationsflächen (Quartik via Ferrari), SAH-BVH-Dreiecksnetze, CPU-Referenz-Backend, Vulkan-Compute- und Raytracing-Pipelines |
-| **Simulieren** | Unified-XPBD-Solver (Starrkörper / Soft Bodies / Tuch / Gelenke / Fluide / Bruch), FLIP-Rauch, Partikelsysteme (optional audio-getrieben), Strömungsfelder / L-Systeme / zelluläre Automaten / Reaktions-Diffusion / Fraktale / Voronoi |
-| **Graden** | Sekundäres Grading (HSL-Selektionen + RGB-Kurven), cinematic-/film-/anime-Presets, Blur / Bloom / Halation / Filmkorn, vier NPR-Stile (Toon / Aquarell / Halbton / Öl), dreifache Denoiser, Vektorpfad-Rasterung und Draw-on |
-| **Klingen** | PolyBLEP-Synthesizer, ADSR, Skalen- und Akkordfolge-Zustandsmaschinen, Arpeggiator, Step-Drummachine, SMF-Parser, SFZ-Sampler, Granularsynthese, Multitrack-Mixing, Loudness-Normalisierung, Beat-/Onset-/FFT-Analyse |
-| **Ausliefern** | Eigenes `PRMV`-Containerformat (v2/v3) mit I/P-Frame-JPEG-Domänencodierung, Water-Filling-Ratensteuerung, Qpel-Bewegungsschätzung; ffmpeg-Pipeline (H.264/HEVC falls vorhanden, sonst automatisch MJPEG); EXR-Sequenzen; Multi-Prozess-Frame-Farm (fortsetzbar, parallele MD5 == serielle MD5) |
-| **Integrieren** | Drei MCP-stdio-Werkzeuge (`scene_check` / `render_submit` / `diagnose`), Node-SDK mit semantischer Versionsaushandlung, HTTP/1.1-Renderdienst, Batch-Manifest mit kartesischem Rendering, Probe-Skelett für Hardware-Encoder auf drei Plattformen |
-| **Nebenweg** | Generative Kunst: Strömungsfelder / L-Systeme / zelluläre Automaten / Reaktions-Diffusion / Mandelbrot / Voronoi, Vektor-Draw-on und Diagramme. KI-Unterstützung: deterministische Mock-Inferenzschicht (Storyboard / Untertitel / Farbhinweise), Modellgewichte als Daten gelesen, Multiplikation-Addition selbst geschrieben, kein ML-Framework |
-
-> Die Tabelle listet nur Fähigkeiten. Was jede davon nicht kann, steht unter [Ehrliche Grenzen](#ehrliche-grenzen), nicht in der Tabelle.
-
 ## Fähigkeiten, die nicht in die Liste passen
 
 Manches gehört nicht in die Tabelle oben — es ist nicht „ein Format mehr“, sondern Infrastruktur, die die Engine für sich selbst gewachsen hat.
 
 ### Audio: ein eingebauter DAW-Kern
 
-`prism-audio` ist kein Randmodul, das zufällig WAV liest. Von der Komposition bis zum Mix ist es eine geschlossene Kette, und jede Funktion ist eine reine Funktion ihrer Parameter (plattformübergreifend bitgleich bei gleicher Eingabe):
+Die Fähigkeitsliste steht in der Zeile **Ton**. Hier geht es um die Funktionsweise und darum, warum sie an derselben Render-Zeitleiste hängen kann:
 
-- **Synthese**: PolyBLEP-Oszillatorfamilie mit Antialiasing, ADSR-Hüllkurven in geschlossener Form, vier Stimmungs-Presets;
-- **Theorie**: Skalenbibliothek (Dur/Moll, Pentatonik, Modi), 12-TET-Tonklasse ↔ Frequenz, Zustandsmaschine mit funktionaler Grammatik für Akkordfolgen plus Stimmführung;
-- **Arrangement**: Arpeggiator (Muster / Rate / Oktave), Step-Drummachine, Takt- und Beat-Raster;
-- **Material**: handgeschriebener SMF-Parser (MIDI-Import), SFZ-Sampler, Granularsynthese;
-- **Sounddesign**: physikalische Modellierung, räumliches Pannen, Effektketten;
-- **Mixing**: lineares Multitrack-Mischen, Fades, peaksicheres Limiting;
-- **Analyse und Kopplung**: Beat-/Onset-Erkennung, FFT-Spektren, Hüllkurvenextraktion, Loudness-Normalisierung; AudioReactive-Baking liest bei Frame N ein festes Fenster und ist damit eine reine Funktion des Frames, seek-äquivalent.
+- **Jede Funktion ist eine reine Funktion ihrer Parameter**: dieselbe Partitur an beliebiger Seek-Position neu berechnet liefert bitgleiche Samples, ohne Abhängigkeit von der Wiedergabehistorie
+- **AudioReactive wird zu einer reinen Funktion pro Frame gebacken**: Frame N liest ein festes Fenster, daher ändern Springen, Rückwärtslaufen oder paralleles Aufteilen das Ergebnis nicht
+- **Mixing ist offline-parallele lineare Algebra**: Mehrspur-Summation + Fades + Peak-Limiting, ohne versteckte Zustandsmaschine
 
-> Grenze: AAC-/mp3-Encoding wird nicht selbst implementiert (Patenthistorie plus Aufwand); es läuft über externes ffmpeg.
+> Grenze: AAC-/mp3-Kodierung wird nicht selbst implementiert (Patentgeschichte plus Aufwand); sie läuft über externes ffmpeg.
 
 ### Eine definierbare Kernel-Registry
 
@@ -240,18 +213,24 @@ Jeder Node-Typ der Engine ist eine **Partikulärlösung** eines Tripels aus „K
 | **Metal** | Compile-Gate vorhanden, nicht aktiviert | Isomorphe Portierung fertig, nicht auf Hardware verifiziert, `is_available()` immer false |
 | **WebGPU** | Nur Fazit | Machbarkeit bewertet (4–6 Personentage Portierung), Renderpfad nicht implementiert |
 
-### Anti-False-Green-Gates
+## Technische Fakten
 
-Vier Gate-Skripte ohne Abhängigkeiten (nur Node): Ghost-Write-Schutz (inklusive Gegenselbsttest), Open-Source-Hygiene-Scan, Compliance-Selbstprüfung (9/9 bestanden plus 8/8 Nachweise, dass die Kriterien anschlagen), Pack-Roundtrip. Ein Gate kennt genau zwei Ergebnisse — bestanden oder rot — und „sieht gut aus“ gehört nicht dazu. **Ein falsches Grün ist gefährlicher als ein Fehlschlag.**
+Drei Einschränkungen und was jede kostet:
 
-## Determinismus ist kein Slogan
+| Einschränkung | Umsetzung | Kosten |
+| --- | --- | --- |
+| Keine Fremdcode-Abhängigkeiten | Alle 110 Laufzeit- + 20 Test-Abhängigkeiten sind `path`-Abhängigkeiten im Repo; kein `build.rs`, kein natives Linken, kein Netzwerk beim Build | Jedes Format, jeder Algorithmus, jede Schrift, jeder Codec muss hier geschrieben werden |
+| Bitgenauer Determinismus | Festkomma-IDCT, feste Sampling-Sequenzen, ein vierdimensionaler Konfigurationshash; identisch über Plattformen bei identischer Eingabe | Keine schnellen Gleitkomma-Abkürzungen, keine Abhängigkeit von Hashmap-Iterationsreihenfolge |
+| Einzeldatei-Verteilung | 642 Dateien aus 28 Crates zu einem 18,9 MB großen UTF-8-Text zusammengeführt, von `node unpack.cjs` wiederhergestellt | Man verliert das direkte Durchstöbern des Quellcodes auf GitHub |
+
+### Wie Determinismus verifiziert wird
 
 Vier Schichten, von den Parametern bis zu den Bytes:
 
-1. **Signatur-Hülle**: Node-Graphen, Cache-Schlüssel, Snapshot-Schlüssel und Frame-Signaturen teilen einen vierdimensionalen Konfigurations-Hash. Ein Parameter ändert sich ⇒ der Schlüssel muss sich ändern ⇒ keine falsche Wiederverwendung. Iterations-Nodes tragen `(ε, n)` im Schlüssel, Stream-Nodes die Frame-Nummer; bei `None` degradiert alles bitgenau auf das alte Verhalten.
-2. **Byte-Fixpunkte**: USD export→import→export ist byteidentisch; WAV 16/24/32 Bit läuft verlustfrei hin und zurück; EXR wird Bitstrom gegen Bitstrom mit dem offiziellen OpenEXR verglichen.
-3. **Pack-Determinismus**: Zweimal packen ergibt dieselbe SHA-256; der Entpack-Roundtrip vergleicht jede Datei Byte für Byte.
-4. **Tests als Kriterium**: Viele der 3929 Tests fixieren Goldwerte (Toleranz von 1e-2 auf 1e-6 verschärft, gemessene Restabweichung 4,53e-7); Formtreue wird über Hausdorff-Schranken begrenzt statt über „passt schon“.
+1. **Signatur-Abschluss**: Node-Graphen, Cache-Schlüssel, Snapshot-Schlüssel und Frame-Signaturen teilen einen vierdimensionalen Konfigurationshash. Ein Parameter ändert sich ⇒ der Schlüssel muss sich ändern ⇒ keine veraltete Wiederverwendung. Iterationsknoten führen `(ε, n)` im Schlüssel, Stream-Knoten die Framenummer; `None` degradiert bitgenau zum alten Verhalten.
+2. **Byte-Fixpunkte**: USD Export→Import→Export ist byteidentisch; WAV 16/24/32 Bit Round-Trips stimmen; EXR wird Bitstrom gegen Bitstrom mit dem offiziellen OpenEXR verglichen.
+3. **Packaging-Determinismus**: zweimaliges Packen derselben Quelle ergibt identische SHA-256; der Unpack-Round-Trip vergleicht jede Datei Byte für Byte.
+4. **Tests als Kriterium**: viele der 3929 Tests fixieren Goldwerte (Toleranz von 1e-2 auf 1e-6 verschärft, gemessene Residuen 4,53e-7); Formtreue wird über Hausdorff-Abstände begrenzt statt über „sieht nah genug aus“.
 
 ## Architektur
 
@@ -307,6 +286,10 @@ node tools/pack_source_txt.mjs --verify      # Pack- und Entpack-Roundtrip, Byte
 - Vollsuite: **3929 passed / 0 failed / 0 ignored**, 179 Testabschnitte, 171,5 s mit allen Kernen (Release).
 - CI mit sechs Jobs: Ghost-Write-Schutz, Build + Volltests, wasm32-Build, WGSL-Statikprüfung, Bitstrom-Interop gegen offizielles OpenEXR, Node-Host-Gegenprobe.
 - Der Hygiene-Scan hat weiterhin Treffer: Die verteilte Dokumentationsebene ist sauber, der Rest steckt in Quellkommentaren und nicht verteilten Repo-Dateien. Das Skript existiert, damit Reste **sichtbar und einzeln abarbeitbar** bleiben — nicht um Sauberkeit vorzutäuschen.
+
+### Anti-False-Green-Gates
+
+Vier Gate-Skripte ohne Abhängigkeiten (nur Node): Ghost-Write-Schutz (inklusive Gegenselbsttest), Open-Source-Hygiene-Scan, Compliance-Selbstprüfung (9/9 bestanden plus 8/8 Nachweise, dass die Kriterien anschlagen), Pack-Roundtrip. Ein Gate kennt genau zwei Ergebnisse — bestanden oder rot — und „sieht gut aus“ gehört nicht dazu. **Ein falsches Grün ist gefährlicher als ein Fehlschlag.**
 
 ## Ehrliche Grenzen
 
