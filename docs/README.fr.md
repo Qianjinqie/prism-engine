@@ -201,8 +201,9 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 | **Sonner** | Synthétiseurs PolyBLEP, ADSR, machines à états de gammes et de progressions d'accords, arpégiateur, boîte à rythmes pas à pas, analyse SMF, sampler SFZ, synthèse granulaire, mixage multipiste, normalisation de sonie, analyse beat / onset / FFT |
 | **Livrer** | Conteneur maison `PRMV` (v2/v3) avec codage en domaine JPEG des trames I/P, contrôle de débit water-filling, estimation de mouvement qpel ; pipeline ffmpeg (H.264/HEVC si présent, repli automatique MJPEG sinon) ; séquences EXR ; ferme d'images multiprocessus (reprise possible, MD5 parallèle == MD5 série) |
 | **Intégrer** | Trois outils MCP stdio (`scene_check` / `render_submit` / `diagnose`), SDK de nœuds avec négociation de version sémantique, service de rendu HTTP/1.1, rendu par lots via manifeste cartésien, squelette de sonde d'encodeurs matériels sur trois plateformes |
+| **Voie parallèle** | Art génératif : champs de flux / systèmes L / automates cellulaires / réaction-diffusion / Mandelbrot / Voronoi, draw-on vectoriel et graphiques. Assistance IA : couche d'inférence mock déterministe (storyboard / sous-titres / indications de couleur), poids de modèle lus comme données, multiplication-addition écrite ici, sans framework ML |
 
-> Le tableau n'est qu'une table des matières. Les paramètres exacts et le « ce qu'elle ne sait pas faire » de chaque capacité se trouvent dans `开发者指南.md`, dans le paquet.
+> Le tableau ne liste que des capacités. Ce que chacune ne sait pas faire se trouve dans [Limites honnêtes](#limites-honnêtes), pas caché dans le tableau.
 
 ## Des capacités qui ne tiennent pas dans la liste
 

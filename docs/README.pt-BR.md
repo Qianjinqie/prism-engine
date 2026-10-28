@@ -201,8 +201,9 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 | **Soar** | Sintetizadores PolyBLEP, ADSR, máquinas de estado de escalas e progressões de acordes, arpejador, caixa de ritmos por passos, análise SMF, sampler SFZ, síntese granular, mixagem multipista, normalização de loudness, análise de beat / onset / FFT |
 | **Entregar** | Contêiner próprio `PRMV` (v2/v3) com codificação em domínio JPEG de quadros I/P, controle de taxa water-filling, estimação de movimento qpel; pipeline ffmpeg (H.264/HEVC se houver, degradação automática para MJPEG se não); sequências EXR; fazenda de quadros multiprocesso (retomável, MD5 paralelo == MD5 serial) |
 | **Integrar** | Três ferramentas MCP stdio (`scene_check` / `render_submit` / `diagnose`), SDK de nós com negociação de versão semântica, serviço HTTP/1.1 de renderização, renderização em lote por manifesto cartesiano, esqueleto de sondagem de encoders de hardware em três plataformas |
+| **Via auxiliar** | Arte generativa: campos de fluxo / sistemas L / autômatos celulares / reação-difusão / Mandelbrot / Voronoi, draw-on vetorial e gráficos. Assistência de IA: camada de inferência mock determinística (storyboard / legendas / sugestões de cor), pesos do modelo lidos como dados com multiplicação-soma própria, sem framework de ML |
 
-> A tabela é só um índice. Os parâmetros exatos e o “o que não faz” de cada capacidade estão em `开发者指南.md`, dentro do pacote.
+> A tabela lista apenas capacidades. O que cada uma não faz está em [Limites honestos](#limites-honestos), não escondido na tabela.
 
 ## Capacidades que não cabem na lista
 

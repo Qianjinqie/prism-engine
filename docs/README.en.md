@@ -201,8 +201,9 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 | **Sound** | PolyBLEP synthesizers, ADSR, scale and chord-progression state machines, arpeggiator, step drum machine, SMF parsing, SFZ sampler, granular synthesis, multitrack mixing, loudness normalization, beat / onset / FFT analysis |
 | **Deliver** | In-house `PRMV` container (v2/v3) with I/P-frame JPEG-domain coding, water-filling rate control, qpel motion estimation; ffmpeg pipeline (H.264/HEVC when present, automatic MJPEG fallback when not); EXR sequences; multi-process frame farm (resumable, parallel MD5 == serial MD5) |
 | **Integrate** | Three MCP stdio tools (`scene_check` / `render_submit` / `diagnose`), node SDK with semantic-version negotiation, HTTP/1.1 render service, batch-manifest Cartesian rendering, hardware-encoder probe skeleton for three platforms |
+| **Side path** | Generative art: flow fields / L-systems / cellular automata / reaction-diffusion / Mandelbrot / Voronoi, vector draw-on and charts. AI assistance: deterministic mock inference layer (storyboard / subtitles / color cues), model weights read as data with hand-written multiply-add, no ML framework |
 
-> The table is only a table of contents. For the exact parameters and the "what it cannot do" of each capability, see `开发者指南.md` inside the package.
+> The table lists capabilities only. What each one cannot do is in [Honest boundaries](#honest-boundaries), not buried in the table.
 
 ## Capabilities that do not fit the list
 
