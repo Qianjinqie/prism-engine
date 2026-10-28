@@ -1,272 +1,326 @@
-[English](README.en.md) | [简体中文](../README.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | **Español** | [Français](README.fr.md) | [Deutsch](README.de.md) | [Português (BR)](README.pt-BR.md) | [Русский](README.ru.md)
-
+**Español** | [简体中文](../README.md) | [English](README.en.md) | [Deutsch](README.de.md) | [Français](README.fr.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [Português (BR)](README.pt-BR.md) | [Русский](README.ru.md)
 
 # Prism Engine
 
-> Motor multimedia en Rust, determinista y sin dependencias — **distribuido como un único archivo TXT**: descarga un texto de 18 MB, ejecuta el script de descompresión y obtienes el árbol de código fuente completo (28 crates), sin necesidad de npm / pip / ffmpeg / OpenEXR.
+**Cero dependencias de terceros · Determinista bit a bit · Distribución en un solo archivo**
 
-![Licencia](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
-![Lenguaje](https://img.shields.io/badge/language-Rust-orange.svg)
-![Dependencias](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)
-![Distribución](https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg)
-![Pruebas](https://img.shields.io/badge/tests-3929%20passed-brightgreen.svg)
-[![Release](https://img.shields.io/badge/release-v2.1-blue.svg)](https://github.com/Qianjinqie/prism-engine/releases)
+Un motor de medios procedural escrito desde cero en Rust: decodificación, composición tipográfica, trazado de rayos, simulación física, síntesis de audio y codificación, todo dentro de un mismo árbol de código. Sin crates de terceros, sin enlazar bibliotecas del sistema, sin red al compilar.
+
+![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
+![Tests](https://img.shields.io/badge/tests-3929%20passed-brightgreen.svg)
+![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)
 ![Crates](https://img.shields.io/badge/crates-28-blue.svg)
+![Distribution](https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg)
+[![Release](https://img.shields.io/badge/release-v2.1-blue.svg)](https://github.com/Qianjinqie/prism-engine/releases)
+
+![Bodegón renderizado por Prism Engine](assets/still-life.png)
+
+<sub>No es un montaje, es salida del motor: 1200×675 · 256 spp · trazado de rayos + BSDF físico + mapeo tonal ACES · 4 hilos, 158 s. Código de la escena: [`docs/gallery/gallery.rs`](gallery/gallery.rs).</sub>
+
+**642** archivos · **28** crates · **261 mil** líneas de Rust · **3929** pruebas · **0** dependencias de terceros · **18,9 MB** en un solo archivo
 
 ---
 
-## Qué es esto
+## Por qué existe este motor
 
-Prism Engine es un motor multimedia escrito en Rust con cero dependencias de código de terceros:
-leer imágenes, componer, dibujar fotogramas, montar la línea de tiempo y producir el montaje final,
-todo dentro de un único motor determinista. Sus 110 dependencias de ejecución
-(más 20 dependencias de prueba) son todas dependencias `path` de este mismo repositorio: no
-dependen de la red, no necesitan gestor de paquetes y no implican riesgo de cadena de suministro.
+Una tubería de medios convencional se ensambla: ffmpeg decodifica, Blender renderiza, ImageMagick escribe imágenes fijas, un DAW se encarga del sonido y los scripts lo pegan todo con archivos temporales. Cada herramienta es excelente, pero en las costuras se pierden dos cosas: **determinismo** y **auditabilidad**. Cambia de máquina y cambia la ruta de coma flotante; cambia de versión y se mueven los valores por defecto; cuando algo falla, quedan cinco cajas negras y una pila de archivos intermedios.
 
-Adopta la **distribución del código fuente en un solo archivo**: todo el motor (642 archivos, 28 crates)
-se fusiona en un único texto UTF-8, `prism-engine-v2.1-source.txt`. Basta con disponer de ese archivo
-para restaurar en local un árbol de directorios idéntico al del repositorio.
+Prism Engine lleva toda la cadena a un solo árbol de código. La misma escena, los mismos parámetros, cualquier máquina, cualquier ejecución: píxeles idénticos y bytes idénticos. No es una promesa; 3929 pruebas lo sujetan.
 
----
+No pretende reemplazar a ffmpeg ni a Blender. Reemplaza el pegamento entre ellos y el determinismo que ese pegamento tira en silencio.
 
-## Qué puede hacer el motor
+El público es estrecho a propósito: tuberías que necesitan «misma entrada, cualquier máquina, misma salida» — renderizado por lotes, investigación gráfica reproducible, renderizado dentro de CI.
 
-Resumen en una frase: **una imagen es el aspecto de una escena en un instante, y un vídeo es la
-sucesión de ese aspecto a lo largo de un periodo de tiempo** — con una misma descripción de escena,
-fijar un momento da un fotograma único, y avanzar de forma continua grabando da un vídeo; la imagen
-estática y la imagen en movimiento comparten un mismo conjunto de capacidades.
-A continuación, cinco bloques según "lo que quieres hacer": **leer → componer → dibujar → producir el montaje → integrarlo en tu propia cadena de herramientas**.
+### Tres restricciones duras
 
-### Qué lee (entrada)
-
-- **Fachada de decodificación unificada**: una única entrada `decode_image(bytes, ext)` despacha las imágenes estáticas — PNG (8/16 bits no entrelazado),
-  JPEG de línea base (IDCT de coma fija, determinista bit a bit entre plataformas), **prioridad del número mágico y la extensión como respaldo** (también decodifica si la extensión está mal escrita);
-  los formatos fuera de la matriz o que requieren colaboración externa devuelven siempre un error en tres partes (dónde / qué ocurre / cómo corregirlo) junto con una sugerencia de colaboración con ffmpeg;
-  **nunca fallan en silencio**.
-- **Animación / audio / contenedores**: decodificación nativa fotograma a fotograma de GIF y APNG (`prism-media`); decodificación WAV integrada, y mp3/aac/FLAC mediante la ruta de detección de ffmpeg (`prism-audio`); relectura de MP4-MJPEG (`decode_mp4_video`).
-- **Todo el ecosistema EXR**: lectura y escritura, compresión, DWA, además de una **comparación de flujos de bits entre implementaciones** con el OpenEXR oficial (no se limita a escribir y leer lo propio).
-- **RAW de cámara**: decodificación RAW de línea base. **Límite**: no está implementado `Compression=7` (lossless JPEG) de los DNG reales,
-  por lo que un DNG capturado por una cámara real no se puede leer; está documentado en «Límites honestos», sin ocultarlo.
-- **Activos 3D**: importación de glTF / OBJ, análisis de USD (`.usda`) y paquetes de parámetros MaterialX; las mallas pueden entrar en la escena de renderizado.
-- **Fuentes externas**: `load_font_file` carga directamente TTF/OTF de terceros, la cadena de respaldo se resuelve nivel a nivel y,
-  cuando falta un glifo, se ofrece un diagnóstico explícito en lugar de un recuadro vacío.
-
-### Qué compone (sintaxis de creación)
-
-- **Sintaxis de bloques completa de DSL v2**: un archivo `.prism` describe "qué se quiere, cómo se coloca, cómo se mueve, qué aspecto tiene
-  y en qué se exporta"; el producto de la compilación es un grafo de nodos + canales de propiedades + línea de tiempo.
-- **Cinco combinadores**: `title_card` / `lower_third` / `split_screen` / `ken_burns` /
-  `morph_between`, combinadores de alto nivel que se expanden a grafos de nodos; "un montaje de 90 segundos" pasa de escribir código de escena a mano a solo ensamblar.
-- **Transiciones y morph**: Fade / Wipe / Dissolve / Push totalmente parametrizados (duración, easing, dirección),
-  deformación de polilíneas Morph, y la secuencia de escenas se puede muestrear en cualquier instante.
-- **Composición de fórmulas**: `math_ast` + `math_layout` componen superíndices y subíndices / fracciones / radicales / operadores grandes /
-  matrices; el bloque `formula` del DSL las compone directamente, con la misma línea base que el texto.
-
-### Qué dibuja (renderizado y simulación)
-
-- **Renderizado offline con calidad fotográfica**: trazado de rutas + BSDF físicamente correctos (difuso / especular / vidrio / metal);
-  el vidrio y el metal usan inversión estocástica (Monte Carlo por series de Neumann) y se admiten medios volumétricos y dispersión subsuperficial.
-- **Cuatro familias de primitivas curvas**: cilindro / cono / toro / superficie de revolución, todas con intersección analítica (la ecuación cuártica se resuelve
-  con la solución cerrada de Ferrari, con raíces exactas); mallas triangulares arbitrarias + SAH-BVH, con verificación de paridad por doble ruta.
-- **GPU compute**: capa semántica de compute independiente del dispositivo + despacho Vulkan + SPIR-V mínimo escrito a mano;
-  con el ICD software Mesa lavapipe funciona por completo en plataformas sin GPU (verificable en headless).
-- **Física y partículas**: solver unificado XPBD (cuerpos rígidos / blandos / tela / articulaciones / fluidos / fractura),
-  humo FLIP, sistemas de partículas (AudioReactive vinculado a la envolvente de audio).
-- **Arte generativo y posprocesado**: campos de flujo / sistemas L / autómatas celulares / reacción-difusión / fractales / Voronoi;
-  blur / bloom / halation / grano de película / cuatro estilos NPR (toon / watercolor / halftone / oil) / reducción de ruido triple.
-- **Etalonaje y vectores**: corrección secundaria (selección HSL + curvas RGB), presets de estilo cinematic / film / anime y
-  tres niveles de calidad borrador / estándar / cine (la calidad es un parámetro, no magia); rasterización de trazados vectoriales, draw-on y morph de trazados.
-- **Procesado de audio**: normalización de sonoridad (loudnorm), detección de tempo, análisis de espectro, extracción de envolvente —
-  todo puede vincularse a la imagen (las partículas AudioReactive siguen la envolvente de audio).
-- **El backend de referencia en CPU es un ciudadano de primera**: las máquinas sin GPU producen igualmente imágenes correctas y, además, sirve de referencia para validar la GPU.
-
-### Qué produce (entrega)
-
-- **`render_movie` directo**: el producto compilado de DSL v2 completa en una sola llamada "evaluación fotograma a fotograma → renderizado por tile →
-  entrega"; un `.prism` produce el montaje con un solo comando (`prism-app render demo.prism`); los nodos no cubiertos devuelven un error explícito, sin aproximaciones silenciosas.
-- **Ciclo de previsualización**: `prism-app preview` levanta el servicio de previsualización; el editor ofrece dos modos de previsualización,
-  Draft (patrones geométricos para mantener los fps) / Real (renderizado real con pocos spp y refresco asíncrono).
-- **Codificador propio + control de tasa**: un codificador temporal en el dominio JPEG con fotogramas I/P sobre el contenedor privado `PRMV` (dos generaciones de
-  schema, v2/v3), control de tasa water-filling + estimación de movimiento subpíxel qpel (PSNR +2.577 dB y tamaño −21.6% medidos).
-- **Cadena de colaboración con ffmpeg**: con ffmpeg → conversión a H.264/HEVC mediante una tubería rawvideo por stdin;
-  sin ffmpeg → degradación automática a MJPEG, **el motor siempre puede producir el montaje**; no se incluye ningún binario.
-- **Entrega de secuencias EXR**: la secuencia de fotogramas se escribe directamente en EXR y entra en la tubería de posproducción.
-- **Granja distribuida**: reparto a nivel de fotograma + N workers en procesos + fusión determinista — el MD5 en paralelo es igual al MD5 en serie,
-  con reanudación desde puntos de control.
-
-### Cómo se integra (ecosistema)
-
-- **Superficie de herramientas MCP**: tres herramientas JSON-RPC por stdio — `scene_check` (compilación + renderizado de prueba + estimación de fotogramas),
-  `render_submit` (job id determinista + resumen MD5 por fotograma), `diagnose` (localización de errores en tres partes).
-- **SDK de nodos**: negociación de versiones semánticas (incluida la excepción 0.x), con un paquete de nodos de ejemplo incluido
-  (`examples/sdk-nodes/cinematic-basic/`, compilable / cargable / negociable).
-- **Esqueleto de detección de codificación por hardware**: `prism-ffi-hwenc` con cadena de detección en tres plataformas (VideoToolbox / NVENC / VAAPI)
-  + matriz de feature gates; si la plataforma no coincide, se informa explícitamente de que no está soportada.
-
-> Para conocer en detalle los límites de capacidad (qué **no se puede** hacer), consulta la sección «Límites honestos» de `开发者指南.md` dentro del paquete descomprimido:
-> allí se registra el estado real actual (las primitivas curvas solo van por CPU, la aceleración de la GPU debe medirse en el hardware objetivo, la codificación por hardware
-> se integra según la plataforma objetivo…); este documento solo ofrece el panorama general, sin exagerar.
+| Restricción | Cómo se aplica | Qué cuesta |
+| --- | --- | --- |
+| **Cero código de terceros** | Las 110 dependencias de ejecución y 20 de prueba son todas `path` dentro del repositorio; sin `build.rs`, sin enlazado nativo, sin red al compilar | Cada formato, algoritmo, fuente y códec hay que escribirlo aquí |
+| **Determinismo bit a bit** | IDCT de coma fija, secuencias de muestreo fijas, un hash de configuración tetradimensional; idéntico entre plataformas para la misma entrada | Renunciar a atajos rápidos de coma flotante y a depender del orden de iteración de tablas hash |
+| **Distribución en un archivo** | 642 archivos de 28 crates fusionados en un texto UTF-8 de 18,9 MB, restaurado con `node unpack.cjs` | Se pierde la comodidad de hojear el código directamente en GitHub |
 
 ---
 
+## En marcha en tres minutos
+
+```bash
+# 1. Descargar el paquete de código y verificar su SHA-256
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.1/prism-engine-v2.1-source.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.1/SHA256SUMS.txt
+sha256sum -c SHA256SUMS.txt
+
+# 2. Extraer el script de desempaquetado incrustado (solo Node 18+, sin npm install)
+awk '/^UNPACK SCRIPT BEGIN$/{f=1;next} /^UNPACK SCRIPT END$/{f=0} f' \
+  prism-engine-v2.1-source.txt > unpack.cjs
+node unpack.cjs                    # restaura 642 archivos
+
+# 3. Compilar y ejecutar la suite completa
+cargo test --workspace --release     # 3929 passed / 0 failed
+
+# 4. Sin escribir nada, verlo renderizar
+cargo run -p prism-app --release     # escena de demostración integrada
+```
+
+El resultado es un workspace de Cargo normal (28 crates bajo `src/`); el resto de comandos `cargo` funcionan como en cualquier proyecto Rust. La primera compilación tarda unos minutos.
+
 ---
 
-## Capacidades internas (más allá de la lista de funciones)
+## Un plano, un texto
 
-Algunas capacidades no encajan en la lista «leer / componer / dibujar / entregar / integrar»: son los activos profundos del motor. Este capítulo mantiene limpia la lista principal.
+`.prism` es el lenguaje de descripción de escenas del motor. Lo siguiente es un plano completo y renderizable de tres segundos: esfera, material, cámara orbital, luz direccional, duración, etalonaje y especificación de salida:
 
-### Audio: un núcleo DAW integrado
+```prism
+scene "spin_red_ball" {
+    sphere ball {
+        radius 1.0
+        material {
+            albedo #c0392b
+            roughness 0.3
+            metalness 0.05
+        }
+    }
 
-`prism-audio` no es un módulo marginal que «sabe leer WAV», sino una cadena completa desde la composición hasta la mezcla; cada función es una función pura de sus parámetros (misma entrada ⇒ bits idénticos entre plataformas):
+    camera main {
+        orbit {
+            center 0,0,0
+            radius 8.0
+        }
+        fov 45
+    }
 
-- **Síntesis**: familia de osciladores PolyBLEP sin aliasing + envolventes ADSR en forma cerrada + 4 presets de ambiente;
-- **Teoría musical**: biblioteca de escalas (mayor/menor, pentatónica, modos), 12-TET altura↔frecuencia, máquina de estados de gramática funcional para progresiones + conducción de voces;
-- **Secuenciación**: arpegiador (patrón/velocidad/octava), caja de ritmos por pasos, partitura en rejilla de compases/pulsos;
-- **Material**: parser SMF escrito a mano (importación MIDI), sampler SFZ, síntesis granular;
-- **Diseño sonoro**: modelado físico, paneo espacial, cadena de efectos;
-- **Mezcla**: mezcla lineal multipista + fundidos + limitación de picos;
-- **Análisis y vínculo**: detección de pulso/onset, espectro FFT, extracción de envolventes, horneado AudioReactive (el fotograma N lee una ventana fija; función pura por fotograma, equivalente a seek), normalización de sonoridad.
+    light sun {
+        direction (1.0, -1.0, -0.5)
+        color #fff4e6
+        intensity 3.0
+    }
+}
 
-> Límite: AAC/mp3 no se desarrollan aquí (historial de patentes + esfuerzo); el audio general pasa por ffmpeg externo.
+timeline {
+    duration 3s
+    fps 12
+}
 
-### Biblioteca de kernels definibles (registro de soluciones especiales)
+aesthetic {
+    teal-orange
+    contrast 1.12
+    filmic
+}
 
-Cada tipo de nodo es una **solución especial** de una terna «kernel + retícula + dualidad». Terceros (o tú) pueden registrar nuevas soluciones con `registry!` sin tocar el núcleo:
+output {
+    resolution 480x270
+    format frames
+}
+```
 
-- Recolección estática (la macro se expande en el crate que define; sin `inventory`/proc-macro, cero dependencias);
-- **Validación de tres preguntas** al registrar (forma del kernel / retícula / dualidad): respuestas incompletas se rechazan con un error en tres partes;
-- Las soluciones oficiales y las personalizadas comparten el mismo registro; sin diferencia en tiempo de ejecución;
-- Matemáticamente es la ecuación de operador `f = g + Kf` con seis estrategias de inversión — exacta / estocástica / local / regularizada / iterativa / espectral. Añadir una capacidad es declarar una terna, no parchear el bucle de render.
+```bash
+cargo run -p prism-app --release -- examples/spin_red_ball.prism          # secuencia de fotogramas
+cargo run -p prism-app --release -- render examples/w2d_showcase.prism \
+    --out out/demo.mp4                                                     # película terminada en una llamada
+```
 
-### Infraestructura de determinismo y reproducibilidad
+`render` toma la ruta directa v2: compilar el grafo de nodos → evaluar fotograma a fotograma → codificar en un contenedor, sin fotogramas intermedios en disco. Los nodos no soportados producen un error explícito `R5xxx` en lugar de omitirse en silencio.
 
-- **Cierre de firmas**: grafos de nodos / claves de caché / claves de instantánea / firmas de fotograma se reducen a un «hash de configuración cuatridimensional»; cambiar un parámetro cambia la clave y nada se reutiliza por error; los nodos iterativos usan `(ε, n)`, los nodos de flujo usan el número de fotograma;
-- **Puntos fijos de bytes**: USD exportar→importar→exportar es idéntico byte a byte; WAV 16/24/32 bits va y vuelve exacto; EXR se compara bit a bit contra la implementación oficial;
-- **Empaquetado determinista en un solo archivo**: el mismo código produce el mismo SHA-256 dos veces; el round-trip de desempaquetado compara cada archivo byte a byte.
+![Fotograma de título renderizado desde DSL](assets/dsl-title.png)
 
-### Backends GPU (declarados con honestidad)
+<sub>Fotograma 10 de `examples/w2d_showcase.prism`: una esfera 3D, una capa de texto, un etalonaje y una pista de fundido comparten una misma línea de tiempo.</sub>
 
-- **Vulkan**: las canalizaciones de cómputo y de escena con trazado de rayos se ejecutan de verdad (verificable sin GPU con el ICD software lavapipe); la salida de `render_scene` es **idéntica byte a byte a la referencia CPU** (0 píxeles distintos); `is_available()` exige autoprueba de cómputo y de render;
-- **Metal**: port isomorfo + compilación condicionada listos, **no verificado en hardware, no activado** (`is_available()` siempre false);
-- **WebGPU**: solo conclusión de viabilidad (4–6 días-persona), sin ruta de render.
+---
+
+## O simplemente la API de Rust
+
+Si prefieres no escribir DSL, llama a la biblioteca directamente. Este es el esqueleto de la imagen principal (la escena completa tiene 190 líneas, ver [`docs/gallery/gallery.rs`](gallery/gallery.rs)):
+
+```rust
+use prism_core::node::EvalCtx;
+use prism_math::Vec3;
+use prism_rt::camera::Camera;
+use prism_rt::integrator::{render_pixel, MaterialKind, RenderParams, Scene, Sphere};
+
+let scene = Scene {
+    spheres: vec![(
+        Sphere { center: Vec3::new(0.0, 0.6, 0.0), radius: 0.6 },
+        MaterialKind::Lambert { albedo: Vec3::new(0.8, 0.2, 0.15) },
+    )],
+    ..Default::default()
+};
+let cam = Camera::new(
+    Vec3::new(0.0, 1.2, 4.8),   // ojo
+    Vec3::new(0.0, 0.72, 0.0),  // objetivo
+    Vec3::new(0.0, 1.0, 0.0),   // arriba
+    30.0, 0.05, 4.85, 0.0, 1.0 / 48.0,
+);
+let ctx = EvalCtx::new(20261028, 0, 0);
+let params = RenderParams::new(256, 10);  // 256 muestras por píxel, hasta 10 rebotes
+
+// Un píxel: escena, cámara, contexto de muestreo, coordenada, resolución, parámetros
+let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
+```
+
+`render_pixel` es una función pura: entran escena, cámara, contexto de muestreo y coordenada de píxel; sale RGB lineal. Con los mismos parámetros devuelve bits idénticos sin importar el hilo ni el orden de llamada; por eso el renderizado en paralelo no necesita sincronización alguna.
+
+---
+
+## Mapa de capacidades
+
+| Capa | Qué hace |
+| --- | --- |
+| **Leer** | PNG (8/16 bit), JPEG baseline (IDCT de coma fija), GIF/APNG fotograma a fotograma, EXR (incluido DWA), RAW baseline, WAV; activos glTF / OBJ / USDA, parámetros MaterialX, fuentes TTF/OTF externas |
+| **Componer** | Compilación DSL v1/v2, cinco combinadores de alto nivel (tarjeta de título / lower third / pantalla dividida / Ken Burns / morph entre escenas), cuatro transiciones + morph, composición de fórmulas (subíndices, fracciones, raíces, matrices, operadores grandes), muestreo de la línea de tiempo en cualquier instante |
+| **Renderizar** | Trazado de rayos + BSDF físico (difuso / especular / vidrio / metal / subsuperficie), volúmenes heterogéneos Woodcock, intersección analítica de cilindros / conos / toros / superficies de revolución (cuártica por forma cerrada de Ferrari), mallas triangulares con SAH-BVH, backend de referencia en CPU, doble tubería Vulkan compute + ray tracing |
+| **Simular** | Solver unificado XPBD (rígidos / blandos / tela / articulaciones / fluidos / fractura), humo FLIP, partículas (opcionalmente ligadas a la envolvente de audio), campos de flujo / sistemas L / autómatas celulares / reacción-difusión / fractales / Voronoi |
+| **Etalonar** | Etalonaje secundario (selecciones HSL + curvas RGB), presets cinematic / film / anime, blur / bloom / halation / grano, cuatro estilos NPR (toon / acuarela / semitono / óleo), denoiser triple, rasterización de trazados vectoriales y draw-on |
+| **Sonar** | Sintetizadores PolyBLEP, ADSR, máquinas de estado de escalas y progresiones de acordes, arpegiador, caja de ritmos por pasos, análisis SMF, sampler SFZ, síntesis granular, mezcla multipista, normalización de sonoridad, análisis de beat / onset / FFT |
+| **Entregar** | Contenedor propio `PRMV` (v2/v3) con codificación en dominio JPEG de tramas I/P, control de tasa water-filling, estimación de movimiento qpel; tubería ffmpeg (H.264/HEVC si existe, degradación automática a MJPEG si no); secuencias EXR; granja de fotogramas multiproceso (reanudable, MD5 en paralelo == MD5 en serie) |
+| **Integrar** | Tres herramientas MCP stdio (`scene_check` / `render_submit` / `diagnose`), SDK de nodos con negociación de versión semántica, servicio HTTP/1.1 de renderizado, renderizado por lotes con manifiesto cartesiano, esqueleto de sondeo de codificadores hardware en tres plataformas |
+
+> La tabla es solo un índice. Los parámetros exactos y el «qué no puede hacer» de cada capacidad están en `开发者指南.md`, dentro del paquete.
+
+---
+
+## Capacidades que no caben en la lista
+
+Hay cosas que no entran en la tabla anterior: no son «un formato más», sino infraestructura que el motor cultivó para sí mismo.
+
+### Audio: un núcleo de DAW incorporado
+
+`prism-audio` no es un módulo periférico que resulta que lee WAV. De la composición a la mezcla es una cadena completa, y cada función es una función pura de sus parámetros (bits idénticos entre plataformas para la misma entrada):
+
+- **Síntesis**: familia de osciladores PolyBLEP antialias, envolventes ADSR en forma cerrada, cuatro presets de ánimo;
+- **Teoría**: biblioteca de escalas (mayor/menor, pentatónica, modos), clase de altura 12-TET ↔ frecuencia, máquina de estados con gramática funcional para progresiones de acordes y conducción de voces;
+- **Arreglo**: arpegiador (patrón / tasa / octava), caja de ritmos por pasos, rejillas de compás y pulso;
+- **Material**: análisis SMF escrito a mano (importación MIDI), sampler SFZ, síntesis granular;
+- **Diseño sonoro**: modelado físico, paneo espacial, cadenas de efectos;
+- **Mezcla**: mezcla lineal multipista, fundidos, protección de picos;
+- **Análisis y vínculo**: detección de beat / onset, espectros FFT, extracción de envolvente, normalización de sonoridad; el horneado AudioReactive lee una ventana fija en el fotograma N, lo que lo hace función pura del fotograma y equivalente a seek.
+
+> Límite: la codificación AAC / mp3 no se implementa aquí (lastre histórico de patentes más esfuerzo); pasa por ffmpeg externo.
+
+### Un registro de kernels definibles
+
+Cada tipo de nodo del motor es una **solución particular** de una terna «kernel + retícula + dual». Terceros (o tú) pueden registrar soluciones nuevas estáticamente con `registry!`, **sin tocar el núcleo del motor**:
+
+- Inclusión estática: la macro se expande dentro del crate que define; se prohíben `inventory` y los proc-macros para mantener cero dependencias;
+- El registro hace una **verificación de tres preguntas** (forma del kernel / retícula / dual); respuestas incompletas se rechazan con un error en tres partes;
+- Las soluciones oficiales y las propias comparten un mismo registro y son indistinguibles en tiempo de ejecución;
+- Matemáticamente corresponde a las seis estrategias de inversión de la ecuación de operadores `f = g + Kf` (exacta / estocástica / local / regularizada / iterativa / espectral): añadir una capacidad es declarar una terna, no parchear el bucle de renderizado.
+
+### GPU: tres rutas, tres estados
+
+| Backend | Estado | Evidencia |
+| --- | --- | --- |
+| **Vulkan** | Funciona de verdad | Tuberías compute + ray tracing; verificable sin GPU sobre el ICD software lavapipe de Mesa; la salida de `render_scene` es **idéntica byte a byte (0 diferencia)** a la referencia de CPU; `is_available()` es una autocomprobación compute ∧ render |
+| **Metal** | Compilado tras una puerta, sin activar | Port isomorfo terminado, no verificado en hardware, `is_available()` siempre false |
+| **WebGPU** | Solo conclusión | Evaluación de viabilidad hecha (4–6 días-persona de port), ruta de renderizado no implementada |
 
 ### Puertas anti-falso-verde
 
-Cuatro scripts locales (cero dependencias, solo `node`): defensa contra escrituras fantasma (con autoprueba inversa), escaneo de higiene de código abierto, autocomprobación de cumplimiento (9/9, autoprueba inversa 8/8 en rojo) y verificación de round-trip del empaquetado. Una puerta solo da «pasa» o «rojo»; «parece bien» no cuenta. **El verde falso es más peligroso que un fallo.**
+Cuatro scripts de puerta sin dependencias (solo Node): defensa contra escrituras fantasma (con autoprueba inversa), escaneo de higiene de código abierto, autocomprobación de cumplimiento (9/9 aprobadas más 8/8 pruebas de que los criterios fallan cuando deben) y verificación de ida y vuelta del empaquetado. Una puerta tiene exactamente dos resultados — pasa o falla — y «parece que está bien» no es uno de ellos. **Un verde falso es más peligroso que un fallo.**
 
 ---
 
-## Por qué la distribución en un solo archivo
+## El determinismo no es un eslogan
 
-- **Auditable**: un único archivo de texto, legible a simple vista, comparable con `diff` y verificable por hash; lo publicado queda congelado.
-- **Reproducible**: el empaquetado es determinista — dos empaquetados de la misma entrada dan un SHA-256 idéntico.
-- **Portable**: no hace falta clonar un repositorio enorme; un solo archivo se puede enviar por correo o por chat y también permite restaurar y compilar sin conexión.
-- **Compromiso asumido**: la distribución en un solo archivo renuncia a la comodidad de "navegar el código directamente en GitHub" a cambio de la determinación de "llevarse todo en un archivo y verificarlo byte a byte". Tras descomprimir se obtiene un Cargo workspace normal, idéntico a cualquier proyecto Rust convencional.
+Cuatro capas, desde los parámetros hasta los bytes:
+
+1. **Cierre de firmas**: grafos de nodos, claves de caché, claves de instantánea y firmas de fotograma comparten un hash de configuración tetradimensional. Cambia un parámetro ⇒ la clave debe cambiar ⇒ no hay reutilización indebida. Los nodos iterativos llevan `(ε, n)` en la clave; los nodos de flujo, el número de fotograma; con `None` todo degrada bit a bit al comportamiento anterior.
+2. **Puntos fijos de bytes**: exportar→importar→exportar USD es idéntico byte a byte; WAV 16/24/32 bit va y vuelve sin pérdida; EXR se compara bitstream contra bitstream con el OpenEXR oficial.
+3. **Determinismo del empaquetado**: empaquetar dos veces el mismo código da el mismo SHA-256; la ida y vuelta de desempaquetado compara cada archivo byte a byte.
+4. **Las pruebas como criterio**: muchas de las 3929 pruebas fijan valores de oro (tolerancia ajustada de 1e-2 a 1e-6, residuo medido 4,53e-7); la fidelidad de forma se acota con distancias de Hausdorff en lugar de «se parece bastante».
 
 ---
 
-## Inicio rápido
+## Arquitectura
 
-Requisitos: instalar [Rust](https://www.rust-lang.org/) (con `cargo`) y [Node.js](https://nodejs.org/) 18+.
-
-```bash
-# 1. Descarga el archivo prism-engine-v2.1-source.txt del repositorio y guárdalo como archivo local
-# 2. Ábrelo con un editor de texto y guarda el script Node.js que está entre "UNPACK SCRIPT BEGIN" y "UNPACK SCRIPT END"
-#    como unpack.cjs en el mismo directorio
-# 3. Ejecuta la descompresión (unos segundos; restaura 642 archivos)
-node unpack.cjs
-# 4. Ejecuta toda la batería de pruebas en el directorio restaurado (la raíz del workspace)
-cargo test --workspace --release
-# Esperado: 3929 passed / 0 failed
+```mermaid
+flowchart LR
+    IN["Entrada<br/>PNG · JPEG · EXR · RAW<br/>GIF · APNG · WAV<br/>glTF · OBJ · USDA"] --> DSL["Composición<br/>prism-dsl<br/>grafo de nodos · canales · línea de tiempo"]
+    DSL --> RT["Evaluación<br/>raster 2D · trazado 3D<br/>física · partículas · arte generativo"]
+    DSL --> AU["Audio<br/>prism-audio<br/>síntesis · arreglo · mezcla"]
+    RT --> FX["Post<br/>etalonaje · bloom · denoise · NPR"]
+    FX --> OUT["Entrega<br/>PRMV · ffmpeg · secuencias EXR"]
+    AU --> OUT
 ```
 
-Tras descomprimir se obtiene un Cargo workspace estándar (28 crates bajo `src/`); los comandos `cargo` posteriores son iguales que en cualquier proyecto Rust convencional.
+28 crates agrupados por responsabilidad:
 
-> Ruta de verificación de wasm en el móvil: `rustup target add wasm32-unknown-unknown` y después `cargo build -p prism-core --target wasm32-unknown-unknown`.
+| Grupo | Crates |
+| --- | --- |
+| Núcleo | `prism-core` · `prism-math` · `prism-bytes` · `prism-geometry` · `prism-noise` |
+| E/S de medios | `prism-io` · `prism-media` · `prism-mux` · `prism-audio` · `prism-texture` |
+| Renderizado | `prism-render` · `prism-raster` · `prism-gpu` · `prism-postfx` · `prism-vector` · `prism-particles` |
+| Animación / generativo | `prism-anim` · `prism-genart` · `prism-aesthetic` · `prism-physics` |
+| Texto / UI | `prism-text` · `prism-rt` · `prism-app` |
+| Avanzado | `prism-ai` · `prism-dsl` · `prism-infra` · `prism-author` |
+| Sidecar (feature gate) | `prism-ffi-hwenc` |
 
----
+Estructura tras desempaquetar:
 
-## Estructura del repositorio (tras descomprimir)
-
-| Ruta | Descripción |
-|------|------|
-| `src/` | Código fuente de los **28 crates** (29 en el repositorio, con el nombre original `crates/`, reorganizados como `src/` al distribuir) |
-| `Compliance/` | Declaraciones de cumplimiento: verificación de cero dependencias / avisos de terceros / registro de activos (nombre original en el repositorio `docs/合规/`) |
-| `开发者指南.md` | Documentación de desarrollo autocontenida: primeros pasos / arquitectura / núcleo matemático / puertas de calidad / extensión (nombre original en el repositorio `docs/开发者指南.md`) |
-| `tools/` | Scripts de puertas de calidad (defensa contra escrituras fantasma, escaneo de higiene, autocomprobación de cumplimiento) |
+| Ruta | Contenido |
+| --- | --- |
+| `src/` | Código de los 28 crates (en el repositorio `crates/`, reorganizado para la distribución) |
+| `Compliance/` | Verificación de cero dependencias, avisos de terceros, registro de activos |
+| `开发者指南.md` | Guía del desarrollador autónoma: inicio / arquitectura / núcleo matemático / puertas / extensión |
+| `tools/` | Scripts de puertas y empaquetado |
+| `examples/` | Ejemplos `.prism` y paquetes de nodos (leídos con `include_str!`; si falta uno, no compila) |
 | `.github/workflows/` | Configuración de CI |
-| `Cargo.toml` / `Cargo.lock` / `.cargo/` | Elementos necesarios para compilar (los workspace members ya apuntan a `src/*`) |
-| `examples/` | Ejemplos para las pruebas de `prism-dsl` y paquetes de nodos de ejemplo (se leen con `include_str!`; si faltan, no compila) |
+
+> `docs/设计/` (documentos de diseño) permanece en el repositorio y no se distribuye; el crate de demostración `prism-anim-demo` tampoco va en el paquete.
 
 ---
 
-## Resumen de módulos
+## Compilar, probar y puertas
 
-Los **28 crates** del paquete de distribución, agrupados por responsabilidad:
+```bash
+cargo test --workspace --release      # 3929 passed / 0 failed / 0 ignored
+cargo xtest                           # alias equivalente
+cargo test -p prism-core --release    # prueba rápida de un crate
 
-| Categoría | crate |
-|------|-------|
-| Núcleo | prism-core · prism-math · prism-bytes · prism-geometry · prism-noise |
-| E/S de medios | prism-io · prism-media · prism-mux · prism-audio · prism-texture |
-| Renderizado | prism-render · prism-raster · prism-gpu · prism-postfx · prism-vector · prism-particles |
-| Animación/generación | prism-anim · prism-genart · prism-aesthetic · prism-physics |
-| Texto/UI | prism-text · prism-rt · prism-app |
-| Avanzado | prism-ai · prism-dsl · prism-infra · prism-author |
-| Auxiliar (feature gate) | prism-ffi-hwenc |
+node tools/ghost_guard.mjs --check    # defensa de escritura fantasma: G1 redefinición / G2 superconjunto estricto / G3 documentación superior / G4 compilación
+node tools/hygiene_scan.mjs           # higiene: lista cada término interno restante (archivo:línea), exit 1 si hay coincidencia
+node tools/compliance_check.mjs       # autocomprobación de cumplimiento: debe pasar 9/9
+node tools/compliance_check.mjs --self-test  # prueba inversa: debe fallar, demostrando que el criterio discrimina
+node tools/pack_source_txt.mjs --verify      # ida y vuelta de empaquetado, byte a byte
+```
+
+- Suite completa: **3929 passed / 0 failed / 0 ignored**, 179 secciones de prueba, 171,5 s con todos los núcleos (release).
+- La CI tiene seis jobs: defensa de escritura fantasma, compilación + pruebas completas, compilación wasm32, comprobación estática WGSL, interoperabilidad de bitstream con el OpenEXR oficial, verificación cruzada en host Node.
+- El escaneo de higiene aún tiene coincidencias: la capa de documentación distribuida está limpia, el resto está en comentarios de código y archivos solo del repositorio. El script existe para que lo restante siga **visible y corregible pieza a pieza**, no para fingir que todo está limpio.
 
 ---
 
-## Compilación y pruebas
+## Límites honestos
 
-```bash
-# Prueba de humo de todo el repositorio (release, recomendado)
-cargo test --workspace --release
-# Alias equivalente
-cargo xtest
-# Verificación rápida de un solo crate
-cargo test -p prism-core --release
-```
+| Límite | Estado | Salida |
+| --- | --- | --- |
+| DNG `Compression=7` (lossless JPEG) | No implementado; los DNG de cámaras reales no se pueden leer | Convertir antes a TIFF/PNG de 16 bit |
+| mp3 / AAC / FLAC | Decodificación vía sonda de ffmpeg externo; codificación no implementada | Instalar ffmpeg, o quedarse en WAV |
+| Primitivas curvas en GPU | Solo ruta de CPU | Triangular y pasar por el SAH-BVH |
+| Metal | Puerta compilada, no verificada en hardware, sin activar | Conectar cuando haya hardware Apple |
+| WebGPU | Viabilidad concluida, ruta de renderizado no implementada | 4–6 días-persona |
+| Codificación hardware | Esqueleto de sondeo para tres plataformas, sin implementación | Rellenar por plataforma objetivo |
+| Aceleración GPU | Corrección verificada solo en lavapipe, nunca medida en GPU real | Medir en el hardware objetivo |
+| Escaneo de higiene | Coincidencias existentes en comentarios | Limpiar una a una; el script las rastrea |
 
-- Batería completa: **3929 passed / 0 failed / 0 ignored** (ejecutado en release dentro del repositorio: 179 suites, 171,5 s con todos los núcleos; el paquete es idéntico byte a byte al repositorio — solo se excluye el crate de demostración)
-- CI: **6 jobs** — defensa contra escrituras fantasma (ghost-guard) / compilación + pruebas completas (native) / compilación wasm32 (wasm) /
-  comprobación estática de WGSL (wasm-verify) / comparación de flujos de bits entre implementaciones con el OpenEXR oficial (interop) / validación cruzada del host node (lint).
-- 3 scripts locales de puertas de calidad (todos con cero dependencias y solo `node`, ver abajo) + 1 script de empaquetado;
-  en ellos, la autocomprobación de cumplimiento pasa **9/9** y la autodemostración inversa da rojo **8/8**.
-
-Ejecución local de las puertas de calidad (requiere Node 18+):
-
-```bash
-node tools/ghost_guard.mjs --check        # Defensa contra escrituras fantasma: G1 definición duplicada / G2 superconjunto estricto / G3 documentación sin sangría / G4 compilación
-node tools/hygiene_scan.mjs               # Higiene de código abierto: enumera uno a uno los términos internos residuales (archivo:línea); si hay coincidencia, exit 1
-node tools/compliance_check.mjs           # Autocomprobación de cumplimiento: debe pasar 9/9
-node tools/compliance_check.mjs --self-test   # Autodemostración inversa: debe dar rojo, lo que demuestra que el criterio tiene capacidad de discriminación
-```
-
-> **El escaneo de higiene de código abierto aún encuentra coincidencias heredadas**: en el repositorio quedan términos internos de una etapa temprana,
-> de los cuales **la capa de documentación distribuida con el paquete ya está a cero** (README / guía de desarrollo / Compliance); el resto está en los
-> **comentarios del código fuente dentro del paquete de distribución** y en **archivos del repositorio que no se distribuyen**, ya clasificados según su estado real
-> y registrados como elementos de limpieza independientes. La existencia del script sirve precisamente para hacer el residuo **visible y limpiable uno a uno**,
-> y no para fingir que está limpio: no interpretes "que el número de coincidencias no sea 0" como un fallo de la puerta de calidad.
+No son puntos de «ya veremos». Hoy no están soportados, explícitamente. Mejor aquí que escondidos en un issue.
 
 ---
 
 ## Cumplimiento
 
-El motor promete **cero dependencias de código de terceros**, y lo verifica mediante autocomprobación:
+El motor promete cero dependencias de código de terceros y lo verifica por autocomprobación:
 
-- **C1 Cero dependencias de código de terceros**: las 130 dependencias (110 de ejecución + 20 de prueba) son todas dependencias `path` de este repositorio; no hay `build.rs`, ni directivas de enlace nativo, y `Cargo.lock` fija 29 paquetes del propio repositorio.
-- **C2 Registro de activos completo**: los campos de la tabla principal de los 5 activos están completos y el estado de desarrollo propio se ajusta al vocabulario controlado; el texto completo de la licencia de fuente OFL 1.1 acompaña a la fuente en `src/prism-text/font_data/LICENSE`.
-- **C3 Declaración de atribución de terceros**: `Compliance/THIRD-PARTY-NOTICES.md` está presente y distingue explícitamente "activo de datos ≠ dependencia de código".
-
-> Nota: este repositorio distribuye **código fuente**. El activo de fuente (subconjunto de Prism Sans SC) se licencia bajo SIL OFL 1.1, y **el texto completo de la licencia acompaña a la fuente en** `src/prism-text/font_data/LICENSE`; el origen de los activos y el registro de licencias se encuentran en `Compliance/assets/资产登记.md`.
-
+- **C1 Cero código de terceros**: las 130 dependencias (110 de ejecución + 20 de prueba) son `path` dentro del repositorio; sin `build.rs`, sin directivas de enlace nativo; `Cargo.lock` fija 29 paquetes del repositorio.
+- **C2 Registro de activos completo**: las cinco entradas de activos tienen completos los campos de la tabla principal; las fuentes se distribuyen bajo SIL OFL 1.1 con el texto completo de la licencia junto a la fuente en `src/prism-text/font_data/LICENSE`.
+- **C3 Avisos de terceros**: `Compliance/THIRD-PARTY-NOTICES.md` separa explícitamente «activos de datos ≠ dependencias de código».
 
 ---
 
 ## Licencia
 
-Este proyecto se publica bajo la **Apache License 2.0**. Consulta el archivo [`LICENSE`](../LICENSE) para más detalles.
+Apache License 2.0, ver [`LICENSE`](../LICENSE).
 
-> Aviso de cumplimiento: Apache-2.0 exige conservar los avisos de copyright y de licencia; si redistribuyes basándote en este motor, conserva las declaraciones de atribución y el registro de activos bajo `Compliance/`.
+Al redistribuir, conserva los avisos y el registro de activos bajo `Compliance/`.
 
-**Nota: si otras versiones contienen errores de traducción, la versión en chino simplificado es la referencia.**
+---
+
+<sub>La imagen principal y la captura de DSL fueron renderizadas por el propio motor; los parámetros están en los pies de foto y en [`docs/gallery/gallery.rs`](gallery/gallery.rs).</sub>

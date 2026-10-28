@@ -1,308 +1,326 @@
 # Prism Engine
 
-> 零依赖、确定性的 Rust 媒体引擎 —— 以**单文件 TXT 分发**：下载一个 18 MB 文本，运行解包脚本即得完整源码树（28 个 crate），无需 npm / pip / ffmpeg / OpenEXR。
+**零第三方依赖 · 逐字节确定 · 单文件分发**
+
+一个用 Rust 从零写成的程序化媒体引擎：解码、排版、路径追踪、物理仿真、音频合成、成片编码，全部在同一棵源码树里完成。零第三方代码依赖——不下载 crate，不链接系统库，构建不联网。
+
+[中文](README.md) · [English](docs/README.en.md) · [Deutsch](docs/README.de.md) · [Español](docs/README.es.md) · [Français](docs/README.fr.md) · [日本語](docs/README.ja.md) · [한국어](docs/README.ko.md) · [Português](docs/README.pt-BR.md) · [Русский](docs/README.ru.md)
 
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
-![Language](https://img.shields.io/badge/language-Rust-orange.svg)
-![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)
-![Distribution](https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg)
 ![Tests](https://img.shields.io/badge/tests-3929%20passed-brightgreen.svg)
-[![Release](https://img.shields.io/badge/release-v2.1-blue.svg)](https://github.com/Qianjinqie/prism-engine/releases)
+![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)
 ![Crates](https://img.shields.io/badge/crates-28-blue.svg)
+![Distribution](https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg)
+[![Release](https://img.shields.io/badge/release-v2.1-blue.svg)](https://github.com/Qianjinqie/prism-engine/releases)
 
-（徽章为静态事实徽章，数字口径见下文；`crates-28` = **分发包内**的 crate 数，
-仓库里另有 1 个不进包的演示 crate，故仓库数是 29。接入 CI 后可替换为动态徽章。）
+![Prism Engine 渲染的静物](docs/assets/still-life.png)
 
----
+<sub>不是效果图，是引擎输出：1200×675 · 256 spp · 路径追踪 + 物理 BSDF + ACES 色调映射 · 4 线程 158 秒。场景源码见 [`docs/gallery/gallery.rs`](docs/gallery/gallery.rs)。</sub>
 
-## 这是什么
-
-Prism Engine 是一个用 Rust 编写的零第三方代码依赖媒体引擎：读图、排版、画画面、
-剪时间线、出成片，全部在一个确定性引擎里完成。全部 110 条运行期依赖
-（另有 20 条测试依赖）均为本仓 `path` 依赖——不依赖网络、不需要包管理器、
-没有供应链风险。
-
-采用**单文件源码分发**：整个引擎（642 个文件、28 个 crate）合并进一个 UTF-8
-文本 `prism-engine-v2.1-source.txt`。持有该文件即可在本地还原出与仓库完全一致的
-目录树。
+**642** 个文件 · **28** 个 crate · **26.1 万** 行 Rust · **3929** 条测试 · **0** 个第三方依赖 · **18.9 MB** 单文件包
 
 ---
 
-## 引擎能干什么
+## 为什么会有这个引擎
 
-一句话总览：**图片是画面在某一时刻的样子，视频是画面在一段时间里一串的样子**——
-同一份场景描述，定住某一刻是单帧，连续推进并录下来就是视频，静态图与动态图共用一套能力。
-下面按"你要做的事"分五块：**读进来 → 排出来 → 画出来 → 出成片 → 接进你自己的工具链**。
+一条常规的媒体流水线是这样搭的：ffmpeg 解码，Blender 渲染，ImageMagick 出图，DAW 做声音，中间用脚本和临时文件把它们粘起来。每一件都是好工具，但接缝处会丢两样东西——**确定性**和**可审计性**：换一台机器，浮点路径变了；换一个版本，默认参数变了；出了问题，你面对的是五个黑盒和一堆中间文件。
 
-### 读什么（输入）
+Prism Engine 把整条链路收进同一棵源码树。同一份场景描述、同样的参数，无论跑在哪台机器、第几次运行，输出的像素和字节都完全一样。这不是一句承诺，是 3929 条测试逐条钉住的事实。
 
-- **统一解码门面**：一个 `decode_image(bytes, ext)` 入口分发静态图——PNG（非交错 8/16bit）、
-  基线 JPEG（定点 IDCT，跨平台逐位确定），**魔数优先、扩展名兜底**（扩展名写错也能解）；
-  矩阵外或需外部协作的格式一律三段式报错（在哪 / 什么事 / 怎么改）并给出 ffmpeg 协作建议，
-  **永不静默失败**。
-- **动图 / 音频 / 容器**：GIF、APNG 原生逐帧解码（`prism-media`）；WAV 内置解码、mp3/aac/FLAC
-  走 ffmpeg 探测路径（`prism-audio`）；MP4-MJPEG 回读（`decode_mp4_video`）。
-- **EXR 全家桶**：读写、压缩、DWA，且与官方 OpenEXR 做**跨实现比特流对拍**（不是自写自读）。
-- **相机 RAW**：基线 RAW 解码。**边界**：真实 DNG 的 `Compression=7`（lossless JPEG）未实现，
-  真实相机拍出的 DNG 读不了——写在「诚实的边界」里，不藏。
-- **三维资产**：glTF / OBJ 导入，USD（`.usda`）解析与 MaterialX 参数包，mesh 可进渲染场景。
-- **外部字体**：`load_font_file` 直接装载第三方 TTF/OTF，回退链逐级解析，
-  缺字形给明确诊断而非豆腐块。
+它不打算替代 ffmpeg 或 Blender。它替代的是把它们粘起来的那层胶水，以及胶水里悄悄丢掉的确定性。
 
-### 排什么（创作语法）
+目标读者很明确：需要「同一份输入、任何机器、同一份输出」的人——批量出图的流水线、要做可复现实验的图形研究、想把渲染塞进 CI 的团队。
 
-- **DSL v2 全块语法**：一套 `.prism` 描述"要什么、怎么摆、怎么动、长什么样、
-  导出成什么"，编译产物是节点图 + 属性通道 + 时间线。
-- **五组合子**：`title_card` / `lower_third` / `split_screen` / `ken_burns` /
-  `morph_between` 高层组合子展开成节点图，"90 秒成片"从手写场景代码降为拼装。
-- **转场与 morph**：Fade / Wipe / Dissolve / Push 全参数化（时长、缓动、方向），
-  Morph 折线变形，场景序列任意时刻可采样。
-- **公式排版**：`math_ast` + `math_layout` 排上下标 / 分式 / 根号 / 大型算子 /
-  矩阵，DSL `formula` 块直排，与正文同基线。
+### 三条硬约束
 
-### 画什么（渲染与仿真）
-
-- **离线照片级渲染**：路径追踪 + 物理正确 BSDF（漫反射 / 镜面 / 玻璃 / 金属），
-  玻璃与金属走随机逆（Neumann 级数蒙特卡洛），支持体积介质与次表面散射。
-- **曲线图元四族**：圆柱 / 圆锥 / 圆环 / 旋转曲面，全部解析求交（四次方程走
-  Ferrari 闭式解，精确根）；任意三角 mesh + SAH-BVH，双路径 parity 对拍。
-- **GPU compute**：设备无关 compute 语义层 + Vulkan dispatch + 手写最小 SPIR-V；
-  Mesa lavapipe 软件 ICD 下无 GPU 平台完整可跑（headless 可验）。
-- **物理与粒子**：XPBD 统一求解器（刚体 / 软体 / 布料 / 关节 / 流体 / 破碎）、
-  烟雾 FLIP、粒子系统（AudioReactive 跟音频包络联动）。
-- **生成艺术与后处理**：流场 / L 系统 / 元胞自动机 / 反应扩散 / 分形 / Voronoi；
-  blur / bloom / halation / 胶片颗粒 / NPR 四风格（toon / watercolor / halftone / oil）/ 三合一降噪。
-- **调色与矢量**：二级调色（HSL 选区 + RGB 曲线）、cinematic / film / anime 风格预设与
-  草稿/标准/电影三档画质（质量是参数，不是玄学）；矢量路径光栅化、路径 draw-on 与 morph。
-- **音频处理**：响度归一（loudnorm）、节拍检测、频谱分析、包络提取——
-  可与画面联动（粒子 AudioReactive 跟音频包络走）。
-- **CPU 参考后端是一等公民**：无 GPU 机器照样出正确图像，同时是 GPU 的判对基准。
-
-### 出什么（交付）
-
-- **`render_movie` 直达**：DSL v2 编译产物一次调用走完"逐帧求值 → tile 渲染 →
-  交付"，`.prism` 单命令出成片（`prism-app render demo.prism`）；未覆盖节点如实报错不静默近似。
-- **预览闭环**：`prism-app preview` 起预览服务；编辑器 Draft 档（几何图案保帧率）/
-  Real 档（低 spp 真实渲染、异步刷新）双档预览。
-- **自研编码器 + 率控**：I/P 帧 JPEG 域时序编码器走私有 `PRMV` 容器（v2/v3 两代
-  schema），water-filling 率控 + qpel 子像素运动估计（实测 PSNR +2.577 dB、
-  体积 −21.6%）。
-- **ffmpeg 协作链**：有 ffmpeg → 经 stdin rawvideo 管道转 H.264/HEVC；
-  无 ffmpeg → 自动降级 MJPEG，**引擎永远能出片**；不捆绑任何二进制。
-- **EXR 序列交付**：帧序列直接写 EXR，进后期管线。
-- **分布式农场**：帧级分发 + N 进程 worker + 确定性合并——并行 MD5 == 串行 MD5，
-  支持断点续算。
-
-### 怎么集成（生态）
-
-- **MCP 工具面**：stdio JSON-RPC 三工具——`scene_check`（编译 + 试渲 + 帧数预估）、
-  `render_submit`（确定性 job id + 逐帧 MD5 摘要）、`diagnose`（三段式错误定位）。
-- **节点 SDK**：语义化版本协商（含 0.x 特例），随包附示例节点包
-  （`examples/sdk-nodes/cinematic-basic/`，可编译 / 可加载 / 可协商）。
-- **硬编探测骨架**：`prism-ffi-hwenc` 三平台（VideoToolbox / NVENC / VAAPI）
-  探测链 + feature gate 矩阵，平台不符明确报不支持。
-
-> 详细能力边界（哪些**做不到**）见解包后 `开发者指南.md` 的「诚实的边界」一节——
-> 那里记着当前真实状态（曲线图元只走 CPU、GPU 加速比需在目标硬件实测、硬编按
-> 目标平台接入…），本文只给全景，不吹。
+| 约束 | 具体做法 | 付出的代价 |
+| --- | --- | --- |
+| **零第三方代码依赖** | 110 条运行期 + 20 条测试依赖全是仓内 `path` 依赖；无 `build.rs`、无原生链接、构建不联网 | 每种格式、每个算法、字体、编解码器全部自己写 |
+| **逐字节确定** | 定点 IDCT、固定采样序列、四维配置哈希；同输入跨平台逐位一致 | 放弃浮点快路径，不能依赖无序容器的遍历顺序 |
+| **单文件分发** | 642 个文件、28 个 crate 合并成一个 18.9 MB 的 UTF-8 文本，`node unpack.cjs` 还原 | 放弃「在 GitHub 上直接点开看源码」的便利 |
 
 ---
 
-## 引擎内特能力（功能清单之外的那些）
+## 三分钟跑起来
 
-有些能力不适合塞进「读 / 排 / 画 / 出 / 集成」的功能列表——它们是引擎内部的**深水区资产**。
-单开这一章，避免主功能列表被细节淹没。
+```bash
+# 1. 取单文件源码包，顺便校验 SHA-256
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.1/prism-engine-v2.1-source.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.1/SHA256SUMS.txt
+sha256sum -c SHA256SUMS.txt
+
+# 2. 抽出包内的解包脚本（只需 Node 18+，不需要 npm install）
+awk '/^UNPACK SCRIPT BEGIN$/{f=1;next} /^UNPACK SCRIPT END$/{f=0} f' \
+  prism-engine-v2.1-source.txt > unpack.cjs
+node unpack.cjs                    # 还原 642 个文件
+
+# 3. 编译并跑全量测试
+cargo test --workspace --release     # 3929 passed / 0 failed
+
+# 4. 什么都不写，先看它出片
+cargo run -p prism-app --release     # 内置演示场景
+```
+
+解包得到的是标准 Cargo workspace（`src/` 下 28 个 crate），后续与普通 Rust 项目无异。首次编译需要几分钟。
+
+---
+
+## 一个镜头，一段文本
+
+`.prism` 是引擎的场景描述语言。下面是一个完整可渲染的 3 秒镜头——球体、材质、环绕相机、方向光、时长、调色、输出规格，全部在这里：
+
+```prism
+scene "spin_red_ball" {
+    sphere ball {
+        radius 1.0
+        material {
+            albedo #c0392b
+            roughness 0.3
+            metalness 0.05
+        }
+    }
+
+    camera main {
+        orbit {
+            center 0,0,0
+            radius 8.0
+        }
+        fov 45
+    }
+
+    light sun {
+        direction (1.0, -1.0, -0.5)
+        color #fff4e6
+        intensity 3.0
+    }
+}
+
+timeline {
+    duration 3s
+    fps 12
+}
+
+aesthetic {
+    teal-orange
+    contrast 1.12
+    filmic
+}
+
+output {
+    resolution 480x270
+    format frames
+}
+```
+
+```bash
+cargo run -p prism-app --release -- examples/spin_red_ball.prism          # 帧序列
+cargo run -p prism-app --release -- render examples/w2d_showcase.prism \
+    --out out/demo.mp4                                                     # 一次出成片
+```
+
+`render` 走 v2 直达路径：编译节点图 → 逐帧求值 → 编码封装，中间不落临时帧；不支持的节点会得到明确的 `R5xxx` 错误，而不是静默跳过。
+
+![DSL 渲染的标题帧](docs/assets/dsl-title.png)
+
+<sub>`examples/w2d_showcase.prism` 的第 10 帧：同一个场景里，3D 球体、文字层、调色和淡入淡出轨道共用一条时间线。</sub>
+
+---
+
+## 也可以只用 Rust API
+
+不想写 DSL，就直接调库。下面是门面图的骨架（完整场景 190 行，见 [`docs/gallery/gallery.rs`](docs/gallery/gallery.rs)）：
+
+```rust
+use prism_core::node::EvalCtx;
+use prism_math::Vec3;
+use prism_rt::camera::Camera;
+use prism_rt::integrator::{render_pixel, MaterialKind, RenderParams, Scene, Sphere};
+
+let scene = Scene {
+    spheres: vec![(
+        Sphere { center: Vec3::new(0.0, 0.6, 0.0), radius: 0.6 },
+        MaterialKind::Lambert { albedo: Vec3::new(0.8, 0.2, 0.15) },
+    )],
+    ..Default::default()
+};
+let cam = Camera::new(
+    Vec3::new(0.0, 1.2, 4.8),   // 视点
+    Vec3::new(0.0, 0.72, 0.0),  // 看向
+    Vec3::new(0.0, 1.0, 0.0),   // 上方向
+    30.0, 0.05, 4.85, 0.0, 1.0 / 48.0,
+);
+let ctx = EvalCtx::new(20261028, 0, 0);
+let params = RenderParams::new(256, 10);  // 每像素 256 样本，最多 10 次弹射
+
+// 单像素：场景、相机、采样上下文、像素坐标、分辨率、参数
+let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
+```
+
+`render_pixel` 是纯函数：输入场景、相机、采样上下文和像素坐标，输出线性 RGB。同样的参数，任意线程、任意顺序调用，结果逐位相同——所以并行渲染不需要任何同步。
+
+---
+
+## 能力全景
+
+| 层 | 能做什么 |
+| --- | --- |
+| **读** | PNG（8/16 bit）、基线 JPEG（定点 IDCT）、GIF/APNG 逐帧、EXR（含 DWA）、基线 RAW、WAV；glTF / OBJ / USDA 三维资产、MaterialX 参数、TTF/OTF 外部字体 |
+| **排** | DSL v1/v2 编译、五个高层组合子（片头 / 人名条 / 分屏 / 肯·伯恩斯 / 场景变形）、四种转场 + morph、公式排版（上下标 / 分式 / 根号 / 矩阵 / 大型算子）、时间线任意时刻采样 |
+| **画** | 路径追踪 + 物理 BSDF（漫反射 / 镜面 / 玻璃 / 金属 / 次表面）、Woodcock 异质体积、圆柱 / 圆锥 / 圆环 / 旋转曲面解析求交（四次方程 Ferrari 闭式解）、SAH-BVH 三角网格、CPU 参考后端、Vulkan compute + 光追双管线 |
+| **动** | XPBD 统一求解器（刚体 / 软体 / 布料 / 关节 / 流体 / 破碎）、FLIP 烟雾、粒子系统（可跟音频包络联动）、流场 / L 系统 / 元胞自动机 / 反应扩散 / 分形 / Voronoi |
+| **调** | 二级调色（HSL 选区 + RGB 曲线）、cinematic / film / anime 预设、blur / bloom / halation / 胶片颗粒、NPR 四风格（toon / watercolor / halftone / oil）、三合一降噪、矢量路径光栅化与 draw-on |
+| **声** | PolyBLEP 合成器、ADSR、音阶与和弦进行状态机、琶音器、step 鼓机、SMF 解析、SFZ 采样器、颗粒合成、多轨混音、响度归一、节拍 / onset / FFT 分析 |
+| **出** | 自研 `PRMV` 容器（v2/v3）+ I/P 帧 JPEG 域编码 + water-filling 率控 + qpel 运动估计、ffmpeg 管道（有则 H.264/HEVC，无则自动降级 MJPEG）、EXR 序列、多进程帧农场（断点续算，并行 MD5 == 串行 MD5） |
+| **接** | MCP stdio 三工具（`scene_check` / `render_submit` / `diagnose`）、节点 SDK（语义化版本协商）、HTTP/1.1 渲染服务、batch manifest 笛卡尔积批量渲染、三平台硬编探测骨架 |
+
+> 表格只是目录。每条能力的具体参数和「做不到什么」，见解包后的 `开发者指南.md`。
+
+---
+
+## 引擎内特能力
+
+有些东西塞不进上面那张表——它们不是「多支持一种格式」，而是引擎内部自己长出来的基础设施。
 
 ### 音频：一套内置 DAW 内核
 
-`prism-audio` 不是"能读 WAV"的边缘模块，而是从作曲到混音的完整链路，每个函数都是
-参数的纯函数（同输入跨平台逐位一致）：
+`prism-audio` 不是「能读 WAV」的边缘模块。从作曲到混音是一条完整链路，每个函数都是参数的纯函数（同输入跨平台逐位一致）：
 
-- **合成**：PolyBLEP 防混叠振荡器族 + ADSR 闭式包络 + 4 情绪预设；
-- **乐理**：音阶库（大小调/五声/中古调式）、12-TET 音级↔频率、和弦进行**功能语法状态机** + 声部引导；
-- **编排**：琶音器（模式/速率/八度）、step 鼓机、小节/节拍网格配乐编排；
+- **合成**：PolyBLEP 防混叠振荡器族、ADSR 闭式包络、4 种情绪预设；
+- **乐理**：音阶库（大小调 / 五声 / 中古调式）、12-TET 音级↔频率、和弦进行的功能语法状态机 + 声部引导；
+- **编排**：琶音器（模式 / 速率 / 八度）、step 鼓机、小节与节拍网格；
 - **素材**：手写 SMF 解析（MIDI 导入）、SFZ 采样器、颗粒合成；
 - **声音设计**：物理建模、空间声像、效果器链；
-- **混音**：多轨线性混合 + 淡入淡出 + 峰值防削波；
-- **分析与联动**：节拍/onset 检测、FFT 频谱、包络提取、AudioReactive 烘焙
-  （第 N 帧读固定窗，帧级纯函数、seek 等价）、响度归一。
+- **混音**：多轨线性混合、淡入淡出、峰值防削波；
+- **分析与联动**：节拍 / onset 检测、FFT 频谱、包络提取、响度归一；AudioReactive 烘焙第 N 帧读固定窗，帧级纯函数，seek 等价。
 
-> 边界：AAC/mp3 不自研（专利历史包袱 + 工程量），走外部 ffmpeg 协作。
+> 边界：AAC / mp3 编码不自研（专利历史包袱 + 工程量），走外部 ffmpeg 协作。
 
-### 可定义核库（特解注册表）
+### 可定义核库
 
-引擎的每个节点类型 = 一个「核 + 格 + 对偶」三元组**特解**。第三方（或你自己）可以
-用 `registry!` 静态注册新特解，**不改引擎核心**：
+引擎里每个节点类型，都是一个「核 + 格 + 对偶」三元组的**特解**。第三方（或你自己）可以用 `registry!` 静态注册新特解，**不改引擎核心**：
 
-- 静态汇入制（宏在定义 crate 内展开，禁 `inventory`/proc-macro，零依赖）；
+- 静态汇入：宏在定义 crate 内展开，禁 `inventory` / proc-macro，保持零依赖；
 - 注册时**三问校验**（核形式 / 格 / 对偶），答不齐直接拒绝并给三段式报错；
-- 官方特解与自定义特解走**同一张注册表**，运行时无差别；
-- 数学上对应「算子方程 `f = g + Kf` 的六种求逆策略」——精确 / 随机 / 局部 / 正则化 /
-  迭代 / 谱，新特性的接入是**声明三元组**，而不是往渲染循环里打补丁。
+- 官方特解与自定义特解走同一张注册表，运行时无差别；
+- 数学上对应算子方程 `f = g + Kf` 的六种求逆策略（精确 / 随机 / 局部 / 正则化 / 迭代 / 谱）——接新特性是声明三元组，而不是往渲染循环里打补丁。
 
-### 确定性与可复现基建
+### GPU：三条路径，三种状态
 
-- **签名闭包**：节点图 / 缓存键 / 快照键 / 帧签名统一为「四维配置哈希」，改参数
-  ⇒ 键必变 ⇒ 不会误复用；迭代节点键含 `(ε, n)`，流节点键含帧号；
-- **字节不动点**：USD 导出→导入→导出逐字节一致；WAV 16/24/32bit 往返一致；
-  EXR 与官方实现跨实现比特流对拍；
-- **单文件分发确定性**：同一源码两次打包 SHA-256 完全一致，解包回环逐文件逐字节校验。
-
-### GPU 后端（诚实分述）
-
-- **Vulkan**：compute + 光追场景双管线**真实运行**（lavapipe 软件 ICD 上无 GPU 可验），
-  `render_scene` 出帧与 CPU 参考**逐字节 0 差异**；`is_available()` 是 compute ∧ render 双自检；
-- **Metal**：同构移植 + 编译门控就绪，**未实机验证、不点亮**（`is_available()` 恒 false）；
-- **WebGPU**：可行性结论已出（迁移量 4–6 人日），渲染路径未实现。
+| 后端 | 状态 | 证据 |
+| --- | --- | --- |
+| **Vulkan** | 真实运行 | compute + 光追双管线；Mesa lavapipe 软件 ICD 上无 GPU 可验证；`render_scene` 出帧与 CPU 参考**逐字节 0 差异**；`is_available()` 是 compute ∧ render 双自检 |
+| **Metal** | 编译门控，不点亮 | 同构移植完成，未实机验证，`is_available()` 恒 false |
+| **WebGPU** | 只出结论 | 可行性评估完成（迁移量 4–6 人日），渲染路径未实现 |
 
 ### 反假绿门禁
 
-四个本地门禁脚本（零依赖、只用 `node`）：幽灵写入防御（含反向自证）、开源卫生扫描、
-合规自检（9/9 + 反向自证 8/8 判红）、打包回环校验。门禁只有「通过」或「判红」两种结果，
-不接受"看起来过了"——**假绿比失败更危险**。
+四个零依赖门禁脚本（只用 `node`）：幽灵写入防御（含反向自证）、开源卫生扫描、合规自检（9/9 通过 + 8/8 反证判红）、打包回环校验。门禁只有「通过」和「判红」两种结果，不接受「看起来过了」——**假绿比失败更危险**。
 
 ---
 
-## 为什么是单文件分发
+## 确定性不是口号
 
-- **可审计**：一个文本文件，人眼可读、可 `diff`、可哈希校验，发布即冻结。
-- **可复现**：打包具确定性——相同输入两次打包 SHA-256 完全一致。
-- **可携带**：无需 clone 庞大仓库，一个文件经邮件或聊天即可传送，离线亦可还原构建。
-- **取舍说明**：单文件分发以让渡"在 GitHub 上直接浏览代码"的便利为代价，换取"一个文件带走全部、且逐字节可验证"的确定性。解包后得到的是普通 Cargo workspace，与常规 Rust 项目无异。
+四层机制，从参数一路管到字节：
+
+1. **签名闭包**：节点图、缓存键、快照键、帧签名统一为四维配置哈希。改一个参数 ⇒ 键必变 ⇒ 不会误复用；迭代节点的键含 `(ε, n)`，流节点的键含帧号，`None` 时逐字节退化到旧行为。
+2. **字节不动点**：USD 导出→导入→导出逐字节一致；WAV 16/24/32 bit 往返一致；EXR 与官方 OpenEXR 做跨实现比特流对拍。
+3. **打包确定性**：同一份源码两次打包，SHA-256 完全一致；解包回环逐文件逐字节比对。
+4. **测试即判据**：3929 条测试里大量黄金值锁定（容差从 1e-2 收到 1e-6，实测残差 4.53e-7）；形状保真度用 Hausdorff 界，而不是「看着差不多」。
 
 ---
 
-## 快速开始
+## 架构
 
-前置：安装 [Rust](https://www.rust-lang.org/)（含 `cargo`）与 [Node.js](https://nodejs.org/) 18+。
-
-```bash
-# 1. 下载仓库中的 prism-engine-v2.1-source.txt，存为本地文件
-# 2. 用文本编辑器打开，把 "UNPACK SCRIPT BEGIN" 与 "UNPACK SCRIPT END"
-#    之间的 Node.js 脚本另存为同目录下的 unpack.cjs
-# 3. 运行解包（约数秒，还原 642 个文件）
-node unpack.cjs
-# 4. 在还原出的目录（即 workspace 根）跑全量测试
-cargo test --workspace --release
-# 预期：3929 passed / 0 failed
+```mermaid
+flowchart LR
+    IN["输入<br/>PNG · JPEG · EXR · RAW<br/>GIF · APNG · WAV<br/>glTF · OBJ · USDA"] --> DSL["编排<br/>prism-dsl<br/>节点图 · 属性通道 · 时间线"]
+    DSL --> RT["求值<br/>2D 光栅 · 3D 路径追踪<br/>物理 · 粒子 · 生成艺术"]
+    DSL --> AU["音频<br/>prism-audio<br/>合成 · 编排 · 混音"]
+    RT --> FX["后期<br/>调色 · bloom · 降噪 · NPR"]
+    FX --> OUT["交付<br/>PRMV · ffmpeg · EXR 序列"]
+    AU --> OUT
 ```
 
-解包后得到一个标准 Cargo workspace（`src/` 下 28 个 crate），后续 `cargo` 命令与常规 Rust 项目相同。
-
-> 手机端 wasm 验证链路：`rustup target add wasm32-unknown-unknown`，再 `cargo build -p prism-core --target wasm32-unknown-unknown`。
-
----
-
-## 仓库结构（解包后）
-
-| 路径 | 说明 |
-|------|------|
-| `src/` | **28 个 crate** 的源码（仓库内 29 个，原名 `crates/`，分发时重组为 `src/`；演示 crate `prism-anim-demo` 不进包） |
-| `Compliance/` | 合规声明：零依赖核验 / 第三方声明 / 资产登记（仓库内原名 `docs/合规/`） |
-| `开发者指南.md` | 自包含开发者文档：上手 / 架构 / 数学内核 / 门禁 / 扩展（仓库内原名 `docs/开发者指南.md`） |
-| `tools/` | 门禁脚本（幽灵写入防御、卫生扫描、合规自检） |
-| `.github/workflows/` | CI 配置 |
-| `Cargo.toml` / `Cargo.lock` / `.cargo/` | 构建必需件（workspace members 已指向 `src/*`） |
-| `examples/` | `prism-dsl` 测试用样例与示例节点包（`include_str!` 读取，缺了编译不过） |
-
-> 设计权威文档（`docs/设计/`）**不随分发**，仅留在发布方的完整仓库中。
-
----
-
-## 模块概览
-
-分发包内 **28 个 crate** 按职责分组（仓库另有演示 crate `prism-anim-demo`，只在仓库里
-作为可复现示例，不进包）：
+28 个 crate，按职责分组：
 
 | 类别 | crate |
-|------|-------|
-| 内核 | prism-core · prism-math · prism-bytes · prism-geometry · prism-noise |
-| 媒体 I/O | prism-io · prism-media · prism-mux · prism-audio · prism-texture |
-| 渲染 | prism-render · prism-raster · prism-gpu · prism-postfx · prism-vector · prism-particles |
-| 动画/生成 | prism-anim · prism-genart · prism-aesthetic · prism-physics |
-| 文本/UI | prism-text · prism-rt · prism-app |
-| 高级 | prism-ai · prism-dsl · prism-infra · prism-author |
-| 旁路（feature gate） | prism-ffi-hwenc |
+| --- | --- |
+| 内核 | `prism-core` · `prism-math` · `prism-bytes` · `prism-geometry` · `prism-noise` |
+| 媒体 I/O | `prism-io` · `prism-media` · `prism-mux` · `prism-audio` · `prism-texture` |
+| 渲染 | `prism-render` · `prism-raster` · `prism-gpu` · `prism-postfx` · `prism-vector` · `prism-particles` |
+| 动画 / 生成 | `prism-anim` · `prism-genart` · `prism-aesthetic` · `prism-physics` |
+| 文本 / UI | `prism-text` · `prism-rt` · `prism-app` |
+| 高级 | `prism-ai` · `prism-dsl` · `prism-infra` · `prism-author` |
+| 旁路（feature gate） | `prism-ffi-hwenc` |
+
+解包后的目录结构：
+
+| 路径 | 说明 |
+| --- | --- |
+| `src/` | 28 个 crate 的源码（仓库内原名 `crates/`，分发时重组） |
+| `Compliance/` | 零依赖核验、第三方声明、资产登记 |
+| `开发者指南.md` | 自包含开发者文档：上手 / 架构 / 数学内核 / 门禁 / 扩展 |
+| `tools/` | 门禁与打包脚本 |
+| `examples/` | `.prism` 示例与节点包（`include_str!` 读取，缺了编译不过） |
+| `.github/workflows/` | CI 配置 |
+
+> 仓库内的 `docs/设计/` 是设计权威文档，不随分发；演示 crate `prism-anim-demo` 同样不进包。
 
 ---
 
-## 构建与测试
+## 构建、测试与门禁
 
 ```bash
-# 全仓冒烟（release，推荐）
-cargo test --workspace --release
-# 等价别名
-cargo xtest
-# 单 crate 快速验证
-cargo test -p prism-core --release
+cargo test --workspace --release      # 3929 passed / 0 failed / 0 ignored
+cargo xtest                           # 等价别名
+cargo test -p prism-core --release    # 单 crate 冒烟
+
+node tools/ghost_guard.mjs --check    # 幽灵写入防御：G1 重复定义 / G2 严格超集 / G3 顶格文档 / G4 编译
+node tools/hygiene_scan.mjs           # 开源卫生：逐条列出残留内部用语，命中即 exit 1
+node tools/compliance_check.mjs       # 合规自检：应 9/9 通过
+node tools/compliance_check.mjs --self-test  # 反向自证：应判红，证明判据有判别力
+node tools/pack_source_txt.mjs --verify      # 打包并解包回环校验（逐文件逐字节）
 ```
 
-- 全量测试：**3929 passed / 0 failed / 0 ignored**（仓库内 release 实跑，179 个测试段，
-  全核并行 171.5 秒）；分发包与仓库**逐文件逐字节一致**，差异仅演示 crate
-  `prism-anim-demo` 不进包（其测试块为空，用例数相同）。
-- CI：**6 个 job**——幽灵写入防御（ghost-guard）/ 编译 + 全量测试（native）/ wasm32 构建（wasm）/
-  WGSL 静态检查（wasm-verify）/ 与官方 OpenEXR 跨实现比特流对拍（interop）/ node 宿主交叉判对（lint）。
-- 本地门禁脚本 3 个（全零依赖、只用 `node`，下）+ 打包脚本 1 个；
-  其中合规自检 **9/9 通过**、反向自证 **8/8 判红**。
+- 全量：**3929 passed / 0 failed / 0 ignored**，179 个测试段，全核并行 171.5 秒（release）。
+- CI 六个 job：幽灵写入防御、编译 + 全量测试、wasm32 构建、WGSL 静态检查、与官方 OpenEXR 跨实现对拍、Node 宿主交叉判对。
+- 卫生扫描仍有存量命中：随包分发的文档层已清零，余下在源码注释与不随包分发的仓库文件中。脚本的存在是为了让残留**可见、可逐条清**，而不是假装干净。
 
-本地运行门禁（需 Node 18+）：
+---
 
-```bash
-node tools/ghost_guard.mjs --check        # 幽灵写入防御：G1 重复定义/G2 严格超集/G3 顶格文档/G4 编译
-node tools/hygiene_scan.mjs               # 开源卫生：逐条列出残留的内部用语（文件:行号），命中即 exit 1
-node tools/compliance_check.mjs           # 合规自检：应 9/9 通过
-node tools/compliance_check.mjs --self-test   # 反向自证：应判红，证明判据具备判别力
-```
+## 诚实的边界
 
-> **开源卫生扫描当前仍有存量命中**：仓库内残留早期内部用语，其中**随包分发的
-> 文档层已清零**（README / 开发者指南 / Compliance），余下在**分发包内源码注释**
-> 与**不随包分发的仓库文件**中，已据实分类并列为独立清理项。脚本的存在正是为了让
-> 残留**可见、可逐条清**，而不是假装干净——请勿把"命中数不为 0"理解为门禁失效。
+| 边界 | 现状 | 出路 |
+| --- | --- | --- |
+| DNG `Compression=7`（lossless JPEG） | 未实现，真实相机 DNG 读不了 | 先转 16 bit TIFF / PNG |
+| mp3 / AAC / FLAC | 解码走外部 ffmpeg 探测；编码不自研 | 装 ffmpeg，或只用 WAV |
+| 曲线图元 GPU | 仅 CPU 路径 | 三角化后走 SAH-BVH |
+| Metal | 编译门控就绪，未实机验证，不点亮 | 有 Apple 设备后接 |
+| WebGPU | 可行性结论已出，渲染未实现 | 4–6 人日 |
+| 硬件编码 | 三平台探测骨架，未接实现 | 按目标平台填 |
+| GPU 加速比 | 只在 lavapipe 上验证了正确性，未在真实 GPU 实测 | 需目标硬件实测 |
+| 卫生扫描 | 源码注释有存量命中 | 逐条清理，脚本可追踪 |
+
+这些不是「以后再说」，是当前状态下明确不支持的。写在这里，比藏在 issue 里好。
 
 ---
 
 ## 合规
 
-引擎承诺**零第三方代码依赖**，并经自检核验：
+引擎承诺零第三方代码依赖，并经自检核验：
 
-- **C1 零第三方代码依赖**：全部 130 条依赖（110 条运行期 + 20 条测试）均为本仓 `path` 依赖；无 `build.rs`、无原生链接指令、`Cargo.lock` 锁定 29 个本仓包。
-- **C2 资产登记完备**：5 项资产主表字段齐全、自研化状态落在受控词表；OFL 1.1 字体许可证全文随字体置于 `src/prism-text/font_data/LICENSE`。
-- **C3 第三方归属声明**：`Compliance/THIRD-PARTY-NOTICES.md` 在场，并明确区分"数据资产 ≠ 代码依赖"。
-
-> 注：本仓库分发的是**源码**。字体资产（Prism Sans SC 子集）以 SIL OFL 1.1 许可，**许可证全文随字体置于** `src/prism-text/font_data/LICENSE`；资产来源与许可登记见 `Compliance/assets/资产登记.md`。
-
----
-
-## 确定性打包（发布方）
-
-如需从完整仓库重新生成分发 TXT（版本号可传，默认出版当前版本 v2.1）：
-
-```bash
-node tools/pack_source_txt.mjs          # 默认 → dist/prism-engine-v2.1-source.txt
-node tools/pack_source_txt.mjs 2.1      # 等价写法（显式传版本号）
-node tools/pack_source_txt.mjs 1.0      # 回到 v1.0 时代产物名（在 v1.0 源码上跑即逐字节复现旧包）
-node tools/pack_source_txt.mjs --verify # 打包后立刻解包回环校验（逐文件逐字节比对源码树）
-# 连跑两次，输出 SHA-256 一致即证明确定性打包成立
-```
-
-打包范围严格限定为：`crates/`（→ `src/`）、`docs/合规/`（→ `Compliance/`）、`docs/开发者指南.md`、`tools/`、`.github/`、`.cargo/`、`examples/`、`Cargo.toml`、`Cargo.lock`。刻意**排除** `docs/设计/`、`target/`、`node_modules/`、`dist/` 本身及一切中间产物。
-
----
-
-## 贡献
-
-欢迎 Issue 与 Pull Request。提交前请保持：
-
-- `cargo test --workspace --release` 全绿；
-- `node tools/hygiene_scan.mjs` **不新增**内部用语（脚本会列出全部命中，含存量）；
-- `node tools/compliance_check.mjs` 9/9 通过。
-
-更详细的架构与扩展指南见解包后的 `开发者指南.md`。
+- **C1 零第三方代码依赖**：130 条依赖（110 运行期 + 20 测试）全部为仓内 `path` 依赖；无 `build.rs`、无原生链接指令；`Cargo.lock` 锁定 29 个本仓包。
+- **C2 资产登记完备**：5 项资产主表字段齐全；字体以 SIL OFL 1.1 分发，许可证全文随字体置于 `src/prism-text/font_data/LICENSE`。
+- **C3 第三方归属声明**：`Compliance/THIRD-PARTY-NOTICES.md` 明确区分「数据资产 ≠ 代码依赖」。
 
 ---
 
 ## 许可证
 
-本项目以 **Apache License 2.0** 发布。详见 [`LICENSE`](LICENSE) 文件。
+Apache License 2.0，见 [`LICENSE`](LICENSE)。
 
-> 合规提示：Apache-2.0 要求保留版权与许可声明；基于本引擎再行分发时，请保留 `Compliance/` 下的归属声明与资产登记。
+再分发时请保留 `Compliance/` 下的归属声明与资产登记。
+
+---
+
+<sub>门面图与 DSL 截图均由引擎自身渲染；参数写在图注与 [`docs/gallery/gallery.rs`](docs/gallery/gallery.rs) 里。</sub>
