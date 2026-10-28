@@ -1,29 +1,64 @@
-**English** | [简体中文](../README.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [Français](README.fr.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [Português (BR)](README.pt-BR.md) | [Русский](README.ru.md)
+<p align="center">
+  <img src="https://cdn.jsdelivr.net/gh/Qianjinqie/prism-engine@main/docs/assets/logo.png" width="132" alt="Prism Engine">
+</p>
 
-# Prism Engine
+<h1 align="center">Prism Engine</h1>
 
-**Zero third-party dependencies · Bit-for-bit deterministic · Single-file distribution**
+<h3 align="center">The whole media pipeline, in one source tree</h3>
 
-A procedural media engine written from scratch in Rust: decoding, layout, path tracing, physical simulation, audio synthesis, and encoding — all inside one source tree. No third-party crates, no system libraries, no network at build time.
+<p align="center">
+  <sub>Decode · Typeset · Path-trace · Simulate · Synthesize · Encode &nbsp;|&nbsp; Zero dependencies · Bit-for-bit deterministic</sub>
+</p>
 
-![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
-![Tests](https://img.shields.io/badge/tests-3929%20passed-brightgreen.svg)
-![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)
-![Crates](https://img.shields.io/badge/crates-28-blue.svg)
-![Distribution](https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg)
-[![Release](https://img.shields.io/badge/release-v2.1-blue.svg)](https://github.com/Qianjinqie/prism-engine/releases)
+<p align="center">
+  <a href="../README.md">中文</a>
+  · <b><a href="README.en.md">English</a></b>
+  · <a href="README.de.md">Deutsch</a>
+  · <a href="README.es.md">Español</a>
+  · <a href="README.fr.md">Français</a>
+  · <a href="README.ja.md">日本語</a>
+  · <a href="README.ko.md">한국어</a>
+  · <a href="README.pt-BR.md">Português</a>
+  · <a href="README.ru.md">Русский</a>
+</p>
 
-![Still life rendered by Prism Engine](assets/still-life.png)
+<p align="center">
+  <img src="https://img.shields.io/badge/license-Apache--2.0-3B82F6?style=for-the-badge" alt="License">
+  <img src="https://img.shields.io/badge/tests-3929%20passed-22C55E?style=for-the-badge" alt="Tests">
+  <img src="https://img.shields.io/badge/dependencies-zero-16A34A?style=for-the-badge" alt="Dependencies">
+  <img src="https://img.shields.io/badge/crates-28-8B5CF6?style=for-the-badge" alt="Crates">
+  <img src="https://img.shields.io/badge/size-18.9%20MB-64748B?style=for-the-badge" alt="Size">
+  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v2.1-6366F1?style=for-the-badge" alt="Release"></a>
+</p>
 
-<sub>Not a mock-up — engine output: 1200×675, 256 spp, path tracing + physical BSDF + ACES tone mapping, 4 threads, 158 s. Scene source: [`docs/gallery/gallery.rs`](gallery/gallery.rs).</sub>
+<p align="center">
+  <a href="https://github.com/Qianjinqie/prism-engine/releases/latest"><img src="https://img.shields.io/badge/DOWNLOAD-v2.1-6C5CE7?style=for-the-badge" alt="Download"></a>
+  <a href="#up-and-running-in-three-minutes"><img src="https://img.shields.io/badge/QUICK_START-3%20minutes-0EA5E9?style=for-the-badge" alt="Quick start"></a>
+  <a href="#architecture"><img src="https://img.shields.io/badge/ARCHITECTURE-28%20crates-334155?style=for-the-badge" alt="Architecture"></a>
+</p>
 
-**642** files · **28** crates · **261k** lines of Rust · **3929** tests · **0** third-party dependencies · **18.9 MB** single-file package
+<p align="center">
+  <img src="https://cdn.jsdelivr.net/gh/Qianjinqie/prism-engine@main/docs/assets/still-life.png" width="880" alt="Still life rendered by Prism Engine">
+</p>
 
----
+<p align="center">
+  <sub>Not a mock-up — engine output: 1200×675, 256 spp, path tracing + physical BSDF + ACES tone mapping, 4 threads, 158 s. Scene source: <a href="gallery/gallery.rs"><code>docs/gallery/gallery.rs</code></a>.</sub>
+</p>
+
+<p align="center">
+  <sub><b>642</b> files · <b>28</b> crates · <b>261k</b> lines of Rust · <b>3929</b> tests · <b>0</b> third-party dependencies · <b>18.9 MB</b> single-file package</sub>
+</p>
 
 ## Why this engine exists
 
 A conventional media pipeline is assembled: ffmpeg decodes, Blender renders, ImageMagick writes stills, a DAW handles sound, and scripts glue everything together with temp files. Each tool is excellent, but the seams lose two things — **determinism** and **auditability**. Change machines and the floating-point path changes; change versions and the defaults move; when something breaks, you face five black boxes and a pile of intermediate files.
+
+| | Conventional pipeline | Prism Engine |
+| --- | --- | --- |
+| Chain | five or six tools + glue scripts + temp files | one source tree, one build |
+| New machine | float paths shift, pixels shift | same input, same bytes |
+| Something breaks | five black boxes and a pile of intermediates | every pixel traces back to a source line |
+| Dependencies | dozens of native libs, each with a version matrix | 0 |
 
 Prism Engine pulls the whole chain into one source tree. Same scene description, same parameters, any machine, any run — identical pixels and identical bytes. That is not a promise; 3929 tests pin it down.
 
@@ -38,8 +73,6 @@ The audience is narrow on purpose: pipelines that need "same input, any machine,
 | **Zero third-party code** | All 110 runtime + 20 test dependencies are in-repo `path` dependencies; no `build.rs`, no native linking, no network at build time | Every format, algorithm, font, and codec has to be written here |
 | **Bit-for-bit determinism** | Fixed-point IDCT, fixed sampling sequences, a four-dimensional configuration hash; identical across platforms for identical input | No fast floating-point shortcuts, no reliance on hash-map iteration order |
 | **Single-file distribution** | 642 files across 28 crates merged into one 18.9 MB UTF-8 text, restored by `node unpack.cjs` | You give up browsing the source directly on GitHub |
-
----
 
 ## Up and running in three minutes
 
@@ -62,8 +95,6 @@ cargo run -p prism-app --release     # built-in demo scene
 ```
 
 What you get is an ordinary Cargo workspace (28 crates under `src/`); every `cargo` command behaves as usual. The first build takes a few minutes.
-
----
 
 ## One shot, one text file
 
@@ -120,11 +151,11 @@ cargo run -p prism-app --release -- render examples/w2d_showcase.prism \
 
 `render` takes the v2 direct path: compile the node graph → evaluate frame by frame → encode into a container, with no intermediate frames on disk. Unsupported nodes produce an explicit `R5xxx` error instead of being skipped silently.
 
-![Title frame rendered from DSL](assets/dsl-title.png)
-
-<sub>Frame 10 of `examples/w2d_showcase.prism`: a 3D sphere, a text layer, a grade, and a fade track all sharing one timeline.</sub>
-
----
+<p align="center">
+  <img src="https://cdn.jsdelivr.net/gh/Qianjinqie/prism-engine@main/docs/assets/dsl-title.png" width="760" alt="Title frame rendered from DSL">
+  <br>
+  <sub>Frame 10 of `examples/w2d_showcase.prism`: a 3D sphere, a text layer, a grade, and a fade track all sharing one timeline.</sub>
+</p>
 
 ## Or just the Rust API
 
@@ -158,8 +189,6 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 
 `render_pixel` is a pure function: scene, camera, sampling context, and pixel coordinate in; linear RGB out. With the same parameters it returns identical bits regardless of thread or call order — which is why parallel rendering needs no synchronization at all.
 
----
-
 ## Capability map
 
 | Layer | What it does |
@@ -174,8 +203,6 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 | **Integrate** | Three MCP stdio tools (`scene_check` / `render_submit` / `diagnose`), node SDK with semantic-version negotiation, HTTP/1.1 render service, batch-manifest Cartesian rendering, hardware-encoder probe skeleton for three platforms |
 
 > The table is only a table of contents. For the exact parameters and the "what it cannot do" of each capability, see `开发者指南.md` inside the package.
-
----
 
 ## Capabilities that do not fit the list
 
@@ -216,8 +243,6 @@ Every node type in the engine is a **particular solution** of a "kernel + lattic
 
 Four zero-dependency gate scripts (Node only): ghost-write defense (including a reverse self-test), open-source hygiene scan, compliance self-check (9/9 pass plus 8/8 must-fail proofs), and a pack round-trip check. A gate has exactly two outcomes — pass or fail — and "looks fine" is not one of them. **A false green is more dangerous than a failure.**
 
----
-
 ## Determinism is not a slogan
 
 Four layers of machinery, from parameters all the way down to bytes:
@@ -226,8 +251,6 @@ Four layers of machinery, from parameters all the way down to bytes:
 2. **Byte fixed points**: USD export→import→export is byte-identical; WAV 16/24/32-bit round-trips match; EXR is compared bitstream-to-bitstream against the official OpenEXR.
 3. **Packaging determinism**: packing the same source twice yields an identical SHA-256; the unpack round-trip compares every file byte by byte.
 4. **Tests as the criterion**: many of the 3929 tests lock golden values (tolerance tightened from 1e-2 to 1e-6, measured residual 4.53e-7); shape fidelity is bounded by Hausdorff distance rather than "looks close enough".
-
----
 
 ## Architecture
 
@@ -266,8 +289,6 @@ Layout after unpacking:
 
 > Design documents (`docs/设计/`) live only in the publisher's full repository and are not distributed; the demo crate `prism-anim-demo` is not packaged either.
 
----
-
 ## Build, test, and gates
 
 ```bash
@@ -286,8 +307,6 @@ node tools/pack_source_txt.mjs --verify      # pack and unpack round-trip, byte 
 - CI has six jobs: ghost-write defense, build + full tests, wasm32 build, WGSL static check, bitstream interop against official OpenEXR, Node-host cross-check.
 - The hygiene scan still has hits: the distributed documentation layer is clean, the rest sit in source comments and repository-only files. The script exists so leftovers stay **visible and fixable one by one** — not to pretend the tree is spotless.
 
----
-
 ## Honest boundaries
 
 | Boundary | Status | Way out |
@@ -303,8 +322,6 @@ node tools/pack_source_txt.mjs --verify      # pack and unpack round-trip, byte 
 
 These are not "later" items. They are explicitly unsupported today. Better here than buried in an issue.
 
----
-
 ## Compliance
 
 The engine promises zero third-party code dependencies, verified by self-check:
@@ -313,14 +330,10 @@ The engine promises zero third-party code dependencies, verified by self-check:
 - **C2 Complete asset registry**: all five asset entries have their main-table fields; fonts are distributed under SIL OFL 1.1 with the full license text next to the font at `src/prism-text/font_data/LICENSE`.
 - **C3 Third-party notices**: `Compliance/THIRD-PARTY-NOTICES.md` explicitly separates "data assets ≠ code dependencies".
 
----
-
 ## License
 
 Apache License 2.0, see [`LICENSE`](../LICENSE).
 
 When redistributing, keep the notices and asset registry under `Compliance/`.
-
----
 
 <sub>The hero image and the DSL screenshot are both rendered by the engine itself; parameters are in the captions and in [`docs/gallery/gallery.rs`](gallery/gallery.rs).</sub>

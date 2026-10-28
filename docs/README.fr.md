@@ -1,29 +1,64 @@
-**Français** | [简体中文](../README.md) | [English](README.en.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [Português (BR)](README.pt-BR.md) | [Русский](README.ru.md)
+<p align="center">
+  <img src="https://cdn.jsdelivr.net/gh/Qianjinqie/prism-engine@main/docs/assets/logo.png" width="132" alt="Prism Engine">
+</p>
 
-# Prism Engine
+<h1 align="center">Prism Engine</h1>
 
-**Zéro dépendance tierce · Déterministe au bit près · Distribution en un seul fichier**
+<h3 align="center">Toute la chaîne média, dans un seul arbre de sources</h3>
 
-Un moteur multimédia procédural écrit de zéro en Rust : décodage, composition typographique, lancer de rayons, simulation physique, synthèse audio et encodage, tout dans un même arbre de sources. Aucun crate tiers, aucune bibliothèque système liée, aucun réseau à la compilation.
+<p align="center">
+  <sub>Décoder · Composer · Path tracing · Simuler · Synthétiser · Encoder &nbsp;|&nbsp; Zéro dépendance · Déterministe au bit près</sub>
+</p>
 
-![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)
-![Tests](https://img.shields.io/badge/tests-3929%20passed-brightgreen.svg)
-![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)
-![Crates](https://img.shields.io/badge/crates-28-blue.svg)
-![Distribution](https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg)
-[![Release](https://img.shields.io/badge/release-v2.1-blue.svg)](https://github.com/Qianjinqie/prism-engine/releases)
+<p align="center">
+  <a href="../README.md">中文</a>
+  · <a href="README.en.md">English</a>
+  · <a href="README.de.md">Deutsch</a>
+  · <a href="README.es.md">Español</a>
+  · <b><a href="README.fr.md">Français</a></b>
+  · <a href="README.ja.md">日本語</a>
+  · <a href="README.ko.md">한국어</a>
+  · <a href="README.pt-BR.md">Português</a>
+  · <a href="README.ru.md">Русский</a>
+</p>
 
-![Nature morte rendue par Prism Engine](assets/still-life.png)
+<p align="center">
+  <img src="https://img.shields.io/badge/license-Apache--2.0-3B82F6?style=for-the-badge" alt="License">
+  <img src="https://img.shields.io/badge/tests-3929%20passed-22C55E?style=for-the-badge" alt="Tests">
+  <img src="https://img.shields.io/badge/dependencies-zero-16A34A?style=for-the-badge" alt="Dependencies">
+  <img src="https://img.shields.io/badge/crates-28-8B5CF6?style=for-the-badge" alt="Crates">
+  <img src="https://img.shields.io/badge/size-18.9%20MB-64748B?style=for-the-badge" alt="Size">
+  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v2.1-6366F1?style=for-the-badge" alt="Release"></a>
+</p>
 
-<sub>Pas une maquette, une sortie du moteur : 1200×675 · 256 spp · lancer de rayons + BSDF physique + tonemapping ACES · 4 threads, 158 s. Source de la scène : [`docs/gallery/gallery.rs`](gallery/gallery.rs).</sub>
+<p align="center">
+  <a href="https://github.com/Qianjinqie/prism-engine/releases/latest"><img src="https://img.shields.io/badge/DOWNLOAD-v2.1-6C5CE7?style=for-the-badge" alt="Download"></a>
+  <a href="#opérationnel-en-trois-minutes"><img src="https://img.shields.io/badge/QUICK_START-3%20minutes-0EA5E9?style=for-the-badge" alt="Quick start"></a>
+  <a href="#architecture"><img src="https://img.shields.io/badge/ARCHITECTURE-28%20crates-334155?style=for-the-badge" alt="Architecture"></a>
+</p>
 
-**642** fichiers · **28** crates · **261 000** lignes de Rust · **3929** tests · **0** dépendance tierce · **18,9 Mo** en un seul fichier
+<p align="center">
+  <img src="https://cdn.jsdelivr.net/gh/Qianjinqie/prism-engine@main/docs/assets/still-life.png" width="880" alt="Nature morte rendue par Prism Engine">
+</p>
 
----
+<p align="center">
+  <sub>Pas une maquette, une sortie du moteur : 1200×675 · 256 spp · lancer de rayons + BSDF physique + tonemapping ACES · 4 threads, 158 s. Source de la scène : <a href="gallery/gallery.rs"><code>docs/gallery/gallery.rs</code></a>.</sub>
+</p>
+
+<p align="center">
+  <sub><b>642</b> fichiers · <b>28</b> crates · <b>261 000</b> lignes de Rust · <b>3929</b> tests · <b>0</b> dépendance tierce · <b>18,9 Mo</b> en un seul fichier</sub>
+</p>
 
 ## Pourquoi ce moteur existe
 
 Une chaîne multimédia classique est un assemblage : ffmpeg décode, Blender rend, ImageMagick écrit les images fixes, un DAW s'occupe du son, et des scripts collent le tout avec des fichiers temporaires. Chaque outil est excellent, mais aux jointures deux choses se perdent — **le déterminisme** et **l'auditabilité**. Changez de machine et le chemin flottant change ; changez de version et les valeurs par défaut bougent ; en cas de problème, il reste cinq boîtes noires et une pile de fichiers intermédiaires.
+
+| | Pipeline classique | Prism Engine |
+| --- | --- | --- |
+| Chaîne | cinq ou six outils + scripts de collage + fichiers temporaires | un seul arbre de sources, une compilation |
+| Autre machine | les chemins flottants changent, les pixels changent | même entrée, mêmes octets |
+| Une panne | cinq boîtes noires et une pile d'intermédiaires | chaque pixel remonte à une ligne de source |
+| Dépendances | des dizaines de bibliothèques natives, chacune avec sa matrice de versions | 0 |
 
 Prism Engine ramène toute la chaîne dans un seul arbre de sources. Même scène, mêmes paramètres, n'importe quelle machine, n'importe quelle exécution : pixels identiques et octets identiques. Ce n'est pas une promesse ; 3929 tests le verrouillent.
 
@@ -38,8 +73,6 @@ Le public est volontairement étroit : les chaînes qui exigent « même entrée
 | **Zéro code tiers** | Les 110 dépendances d'exécution et 20 de test sont toutes des dépendances `path` internes ; pas de `build.rs`, pas d'édition de liens native, pas de réseau à la compilation | Chaque format, algorithme, police et codec doit être écrit ici |
 | **Déterminisme au bit près** | IDCT en virgule fixe, séquences d'échantillonnage fixes, hachage de configuration en quatre dimensions ; identique entre plateformes à entrée égale | Renoncer aux raccourcis flottants rapides et à l'ordre d'itération des tables de hachage |
 | **Distribution en un fichier** | 642 fichiers de 28 crates fusionnés en un texte UTF-8 de 18,9 Mo, restauré par `node unpack.cjs` | On renonce à parcourir le code directement sur GitHub |
-
----
 
 ## Opérationnel en trois minutes
 
@@ -62,8 +95,6 @@ cargo run -p prism-app --release     # scène de démonstration intégrée
 ```
 
 Le résultat est un workspace Cargo ordinaire (28 crates sous `src/`) ; les commandes `cargo` suivantes se comportent comme dans tout projet Rust. La première compilation prend quelques minutes.
-
----
 
 ## Un plan, un texte
 
@@ -120,11 +151,11 @@ cargo run -p prism-app --release -- render examples/w2d_showcase.prism \
 
 `render` emprunte le chemin direct v2 : compiler le graphe de nœuds → évaluer image par image → encoder dans un conteneur, sans images intermédiaires sur disque. Les nœuds non pris en charge produisent une erreur explicite `R5xxx` au lieu d'être ignorés en silence.
 
-![Image de titre rendue depuis le DSL](assets/dsl-title.png)
-
-<sub>Image 10 de `examples/w2d_showcase.prism` : une sphère 3D, un calque de texte, un étalonnage et une piste de fondu partagent une même timeline.</sub>
-
----
+<p align="center">
+  <img src="https://cdn.jsdelivr.net/gh/Qianjinqie/prism-engine@main/docs/assets/dsl-title.png" width="760" alt="Image de titre rendue depuis le DSL">
+  <br>
+  <sub>Image 10 de `examples/w2d_showcase.prism` : une sphère 3D, un calque de texte, un étalonnage et une piste de fondu partagent une même timeline.</sub>
+</p>
 
 ## Ou simplement l'API Rust
 
@@ -158,8 +189,6 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 
 `render_pixel` est une fonction pure : scène, caméra, contexte d'échantillonnage et coordonnée de pixel en entrée ; RGB linéaire en sortie. À paramètres égaux, les bits sont identiques quel que soit le thread ou l'ordre d'appel — c'est pourquoi le rendu parallèle n'a besoin d'aucune synchronisation.
 
----
-
 ## Carte des capacités
 
 | Couche | Ce qu'elle fait |
@@ -174,8 +203,6 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 | **Intégrer** | Trois outils MCP stdio (`scene_check` / `render_submit` / `diagnose`), SDK de nœuds avec négociation de version sémantique, service de rendu HTTP/1.1, rendu par lots via manifeste cartésien, squelette de sonde d'encodeurs matériels sur trois plateformes |
 
 > Le tableau n'est qu'une table des matières. Les paramètres exacts et le « ce qu'elle ne sait pas faire » de chaque capacité se trouvent dans `开发者指南.md`, dans le paquet.
-
----
 
 ## Des capacités qui ne tiennent pas dans la liste
 
@@ -216,8 +243,6 @@ Chaque type de nœud du moteur est une **solution particulière** d'un triplet �
 
 Quatre scripts de porte sans dépendance (Node uniquement) : défense contre les écritures fantômes (avec auto-test inverse), scan d'hygiène open source, auto-contrôle de conformité (9/9 réussis plus 8/8 preuves que le critère échoue quand il doit), et vérification aller-retour du paquet. Une porte n'a que deux issues — réussite ou échec — et « ça a l'air bon » n'en fait pas partie. **Un faux vert est plus dangereux qu'un échec.**
 
----
-
 ## Le déterminisme n'est pas un slogan
 
 Quatre couches, des paramètres jusqu'aux octets :
@@ -226,8 +251,6 @@ Quatre couches, des paramètres jusqu'aux octets :
 2. **Points fixes d'octets** : export→import→export USD identique octet pour octet ; WAV 16/24/32 bits aller-retour sans perte ; EXR comparé flux de bits contre flux de bits avec l'OpenEXR officiel.
 3. **Déterminisme du paquetage** : empaqueter deux fois la même source donne le même SHA-256 ; l'aller-retour de dépaquetage compare chaque fichier octet par octet.
 4. **Les tests comme critère** : beaucoup des 3929 tests verrouillent des valeurs d'or (tolérance resserrée de 1e-2 à 1e-6, résidu mesuré 4,53e-7) ; la fidélité de forme est bornée par distance de Hausdorff plutôt que par « ça se ressemble ».
-
----
 
 ## Architecture
 
@@ -266,8 +289,6 @@ Structure après dépaquetage :
 
 > Les documents de conception (`docs/设计/`) ne vivent que dans le dépôt complet de l'éditeur et ne sont pas distribués ; le crate de démonstration `prism-anim-demo` n'est pas empaqueté non plus.
 
----
-
 ## Compiler, tester, portes
 
 ```bash
@@ -286,8 +307,6 @@ node tools/pack_source_txt.mjs --verify      # aller-retour paquetage/dépaqueta
 - La CI compte six jobs : défense écriture fantôme, compilation + tests complets, compilation wasm32, vérification statique WGSL, interopérabilité de flux de bits avec l'OpenEXR officiel, contre-vérification sur hôte Node.
 - Le scan d'hygiène a encore des occurrences : la couche documentaire distribuée est propre, le reste se trouve dans les commentaires de source et les fichiers propres au dépôt. Le script existe pour que le reste demeure **visible et corrigeable un par un**, pas pour prétendre que tout est propre.
 
----
-
 ## Limites honnêtes
 
 | Limite | État | Issue |
@@ -303,8 +322,6 @@ node tools/pack_source_txt.mjs --verify      # aller-retour paquetage/dépaqueta
 
 Ce ne sont pas des points « plus tard ». Ils ne sont explicitement pas pris en charge aujourd'hui. Mieux ici que cachés dans une issue.
 
----
-
 ## Conformité
 
 Le moteur promet zéro dépendance de code tiers et le vérifie lui-même :
@@ -313,14 +330,10 @@ Le moteur promet zéro dépendance de code tiers et le vérifie lui-même :
 - **C2 Registre d'actifs complet** : les cinq entrées d'actifs ont tous les champs de la table principale ; les polices sont distribuées sous SIL OFL 1.1 avec le texte intégral de la licence à côté de la police dans `src/prism-text/font_data/LICENSE`.
 - **C3 Avis tiers** : `Compliance/THIRD-PARTY-NOTICES.md` sépare explicitement « actifs de données ≠ dépendances de code ».
 
----
-
 ## Licence
 
 Apache License 2.0, voir [`LICENSE`](../LICENSE).
 
 Lors d'une redistribution, conservez les avis et le registre d'actifs sous `Compliance/`.
-
----
 
 <sub>L'image d'en-tête et la capture DSL ont été rendues par le moteur lui-même ; les paramètres figurent dans les légendes et dans [`docs/gallery/gallery.rs`](gallery/gallery.rs).</sub>
