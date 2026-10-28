@@ -1,6 +1,3 @@
-<p align="center">
-  <img src="https://cdn.jsdelivr.net/gh/Qianjinqie/prism-engine@main/docs/assets/logo.png" width="132" alt="Prism Engine">
-</p>
 
 <h1 align="center">Prism Engine</h1>
 
