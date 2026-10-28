@@ -4,10 +4,10 @@
 
 <h1 align="center">Prism Engine</h1>
 
-<h3 align="center">Todo el pipeline multimedia, en un solo árbol de código</h3>
+<h3 align="center">Motor de medios procedural</h3>
 
 <p align="center">
-  <sub>Decodificar · Componer · Path tracing · Simular · Sintetizar · Codificar &nbsp;|&nbsp; Cero dependencias · Determinista bit a bit</sub>
+  <sub>Decodificar · Componer · Path tracing · Simular · Sintetizar · Codificar &nbsp;|&nbsp; Fotograma · Secuencia · Montaje final &nbsp;|&nbsp; CPU + Vulkan</sub>
 </p>
 
 <p align="center">
@@ -49,30 +49,23 @@
   <sub><b>642</b> archivos · <b>28</b> crates · <b>261 mil</b> líneas de Rust · <b>3929</b> pruebas · <b>0</b> dependencias de terceros · <b>18,9 MB</b> en un solo archivo</sub>
 </p>
 
-## Por qué existe este motor
+## Mapa de capacidades
 
-Una tubería de medios convencional se ensambla: ffmpeg decodifica, Blender renderiza, ImageMagick escribe imágenes fijas, un DAW se encarga del sonido y los scripts lo pegan todo con archivos temporales. Cada herramienta es excelente, pero en las costuras se pierden dos cosas: **determinismo** y **auditabilidad**. Cambia de máquina y cambia la ruta de coma flotante; cambia de versión y se mueven los valores por defecto; cuando algo falla, quedan cinco cajas negras y una pila de archivos intermedios.
+Un motor de medios procedural en Rust. La entrada es una escena `.prism` o una llamada a la API de Rust; la salida es un fotograma, una secuencia de fotogramas o un montaje final. Las capas siguen una cadena de medios; congelar un instante da un fotograma, avanzar y grabarlo da vídeo — todas las capas tratan ambos igual.
 
-| | Pipeline convencional | Prism Engine |
-| --- | --- | --- |
-| Cadena | cinco o seis herramientas + scripts de pegamento + archivos temporales | un árbol de código, una compilación |
-| Otra máquina | las rutas de coma flotante cambian, los píxeles cambian | misma entrada, mismos bytes |
-| Algo falla | cinco cajas negras y un montón de intermedios | cada píxel se rastrea hasta una línea de código |
-| Dependencias | decenas de bibliotecas nativas, cada una con su matriz de versiones | 0 |
+| Capa | Qué hace |
+| --- | --- |
+| **Leer** | PNG (8/16 bits, inversión de filtros), JPEG baseline (IDCT de coma fija, idéntico bit a bit entre plataformas), EXR (lectura/escritura, familia de compresión, DWA), RAW de cámara, GIF / APNG fotograma a fotograma, WAV; importación glTF / OBJ / USDA, parámetros MaterialX; carga TTF/OTF con cadena de respaldo de cuatro niveles (incorporada → usuario → subconjuntos multi-escritura → símbolos matemáticos) |
+| **Componer** | Análisis OpenType, shaping GSUB/GPOS, bidireccional UAX #9, cuatro formas árabes, composición vertical; composición de fórmulas (sub/superíndices, fracciones, radicales, matrices, operadores grandes); DSL v1/v2 compilado a un grafo de tripletas; cinco combinadores de alto nivel (cabecera / rótulo inferior / pantalla dividida / Ken Burns / morph entre escenas); cuatro transiciones + morph, muestreables en cualquier instante |
+| **Renderizar** | Path tracing + BSDF físico (difuso / especular / vidrio / metal / subsuperficie), vidrio y metal por inversión estocástica (serie de Neumann, Monte Carlo); volúmenes heterogéneos Woodcock; intersecciones analíticas para cilindros / conos / toros / superficies de revolución (cuártica por Ferrari); mallas triangulares + SAH-BVH (ordenación estable, construcción determinista); mallas horneadas a SDF para booleanos / deformación de dominio / colisión exacta; CpuRef como backend de primera clase + pipelines Vulkan de cómputo y ray tracing |
+| **Simular** | Solucionador XPBD unificado — rígidos / blandos / tela / articulaciones / fluidos / fractura son seis juegos de parámetros de un mismo bucle de proyección de restricciones; humo FLIP; partículas + AudioReactive; restricciones y sombreado de pelo; campos de flujo / sistemas L / autómatas celulares / reacción-difusión / fractales / Voronoi; solución analítica de resortes y keyframes |
+| **Etalonar** | Etalonaje secundario (selecciones HSL + curvas RGB); presets cinematic / film / anime, con tres niveles (borrador / estándar / cine) tarifados explícitamente; blur / bloom / viñeta / aberración cromática / sharpen / glitch / dissolve; halation + grano de película a dos escalas (derivado en el dominio del píxel); denoising triple; cuatro estilos NPR (toon / watercolor / halftone / oil); funciones de transferencia PQ / HLG, sRGB lineal ↔ ACEScg, transformada de salida ACES |
+| **Sonido** | Oscilador PolyBLEP anti-aliasing + envolvente ADSR cerrada + 4 presets de ánimo; biblioteca de escalas + 12-TET + máquina de estados de progresiones por gramática funcional + conducción de voces; arpegiador / caja de ritmos por pasos / rejilla de compases; parser SMF escrito a mano, sampler SFZ, síntesis granular; modelado físico / paneo espacial / cadenas de efectos; mezcla multipista + limitación de picos; beat / onset / FFT, horneado AudioReactive, normalización de sonoridad; WAV 16/24/32 bits round-trip byte a byte |
+| **Entregar** | Contenedor PRMV propio (v2/v3, v3 lee v1/v2) + codificación temporal I/P; control de tasa water-filling + estimación de movimiento qpel subpíxel (PSNR medido +2,577 dB, tamaño −21,6 %); ffmpeg detectado en tiempo de ejecución — pipe stdin a H.264/HEVC si existe, fallback automático a MJPEG si no, siempre sale un archivo; contenedores MP4 + MJPEG, secuencias EXR; granja de frames multiproceso (reanudable, MD5 paralelo == MD5 serie); mapeo temporal NLE / keyframes / transiciones |
+| **Integrar** | Tres herramientas MCP stdio (`scene_check` / `render_submit` / `diagnose`); SDK de nodos con negociación de versión semántica + paquete de nodo de ejemplo; CLI (`render` / `preview` / `demo`); editor interactivo con dos niveles de previsualización (Draft geométrico / Real bajo spp) + incrementos por firma de subgrafo; manifiesto batch como producto cartesiano; esqueleto de sonda de codificador hardware para tres plataformas (VideoToolbox / NVENC / VAAPI, sin backend conectado) |
+| **Vía auxiliar** | Arte generativo: campos de flujo / sistemas L / autómatas celulares / reacción-difusión / Mandelbrot / Voronoi, draw-on vectorial y gráficos. Asistencia IA: capa de inferencia mock determinista (storyboard / subtítulos / sugerencias de color), pesos del modelo leídos como datos con multiplicación-suma propia, sin framework de ML |
 
-Prism Engine lleva toda la cadena a un solo árbol de código. La misma escena, los mismos parámetros, cualquier máquina, cualquier ejecución: píxeles idénticos y bytes idénticos. No es una promesa; 3929 pruebas lo sujetan.
-
-No pretende reemplazar a ffmpeg ni a Blender. Reemplaza el pegamento entre ellos y el determinismo que ese pegamento tira en silencio.
-
-El público es estrecho a propósito: tuberías que necesitan «misma entrada, cualquier máquina, misma salida» — renderizado por lotes, investigación gráfica reproducible, renderizado dentro de CI.
-
-### Tres restricciones duras
-
-| Restricción | Cómo se aplica | Qué cuesta |
-| --- | --- | --- |
-| **Cero código de terceros** | Las 110 dependencias de ejecución y 20 de prueba son todas `path` dentro del repositorio; sin `build.rs`, sin enlazado nativo, sin red al compilar | Cada formato, algoritmo, fuente y códec hay que escribirlo aquí |
-| **Determinismo bit a bit** | IDCT de coma fija, secuencias de muestreo fijas, un hash de configuración tetradimensional; idéntico entre plataformas para la misma entrada | Renunciar a atajos rápidos de coma flotante y a depender del orden de iteración de tablas hash |
-| **Distribución en un archivo** | 642 archivos de 28 crates fusionados en un texto UTF-8 de 18,9 MB, restaurado con `node unpack.cjs` | Se pierde la comodidad de hojear el código directamente en GitHub |
+La tabla solo enumera capacidades. Lo que cada una no puede hacer está en [Límites honestos](#límites-honestos), no escondido en la tabla.
 
 ## En marcha en tres minutos
 
@@ -189,39 +182,19 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 
 `render_pixel` es una función pura: entran escena, cámara, contexto de muestreo y coordenada de píxel; sale RGB lineal. Con los mismos parámetros devuelve bits idénticos sin importar el hilo ni el orden de llamada; por eso el renderizado en paralelo no necesita sincronización alguna.
 
-## Mapa de capacidades
-
-| Capa | Qué hace |
-| --- | --- |
-| **Leer** | PNG (8/16 bit), JPEG baseline (IDCT de coma fija), GIF/APNG fotograma a fotograma, EXR (incluido DWA), RAW baseline, WAV; activos glTF / OBJ / USDA, parámetros MaterialX, fuentes TTF/OTF externas |
-| **Componer** | Compilación DSL v1/v2, cinco combinadores de alto nivel (tarjeta de título / lower third / pantalla dividida / Ken Burns / morph entre escenas), cuatro transiciones + morph, composición de fórmulas (subíndices, fracciones, raíces, matrices, operadores grandes), muestreo de la línea de tiempo en cualquier instante |
-| **Renderizar** | Trazado de rayos + BSDF físico (difuso / especular / vidrio / metal / subsuperficie), volúmenes heterogéneos Woodcock, intersección analítica de cilindros / conos / toros / superficies de revolución (cuártica por forma cerrada de Ferrari), mallas triangulares con SAH-BVH, backend de referencia en CPU, doble tubería Vulkan compute + ray tracing |
-| **Simular** | Solver unificado XPBD (rígidos / blandos / tela / articulaciones / fluidos / fractura), humo FLIP, partículas (opcionalmente ligadas a la envolvente de audio), campos de flujo / sistemas L / autómatas celulares / reacción-difusión / fractales / Voronoi |
-| **Etalonar** | Etalonaje secundario (selecciones HSL + curvas RGB), presets cinematic / film / anime, blur / bloom / halation / grano, cuatro estilos NPR (toon / acuarela / semitono / óleo), denoiser triple, rasterización de trazados vectoriales y draw-on |
-| **Sonar** | Sintetizadores PolyBLEP, ADSR, máquinas de estado de escalas y progresiones de acordes, arpegiador, caja de ritmos por pasos, análisis SMF, sampler SFZ, síntesis granular, mezcla multipista, normalización de sonoridad, análisis de beat / onset / FFT |
-| **Entregar** | Contenedor propio `PRMV` (v2/v3) con codificación en dominio JPEG de tramas I/P, control de tasa water-filling, estimación de movimiento qpel; tubería ffmpeg (H.264/HEVC si existe, degradación automática a MJPEG si no); secuencias EXR; granja de fotogramas multiproceso (reanudable, MD5 en paralelo == MD5 en serie) |
-| **Integrar** | Tres herramientas MCP stdio (`scene_check` / `render_submit` / `diagnose`), SDK de nodos con negociación de versión semántica, servicio HTTP/1.1 de renderizado, renderizado por lotes con manifiesto cartesiano, esqueleto de sondeo de codificadores hardware en tres plataformas |
-| **Vía auxiliar** | Arte generativo: campos de flujo / sistemas L / autómatas celulares / reacción-difusión / Mandelbrot / Voronoi, draw-on vectorial y gráficos. Asistencia IA: capa de inferencia mock determinista (storyboard / subtítulos / sugerencias de color), pesos del modelo leídos como datos con multiplicación-suma propia, sin framework de ML |
-
-> La tabla solo enumera capacidades. Lo que cada una no puede hacer está en [Límites honestos](#límites-honestos), no escondido en la tabla.
-
 ## Capacidades que no caben en la lista
 
-Hay cosas que no entran en la tabla anterior: no son «un formato más», sino infraestructura que el motor cultivó para sí mismo.
+Estas cosas no son soporte de formatos, sino infraestructura dentro del motor.
 
 ### Audio: un núcleo de DAW incorporado
 
-`prism-audio` no es un módulo periférico que resulta que lee WAV. De la composición a la mezcla es una cadena completa, y cada función es una función pura de sus parámetros (bits idénticos entre plataformas para la misma entrada):
+La lista de capacidades está en la fila **Sonido**. Aquí va cómo funciona, y por qué puede colgar de la misma línea de tiempo de render:
 
-- **Síntesis**: familia de osciladores PolyBLEP antialias, envolventes ADSR en forma cerrada, cuatro presets de ánimo;
-- **Teoría**: biblioteca de escalas (mayor/menor, pentatónica, modos), clase de altura 12-TET ↔ frecuencia, máquina de estados con gramática funcional para progresiones de acordes y conducción de voces;
-- **Arreglo**: arpegiador (patrón / tasa / octava), caja de ritmos por pasos, rejillas de compás y pulso;
-- **Material**: análisis SMF escrito a mano (importación MIDI), sampler SFZ, síntesis granular;
-- **Diseño sonoro**: modelado físico, paneo espacial, cadenas de efectos;
-- **Mezcla**: mezcla lineal multipista, fundidos, protección de picos;
-- **Análisis y vínculo**: detección de beat / onset, espectros FFT, extracción de envolvente, normalización de sonoridad; el horneado AudioReactive lee una ventana fija en el fotograma N, lo que lo hace función pura del fotograma y equivalente a seek.
+- **Cada función es una función pura de sus parámetros**: la misma partitura recalculada en cualquier posición de seek da muestras idénticas bit a bit, sin depender del historial de reproducción
+- **AudioReactive se hornea en una función pura por fotograma**: el fotograma N lee una ventana fija, así que saltar fotogramas, reproducir al revés o trocear en paralelo no cambia el resultado
+- **La mezcla es álgebra lineal offline-paralela**: suma multipista + fundidos + limitación de picos, sin máquina de estados oculta
 
-> Límite: la codificación AAC / mp3 no se implementa aquí (lastre histórico de patentes más esfuerzo); pasa por ffmpeg externo.
+> Límite: la codificación AAC / mp3 no se implementa aquí (historia de patentes más esfuerzo); pasa por ffmpeg externo.
 
 ### Un registro de kernels definibles
 
@@ -240,18 +213,24 @@ Cada tipo de nodo del motor es una **solución particular** de una terna «kerne
 | **Metal** | Compilado tras una puerta, sin activar | Port isomorfo terminado, no verificado en hardware, `is_available()` siempre false |
 | **WebGPU** | Solo conclusión | Evaluación de viabilidad hecha (4–6 días-persona de port), ruta de renderizado no implementada |
 
-### Puertas anti-falso-verde
+## Hechos de ingeniería
 
-Cuatro scripts de puerta sin dependencias (solo Node): defensa contra escrituras fantasma (con autoprueba inversa), escaneo de higiene de código abierto, autocomprobación de cumplimiento (9/9 aprobadas más 8/8 pruebas de que los criterios fallan cuando deben) y verificación de ida y vuelta del empaquetado. Una puerta tiene exactamente dos resultados — pasa o falla — y «parece que está bien» no es uno de ellos. **Un verde falso es más peligroso que un fallo.**
+Tres restricciones y lo que cuesta cada una:
 
-## El determinismo no es un eslogan
+| Restricción | Cómo se aplica | Qué cuesta |
+| --- | --- | --- |
+| Cero código de terceros | Las 110 dependencias de ejecución + 20 de test son dependencias `path` dentro del repositorio; sin `build.rs`, sin enlazado nativo, sin red al compilar | Cada formato, algoritmo, fuente y códec hay que escribirlo aquí |
+| Determinismo bit a bit | IDCT de coma fija, secuencias de muestreo fijas, un hash de configuración de cuatro dimensiones; idéntico entre plataformas para la misma entrada | Se renuncia a atajos rápidos en coma flotante y a depender del orden de iteración de hashmaps |
+| Distribución en un solo archivo | 642 archivos de 28 crates fusionados en un texto UTF-8 de 18,9 MB, restaurado con `node unpack.cjs` | Se renuncia a hojear el código directamente en GitHub |
+
+### Cómo se verifica el determinismo
 
 Cuatro capas, desde los parámetros hasta los bytes:
 
-1. **Cierre de firmas**: grafos de nodos, claves de caché, claves de instantánea y firmas de fotograma comparten un hash de configuración tetradimensional. Cambia un parámetro ⇒ la clave debe cambiar ⇒ no hay reutilización indebida. Los nodos iterativos llevan `(ε, n)` en la clave; los nodos de flujo, el número de fotograma; con `None` todo degrada bit a bit al comportamiento anterior.
-2. **Puntos fijos de bytes**: exportar→importar→exportar USD es idéntico byte a byte; WAV 16/24/32 bit va y vuelve sin pérdida; EXR se compara bitstream contra bitstream con el OpenEXR oficial.
-3. **Determinismo del empaquetado**: empaquetar dos veces el mismo código da el mismo SHA-256; la ida y vuelta de desempaquetado compara cada archivo byte a byte.
-4. **Las pruebas como criterio**: muchas de las 3929 pruebas fijan valores de oro (tolerancia ajustada de 1e-2 a 1e-6, residuo medido 4,53e-7); la fidelidad de forma se acota con distancias de Hausdorff en lugar de «se parece bastante».
+1. **Cierre de firmas**: grafos de nodos, claves de caché, claves de snapshot y firmas de fotograma comparten un hash de configuración de cuatro dimensiones. Cambiar un parámetro ⇒ la clave cambia ⇒ no hay reutilización obsoleta. Los nodos de iteración llevan `(ε, n)` en la clave; los de flujo, el número de fotograma; `None` degrada bit a bit al comportamiento anterior.
+2. **Puntos fijos de bytes**: USD exportar→importar→exportar es idéntico byte a byte; los round-trips WAV de 16/24/32 bits coinciden; EXR se compara bitstream contra bitstream con el OpenEXR oficial.
+3. **Determinismo de empaquetado**: empaquetar dos veces la misma fuente da el mismo SHA-256; el round-trip de desempaquetado compara cada archivo byte a byte.
+4. **Los tests como criterio**: muchos de los 3929 tests fijan valores de oro (tolerancia ajustada de 1e-2 a 1e-6, residuo medido 4,53e-7); la fidelidad de forma se acota con distancia de Hausdorff en lugar de «se ve bastante parecido».
 
 ## Arquitectura
 
@@ -307,6 +286,10 @@ node tools/pack_source_txt.mjs --verify      # ida y vuelta de empaquetado, byte
 - Suite completa: **3929 passed / 0 failed / 0 ignored**, 179 secciones de prueba, 171,5 s con todos los núcleos (release).
 - La CI tiene seis jobs: defensa de escritura fantasma, compilación + pruebas completas, compilación wasm32, comprobación estática WGSL, interoperabilidad de bitstream con el OpenEXR oficial, verificación cruzada en host Node.
 - El escaneo de higiene aún tiene coincidencias: la capa de documentación distribuida está limpia, el resto está en comentarios de código y archivos solo del repositorio. El script existe para que lo restante siga **visible y corregible pieza a pieza**, no para fingir que todo está limpio.
+
+### Puertas anti-falso-verde
+
+Cuatro scripts de puerta sin dependencias (solo Node): defensa contra escrituras fantasma (con autoprueba inversa), escaneo de higiene de código abierto, autocomprobación de cumplimiento (9/9 aprobadas más 8/8 pruebas de que los criterios fallan cuando deben) y verificación de ida y vuelta del empaquetado. Una puerta tiene exactamente dos resultados — pasa o falla — y «parece que está bien» no es uno de ellos. **Un verde falso es más peligroso que un fallo.**
 
 ## Límites honestos
 

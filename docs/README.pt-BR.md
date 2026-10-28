@@ -4,10 +4,10 @@
 
 <h1 align="center">Prism Engine</h1>
 
-<h3 align="center">Todo o pipeline de mídia, em uma única árvore de código</h3>
+<h3 align="center">Motor de mídia procedural</h3>
 
 <p align="center">
-  <sub>Decodificar · Compor · Path tracing · Simular · Sintetizar · Codificar &nbsp;|&nbsp; Zero dependências · Determinístico byte a byte</sub>
+  <sub>Decodificar · Compor · Path tracing · Simular · Sintetizar · Codificar &nbsp;|&nbsp; Imagem · Sequência · Corte final &nbsp;|&nbsp; CPU + Vulkan</sub>
 </p>
 
 <p align="center">
@@ -49,30 +49,23 @@
   <sub><b>642</b> arquivos · <b>28</b> crates · <b>261 mil</b> linhas de Rust · <b>3929</b> testes · <b>0</b> dependências de terceiros · <b>18,9 MB</b> em arquivo único</sub>
 </p>
 
-## Por que este motor existe
+## Mapa de capacidades
 
-Um pipeline de mídia convencional é montado: ffmpeg decodifica, Blender renderiza, ImageMagick grava imagens estáticas, um DAW cuida do som e scripts colam tudo com arquivos temporários. Cada ferramenta é excelente, mas nas junções duas coisas se perdem — **determinismo** e **auditabilidade**. Troque de máquina e o caminho de ponto flutuante muda; troque de versão e os padrões se movem; quando algo quebra, restam cinco caixas-pretas e uma pilha de arquivos intermediários.
+Um motor de mídia procedural em Rust. A entrada é uma cena `.prism` ou uma chamada à API Rust; a saída é uma imagem, uma sequência de quadros ou um corte final. As camadas seguem uma cadeia de mídia; congelar um instante dá uma imagem, avançar e gravar dá vídeo — todas as camadas tratam os dois do mesmo jeito.
 
-| | Pipeline convencional | Prism Engine |
-| --- | --- | --- |
-| Cadeia | cinco ou seis ferramentas + scripts de cola + arquivos temporários | uma árvore de código, uma compilação |
-| Outra máquina | caminhos de ponto flutuante mudam, pixels mudam | mesma entrada, mesmos bytes |
-| Algo quebra | cinco caixas-pretas e uma pilha de intermediários | cada pixel remonta a uma linha de código |
-| Dependências | dezenas de bibliotecas nativas, cada uma com sua matriz de versões | 0 |
+| Camada | O que faz |
+| --- | --- |
+| **Ler** | PNG (8/16 bits, inversão de filtros), JPEG baseline (IDCT de ponto fixo, idêntico bit a bit entre plataformas), EXR (leitura/escrita, família de compressão, DWA), RAW de câmera, GIF / APNG quadro a quadro, WAV; importação glTF / OBJ / USDA, parâmetros MaterialX; carga TTF/OTF com cadeia de fallback de quatro níveis (embutida → usuário → subconjuntos multi-escrita → símbolos matemáticos) |
+| **Compor** | Análise OpenType, shaping GSUB/GPOS, bidirecional UAX #9, quatro formas árabes, composição vertical; composição de fórmulas (sub/sobrescritos, frações, radicais, matrizes, operadores grandes); DSL v1/v2 compilado em grafo de triplas; cinco combinadores de alto nível (cartela de título / faixa inferior / tela dividida / Ken Burns / morph entre cenas); quatro transições + morph, amostráveis em qualquer instante |
+| **Renderizar** | Path tracing + BSDF físico (difuso / especular / vidro / metal / subsuperfície), vidro e metal por inversão estocástica (série de Neumann, Monte Carlo); volumes heterogêneos Woodcock; interseções analíticas para cilindros / cones / toros / superfícies de revolução (quártica por Ferrari); malhas triangulares + SAH-BVH (ordenação estável, construção determinística); malhas assadas em SDF para booleanos / deformação de domínio / colisão exata; CpuRef como backend de primeira classe + pipelines Vulkan de computação e ray tracing |
+| **Simular** | Solver XPBD unificado — rígidos / macios / tecido / juntas / fluidos / fratura são seis conjuntos de parâmetros de um mesmo laço de projeção de restrições; fumaça FLIP; partículas + AudioReactive; restrições e sombreamento de pelos; campos de fluxo / sistemas L / autômatos celulares / reação-difusão / fractais / Voronoi; solução analítica de molas e keyframes |
+| **Colorir** | Graduação secundária (seleções HSL + curvas RGB); presets cinematic / film / anime, com três níveis (rascunho / padrão / cinema) precificados explicitamente; blur / bloom / vinheta / aberração cromática / sharpen / glitch / dissolve; halation + grão de filme em duas escalas (derivado no domínio do pixel); denoising triplo; quatro estilos NPR (toon / watercolor / halftone / oil); funções de transferência PQ / HLG, sRGB linear ↔ ACEScg, transformação de saída ACES |
+| **Som** | Oscilador PolyBLEP anti-aliasing + envelope ADSR fechado + 4 presets de humor; biblioteca de escalas + 12-TET + máquina de estados de progressões por gramática funcional + condução de vozes; arpejador / caixa de ritmos por passos / grade de compassos; parser SMF escrito à mão, sampler SFZ, síntese granular; modelagem física / panning espacial / cadeias de efeitos; mixagem multipista + limitação de picos; beat / onset / FFT, assamento AudioReactive, normalização de loudness; WAV 16/24/32 bits round-trip byte a byte |
+| **Entregar** | Contêiner PRMV próprio (v2/v3, v3 lê v1/v2) + codificação temporal I/P; controle de taxa water-filling + estimação de movimento qpel subpixel (PSNR medido +2,577 dB, tamanho −21,6 %); ffmpeg detectado em tempo de execução — pipe stdin para H.264/HEVC se existir, fallback automático para MJPEG se não, sempre sai um arquivo; contêineres MP4 + MJPEG, sequências EXR; fazenda de quadros multiprocesso (retomável, MD5 paralelo == MD5 serial); mapeamento temporal NLE / keyframes / transições |
+| **Integrar** | Três ferramentas MCP stdio (`scene_check` / `render_submit` / `diagnose`); SDK de nós com negociação de versão semântica + pacote de nó de exemplo; CLI (`render` / `preview` / `demo`); editor interativo com dois níveis de pré-visualização (Draft geométrico / Real baixo spp) + incrementos por assinatura de subgrafo; manifesto batch como produto cartesiano; esqueleto de sonda de codificador de hardware para três plataformas (VideoToolbox / NVENC / VAAPI, sem backend conectado) |
+| **Via auxiliar** | Arte generativa: campos de fluxo / sistemas L / autômatos celulares / reação-difusão / Mandelbrot / Voronoi, draw-on vetorial e gráficos. Assistência de IA: camada de inferência mock determinística (storyboard / legendas / sugestões de cor), pesos do modelo lidos como dados com multiplicação-soma própria, sem framework de ML |
 
-O Prism Engine traz a cadeia inteira para uma única árvore de código. Mesma cena, mesmos parâmetros, qualquer máquina, qualquer execução: pixels idênticos e bytes idênticos. Não é promessa; 3929 testes prendem isso.
-
-Não pretende substituir ffmpeg ou Blender. Substitui a cola entre eles, e o determinismo que essa cola joga fora em silêncio.
-
-O público é estreito de propósito: pipelines que precisam de “mesma entrada, qualquer máquina, mesma saída” — renderização em lote, pesquisa gráfica reproduzível, renderização dentro da CI.
-
-### Três restrições duras
-
-| Restrição | Como é aplicada | O que custa |
-| --- | --- | --- |
-| **Zero código de terceiros** | Todas as 110 dependências de execução e 20 de teste são `path` dentro do repositório; sem `build.rs`, sem link nativo, sem rede na compilação | Cada formato, algoritmo, fonte e codec precisa ser escrito aqui |
-| **Determinismo bit a bit** | IDCT de ponto fixo, sequências de amostragem fixas, hash de configuração quadridimensional; idêntico entre plataformas para a mesma entrada | Abrir mão de atalhos rápidos de ponto flutuante e de depender da ordem de iteração de tabelas hash |
-| **Distribuição em arquivo único** | 642 arquivos de 28 crates fundidos em um texto UTF-8 de 18,9 MB, restaurado com `node unpack.cjs` | Perde-se a conveniência de folhear o código direto no GitHub |
+A tabela lista apenas capacidades. O que cada uma não faz está em [Limites honestos](#limites-honestos), não escondido na tabela.
 
 ## Rodando em três minutos
 
@@ -189,39 +182,19 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 
 `render_pixel` é uma função pura: entram cena, câmera, contexto de amostragem e coordenada do pixel; sai RGB linear. Com os mesmos parâmetros devolve bits idênticos, não importa a thread nem a ordem de chamada — por isso a renderização paralela não precisa de sincronização alguma.
 
-## Mapa de capacidades
-
-| Camada | O que faz |
-| --- | --- |
-| **Ler** | PNG (8/16 bit), JPEG baseline (IDCT de ponto fixo), GIF/APNG quadro a quadro, EXR (incluindo DWA), RAW baseline, WAV; ativos glTF / OBJ / USDA, parâmetros MaterialX, fontes TTF/OTF externas |
-| **Compor** | Compilação DSL v1/v2, cinco combinadores de alto nível (cartela de título / lower third / tela dividida / Ken Burns / morph entre cenas), quatro transições + morph, composição de fórmulas (sub/sobrescrito, frações, radicais, matrizes, operadores grandes), amostragem da linha do tempo em qualquer instante |
-| **Renderizar** | Path tracing + BSDF físico (difuso / especular / vidro / metal / subsuperfície), volumes heterogêneos Woodcock, interseção analítica de cilindros / cones / toros / superfícies de revolução (quártica pela forma fechada de Ferrari), malhas triangulares com SAH-BVH, backend de referência em CPU, pipeline duplo Vulkan compute + ray tracing |
-| **Simular** | Solver unificado XPBD (rígidos / macios / tecido / juntas / fluidos / fratura), fumaça FLIP, partículas (opcionalmente ligadas ao envelope de áudio), campos de fluxo / sistemas L / autômatos celulares / reação-difusão / fractais / Voronoi |
-| **Graduar** | Grade secundário (seleções HSL + curvas RGB), presets cinematic / film / anime, blur / bloom / halation / grão, quatro estilos NPR (toon / aquarela / meio-tom / óleo), denoiser triplo, rasterização de caminhos vetoriais e draw-on |
-| **Soar** | Sintetizadores PolyBLEP, ADSR, máquinas de estado de escalas e progressões de acordes, arpejador, caixa de ritmos por passos, análise SMF, sampler SFZ, síntese granular, mixagem multipista, normalização de loudness, análise de beat / onset / FFT |
-| **Entregar** | Contêiner próprio `PRMV` (v2/v3) com codificação em domínio JPEG de quadros I/P, controle de taxa water-filling, estimação de movimento qpel; pipeline ffmpeg (H.264/HEVC se houver, degradação automática para MJPEG se não); sequências EXR; fazenda de quadros multiprocesso (retomável, MD5 paralelo == MD5 serial) |
-| **Integrar** | Três ferramentas MCP stdio (`scene_check` / `render_submit` / `diagnose`), SDK de nós com negociação de versão semântica, serviço HTTP/1.1 de renderização, renderização em lote por manifesto cartesiano, esqueleto de sondagem de encoders de hardware em três plataformas |
-| **Via auxiliar** | Arte generativa: campos de fluxo / sistemas L / autômatos celulares / reação-difusão / Mandelbrot / Voronoi, draw-on vetorial e gráficos. Assistência de IA: camada de inferência mock determinística (storyboard / legendas / sugestões de cor), pesos do modelo lidos como dados com multiplicação-soma própria, sem framework de ML |
-
-> A tabela lista apenas capacidades. O que cada uma não faz está em [Limites honestos](#limites-honestos), não escondido na tabela.
-
 ## Capacidades que não cabem na lista
 
-Há coisas que não entram na tabela acima: não são “mais um formato”, mas infraestrutura que o motor cultivou para si.
+Estas coisas não são suporte a formatos, mas infraestrutura dentro do motor.
 
 ### Áudio: um núcleo de DAW embutido
 
-`prism-audio` não é um módulo periférico que por acaso lê WAV. Da composição à mixagem é uma cadeia completa, e cada função é uma função pura de seus parâmetros (bits idênticos entre plataformas para a mesma entrada):
+A lista de capacidades está na linha **Som**. Aqui vai como ele funciona, e por que pode pendurar na mesma linha de tempo de render:
 
-- **Síntese**: família de osciladores PolyBLEP com anti-aliasing, envelopes ADSR em forma fechada, quatro presets de humor;
-- **Teoria**: biblioteca de escalas (maior/menor, pentatônica, modos), classe de altura 12-TET ↔ frequência, máquina de estados com gramática funcional para progressões de acordes e condução de vozes;
-- **Arranjo**: arpejador (padrão / taxa / oitava), caixa de ritmos por passos, grades de compasso e pulso;
-- **Material**: análise SMF escrita à mão (importação MIDI), sampler SFZ, síntese granular;
-- **Design de som**: modelagem física, panorâmica espacial, cadeias de efeitos;
-- **Mixagem**: mixagem linear multipista, fades, proteção de picos;
-- **Análise e vínculo**: detecção de beat / onset, espectros FFT, extração de envelope, normalização de loudness; o baking AudioReactive lê uma janela fixa no quadro N, tornando-o função pura do quadro e equivalente a seek.
+- **Cada função é uma função pura de seus parâmetros**: a mesma partitura recalculada em qualquer posição de seek dá amostras idênticas bit a bit, sem depender do histórico de reprodução
+- **AudioReactive é assado em função pura por quadro**: o quadro N lê uma janela fixa, então pular quadros, tocar ao contrário ou fatiar em paralelo não muda o resultado
+- **A mixagem é álgebra linear paralela offline**: soma multipista + fades + limitação de picos, sem máquina de estados escondida
 
-> Limite: codificação AAC / mp3 não é implementada aqui (peso histórico de patentes mais esforço); passa por ffmpeg externo.
+> Limite: codificação AAC / mp3 não é implementada aqui (histórico de patentes mais esforço); passa por ffmpeg externo.
 
 ### Um registro de kernels definíveis
 
@@ -240,18 +213,24 @@ Cada tipo de nó do motor é uma **solução particular** de uma tripla “kerne
 | **Metal** | Compilado atrás de gate, não ativado | Port isomórfico concluído, não verificado em hardware, `is_available()` sempre false |
 | **WebGPU** | Apenas conclusão | Avaliação de viabilidade feita (4–6 pessoas-dia de port), caminho de renderização não implementado |
 
-### Portões anti-falso-verde
+## Fatos de engenharia
 
-Quatro scripts de portão sem dependências (só Node): defesa contra escrita fantasma (com autoteste reverso), varredura de higiene open source, autoverificação de conformidade (9/9 aprovadas mais 8/8 provas de que o critério falha quando deve) e verificação de ida e volta do empacotamento. Um portão tem exatamente dois resultados — passa ou falha — e “parece bom” não é um deles. **Um verde falso é mais perigoso que uma falha.**
+Três restrições e o que cada uma custa:
 
-## Determinismo não é slogan
+| Restrição | Como é aplicada | O que custa |
+| --- | --- | --- |
+| Zero código de terceiros | As 110 dependências de execução + 20 de teste são dependências `path` dentro do repositório; sem `build.rs`, sem linkedição nativa, sem rede na compilação | Todo formato, algoritmo, fonte e codec precisa ser escrito aqui |
+| Determinismo byte a byte | IDCT de ponto fixo, sequências de amostragem fixas, um hash de configuração de quatro dimensões; idêntico entre plataformas para a mesma entrada | Abre mão de atalhos rápidos em ponto flutuante e de depender da ordem de iteração de hashmaps |
+| Distribuição em arquivo único | 642 arquivos de 28 crates fundidos em um texto UTF-8 de 18,9 MB, restaurado por `node unpack.cjs` | Abre mão de folhear o código direto no GitHub |
+
+### Como o determinismo é verificado
 
 Quatro camadas, dos parâmetros até os bytes:
 
-1. **Fecho de assinaturas**: grafos de nós, chaves de cache, chaves de snapshot e assinaturas de quadro compartilham um hash de configuração quadridimensional. Mude um parâmetro ⇒ a chave muda ⇒ sem reutilização indevida. Nós iterativos carregam `(ε, n)` na chave; nós de fluxo, o número do quadro; com `None`, tudo degrada bit a bit ao comportamento antigo.
-2. **Pontos fixos de bytes**: exportar→importar→exportar USD é idêntico byte a byte; WAV 16/24/32 bit vai e volta sem perda; EXR é comparado bitstream contra bitstream com o OpenEXR oficial.
-3. **Determinismo do empacotamento**: empacotar duas vezes o mesmo código gera o mesmo SHA-256; a ida e volta de desempacotamento compara cada arquivo byte a byte.
-4. **Testes como critério**: muitos dos 3929 testes fixam valores de ouro (tolerância apertada de 1e-2 para 1e-6, resíduo medido 4,53e-7); a fidelidade de forma é limitada por distância de Hausdorff em vez de “parece próximo”.
+1. **Fechamento de assinatura**: grafos de nós, chaves de cache, chaves de snapshot e assinaturas de quadro compartilham um hash de configuração de quatro dimensões. Mudar um parâmetro ⇒ a chave muda ⇒ sem reúso obsoleto. Nós de iteração carregam `(ε, n)` na chave; nós de fluxo, o número do quadro; `None` degenera byte a byte para o comportamento antigo.
+2. **Pontos fixos de bytes**: USD exportar→importar→exportar é idêntico byte a byte; round-trips WAV de 16/24/32 bits batem; EXR é comparado bitstream contra bitstream com o OpenEXR oficial.
+3. **Determinismo de empacotamento**: empacotar duas vezes a mesma fonte gera o mesmo SHA-256; o round-trip de desempacotamento compara cada arquivo byte a byte.
+4. **Testes como critério**: muitos dos 3929 testes travam valores de ouro (tolerância apertada de 1e-2 para 1e-6, resíduo medido 4,53e-7); a fidelidade de forma é limitada por distância de Hausdorff em vez de “parece próximo o bastante”.
 
 ## Arquitetura
 
@@ -307,6 +286,10 @@ node tools/pack_source_txt.mjs --verify      # ida e volta de empacotamento, byt
 - Suíte completa: **3929 passed / 0 failed / 0 ignored**, 179 seções de teste, 171,5 s com todos os núcleos (release).
 - A CI tem seis jobs: defesa de escrita fantasma, compilação + testes completos, build wasm32, checagem estática WGSL, interoperabilidade de bitstream com o OpenEXR oficial, verificação cruzada em host Node.
 - A varredura de higiene ainda tem ocorrências: a camada de documentação distribuída está limpa, o resto está em comentários de código e arquivos só do repositório. O script existe para que o restante fique **visível e corrigível peça por peça**, não para fingir que está tudo limpo.
+
+### Portões anti-falso-verde
+
+Quatro scripts de portão sem dependências (só Node): defesa contra escrita fantasma (com autoteste reverso), varredura de higiene open source, autoverificação de conformidade (9/9 aprovadas mais 8/8 provas de que o critério falha quando deve) e verificação de ida e volta do empacotamento. Um portão tem exatamente dois resultados — passa ou falha — e “parece bom” não é um deles. **Um verde falso é mais perigoso que uma falha.**
 
 ## Limites honestos
 
