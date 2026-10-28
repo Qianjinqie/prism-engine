@@ -4,6 +4,22 @@
 <h3 align="center">程序化媒体引擎</h3>
 
 <p align="center">
+  <sub>解码 · 排版 · 路径追踪 · 物理仿真 · 音频合成 · 成片编码 &nbsp;|&nbsp; 单帧 · 帧序列 · 成片 &nbsp;|&nbsp; CPU + Vulkan 双后端</sub>
+</p>
+
+<p align="center">
+  <b><a href="README.md">中文</a></b>
+  · <a href="docs/README.en.md">English</a>
+  · <a href="docs/README.de.md">Deutsch</a>
+  · <a href="docs/README.es.md">Español</a>
+  · <a href="docs/README.fr.md">Français</a>
+  · <a href="docs/README.ja.md">日本語</a>
+  · <a href="docs/README.ko.md">한국어</a>
+  · <a href="docs/README.pt-BR.md">Português</a>
+  · <a href="docs/README.ru.md">Русский</a>
+</p>
+
+<p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/tests-3929%20passed-brightgreen.svg" alt="Tests">
   <img src="https://img.shields.io/badge/dependencies-zero-brightgreen.svg" alt="Dependencies">
