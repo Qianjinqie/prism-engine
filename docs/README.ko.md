@@ -4,6 +4,22 @@
 <h3 align="center">프로시저럴 미디어 엔진</h3>
 
 <p align="center">
+  <sub>디코드 · 조판 · 패스트레이싱 · 물리 시뮬레이션 · 오디오 합성 · 인코딩 | 스틸 · 시퀀스 · 완성 컷 | CPU + Vulkan</sub>
+</p>
+
+<p align="center">
+  <a href="../README.md">中文</a>
+  · <a href="README.en.md">English</a>
+  · <a href="README.de.md">Deutsch</a>
+  · <a href="README.es.md">Español</a>
+  · <a href="README.fr.md">Français</a>
+  · <a href="README.ja.md">日本語</a>
+  · <b><a href="README.ko.md">한국어</a></b>
+  · <a href="README.pt-BR.md">Português</a>
+  · <a href="README.ru.md">Русский</a>
+</p>
+
+<p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/tests-3929%20passed-brightgreen.svg" alt="Tests">
   <img src="https://img.shields.io/badge/dependencies-zero-brightgreen.svg" alt="Dependencies">
