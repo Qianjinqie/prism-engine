@@ -2,7 +2,7 @@
 
 | 项 | 内容 |
 |---|---|
-| 文档 | calculus-film-v2-prd.md（v2.0，待架构评审） |
+| 文档 | 微积分短片-v2-分镜PRD.md（v2.0，待架构评审） |
 | 作者 | 许清楚（Alice）· 产品经理 |
 | 团队 | software-calculus-film-v2（主理人：齐活林） |
 | 上游 | v1 已交付 60s 短片（`crates/prism-author/examples/calculus_film.rs`）；引擎作者批评："不能体现引擎实力，小引擎也能做——用户为什么不选 Manim？" |

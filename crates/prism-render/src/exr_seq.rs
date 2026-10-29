@@ -2,7 +2,7 @@
 //!
 //! # 定位
 //!
-//! 交付矩阵（`docs/delivery-matrix.md`）里的 `EXR-seq` 一列就是本模块：**无损、逐帧
+//! 交付矩阵（`docs/交付矩阵.md`）里的 `EXR-seq` 一列就是本模块：**无损、逐帧
 //! 独立**的图像序列容器，面向合成/调色/后期（保留浮点线性值、无帧间预测、可任取单帧）。
 //! 写入器**完全复用** `prism-io` 的 [`prism_io::exr_write`]（扫描线 flat 通道 +
 //! 十种压缩），本模块只负责三件事：
@@ -47,7 +47,7 @@ pub struct ExrSeqOptions {
 impl Default for ExrSeqOptions {
     fn default() -> Self {
         // `Zip`（16 扫描线一块的 deflate）：无损、跨实现最通用，体积约为未压缩的
-        // 1/3～1/2（实测见 `docs/delivery-matrix.md`）。
+        // 1/3～1/2（实测见 `docs/交付矩阵.md`）。
         ExrSeqOptions { compression: Compression::Zip, start_index: 0 }
     }
 }

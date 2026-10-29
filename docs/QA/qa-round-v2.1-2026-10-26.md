@@ -84,7 +84,7 @@ $ cd /workspace/media-engine && cargo xtest          # 日志 /tmp/xtest_v21.log
 
 ### 3.3 流 A — A3 WebGPU 评估
 
-`docs/v2.1-webgpu-feasibility.md`：结论「**条件可行**」，量级 4–6 人日，三档区分（1.1 已有在用 / 1.2 已存在未接线 / 1.3 未建）明确；显式写明「这段厚度说明的是绑定与测试链成熟，不是能渲染」。✅ 无实现、无渲染能力声称。
+`docs/v2.1-WebGPU可行性评估.md`：结论「**条件可行**」，量级 4–6 人日，三档区分（1.1 已有在用 / 1.2 已存在未接线 / 1.3 未建）明确；显式写明「这段厚度说明的是绑定与测试链成熟，不是能渲染」。✅ 无实现、无渲染能力声称。
 
 ### 3.4 流 B — #9 R1 / R3（prism-io 584、prism-geometry 75）
 
@@ -114,7 +114,7 @@ $ cd /workspace/media-engine && cargo xtest          # 日志 /tmp/xtest_v21.log
 
 ### 3.6 流 C — C1 盘点 / C2 异质体积 / C3 T4
 
-**C1 盘点**：`docs/v2.1-longtail-inventory.md` 名录四项（光谱 / SVGF-OIDN / 自适应 / 异质体积）逐条 K1 三元组（K、σ∈六策略、d）+ 参考实例对照 + 量级 + 分级；§2 收敛判据三项可机械判定；§4 grep 补漏结论。✅
+**C1 盘点**：`docs/v2.1-渲染特性长尾盘点.md` 名录四项（光谱 / SVGF-OIDN / 自适应 / 异质体积）逐条 K1 三元组（K、σ∈六策略、d）+ 参考实例对照 + 量级 + 分级；§2 收敛判据三项可机械判定；§4 grep 补漏结论。✅
 
 **C2 异质体积（prism-rt 253/253）**：
 

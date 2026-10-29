@@ -1623,7 +1623,7 @@ mod tests {
             data.len() < mjpeg.len(),
             "时序编码体积 {} 应小于 MJPEG {}", data.len(), mjpeg.len()
         );
-        // 交付矩阵（docs/delivery-matrix.md）体积列的口径实测：320×180@24fps × 48 帧。
+        // 交付矩阵（docs/交付矩阵.md）体积列的口径实测：320×180@24fps × 48 帧。
         let px = (w * h) as f64;
         eprintln!(
             "[volume] PRMV {} B ({:.3} bpp, 参考 PSNR {:.2} dB) | MJPEG {} B ({:.3} bpp) | 比 {:.1}%",

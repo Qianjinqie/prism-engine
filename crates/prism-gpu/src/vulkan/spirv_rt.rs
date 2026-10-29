@@ -366,7 +366,7 @@ pub fn scene_kernel(w: u32, h: u32, num_spheres: usize, num_lights: usize) -> Op
         ],
         MODULE_SCENE,
         // WGSL 宿主**尚未建立**（V2.1 A3 评估为「条件可行、未实施」，见
-        // `docs/v2.1-webgpu-feasibility.md`）。本 kernel 现有的宿主是
+        // `docs/v2.1-WebGPU可行性评估.md`）。本 kernel 现有的宿主是
         // SPIR-V（本模块发射器）与 MSL（`metal::msl::RT_SCENE_MSL`）两份；
         // 此处留空串如实表达「没有 WGSL 源」，不指向一个不存在的文件。
         "",
