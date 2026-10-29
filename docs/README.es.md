@@ -44,17 +44,17 @@
 <details>
 <summary>Contenido</summary>
 
-- [Mapa de capacidades](#user-content-capabilities)
-- [En marcha en tres minutos](#user-content-quickstart)
-- [Un plano, un texto](#user-content-one-scene)
-- [O simplemente la API de Rust](#user-content-rust-api)
-- [Capacidades que no caben en la lista](#user-content-internals)
-- [Hechos de ingeniería](#user-content-engineering)
-- [Arquitectura](#user-content-architecture)
-- [Compilar, probar y puertas](#user-content-build-test)
-- [Límites honestos](#user-content-boundaries)
-- [Cumplimiento](#user-content-compliance)
-- [Licencia](#user-content-license)
+- [Mapa de capacidades](#capabilities)
+- [En marcha en tres minutos](#quickstart)
+- [Un plano, un texto](#one-scene)
+- [O simplemente la API de Rust](#rust-api)
+- [Capacidades que no caben en la lista](#internals)
+- [Hechos de ingeniería](#engineering)
+- [Arquitectura](#architecture)
+- [Compilar, probar y puertas](#build-test)
+- [Límites honestos](#boundaries)
+- [Cumplimiento](#compliance)
+- [Licencia](#license)
 
 </details>
 <!-- TOC-END -->

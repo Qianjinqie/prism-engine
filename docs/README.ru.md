@@ -44,17 +44,17 @@
 <details>
 <summary>Содержание</summary>
 
-- [Карта возможностей](#user-content-capabilities)
-- [Запуск за три минуты](#user-content-quickstart)
-- [Один кадр — один текст](#user-content-one-scene)
-- [Или просто Rust API](#user-content-rust-api)
-- [Возможности, не влезающие в список](#user-content-internals)
-- [Инженерные факты](#user-content-engineering)
-- [Архитектура](#user-content-architecture)
-- [Сборка, тесты, гейты](#user-content-build-test)
-- [Честные границы](#user-content-boundaries)
-- [Соответствие](#user-content-compliance)
-- [Лицензия](#user-content-license)
+- [Карта возможностей](#capabilities)
+- [Запуск за три минуты](#quickstart)
+- [Один кадр — один текст](#one-scene)
+- [Или просто Rust API](#rust-api)
+- [Возможности, не влезающие в список](#internals)
+- [Инженерные факты](#engineering)
+- [Архитектура](#architecture)
+- [Сборка, тесты, гейты](#build-test)
+- [Честные границы](#boundaries)
+- [Соответствие](#compliance)
+- [Лицензия](#license)
 
 </details>
 <!-- TOC-END -->

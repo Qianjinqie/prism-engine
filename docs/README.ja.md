@@ -44,17 +44,17 @@
 <details>
 <summary>目次</summary>
 
-- [能力の全体像](#user-content-capabilities)
-- [3 分で動かす](#user-content-quickstart)
-- [一つのショットを、一つのテキストで](#user-content-one-scene)
-- [Rust API だけを使う](#user-content-rust-api)
-- [一覧に収まらない内部能力](#user-content-internals)
-- [エンジニアリング上の事実](#user-content-engineering)
-- [アーキテクチャ](#user-content-architecture)
-- [ビルド・テスト・ゲート](#user-content-build-test)
-- [正直な境界](#user-content-boundaries)
-- [コンプライアンス](#user-content-compliance)
-- [ライセンス](#user-content-license)
+- [能力の全体像](#capabilities)
+- [3 分で動かす](#quickstart)
+- [一つのショットを、一つのテキストで](#one-scene)
+- [Rust API だけを使う](#rust-api)
+- [一覧に収まらない内部能力](#internals)
+- [エンジニアリング上の事実](#engineering)
+- [アーキテクチャ](#architecture)
+- [ビルド・テスト・ゲート](#build-test)
+- [正直な境界](#boundaries)
+- [コンプライアンス](#compliance)
+- [ライセンス](#license)
 
 </details>
 <!-- TOC-END -->

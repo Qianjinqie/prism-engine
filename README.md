@@ -44,16 +44,16 @@
 <details>
 <summary>目录</summary>
 
-- [能力全景](#user-content-capabilities)
-- [三分钟跑起来](#user-content-quickstart)
-- [一个镜头，一段文本](#user-content-one-scene)
-- [也可以只用 Rust API](#user-content-rust-api)
-- [引擎内特能力](#user-content-internals)
-- [工程事实](#user-content-engineering)
-- [架构](#user-content-architecture)
-- [构建、测试与门禁](#user-content-build-test)
-- [诚实的边界](#user-content-boundaries)
-- [合规与许可](#user-content-compliance)
+- [能力全景](#capabilities)
+- [三分钟跑起来](#quickstart)
+- [一个镜头，一段文本](#one-scene)
+- [也可以只用 Rust API](#rust-api)
+- [引擎内特能力](#internals)
+- [工程事实](#engineering)
+- [架构](#architecture)
+- [构建、测试与门禁](#build-test)
+- [诚实的边界](#boundaries)
+- [合规与许可](#compliance)
 
 </details>
 <!-- TOC-END -->
