@@ -44,17 +44,17 @@
 <details>
 <summary>Índice</summary>
 
-- [Mapa de capacidades](#user-content-capabilities)
-- [Rodando em três minutos](#user-content-quickstart)
-- [Um plano, um texto](#user-content-one-scene)
-- [Ou apenas a API Rust](#user-content-rust-api)
-- [Capacidades que não cabem na lista](#user-content-internals)
-- [Fatos de engenharia](#user-content-engineering)
-- [Arquitetura](#user-content-architecture)
-- [Compilar, testar e portões](#user-content-build-test)
-- [Limites honestos](#user-content-boundaries)
-- [Conformidade](#user-content-compliance)
-- [Licença](#user-content-license)
+- [Mapa de capacidades](#capabilities)
+- [Rodando em três minutos](#quickstart)
+- [Um plano, um texto](#one-scene)
+- [Ou apenas a API Rust](#rust-api)
+- [Capacidades que não cabem na lista](#internals)
+- [Fatos de engenharia](#engineering)
+- [Arquitetura](#architecture)
+- [Compilar, testar e portões](#build-test)
+- [Limites honestos](#boundaries)
+- [Conformidade](#compliance)
+- [Licença](#license)
 
 </details>
 <!-- TOC-END -->
