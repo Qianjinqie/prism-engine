@@ -44,17 +44,17 @@
 <details>
 <summary>목차</summary>
 
-- [기능 전경](#user-content-capabilities)
-- [3분 만에 실행하기](#user-content-quickstart)
-- [한 장면을, 한 편의 텍스트로](#user-content-one-scene)
-- [Rust API만 쓰기](#user-content-rust-api)
-- [목록에 담기지 않는 내부 능력](#user-content-internals)
-- [엔지니어링 사실](#user-content-engineering)
-- [아키텍처](#user-content-architecture)
-- [빌드, 테스트, 게이트](#user-content-build-test)
-- [정직한 경계](#user-content-boundaries)
-- [컴플라이언스](#user-content-compliance)
-- [라이선스](#user-content-license)
+- [기능 전경](#capabilities)
+- [3분 만에 실행하기](#quickstart)
+- [한 장면을, 한 편의 텍스트로](#one-scene)
+- [Rust API만 쓰기](#rust-api)
+- [목록에 담기지 않는 내부 능력](#internals)
+- [엔지니어링 사실](#engineering)
+- [아키텍처](#architecture)
+- [빌드, 테스트, 게이트](#build-test)
+- [정직한 경계](#boundaries)
+- [컴플라이언스](#compliance)
+- [라이선스](#license)
 
 </details>
 <!-- TOC-END -->
