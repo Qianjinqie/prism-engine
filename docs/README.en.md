@@ -40,6 +40,26 @@
   <sub><b>642</b> files · <b>28</b> crates · <b>261k</b> lines of Rust · <b>3929</b> tests · <b>0</b> third-party dependencies · <b>18.9 MB</b> single-file package</sub>
 </p>
 
+
+<!-- TOC-START -->
+<details>
+<summary>Contents</summary>
+
+- [Capability map](#capability-map)
+- [Up and running in three minutes](#up-and-running-in-three-minutes)
+- [One shot, one text file](#one-shot-one-text-file)
+- [Or just the Rust API](#or-just-the-rust-api)
+- [Capabilities that do not fit the list](#capabilities-that-do-not-fit-the-list)
+- [Engineering facts](#engineering-facts)
+- [Architecture](#architecture)
+- [Build, test, and gates](#build-test-and-gates)
+- [Honest boundaries](#honest-boundaries)
+- [Compliance](#compliance)
+- [License](#license)
+
+</details>
+<!-- TOC-END -->
+
 ## Capability map
 
 A procedural media engine in Rust. Feed it a `.prism` scene file or call the Rust API; it outputs a still, a frame sequence, or a finished cut. The layers below follow one media pipeline; freeze an instant and you get a still, advance and record it and you get video — every layer treats both the same.
@@ -312,3 +332,4 @@ Apache License 2.0, see [`LICENSE`](../LICENSE).
 When redistributing, keep the notices and asset registry under `Compliance/`.
 
 <sub>The hero image and the DSL screenshot are both rendered by the engine itself; parameters are in the captions and in [`docs/gallery/gallery.rs`](gallery/gallery.rs).</sub>
+

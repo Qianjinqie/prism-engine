@@ -40,6 +40,26 @@
   <sub><b>642</b> arquivos · <b>28</b> crates · <b>261 mil</b> linhas de Rust · <b>3929</b> testes · <b>0</b> dependências de terceiros · <b>18,9 MB</b> em arquivo único</sub>
 </p>
 
+
+<!-- TOC-START -->
+<details>
+<summary>Índice</summary>
+
+- [Mapa de capacidades](#mapa-de-capacidades)
+- [Rodando em três minutos](#rodando-em-três-minutos)
+- [Um plano, um texto](#um-plano-um-texto)
+- [Ou apenas a API Rust](#ou-apenas-a-api-rust)
+- [Capacidades que não cabem na lista](#capacidades-que-não-cabem-na-lista)
+- [Fatos de engenharia](#fatos-de-engenharia)
+- [Arquitetura](#arquitetura)
+- [Compilar, testar e portões](#compilar-testar-e-portões)
+- [Limites honestos](#limites-honestos)
+- [Conformidade](#conformidade)
+- [Licença](#licença)
+
+</details>
+<!-- TOC-END -->
+
 ## Mapa de capacidades
 
 Um motor de mídia procedural em Rust. A entrada é uma cena `.prism` ou uma chamada à API Rust; a saída é uma imagem, uma sequência de quadros ou um corte final. As camadas seguem uma cadeia de mídia; congelar um instante dá uma imagem, avançar e gravar dá vídeo — todas as camadas tratam os dois do mesmo jeito.
@@ -312,3 +332,4 @@ Apache License 2.0, veja [`LICENSE`](../LICENSE).
 Ao redistribuir, mantenha os avisos e o registro de ativos em `Compliance/`.
 
 <sub>A imagem principal e a captura do DSL foram renderizadas pelo próprio motor; os parâmetros estão nas legendas e em [`docs/gallery/gallery.rs`](gallery/gallery.rs).</sub>
+

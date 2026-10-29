@@ -40,6 +40,26 @@
   <sub><b>642</b> fichiers · <b>28</b> crates · <b>261 000</b> lignes de Rust · <b>3929</b> tests · <b>0</b> dépendance tierce · <b>18,9 Mo</b> en un seul fichier</sub>
 </p>
 
+
+<!-- TOC-START -->
+<details>
+<summary>Sommaire</summary>
+
+- [Carte des capacités](#carte-des-capacités)
+- [Opérationnel en trois minutes](#opérationnel-en-trois-minutes)
+- [Un plan, un texte](#un-plan-un-texte)
+- [Ou simplement l'API Rust](#ou-simplement-lapi-rust)
+- [Des capacités qui ne tiennent pas dans la liste](#des-capacités-qui-ne-tiennent-pas-dans-la-liste)
+- [Faits d'ingénierie](#faits-dingénierie)
+- [Architecture](#architecture)
+- [Compiler, tester, portes](#compiler-tester-portes)
+- [Limites honnêtes](#limites-honnêtes)
+- [Conformité](#conformité)
+- [Licence](#licence)
+
+</details>
+<!-- TOC-END -->
+
 ## Carte des capacités
 
 Un moteur multimédia procédural en Rust. L'entrée est une scène `.prism` ou un appel à l'API Rust ; la sortie est une image fixe, une séquence d'images ou un montage final. Les couches suivent une chaîne média ; figer un instant donne une image, avancer et enregistrer donne une vidéo — chaque couche traite les deux de la même façon.
@@ -312,3 +332,4 @@ Apache License 2.0, voir [`LICENSE`](../LICENSE).
 Lors d'une redistribution, conservez les avis et le registre d'actifs sous `Compliance/`.
 
 <sub>L'image d'en-tête et la capture DSL ont été rendues par le moteur lui-même ; les paramètres figurent dans les légendes et dans [`docs/gallery/gallery.rs`](gallery/gallery.rs).</sub>
+

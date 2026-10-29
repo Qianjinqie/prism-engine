@@ -40,6 +40,26 @@
   <sub><b>642</b> Dateien · <b>28</b> Crates · <b>261.000</b> Zeilen Rust · <b>3929</b> Tests · <b>0</b> Fremdabhängigkeiten · <b>18,9 MB</b> Einzeldatei</sub>
 </p>
 
+
+<!-- TOC-START -->
+<details>
+<summary>Inhaltsverzeichnis</summary>
+
+- [Funktionsübersicht](#funktionsübersicht)
+- [In drei Minuten lauffähig](#in-drei-minuten-lauffähig)
+- [Eine Einstellung, ein Text](#eine-einstellung-ein-text)
+- [Oder einfach die Rust-API](#oder-einfach-die-rust-api)
+- [Fähigkeiten, die nicht in die Liste passen](#fähigkeiten-die-nicht-in-die-liste-passen)
+- [Technische Fakten](#technische-fakten)
+- [Architektur](#architektur)
+- [Bauen, testen, Gates](#bauen-testen-gates)
+- [Ehrliche Grenzen](#ehrliche-grenzen)
+- [Compliance](#compliance)
+- [Lizenz](#lizenz)
+
+</details>
+<!-- TOC-END -->
+
 ## Funktionsübersicht
 
 Eine prozedurale Medien-Engine in Rust. Eingabe ist eine `.prism`-Szene oder ein Aufruf der Rust-API; Ausgabe ist ein Standbild, eine Bildsequenz oder ein fertiger Schnitt. Die Schichten folgen einer Medien-Pipeline; ein eingefrorener Zeitpunkt ergibt ein Standbild, fortlaufend aufgezeichnet ein Video — jede Schicht behandelt beides gleich.
@@ -312,3 +332,4 @@ Apache License 2.0, siehe [`LICENSE`](../LICENSE).
 Bei der Weitergabe bitte die Hinweise und das Asset-Register unter `Compliance/` erhalten.
 
 <sub>Titelbild und DSL-Screenshot wurden von der Engine selbst gerendert; die Parameter stehen in den Bildunterschriften und in [`docs/gallery/gallery.rs`](gallery/gallery.rs).</sub>
+
