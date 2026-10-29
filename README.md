@@ -40,6 +40,25 @@
   <sub><b>642</b> 个文件 &nbsp;·&nbsp; <b>28</b> 个 crate &nbsp;·&nbsp; <b>26.1 万</b> 行 Rust &nbsp;·&nbsp; <b>3929</b> 条测试 &nbsp;·&nbsp; <b>0</b> 个第三方依赖 &nbsp;·&nbsp; <b>18.9 MB</b> 单文件</sub>
 </p>
 
+
+<!-- TOC-START -->
+<details>
+<summary>目录</summary>
+
+- [能力全景](#能力全景)
+- [三分钟跑起来](#三分钟跑起来)
+- [一个镜头，一段文本](#一个镜头一段文本)
+- [也可以只用 Rust API](#也可以只用-rust-api)
+- [引擎内特能力](#引擎内特能力)
+- [工程事实](#工程事实)
+- [架构](#架构)
+- [构建、测试与门禁](#构建测试与门禁)
+- [诚实的边界](#诚实的边界)
+- [合规与许可](#合规与许可)
+
+</details>
+<!-- TOC-END -->
+
 ## 能力全景
 
 Rust 写的程序化媒体引擎。输入 `.prism` 场景文本或 Rust 调用，输出单帧、帧序列或成片。按一条媒体流水线的环节分九层；同一份场景描述，定住某一刻是单帧，连续推进并录下来就是视频——下面所有层对静态图和动态图是同一套。
@@ -312,3 +331,4 @@ Apache License 2.0，见 [`LICENSE`](LICENSE)。再分发时请保留 `Complianc
 <p align="center">
   <sub>门面图与 DSL 截图均由引擎自身渲染，参数写在各图图注与 <a href="docs/gallery/gallery.rs"><code>docs/gallery/gallery.rs</code></a> 中</sub>
 </p>
+
