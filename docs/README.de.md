@@ -44,17 +44,17 @@
 <details>
 <summary>Inhaltsverzeichnis</summary>
 
-- [Funktionsübersicht](#user-content-capabilities)
-- [In drei Minuten lauffähig](#user-content-quickstart)
-- [Eine Einstellung, ein Text](#user-content-one-scene)
-- [Oder einfach die Rust-API](#user-content-rust-api)
-- [Fähigkeiten, die nicht in die Liste passen](#user-content-internals)
-- [Technische Fakten](#user-content-engineering)
-- [Architektur](#user-content-architecture)
-- [Bauen, testen, Gates](#user-content-build-test)
-- [Ehrliche Grenzen](#user-content-boundaries)
-- [Compliance](#user-content-compliance)
-- [Lizenz](#user-content-license)
+- [Funktionsübersicht](#capabilities)
+- [In drei Minuten lauffähig](#quickstart)
+- [Eine Einstellung, ein Text](#one-scene)
+- [Oder einfach die Rust-API](#rust-api)
+- [Fähigkeiten, die nicht in die Liste passen](#internals)
+- [Technische Fakten](#engineering)
+- [Architektur](#architecture)
+- [Bauen, testen, Gates](#build-test)
+- [Ehrliche Grenzen](#boundaries)
+- [Compliance](#compliance)
+- [Lizenz](#license)
 
 </details>
 <!-- TOC-END -->
