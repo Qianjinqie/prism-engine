@@ -1,4 +1,7 @@
 
+<p align="center">
+  <img src="docs/assets/logo.svg" width="140" alt="Prism Engine">
+</p>
 <h1 align="center">Prism Engine</h1>
 
 <h3 align="center">程序化媒体引擎</h3>
