@@ -40,26 +40,26 @@
   <sub><b>642</b> Dateien · <b>28</b> Crates · <b>261.000</b> Zeilen Rust · <b>3929</b> Tests · <b>0</b> Fremdabhängigkeiten · <b>18,9 MB</b> Einzeldatei</sub>
 </p>
 
-
 <!-- TOC-START -->
 <details>
 <summary>Inhaltsverzeichnis</summary>
 
-- [Funktionsübersicht](#funktionsübersicht)
-- [In drei Minuten lauffähig](#in-drei-minuten-lauffähig)
-- [Eine Einstellung, ein Text](#eine-einstellung-ein-text)
-- [Oder einfach die Rust-API](#oder-einfach-die-rust-api)
-- [Fähigkeiten, die nicht in die Liste passen](#fähigkeiten-die-nicht-in-die-liste-passen)
-- [Technische Fakten](#technische-fakten)
-- [Architektur](#architektur)
-- [Bauen, testen, Gates](#bauen-testen-gates)
-- [Ehrliche Grenzen](#ehrliche-grenzen)
-- [Compliance](#compliance)
-- [Lizenz](#lizenz)
+- [Funktionsübersicht](#user-content-capabilities)
+- [In drei Minuten lauffähig](#user-content-quickstart)
+- [Eine Einstellung, ein Text](#user-content-one-scene)
+- [Oder einfach die Rust-API](#user-content-rust-api)
+- [Fähigkeiten, die nicht in die Liste passen](#user-content-internals)
+- [Technische Fakten](#user-content-engineering)
+- [Architektur](#user-content-architecture)
+- [Bauen, testen, Gates](#user-content-build-test)
+- [Ehrliche Grenzen](#user-content-boundaries)
+- [Compliance](#user-content-compliance)
+- [Lizenz](#user-content-license)
 
 </details>
 <!-- TOC-END -->
 
+<a id="capabilities"></a>
 ## Funktionsübersicht
 
 Eine prozedurale Medien-Engine in Rust. Eingabe ist eine `.prism`-Szene oder ein Aufruf der Rust-API; Ausgabe ist ein Standbild, eine Bildsequenz oder ein fertiger Schnitt. Die Schichten folgen einer Medien-Pipeline; ein eingefrorener Zeitpunkt ergibt ein Standbild, fortlaufend aufgezeichnet ein Video — jede Schicht behandelt beides gleich.
@@ -78,6 +78,7 @@ Eine prozedurale Medien-Engine in Rust. Eingabe ist eine `.prism`-Szene oder ein
 
 Die Tabelle listet nur Fähigkeiten. Was jede davon nicht kann, steht unter [Ehrliche Grenzen](#ehrliche-grenzen), nicht in der Tabelle.
 
+<a id="quickstart"></a>
 ## In drei Minuten lauffähig
 
 ```bash
@@ -100,6 +101,7 @@ cargo run -p prism-app --release     # eingebaute Demo-Szene
 
 Das Ergebnis ist ein gewöhnlicher Cargo-Workspace (28 Crates unter `src/`); alle weiteren `cargo`-Befehle funktionieren wie in jedem Rust-Projekt. Der erste Build dauert einige Minuten.
 
+<a id="one-scene"></a>
 ## Eine Einstellung, ein Text
 
 `.prism` ist die Szenenbeschreibungssprache der Engine. Das Folgende ist eine vollständige, renderbare Drei-Sekunden-Einstellung — Kugel, Material, Orbit-Kamera, gerichtetes Licht, Dauer, Grading, Ausgabespezifikation:
@@ -161,6 +163,7 @@ cargo run -p prism-app --release -- render examples/w2d_showcase.prism \
   <sub>Bild 10 aus `examples/w2d_showcase.prism`: 3D-Kugel, Textebene, Grading und eine Fade-Spur teilen sich eine Timeline.</sub>
 </p>
 
+<a id="rust-api"></a>
 ## Oder einfach die Rust-API
 
 Wer keine DSL schreiben will, ruft die Bibliothek direkt auf. Das ist das Skelett des Titelbilds (die vollständige Szene umfasst 190 Zeilen, siehe [`docs/gallery/gallery.rs`](gallery/gallery.rs)):
@@ -193,6 +196,7 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 
 `render_pixel` ist eine reine Funktion: Szene, Kamera, Sampling-Kontext und Pixelkoordinate hinein, lineares RGB heraus. Bei gleichen Parametern sind die Bits identisch, unabhängig von Thread oder Aufrufreihenfolge — deshalb braucht paralleles Rendering keinerlei Synchronisation.
 
+<a id="internals"></a>
 ## Fähigkeiten, die nicht in die Liste passen
 
 Manches gehört nicht in die Tabelle oben — es ist nicht „ein Format mehr“, sondern Infrastruktur, die die Engine für sich selbst gewachsen hat.
@@ -224,6 +228,7 @@ Jeder Node-Typ der Engine ist eine **Partikulärlösung** eines Tripels aus „K
 | **Metal** | Compile-Gate vorhanden, nicht aktiviert | Isomorphe Portierung fertig, nicht auf Hardware verifiziert, `is_available()` immer false |
 | **WebGPU** | Nur Fazit | Machbarkeit bewertet (4–6 Personentage Portierung), Renderpfad nicht implementiert |
 
+<a id="engineering"></a>
 ## Technische Fakten
 
 Drei Einschränkungen und was jede kostet:
@@ -243,6 +248,7 @@ Vier Schichten, von den Parametern bis zu den Bytes:
 3. **Packaging-Determinismus**: zweimaliges Packen derselben Quelle ergibt identische SHA-256; der Unpack-Round-Trip vergleicht jede Datei Byte für Byte.
 4. **Tests als Kriterium**: viele der 3929 Tests fixieren Goldwerte (Toleranz von 1e-2 auf 1e-6 verschärft, gemessene Residuen 4,53e-7); Formtreue wird über Hausdorff-Abstände begrenzt statt über „sieht nah genug aus“.
 
+<a id="architecture"></a>
 ## Architektur
 
 ```mermaid
@@ -280,6 +286,7 @@ Verzeichnisstruktur nach dem Entpacken:
 
 > Designdokumente (`docs/设计/`) liegen nur im vollständigen Repository des Herausgebers und werden nicht verteilt; die Demo-Crate `prism-anim-demo` ist ebenfalls nicht im Paket.
 
+<a id="build-test"></a>
 ## Bauen, testen, Gates
 
 ```bash
@@ -302,6 +309,7 @@ node tools/pack_source_txt.mjs --verify      # Pack- und Entpack-Roundtrip, Byte
 
 Vier Gate-Skripte ohne Abhängigkeiten (nur Node): Ghost-Write-Schutz (inklusive Gegenselbsttest), Open-Source-Hygiene-Scan, Compliance-Selbstprüfung (9/9 bestanden plus 8/8 Nachweise, dass die Kriterien anschlagen), Pack-Roundtrip. Ein Gate kennt genau zwei Ergebnisse — bestanden oder rot — und „sieht gut aus“ gehört nicht dazu. **Ein falsches Grün ist gefährlicher als ein Fehlschlag.**
 
+<a id="boundaries"></a>
 ## Ehrliche Grenzen
 
 | Grenze | Stand | Ausweg |
@@ -317,6 +325,7 @@ Vier Gate-Skripte ohne Abhängigkeiten (nur Node): Ghost-Write-Schutz (inklusive
 
 Das sind keine „später“-Punkte. Sie werden heute ausdrücklich nicht unterstützt. Hier besser als in einem Issue versteckt.
 
+<a id="compliance"></a>
 ## Compliance
 
 Die Engine verspricht null Fremdcode-Abhängigkeiten und prüft das selbst:
@@ -325,6 +334,7 @@ Die Engine verspricht null Fremdcode-Abhängigkeiten und prüft das selbst:
 - **C2 Vollständiges Asset-Register**: Alle fünf Assets haben vollständige Haupttabellenfelder; Schriften stehen unter SIL OFL 1.1, der vollständige Lizenztext liegt bei der Schrift unter `src/prism-text/font_data/LICENSE`.
 - **C3 Drittanbieter-Hinweise**: `Compliance/THIRD-PARTY-NOTICES.md` trennt ausdrücklich „Datenassets ≠ Codeabhängigkeiten“.
 
+<a id="license"></a>
 ## Lizenz
 
 Apache License 2.0, siehe [`LICENSE`](../LICENSE).
