@@ -40,26 +40,26 @@
   <sub><b>642</b> 파일 · <b>28</b> crate · <b>26.1만</b> 줄의 Rust · <b>3929</b> 테스트 · 서드파티 의존성 <b>0</b> · <b>18.9 MB</b> 단일 파일</sub>
 </p>
 
-
 <!-- TOC-START -->
 <details>
 <summary>목차</summary>
 
-- [기능 전경](#기능-전경)
-- [3분 만에 실행하기](#3분-만에-실행하기)
-- [한 장면을, 한 편의 텍스트로](#한-장면을-한-편의-텍스트로)
-- [Rust API만 쓰기](#rust-api만-쓰기)
-- [목록에 담기지 않는 내부 능력](#목록에-담기지-않는-내부-능력)
-- [엔지니어링 사실](#엔지니어링-사실)
-- [아키텍처](#아키텍처)
-- [빌드, 테스트, 게이트](#빌드-테스트-게이트)
-- [정직한 경계](#정직한-경계)
-- [컴플라이언스](#컴플라이언스)
-- [라이선스](#라이선스)
+- [기능 전경](#user-content-capabilities)
+- [3분 만에 실행하기](#user-content-quickstart)
+- [한 장면을, 한 편의 텍스트로](#user-content-one-scene)
+- [Rust API만 쓰기](#user-content-rust-api)
+- [목록에 담기지 않는 내부 능력](#user-content-internals)
+- [엔지니어링 사실](#user-content-engineering)
+- [아키텍처](#user-content-architecture)
+- [빌드, 테스트, 게이트](#user-content-build-test)
+- [정직한 경계](#user-content-boundaries)
+- [컴플라이언스](#user-content-compliance)
+- [라이선스](#user-content-license)
 
 </details>
 <!-- TOC-END -->
 
+<a id="capabilities"></a>
 ## 기능 전경
 
 Rust로 작성된 프로시저럴 미디어 엔진. 입력은 `.prism` 장면 기술이나 Rust 호출, 출력은 스틸·프레임 시퀀스·완성 컷. 아래 계층은 미디어 파이프라인의 공정 순서를 따르며, 어느 순간에서 멈추면 스틸, 연속으로 기록하면 영상이 된다——모든 계층이 둘을 같은 방식으로 다룬다.
@@ -78,6 +78,7 @@ Rust로 작성된 프로시저럴 미디어 엔진. 입력은 `.prism` 장면 �
 
 표는 능력만 나열합니다. 각 능력이 못 하는 것은 [정직한 경계](#정직한-경계)에 있으며 표 안에 숨기지 않았습니다.
 
+<a id="quickstart"></a>
 ## 3분 만에 실행하기
 
 ```bash
@@ -100,6 +101,7 @@ cargo run -p prism-app --release     # 내장 데모 장면
 
 복원 결과는 평범한 Cargo workspace(`src/` 아래 28개 crate)이며, 이후 `cargo` 명령은 일반 Rust 프로젝트와 같습니다. 첫 빌드에는 몇 분이 걸립니다.
 
+<a id="one-scene"></a>
 ## 한 장면을, 한 편의 텍스트로
 
 `.prism`은 엔진의 장면 서술 언어입니다. 아래는 완전히 렌더링 가능한 3초 장면입니다——구체, 재질, 궤도 카메라, 방향광, 길이, 그레이딩, 출력 사양까지 전부:
@@ -161,6 +163,7 @@ cargo run -p prism-app --release -- render examples/w2d_showcase.prism \
   <sub>`examples/w2d_showcase.prism`의 10번째 프레임: 3D 구체, 텍스트 레이어, 그레이딩, 페이드 트랙이 하나의 타임라인을 공유합니다.</sub>
 </p>
 
+<a id="rust-api"></a>
 ## Rust API만 쓰기
 
 DSL을 쓰지 않고 라이브러리를 직접 호출할 수 있습니다. 아래는 히어로 이미지의 골격입니다(전체 장면은 190줄, [`docs/gallery/gallery.rs`](gallery/gallery.rs)):
@@ -193,6 +196,7 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 
 `render_pixel`은 순수 함수입니다. 장면, 카메라, 샘플링 컨텍스트, 픽셀 좌표를 받아 선형 RGB를 돌려줍니다. 같은 파라미터라면 어느 스레드에서, 어떤 순서로 호출해도 결과 비트가 같습니다——그래서 병렬 렌더링에 동기화가 전혀 필요 없습니다.
 
+<a id="internals"></a>
 ## 목록에 담기지 않는 내부 능력
 
 이것들은 포맷 지원이 아니라 엔진 내부의 기반입니다.
@@ -224,6 +228,7 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 | **Metal** | 컴파일 게이트 완료, 미점등 | 동형 이식 완료, 실기 검증 없음, `is_available()` 항상 false |
 | **WebGPU** | 결론만 | 타당성 평가 완료(이식량 4–6 인일), 렌더 경로 미구현 |
 
+<a id="engineering"></a>
 ## 엔지니어링 사실
 
 세 가지 제약과 각각의 비용:
@@ -243,6 +248,7 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 3. **패키징 결정성**: 같은 소스를 두 번 패키징하면 SHA-256이 동일; 압축 해제 왕복에서 모든 파일을 바이트 단위로 비교한다.
 4. **테스트를 판정 기준으로**: 3929개 테스트 중 다수가 황금값을 고정(허용 오차 1e-2에서 1e-6으로, 실측 잔차 4.53e-7); 형상 충실도는 "대충 비슷하다"가 아니라 Hausdorff 거리로 상한을 정한다.
 
+<a id="architecture"></a>
 ## 아키텍처
 
 ```mermaid
@@ -280,6 +286,7 @@ flowchart LR
 
 > 설계 정본(`docs/设计/`)은 배포자의 전체 저장소에만 있으며 배포에는 포함되지 않습니다. 데모 crate `prism-anim-demo`도 마찬가지입니다.
 
+<a id="build-test"></a>
 ## 빌드, 테스트, 게이트
 
 ```bash
@@ -302,6 +309,7 @@ node tools/pack_source_txt.mjs --verify      # 패키징과 언팩 왕복을 바
 
 의존성 제로 게이트 스크립트 네 개(Node만 사용): 유령 쓰기 방어(역 자체 시험 포함), 오픈소스 위생 스캔, 컴플라이언스 자체 점검(9/9 통과 + 8/8 반증 판정), 패키지 왕복 검증. 게이트 결과는 "통과"와 "실패" 둘뿐이며, "아마 괜찮을 것"은 인정하지 않습니다——**가짜 초록은 실패보다 위험합니다**.
 
+<a id="boundaries"></a>
 ## 정직한 경계
 
 | 경계 | 현황 | 출로 |
@@ -317,6 +325,7 @@ node tools/pack_source_txt.mjs --verify      # 패키징과 언팩 왕복을 바
 
 이것들은 "나중에"가 아니라 현재 명확히 지원하지 않는 항목입니다. 이슈에 숨기는 것보다 여기 적는 편이 낫다고 판단했습니다.
 
+<a id="compliance"></a>
 ## 컴플라이언스
 
 엔진은 서드파티 코드 의존성 제로를 표방하며 자체 점검으로 검증합니다:
@@ -325,6 +334,7 @@ node tools/pack_source_txt.mjs --verify      # 패키징과 언팩 왕복을 바
 - **C2 에셋 등록 완비**: 5개 에셋의 주표 항목이 모두 채워져 있습니다. 폰트는 SIL OFL 1.1로 배포하며 라이선스 전문을 `src/prism-text/font_data/LICENSE`에 동봉.
 - **C3 서드파티 귀속 고지**: `Compliance/THIRD-PARTY-NOTICES.md`가 "데이터 자산 ≠ 코드 의존성"을 명확히 구분.
 
+<a id="license"></a>
 ## 라이선스
 
 Apache License 2.0, [`LICENSE`](../LICENSE)를 참고하세요.

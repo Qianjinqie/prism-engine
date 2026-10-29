@@ -40,25 +40,25 @@
   <sub><b>642</b> 个文件 &nbsp;·&nbsp; <b>28</b> 个 crate &nbsp;·&nbsp; <b>26.1 万</b> 行 Rust &nbsp;·&nbsp; <b>3929</b> 条测试 &nbsp;·&nbsp; <b>0</b> 个第三方依赖 &nbsp;·&nbsp; <b>18.9 MB</b> 单文件</sub>
 </p>
 
-
 <!-- TOC-START -->
 <details>
 <summary>目录</summary>
 
-- [能力全景](#能力全景)
-- [三分钟跑起来](#三分钟跑起来)
-- [一个镜头，一段文本](#一个镜头一段文本)
-- [也可以只用 Rust API](#也可以只用-rust-api)
-- [引擎内特能力](#引擎内特能力)
-- [工程事实](#工程事实)
-- [架构](#架构)
-- [构建、测试与门禁](#构建测试与门禁)
-- [诚实的边界](#诚实的边界)
-- [合规与许可](#合规与许可)
+- [能力全景](#user-content-capabilities)
+- [三分钟跑起来](#user-content-quickstart)
+- [一个镜头，一段文本](#user-content-one-scene)
+- [也可以只用 Rust API](#user-content-rust-api)
+- [引擎内特能力](#user-content-internals)
+- [工程事实](#user-content-engineering)
+- [架构](#user-content-architecture)
+- [构建、测试与门禁](#user-content-build-test)
+- [诚实的边界](#user-content-boundaries)
+- [合规与许可](#user-content-compliance)
 
 </details>
 <!-- TOC-END -->
 
+<a id="capabilities"></a>
 ## 能力全景
 
 Rust 写的程序化媒体引擎。输入 `.prism` 场景文本或 Rust 调用，输出单帧、帧序列或成片。按一条媒体流水线的环节分九层；同一份场景描述，定住某一刻是单帧，连续推进并录下来就是视频——下面所有层对静态图和动态图是同一套。
@@ -77,6 +77,7 @@ Rust 写的程序化媒体引擎。输入 `.prism` 场景文本或 Rust 调用�
 
 这张表只列能力。每项「做不到什么」写在下面的[诚实的边界](#诚实的边界)，不藏在表里。
 
+<a id="quickstart"></a>
 ## 三分钟跑起来
 
 ```bash
@@ -101,6 +102,7 @@ cargo run -p prism-app --release     # 内置演示场景
 
 > 只想要「能跑起来」的最短路径：跳过第 1、2 步，直接在发布方的完整仓库里 `cargo run -p prism-app --release`。
 
+<a id="one-scene"></a>
 ## 一个镜头，一段文本
 
 `.prism` 是引擎的场景描述语言。下面是一个完整可渲染的 3 秒镜头——球体、材质、环绕相机、方向光、时长、调色、输出规格，全在这里：
@@ -162,6 +164,7 @@ cargo run -p prism-app --release -- render examples/w2d_showcase.prism \
   <sub><code>examples/w2d_showcase.prism</code> 的第 10 帧：同一个场景里，3D 球体、文字层、调色与淡入淡出轨道共用一条时间线</sub>
 </p>
 
+<a id="rust-api"></a>
 ## 也可以只用 Rust API
 
 不想写 DSL，就直接调库。下面是门面图的骨架（完整场景 190 行，见 [`docs/gallery/gallery.rs`](docs/gallery/gallery.rs)）：
@@ -194,6 +197,7 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 
 `render_pixel` 是纯函数：输入场景、相机、采样上下文和像素坐标，输出线性 RGB。同样的参数，任意线程、任意顺序调用，结果逐位相同——所以并行渲染不需要任何同步。
 
+<a id="internals"></a>
 ## 引擎内特能力
 
 这几样不是格式支持，而是引擎内部的基础设施。
@@ -225,6 +229,7 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 | **Metal** | 编译门控，不点亮 | 同构移植完成，未实机验证，`is_available()` 恒 false |
 | **WebGPU** | 只出结论 | 可行性评估完成（迁移量 4–6 人日），渲染路径未实现 |
 
+<a id="engineering"></a>
 ## 工程事实
 
 三条约束及其代价：
@@ -244,6 +249,7 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 3. **打包确定性**：同一份源码两次打包，SHA-256 完全一致；解包回环逐文件逐字节比对。
 4. **测试即判据**：3929 条测试里大量黄金值锁定（容差从 1e-2 收到 1e-6，实测残差 4.53e-7）；形状保真度用 Hausdorff 界，而不是「看着差不多」。
 
+<a id="architecture"></a>
 ## 架构
 
 ```mermaid
@@ -281,6 +287,7 @@ flowchart LR
 
 > 设计权威文档（`docs/设计/`）只在发布方的完整仓库中，不随分发；演示 crate `prism-anim-demo` 同样不进包。
 
+<a id="build-test"></a>
 ## 构建、测试与门禁
 
 ```bash
@@ -303,6 +310,7 @@ node tools/pack_source_txt.mjs --verify      # 打包并解包回环校验（逐
 
 四个零依赖门禁脚本（只用 `node`）：幽灵写入防御（含反向自证）、开源卫生扫描、合规自检（9/9 通过 + 8/8 反证判红）、打包回环校验。门禁只接受两种结果：通过，或判红。
 
+<a id="boundaries"></a>
 ## 诚实的边界
 
 | 边界 | 现状 | 出路 |
@@ -318,6 +326,7 @@ node tools/pack_source_txt.mjs --verify      # 打包并解包回环校验（逐
 
 这些不是「以后再说」，是当前状态下明确不支持的。写在这里，比藏在 issue 里好。
 
+<a id="compliance"></a>
 ## 合规与许可
 
 第三方代码依赖为零，经自检核验：

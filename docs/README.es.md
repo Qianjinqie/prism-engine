@@ -40,26 +40,26 @@
   <sub><b>642</b> archivos · <b>28</b> crates · <b>261 mil</b> líneas de Rust · <b>3929</b> pruebas · <b>0</b> dependencias de terceros · <b>18,9 MB</b> en un solo archivo</sub>
 </p>
 
-
 <!-- TOC-START -->
 <details>
 <summary>Contenido</summary>
 
-- [Mapa de capacidades](#mapa-de-capacidades)
-- [En marcha en tres minutos](#en-marcha-en-tres-minutos)
-- [Un plano, un texto](#un-plano-un-texto)
-- [O simplemente la API de Rust](#o-simplemente-la-api-de-rust)
-- [Capacidades que no caben en la lista](#capacidades-que-no-caben-en-la-lista)
-- [Hechos de ingeniería](#hechos-de-ingeniería)
-- [Arquitectura](#arquitectura)
-- [Compilar, probar y puertas](#compilar-probar-y-puertas)
-- [Límites honestos](#límites-honestos)
-- [Cumplimiento](#cumplimiento)
-- [Licencia](#licencia)
+- [Mapa de capacidades](#user-content-capabilities)
+- [En marcha en tres minutos](#user-content-quickstart)
+- [Un plano, un texto](#user-content-one-scene)
+- [O simplemente la API de Rust](#user-content-rust-api)
+- [Capacidades que no caben en la lista](#user-content-internals)
+- [Hechos de ingeniería](#user-content-engineering)
+- [Arquitectura](#user-content-architecture)
+- [Compilar, probar y puertas](#user-content-build-test)
+- [Límites honestos](#user-content-boundaries)
+- [Cumplimiento](#user-content-compliance)
+- [Licencia](#user-content-license)
 
 </details>
 <!-- TOC-END -->
 
+<a id="capabilities"></a>
 ## Mapa de capacidades
 
 Un motor de medios procedural en Rust. La entrada es una escena `.prism` o una llamada a la API de Rust; la salida es un fotograma, una secuencia de fotogramas o un montaje final. Las capas siguen una cadena de medios; congelar un instante da un fotograma, avanzar y grabarlo da vídeo — todas las capas tratan ambos igual.
@@ -78,6 +78,7 @@ Un motor de medios procedural en Rust. La entrada es una escena `.prism` o una l
 
 La tabla solo enumera capacidades. Lo que cada una no puede hacer está en [Límites honestos](#límites-honestos), no escondido en la tabla.
 
+<a id="quickstart"></a>
 ## En marcha en tres minutos
 
 ```bash
@@ -100,6 +101,7 @@ cargo run -p prism-app --release     # escena de demostración integrada
 
 El resultado es un workspace de Cargo normal (28 crates bajo `src/`); el resto de comandos `cargo` funcionan como en cualquier proyecto Rust. La primera compilación tarda unos minutos.
 
+<a id="one-scene"></a>
 ## Un plano, un texto
 
 `.prism` es el lenguaje de descripción de escenas del motor. Lo siguiente es un plano completo y renderizable de tres segundos: esfera, material, cámara orbital, luz direccional, duración, etalonaje y especificación de salida:
@@ -161,6 +163,7 @@ cargo run -p prism-app --release -- render examples/w2d_showcase.prism \
   <sub>Fotograma 10 de `examples/w2d_showcase.prism`: una esfera 3D, una capa de texto, un etalonaje y una pista de fundido comparten una misma línea de tiempo.</sub>
 </p>
 
+<a id="rust-api"></a>
 ## O simplemente la API de Rust
 
 Si prefieres no escribir DSL, llama a la biblioteca directamente. Este es el esqueleto de la imagen principal (la escena completa tiene 190 líneas, ver [`docs/gallery/gallery.rs`](gallery/gallery.rs)):
@@ -193,6 +196,7 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 
 `render_pixel` es una función pura: entran escena, cámara, contexto de muestreo y coordenada de píxel; sale RGB lineal. Con los mismos parámetros devuelve bits idénticos sin importar el hilo ni el orden de llamada; por eso el renderizado en paralelo no necesita sincronización alguna.
 
+<a id="internals"></a>
 ## Capacidades que no caben en la lista
 
 Estas cosas no son soporte de formatos, sino infraestructura dentro del motor.
@@ -224,6 +228,7 @@ Cada tipo de nodo del motor es una **solución particular** de una terna «kerne
 | **Metal** | Compilado tras una puerta, sin activar | Port isomorfo terminado, no verificado en hardware, `is_available()` siempre false |
 | **WebGPU** | Solo conclusión | Evaluación de viabilidad hecha (4–6 días-persona de port), ruta de renderizado no implementada |
 
+<a id="engineering"></a>
 ## Hechos de ingeniería
 
 Tres restricciones y lo que cuesta cada una:
@@ -243,6 +248,7 @@ Cuatro capas, desde los parámetros hasta los bytes:
 3. **Determinismo de empaquetado**: empaquetar dos veces la misma fuente da el mismo SHA-256; el round-trip de desempaquetado compara cada archivo byte a byte.
 4. **Los tests como criterio**: muchos de los 3929 tests fijan valores de oro (tolerancia ajustada de 1e-2 a 1e-6, residuo medido 4,53e-7); la fidelidad de forma se acota con distancia de Hausdorff en lugar de «se ve bastante parecido».
 
+<a id="architecture"></a>
 ## Arquitectura
 
 ```mermaid
@@ -280,6 +286,7 @@ Estructura tras desempaquetar:
 
 > Los documentos de diseño (`docs/设计/`) solo existen en el repositorio completo del editor y no se distribuyen; el crate de demostración `prism-anim-demo` tampoco va en el paquete.
 
+<a id="build-test"></a>
 ## Compilar, probar y puertas
 
 ```bash
@@ -302,6 +309,7 @@ node tools/pack_source_txt.mjs --verify      # ida y vuelta de empaquetado, byte
 
 Cuatro scripts de puerta sin dependencias (solo Node): defensa contra escrituras fantasma (con autoprueba inversa), escaneo de higiene de código abierto, autocomprobación de cumplimiento (9/9 aprobadas más 8/8 pruebas de que los criterios fallan cuando deben) y verificación de ida y vuelta del empaquetado. Una puerta tiene exactamente dos resultados — pasa o falla — y «parece que está bien» no es uno de ellos. **Un verde falso es más peligroso que un fallo.**
 
+<a id="boundaries"></a>
 ## Límites honestos
 
 | Límite | Estado | Salida |
@@ -317,6 +325,7 @@ Cuatro scripts de puerta sin dependencias (solo Node): defensa contra escrituras
 
 No son puntos de «ya veremos». Hoy no están soportados, explícitamente. Mejor aquí que escondidos en un issue.
 
+<a id="compliance"></a>
 ## Cumplimiento
 
 El motor promete cero dependencias de código de terceros y lo verifica por autocomprobación:
@@ -325,6 +334,7 @@ El motor promete cero dependencias de código de terceros y lo verifica por auto
 - **C2 Registro de activos completo**: las cinco entradas de activos tienen completos los campos de la tabla principal; las fuentes se distribuyen bajo SIL OFL 1.1 con el texto completo de la licencia junto a la fuente en `src/prism-text/font_data/LICENSE`.
 - **C3 Avisos de terceros**: `Compliance/THIRD-PARTY-NOTICES.md` separa explícitamente «activos de datos ≠ dependencias de código».
 
+<a id="license"></a>
 ## Licencia
 
 Apache License 2.0, ver [`LICENSE`](../LICENSE).

@@ -40,26 +40,26 @@
   <sub><b>642</b> arquivos · <b>28</b> crates · <b>261 mil</b> linhas de Rust · <b>3929</b> testes · <b>0</b> dependências de terceiros · <b>18,9 MB</b> em arquivo único</sub>
 </p>
 
-
 <!-- TOC-START -->
 <details>
 <summary>Índice</summary>
 
-- [Mapa de capacidades](#mapa-de-capacidades)
-- [Rodando em três minutos](#rodando-em-três-minutos)
-- [Um plano, um texto](#um-plano-um-texto)
-- [Ou apenas a API Rust](#ou-apenas-a-api-rust)
-- [Capacidades que não cabem na lista](#capacidades-que-não-cabem-na-lista)
-- [Fatos de engenharia](#fatos-de-engenharia)
-- [Arquitetura](#arquitetura)
-- [Compilar, testar e portões](#compilar-testar-e-portões)
-- [Limites honestos](#limites-honestos)
-- [Conformidade](#conformidade)
-- [Licença](#licença)
+- [Mapa de capacidades](#user-content-capabilities)
+- [Rodando em três minutos](#user-content-quickstart)
+- [Um plano, um texto](#user-content-one-scene)
+- [Ou apenas a API Rust](#user-content-rust-api)
+- [Capacidades que não cabem na lista](#user-content-internals)
+- [Fatos de engenharia](#user-content-engineering)
+- [Arquitetura](#user-content-architecture)
+- [Compilar, testar e portões](#user-content-build-test)
+- [Limites honestos](#user-content-boundaries)
+- [Conformidade](#user-content-compliance)
+- [Licença](#user-content-license)
 
 </details>
 <!-- TOC-END -->
 
+<a id="capabilities"></a>
 ## Mapa de capacidades
 
 Um motor de mídia procedural em Rust. A entrada é uma cena `.prism` ou uma chamada à API Rust; a saída é uma imagem, uma sequência de quadros ou um corte final. As camadas seguem uma cadeia de mídia; congelar um instante dá uma imagem, avançar e gravar dá vídeo — todas as camadas tratam os dois do mesmo jeito.
@@ -78,6 +78,7 @@ Um motor de mídia procedural em Rust. A entrada é uma cena `.prism` ou uma cha
 
 A tabela lista apenas capacidades. O que cada uma não faz está em [Limites honestos](#limites-honestos), não escondido na tabela.
 
+<a id="quickstart"></a>
 ## Rodando em três minutos
 
 ```bash
@@ -100,6 +101,7 @@ cargo run -p prism-app --release     # cena de demonstração embutida
 
 O resultado é um workspace Cargo comum (28 crates em `src/`); os demais comandos `cargo` funcionam como em qualquer projeto Rust. A primeira compilação leva alguns minutos.
 
+<a id="one-scene"></a>
 ## Um plano, um texto
 
 `.prism` é a linguagem de descrição de cenas do motor. Abaixo está um plano completo e renderizável de três segundos — esfera, material, câmera orbital, luz direcional, duração, grade e especificação de saída:
@@ -161,6 +163,7 @@ cargo run -p prism-app --release -- render examples/w2d_showcase.prism \
   <sub>Quadro 10 de `examples/w2d_showcase.prism`: uma esfera 3D, uma camada de texto, um grade e uma faixa de fade compartilham a mesma linha de tempo.</sub>
 </p>
 
+<a id="rust-api"></a>
 ## Ou apenas a API Rust
 
 Se preferir não escrever DSL, chame a biblioteca direto. Este é o esqueleto da imagem principal (a cena completa tem 190 linhas, veja [`docs/gallery/gallery.rs`](gallery/gallery.rs)):
@@ -193,6 +196,7 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 
 `render_pixel` é uma função pura: entram cena, câmera, contexto de amostragem e coordenada do pixel; sai RGB linear. Com os mesmos parâmetros devolve bits idênticos, não importa a thread nem a ordem de chamada — por isso a renderização paralela não precisa de sincronização alguma.
 
+<a id="internals"></a>
 ## Capacidades que não cabem na lista
 
 Estas coisas não são suporte a formatos, mas infraestrutura dentro do motor.
@@ -224,6 +228,7 @@ Cada tipo de nó do motor é uma **solução particular** de uma tripla “kerne
 | **Metal** | Compilado atrás de gate, não ativado | Port isomórfico concluído, não verificado em hardware, `is_available()` sempre false |
 | **WebGPU** | Apenas conclusão | Avaliação de viabilidade feita (4–6 pessoas-dia de port), caminho de renderização não implementado |
 
+<a id="engineering"></a>
 ## Fatos de engenharia
 
 Três restrições e o que cada uma custa:
@@ -243,6 +248,7 @@ Quatro camadas, dos parâmetros até os bytes:
 3. **Determinismo de empacotamento**: empacotar duas vezes a mesma fonte gera o mesmo SHA-256; o round-trip de desempacotamento compara cada arquivo byte a byte.
 4. **Testes como critério**: muitos dos 3929 testes travam valores de ouro (tolerância apertada de 1e-2 para 1e-6, resíduo medido 4,53e-7); a fidelidade de forma é limitada por distância de Hausdorff em vez de “parece próximo o bastante”.
 
+<a id="architecture"></a>
 ## Arquitetura
 
 ```mermaid
@@ -280,6 +286,7 @@ Estrutura após desempacotar:
 
 > Os documentos de design (`docs/设计/`) ficam apenas no repositório completo do publicador e não são distribuídos; o crate de demonstração `prism-anim-demo` também não vai no pacote.
 
+<a id="build-test"></a>
 ## Compilar, testar e portões
 
 ```bash
@@ -302,6 +309,7 @@ node tools/pack_source_txt.mjs --verify      # ida e volta de empacotamento, byt
 
 Quatro scripts de portão sem dependências (só Node): defesa contra escrita fantasma (com autoteste reverso), varredura de higiene open source, autoverificação de conformidade (9/9 aprovadas mais 8/8 provas de que o critério falha quando deve) e verificação de ida e volta do empacotamento. Um portão tem exatamente dois resultados — passa ou falha — e “parece bom” não é um deles. **Um verde falso é mais perigoso que uma falha.**
 
+<a id="boundaries"></a>
 ## Limites honestos
 
 | Limite | Estado | Saída |
@@ -317,6 +325,7 @@ Quatro scripts de portão sem dependências (só Node): defesa contra escrita fa
 
 Não são itens de “depois”. Hoje não são suportados, explicitamente. Melhor aqui do que escondido em uma issue.
 
+<a id="compliance"></a>
 ## Conformidade
 
 O motor promete zero dependências de código de terceiros e verifica isso por autoverificação:
@@ -325,6 +334,7 @@ O motor promete zero dependências de código de terceiros e verifica isso por a
 - **C2 Registro de ativos completo**: as cinco entradas de ativos têm os campos da tabela principal; as fontes são distribuídas sob SIL OFL 1.1 com o texto completo da licença junto à fonte em `src/prism-text/font_data/LICENSE`.
 - **C3 Avisos de terceiros**: `Compliance/THIRD-PARTY-NOTICES.md` separa explicitamente “ativos de dados ≠ dependências de código”.
 
+<a id="license"></a>
 ## Licença
 
 Apache License 2.0, veja [`LICENSE`](../LICENSE).
