@@ -40,26 +40,26 @@
   <sub><b>642</b> files · <b>28</b> crates · <b>261k</b> lines of Rust · <b>3929</b> tests · <b>0</b> third-party dependencies · <b>18.9 MB</b> single-file package</sub>
 </p>
 
-
 <!-- TOC-START -->
 <details>
 <summary>Contents</summary>
 
-- [Capability map](#capability-map)
-- [Up and running in three minutes](#up-and-running-in-three-minutes)
-- [One shot, one text file](#one-shot-one-text-file)
-- [Or just the Rust API](#or-just-the-rust-api)
-- [Capabilities that do not fit the list](#capabilities-that-do-not-fit-the-list)
-- [Engineering facts](#engineering-facts)
-- [Architecture](#architecture)
-- [Build, test, and gates](#build-test-and-gates)
-- [Honest boundaries](#honest-boundaries)
-- [Compliance](#compliance)
-- [License](#license)
+- [Capability map](#user-content-capabilities)
+- [Up and running in three minutes](#user-content-quickstart)
+- [One shot, one text file](#user-content-one-scene)
+- [Or just the Rust API](#user-content-rust-api)
+- [Capabilities that do not fit the list](#user-content-internals)
+- [Engineering facts](#user-content-engineering)
+- [Architecture](#user-content-architecture)
+- [Build, test, and gates](#user-content-build-test)
+- [Honest boundaries](#user-content-boundaries)
+- [Compliance](#user-content-compliance)
+- [License](#user-content-license)
 
 </details>
 <!-- TOC-END -->
 
+<a id="capabilities"></a>
 ## Capability map
 
 A procedural media engine in Rust. Feed it a `.prism` scene file or call the Rust API; it outputs a still, a frame sequence, or a finished cut. The layers below follow one media pipeline; freeze an instant and you get a still, advance and record it and you get video — every layer treats both the same.
@@ -78,6 +78,7 @@ A procedural media engine in Rust. Feed it a `.prism` scene file or call the Rus
 
 The table lists capabilities only. What each one cannot do is in [Honest boundaries](#honest-boundaries), not buried in the table.
 
+<a id="quickstart"></a>
 ## Up and running in three minutes
 
 ```bash
@@ -100,6 +101,7 @@ cargo run -p prism-app --release     # built-in demo scene
 
 What you get is an ordinary Cargo workspace (28 crates under `src/`); every `cargo` command behaves as usual. The first build takes a few minutes.
 
+<a id="one-scene"></a>
 ## One shot, one text file
 
 `.prism` is the engine's scene description language. Below is a complete, renderable three-second shot — sphere, material, orbit camera, directional light, duration, grade, output spec, all of it:
@@ -161,6 +163,7 @@ cargo run -p prism-app --release -- render examples/w2d_showcase.prism \
   <sub>Frame 10 of `examples/w2d_showcase.prism`: a 3D sphere, a text layer, a grade, and a fade track all sharing one timeline.</sub>
 </p>
 
+<a id="rust-api"></a>
 ## Or just the Rust API
 
 If you would rather skip the DSL, call the library directly. This is the skeleton of the hero image (the full scene is 190 lines, see [`docs/gallery/gallery.rs`](gallery/gallery.rs)):
@@ -193,6 +196,7 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 
 `render_pixel` is a pure function: scene, camera, sampling context, and pixel coordinate in; linear RGB out. With the same parameters it returns identical bits regardless of thread or call order — which is why parallel rendering needs no synchronization at all.
 
+<a id="internals"></a>
 ## Capabilities that do not fit the list
 
 These are not format support but infrastructure inside the engine.
@@ -224,6 +228,7 @@ Every node type in the engine is a **particular solution** of a "kernel + lattic
 | **Metal** | Compiled behind a gate, not enabled | Isomorphic port complete, not verified on hardware, `is_available()` is always false |
 | **WebGPU** | Conclusion only | Feasibility assessment done (4–6 person-days of porting), render path not implemented |
 
+<a id="engineering"></a>
 ## Engineering facts
 
 Three constraints, and what each costs:
@@ -243,6 +248,7 @@ Four layers, from parameters all the way down to bytes:
 3. **Packaging determinism**: packing the same source twice yields an identical SHA-256; the unpack round-trip compares every file byte by byte.
 4. **Tests as the criterion**: many of the 3929 tests lock golden values (tolerance tightened from 1e-2 to 1e-6, measured residual 4.53e-7); shape fidelity is bounded by Hausdorff distance rather than "looks close enough".
 
+<a id="architecture"></a>
 ## Architecture
 
 ```mermaid
@@ -280,6 +286,7 @@ Layout after unpacking:
 
 > Design documents (`docs/设计/`) live only in the publisher's full repository and are not distributed; the demo crate `prism-anim-demo` is not packaged either.
 
+<a id="build-test"></a>
 ## Build, test, and gates
 
 ```bash
@@ -302,6 +309,7 @@ node tools/pack_source_txt.mjs --verify      # pack and unpack round-trip, byte 
 
 Four zero-dependency gate scripts (Node only): ghost-write defense (including a reverse self-test), open-source hygiene scan, compliance self-check (9/9 pass plus 8/8 must-fail proofs), and a pack round-trip check. A gate has exactly two outcomes — pass or fail — and "looks fine" is not one of them. **A false green is more dangerous than a failure.**
 
+<a id="boundaries"></a>
 ## Honest boundaries
 
 | Boundary | Status | Way out |
@@ -317,6 +325,7 @@ Four zero-dependency gate scripts (Node only): ghost-write defense (including a 
 
 These are not "later" items. They are explicitly unsupported today. Better here than buried in an issue.
 
+<a id="compliance"></a>
 ## Compliance
 
 The engine promises zero third-party code dependencies, verified by self-check:
@@ -325,6 +334,7 @@ The engine promises zero third-party code dependencies, verified by self-check:
 - **C2 Complete asset registry**: all five asset entries have their main-table fields; fonts are distributed under SIL OFL 1.1 with the full license text next to the font at `src/prism-text/font_data/LICENSE`.
 - **C3 Third-party notices**: `Compliance/THIRD-PARTY-NOTICES.md` explicitly separates "data assets ≠ code dependencies".
 
+<a id="license"></a>
 ## License
 
 Apache License 2.0, see [`LICENSE`](../LICENSE).
