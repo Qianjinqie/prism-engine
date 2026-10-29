@@ -40,26 +40,26 @@
   <sub><b>642</b> ファイル · <b>28</b> crate · <b>26.1 万</b> 行の Rust · <b>3929</b> テスト · サードパーティ依存 <b>0</b> · <b>18.9 MB</b> の単一ファイル</sub>
 </p>
 
-
 <!-- TOC-START -->
 <details>
 <summary>目次</summary>
 
-- [能力の全体像](#能力の全体像)
-- [3 分で動かす](#3-分で動かす)
-- [一つのショットを、一つのテキストで](#一つのショットを一つのテキストで)
-- [Rust API だけを使う](#rust-api-だけを使う)
-- [一覧に収まらない内部能力](#一覧に収まらない内部能力)
-- [エンジニアリング上の事実](#エンジニアリング上の事実)
-- [アーキテクチャ](#アーキテクチャ)
-- [ビルド・テスト・ゲート](#ビルド・テスト・ゲート)
-- [正直な境界](#正直な境界)
-- [コンプライアンス](#コンプライアンス)
-- [ライセンス](#ライセンス)
+- [能力の全体像](#user-content-capabilities)
+- [3 分で動かす](#user-content-quickstart)
+- [一つのショットを、一つのテキストで](#user-content-one-scene)
+- [Rust API だけを使う](#user-content-rust-api)
+- [一覧に収まらない内部能力](#user-content-internals)
+- [エンジニアリング上の事実](#user-content-engineering)
+- [アーキテクチャ](#user-content-architecture)
+- [ビルド・テスト・ゲート](#user-content-build-test)
+- [正直な境界](#user-content-boundaries)
+- [コンプライアンス](#user-content-compliance)
+- [ライセンス](#user-content-license)
 
 </details>
 <!-- TOC-END -->
 
+<a id="capabilities"></a>
 ## 能力の全体像
 
 Rust で書かれたプロシージャル・メディアエンジン。入力は `.prism` のシーン記述か Rust 呼び出し、出力は静止画・連番・完成カット。以下の層はメディアパイプラインの工程順で、ある瞬間で止めれば静止画、連続して記録すれば動画になる——どの層も両方を同じように扱う。
@@ -78,6 +78,7 @@ Rust で書かれたプロシージャル・メディアエンジン。入力は
 
 表は能力の一覧です。各能力の「できないこと」は[正直な境界](#正直な境界)にあり、表の中には隠していません。
 
+<a id="quickstart"></a>
 ## 3 分で動かす
 
 ```bash
@@ -100,6 +101,7 @@ cargo run -p prism-app --release     # 内蔵デモシーン
 
 展開後は通常の Cargo workspace（`src/` 以下に 28 crate）で、以降の `cargo` コマンドは普通の Rust プロジェクトと同じです。初回ビルドには数分かかります。
 
+<a id="one-scene"></a>
 ## 一つのショットを、一つのテキストで
 
 `.prism` はエンジンのシーン記述言語です。以下は完全にレンダリング可能な 3 秒のショット——球体、マテリアル、周回カメラ、方向光源、長さ、グレーディング、出力仕様のすべて：
@@ -161,6 +163,7 @@ cargo run -p prism-app --release -- render examples/w2d_showcase.prism \
   <sub>`examples/w2d_showcase.prism` の 10 フレーム目：3D 球体、テキストレイヤ、グレーディング、フェードトラックが同じタイムラインを共有しています。</sub>
 </p>
 
+<a id="rust-api"></a>
 ## Rust API だけを使う
 
 DSL を書かずにライブラリを直接呼ぶこともできます。以下はヒーローイメージの骨格です（完全なシーンは 190 行、[`docs/gallery/gallery.rs`](gallery/gallery.rs)）：
@@ -193,6 +196,7 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 
 `render_pixel` は純関数です。シーン、カメラ、サンプリング文脈、ピクセル座標を入力に、線形 RGB を返します。同じパラメータなら、どのスレッドから、どの順序で呼んでも結果はビット一致——だから並列レンダリングに同期は一切要りません。
 
+<a id="internals"></a>
 ## 一覧に収まらない内部能力
 
 これらはフォーマット対応ではなく、エンジン内部の基盤です。
@@ -224,6 +228,7 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 | **Metal** | コンパイルゲート済み、未点灯 | 同型移植は完了、実機検証なし、`is_available()` は常に false |
 | **WebGPU** | 結論のみ | 実現可能性の評価は完了（移植量 4〜6 人日）、描画経路は未実装 |
 
+<a id="engineering"></a>
 ## エンジニアリング上の事実
 
 三つの制約と、それぞれのコスト：
@@ -243,6 +248,7 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 3. **パッケージングの決定性**：同じソースを二度パッケージすると SHA-256 が一致；展開の往復で全ファイルをバイト単位で比較する。
 4. **テストを判定基準にする**：3929 件のテストの多くが黄金値を固定（許容差は 1e-2 から 1e-6 へ、実測残差 4.53e-7）；形状の忠実さは「だいたい合っている」ではなく Hausdorff 距離で上限を決める。
 
+<a id="architecture"></a>
 ## アーキテクチャ
 
 ```mermaid
@@ -280,6 +286,7 @@ flowchart LR
 
 > 設計の正典（`docs/設計/`）は配布元の完全なリポジトリにのみ存在し、配布には含まれません。デモ crate `prism-anim-demo` も同様です。
 
+<a id="build-test"></a>
 ## ビルド・テスト・ゲート
 
 ```bash
@@ -302,6 +309,7 @@ node tools/pack_source_txt.mjs --verify      # パッケージと展開の往復
 
 依存ゼロのゲートスクリプト四本（Node のみ）：幽霊書き込み防御（逆自己試験つき）、オープンソース衛生スキャン、コンプライアンス自己点検（9/9 通過 + 8/8 の反証で落ちることを確認）、パッケージ往復検証。ゲートの結果は「通過」か「失敗」の二つだけで、「たぶん大丈夫」は認めません——**偽のグリーンは失敗より危険です**。
 
+<a id="boundaries"></a>
 ## 正直な境界
 
 | 境界 | 現状 | 道筋 |
@@ -317,6 +325,7 @@ node tools/pack_source_txt.mjs --verify      # パッケージと展開の往復
 
 これらは「後回し」ではなく、現時点で明確に対応していない事項です。issue に隠すより、ここに書くほうがよいと判断しました。
 
+<a id="compliance"></a>
 ## コンプライアンス
 
 エンジンはサードパーティコード依存ゼロを掲げ、自己点検で検証しています：
@@ -325,6 +334,7 @@ node tools/pack_source_txt.mjs --verify      # パッケージと展開の往復
 - **C2 アセット登録の完備**：5 件のアセットの主表項目が揃っています。フォントは SIL OFL 1.1 で配布し、ライセンス全文を `src/prism-text/font_data/LICENSE` に同梱。
 - **C3 第三者帰属表示**：`Compliance/THIRD-PARTY-NOTICES.md` が「データ資産 ≠ コード依存」を明確に区別。
 
+<a id="license"></a>
 ## ライセンス
 
 Apache License 2.0。[`LICENSE`](../LICENSE) を参照してください。
