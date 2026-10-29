@@ -225,8 +225,8 @@ Every node type in the engine is a **particular solution** of a "kernel + lattic
 | Backend | Status | Evidence |
 | --- | --- | --- |
 | **Vulkan** | Really runs | Compute + ray-tracing pipelines; verifiable without a GPU on Mesa's lavapipe software ICD; `render_scene` output is **bit-identical (0 difference)** to the CPU reference; `is_available()` is a compute ∧ render self-check |
-| **Metal** | Compiled behind a gate, not enabled | Isomorphic port complete, not verified on hardware, `is_available()` is always false |
-| **WebGPU** | Conclusion only | Feasibility assessment done (4–6 person-days of porting), render path not implemented |
+| **Metal** | Code-ready (reuses the Vulkan backend via the MoltenVK translation layer), not verified on hardware | Isomorphic port complete, `is_available()` always false, probe chain ready |
+| **WebGPU** | Code-ready (T1/T2/T3 green), Chrome/Edge only | Feasibility assessment done (4–6 person-days of porting), render path lands in T03, T3 is SwiftShader, not user devices |
 
 <a id="engineering"></a>
 ## Engineering facts
@@ -238,6 +238,8 @@ Three constraints, and what each costs:
 | Zero third-party code | All 110 runtime + 20 test dependencies are in-repo `path` dependencies; no `build.rs`, no native linking, no network at build time | Every format, algorithm, font, and codec has to be written here |
 | Bit-for-bit determinism | Fixed-point IDCT, fixed sampling sequences, a four-dimensional configuration hash; identical across platforms for identical input | No fast floating-point shortcuts, no reliance on hash-map iteration order |
 | Single-file distribution | 642 files across 28 crates merged into one 18.9 MB UTF-8 text, restored by `node unpack.cjs` | You give up browsing the source directly on GitHub |
+
+> ⚠️ **v2.2 distribution correction**: the v2.1 single-file distribution (`dist/prism-engine-v2.1-source.txt`, packaged 2026-10-27) contained a BSDF multi-scatter compensation defect (oversaturated-metal grazing-angle color shift); **fixed in v2.2**. Users rendering oversaturated metals with the v2.1 single-file distribution should upgrade to v2.2.
 
 ### How determinism is verified
 
@@ -312,16 +314,16 @@ Four zero-dependency gate scripts (Node only): ghost-write defense (including a 
 <a id="boundaries"></a>
 ## Honest boundaries
 
-| Boundary | Status | Way out |
-| --- | --- | --- |
-| DNG `Compression=7` (lossless JPEG) | Not implemented; DNGs from real cameras cannot be read | Convert to 16-bit TIFF / PNG first |
-| mp3 / AAC / FLAC | Decoding via external ffmpeg probe; encoding not implemented | Install ffmpeg, or stay on WAV |
-| Curved primitives on GPU | CPU path only | Triangulate and go through the SAH-BVH |
-| Metal | Gate compiled, not verified on hardware, not enabled | Wire it up once Apple hardware is available |
-| WebGPU | Feasibility concluded, render path not implemented | 4–6 person-days |
-| Hardware encoding | Probe skeleton for three platforms, no implementation | Fill in per target platform |
-| GPU speedup | Correctness verified only on lavapipe, never measured on a real GPU | Measure on target hardware |
-| Hygiene scan | Existing hits in source comments | Clean them one by one; the script tracks them |
+| Boundary | Status | Way out | Evidence / rejection point |
+| --- | --- | --- | --- |
+| DNG `Compression=1/7/8` (incl. 32946 Deflate) | Supported 1/7/8 (incl. 32946 Deflate); real camera models not validated by samples | No conversion needed; real-camera samples can add a golden (unsupported values 6/34892/34712/52546 are rejected structurally) | `raw.rs:3282,3287` (read path dispatches 1/7/8/32946) + `raw_dng_synth.rs:260` (synth supports 1/7/8/32946) + 设计 §7.3 / Q10 (real-device registry) |
+| mp3 / AAC / FLAC | Decoding via external ffmpeg probe; encoding not in-house | Install ffmpeg, or stay on WAV | `README.md:213` (AAC/mp3 encoding not in-house, via ffmpeg) |
+| Curved primitives on GPU | CPU path only | Triangulate and go through the SAH-BVH | Structured rejection point: no GPU kernel (`prism-vector/src/path.rs:8` CPU flatten; GPU curves are T06 TODO, 设计 §6 WP-A) |
+| Metal | Code-ready (reuses the Vulkan backend via the MoltenVK translation layer); `is_available()` always false, not verified on hardware | Wire it up once Apple hardware is available | `prism-gpu/src/metal/mod.rs:9,189` (is_available always false) + `metal/render.rs:1` (not lit) + 设计 §7.2 Metal row |
+| WebGPU | Code-ready (T1/T2/T3 green), Chrome/Edge only; render path lands in T03, T3 is SwiftShader, not user devices | 4–6 person-days | `docs/v2.1-WebGPU可行性评估.md:13,152` (conditionally feasible, Chrome/Edge first) + 设计 §7.2 WebGPU row |
+| Hardware encoding | Probe skeleton for three platforms, no implementation (binding-ready pending C-2) | Fill in per target platform | `prism-ffi-hwenc/src/lib.rs:14` (links no platform library) + 设计 §7.2 硬件编码 row |
+| GPU speedup | Registered-pending-verification: correctness verified only on lavapipe; real-GPU speedup not measured, no number written (lavapipe is a pseudo-value) | Measure on target hardware | `README.md:228` (lavapipe software ICD, no GPU to verify) + 设计 §7.2 GPU 加速比 row (no number allowed) |
+| Hygiene scan | Existing hits in source comments (C-3 moved out of this release; gate retained) | Clean them one by one; the script tracks them | `README.md:299,307` (hygiene_scan gate, doc layer cleared) + C-3 moved out (设计 §6.2) |
 
 These are not "later" items. They are explicitly unsupported today. Better here than buried in an issue.
 

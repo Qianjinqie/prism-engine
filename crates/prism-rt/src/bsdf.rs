@@ -804,4 +804,217 @@ mod tests {
             _ => panic!("有效参数下采样不应失败"),
         }
     }
+
+    // ===========================================================================
+    //  V2.2-C-4（T12）多散射补偿登记补齐的测试钉子
+    //  —— 以下全部针对 `eval` 的补偿项 `ms`，复算旧/新两套形式做对照。
+    //  仅对纯金属（metalness=1, transmission=0）严格成立：diffuse 让位、无透射，
+    //  此时 eval = spec_scatter + ms，可由 eval − spec_scatter 反解实际 ms。
+    // ===========================================================================
+
+    /// 单位半球方向：极角由 cosθ=mu 决定（法线取 +z）。
+    #[inline]
+    fn hemi_dir(mu: f32) -> Vec3 {
+        Vec3::new((1.0 - mu * mu).max(0.0).sqrt(), 0.0, mu)
+    }
+
+    /// 旧形式复算：逐通道各自 F0 查表回填（修复前 / 被 T12 判死的旧实现）。
+    ///
+    /// `ms_ch = (1−E_o)(1−E_i)·f0_ch / (π(1−E_avg))`，其中 `E` 取自
+    /// `energy_dir(·,·,f0_ch)`、`energy_avg(·,f0_ch)`——每个通道用自己的 F0 查表。
+    /// 低 F0 通道的 `(1−E)` 更大、`1−E_avg` 更小，相除把回填量在 `f0→0` 侧放大，
+    /// 补偿幅度不随 F0 单调（高饱和金属低通道被过量补能 → 偏补色）。
+    fn old_colored_ms(b: &Bsdf, wo: Vec3, wi: Vec3, n: Vec3) -> Vec3 {
+        let f0 = b.f0();
+        let alpha = b.alpha();
+        let cos_o = wo.dot(&n).max(0.0);
+        let cos_i = wi.dot(&n).max(0.0);
+        let comp = |f0c: f32| -> f32 {
+            let e_o = energy_dir(cos_o, alpha, f0c);
+            let e_i = energy_dir(cos_i, alpha, f0c);
+            let e_avg = energy_avg(alpha, f0c);
+            (1.0 - e_o) * (1.0 - e_i) * f0c / (PI * (1.0 - e_avg).max(1e-3))
+        };
+        Vec3::new(comp(f0.x), comp(f0.y), comp(f0.z))
+    }
+
+    /// 白炉标准形补偿（F0=1 单色）：`ms = (1−E_o)(1−E_i) / (π(1−E_avg))`。
+    #[inline]
+    fn white_furnace_ms(cos_o: f32, cos_i: f32, alpha: f32) -> f32 {
+        let e_o = energy_dir(cos_o, alpha, 1.0);
+        let e_i = energy_dir(cos_i, alpha, 1.0);
+        let e_avg = energy_avg(alpha, 1.0);
+        (1.0 - e_o) * (1.0 - e_i) / (PI * (1.0 - e_avg).max(1e-3))
+    }
+
+    #[test]
+    fn multiscatter_compensation_monotonic_in_f0() {
+        // 补偿量随 F0 单调不减：高 F0 通道的补偿 ≥ 低 F0 通道。
+        // 这正是新形式（Fdez-Agüera 2019 彩色导体）相对旧形式的关键区分点——
+        // 旧形式在 f0→0 侧把回填量放大，补偿与 F0 呈反单调。
+        // 金 f0=(1.000,0.766,0.336)、铜 f0=(0.955,0.638,0.538)，
+        // 在 α∈{0.05,0.1,0.2,0.35} × cosθ∈{0.05,0.1,0.25,0.8} 网格上验证。
+        let n = Vec3::new(0.0, 0.0, 1.0);
+        let metals = [
+            ("金", Vec3::new(1.0, 0.766, 0.336)),
+            ("铜", Vec3::new(0.955, 0.638, 0.538)),
+        ];
+        let alphas = [0.05f32, 0.1, 0.2, 0.35];
+        let cos = [0.05f32, 0.1, 0.25, 0.8];
+        for (name, f0v) in metals {
+            for &a in &alphas {
+                let b = Bsdf::new(f0v, 1.0, a.sqrt(), 1.5, 0.0, 0.0, Vec3::splat(0.3));
+                let f0 = b.f0();
+                let alpha = b.alpha();
+                for &muo in &cos {
+                    for &mui in &cos {
+                        let wo = hemi_dir(muo);
+                        let wi = hemi_dir(mui);
+                        let disk = b.eval(wo, wi, n);
+                        let spec = spec_scatter(wo, wi, n, alpha, f0);
+                        // 实际补偿量 = eval − spec（含 ≤3 ulp 还原误差，远小于断言容差）。
+                        let ms = disk - spec;
+                        // 按 F0 升序排序 (f0c, msc) 对，断言 msc 单调不减。
+                        let mut pairs = [(f0.x, ms.x), (f0.y, ms.y), (f0.z, ms.z)];
+                        pairs.sort_by(|p, q| p.0.partial_cmp(&q.0).unwrap());
+                        for k in 1..3 {
+                            assert!(
+                                pairs[k].1 >= pairs[k - 1].1 - 1e-9,
+                                "{name} α={a} μo={muo} μi={mui}：补偿不随 F0 单调不减 \
+                                 ({:?} vs {:?})",
+                                pairs[k - 1],
+                                pairs[k]
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn white_metal_compensation_equals_white_furnace_form() {
+        // 白金属（f0=1）补偿逐位等于白炉标准形：
+        //   ms = (1−E_o)(1−E_i) / (π(1−E_avg))，E 取白炉表（F0=1）。
+        // Fdez-Agüera 形式在 F_avg=1 时逐字退化为上式，故 eval = spec_scatter + ms_base，
+        // 且三个通道的补偿分量完全相等（同一 ms_base）。逐位（bit-exact）断言。
+        let n = Vec3::new(0.0, 0.0, 1.0);
+        let w = Bsdf::new(Vec3::splat(1.0), 1.0, 0.2, 1.5, 0.0, 0.0, Vec3::splat(0.3));
+        let f0 = w.f0();
+        let alpha = w.alpha();
+        for &(muo, mui) in &[(1.0f32, 1.0), (0.6, 1.0), (0.25, 0.8), (0.05, 0.25)] {
+            let wo = hemi_dir(muo);
+            let wi = hemi_dir(mui);
+            let disk = w.eval(wo, wi, n);
+            let spec = spec_scatter(wo, wi, n, alpha, f0);
+            let wf_ms = white_furnace_ms(muo, mui, alpha);
+            // 白炉标准形逐位：每个通道都是同一个 wf_ms。
+            let expected = Vec3::new(spec.x + wf_ms, spec.y + wf_ms, spec.z + wf_ms);
+            assert_eq!(disk.x.to_bits(), expected.x.to_bits(),
+                "白金属 μo={muo} μi={mui}：R 补偿 ≠ 白炉标准形（逐位）");
+            assert_eq!(disk.y.to_bits(), expected.y.to_bits(),
+                "白金属 μo={muo} μi={mui}：G 补偿 ≠ 白炉标准形（逐位）");
+            assert_eq!(disk.z.to_bits(), expected.z.to_bits(),
+                "白金属 μo={muo} μi={mui}：B 补偿 ≠ 白炉标准形（逐位）");
+        }
+    }
+
+    #[test]
+    fn old_colored_multiscatter_form_is_dead() {
+        // 负向自证（注入式，先例 prism-core/tests/qa_ignore_guard.rs 的注入式自证）：
+        // 旧「逐通道各自 F0 查表回填」形式必须被本测试判死。
+        // 若 eval 回退到旧形式，实际补偿 == 旧形式复算 → 差异归零 → 本测试判红。
+        let n = Vec3::new(0.0, 0.0, 1.0);
+
+        // ① 白金属锚点：旧形式在 f0=1 处退化为白炉标准形，与当前实现逐位一致。
+        //    证明本测试的旧形式复算与被测函数共用同一套能量表（复算本身可信），
+        //    从而 ② 的「差异显著」不是复算失真造成的假阳性。
+        {
+            let w = Bsdf::new(Vec3::splat(1.0), 1.0, 0.2, 1.5, 0.0, 0.0, Vec3::splat(0.3));
+            let f0 = w.f0();
+            let alpha = w.alpha();
+            for &(muo, mui) in &[(1.0f32, 1.0), (0.25, 0.25), (0.05, 0.8)] {
+                let wo = hemi_dir(muo);
+                let wi = hemi_dir(mui);
+                let disk = w.eval(wo, wi, n);
+                let spec = spec_scatter(wo, wi, n, alpha, f0);
+                let wf_ms = white_furnace_ms(muo, mui, alpha);
+                let old_full = Vec3::new(spec.x + wf_ms, spec.y + wf_ms, spec.z + wf_ms);
+                assert_eq!(disk.x.to_bits(), old_full.x.to_bits(),
+                    "白金属锚点：旧形式复算应与实现逐位一致（复算可靠性锚）");
+                assert_eq!(disk.y.to_bits(), old_full.y.to_bits());
+                assert_eq!(disk.z.to_bits(), old_full.z.to_bits());
+            }
+        }
+
+        // ② 彩色金属（金）：旧形式必被杀死。金 f0=(1.000,0.766,0.336)，
+        //    在 α=0.05、μ=0.25 处旧→新 = [0.019914,0.046192,0.050627] →
+        //    [0.019914,0.012003,0.002676]（G 差 3.85×、B 差 18.92×）；
+        //    极端掠射（μo=0.1, μi=0.8）B 差 49.83×。
+        for &alpha in &[0.05f32, 0.1, 0.2] {
+            let gold = Bsdf::new(
+                Vec3::new(1.0, 0.766, 0.336),
+                1.0,
+                alpha.sqrt(),
+                1.5,
+                0.0,
+                0.0,
+                Vec3::splat(0.3),
+            );
+            let f0 = gold.f0();
+            let a = gold.alpha();
+            for &(muo, mui) in &[
+                (0.25f32, 0.25),
+                (0.1, 0.8),
+                (0.05, 0.05),
+                (0.25, 0.05),
+                (0.05, 0.25),
+            ] {
+                let wo = hemi_dir(muo);
+                let wi = hemi_dir(mui);
+                let disk = gold.eval(wo, wi, n);
+                let spec = spec_scatter(wo, wi, n, a, f0);
+                let ms_actual = disk - spec;
+                let old_ms = old_colored_ms(&gold, wo, wi, n);
+                // 最差通道的相对偏差必须显著（>20%）——旧形式若重现则 ≈0 → 判红。
+                let mut worst_rel = 0.0f32;
+                for (m, o) in [(ms_actual.x, old_ms.x), (ms_actual.y, old_ms.y), (ms_actual.z, old_ms.z)] {
+                    let rel = if o.abs() < 1e-9 {
+                        (m - o).abs()
+                    } else {
+                        (m - o).abs() / o.abs()
+                    };
+                    worst_rel = worst_rel.max(rel);
+                }
+                assert!(
+                    worst_rel > 0.2,
+                    "金 α={alpha} μo={muo} μi={mui}：旧形式未被杀死，\
+                     最差通道相对偏差 {worst_rel:.3}（应 >0.2，旧新差异显著）"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn eval_is_deterministic() {
+        // 两遍求值逐位一致（G3：纯函数 [D]，eval 不含 RNG / 全局可变状态）。
+        // 既有 `bsdf_sample_is_deterministic` 覆盖采样路径；此处覆盖 eval 主体。
+        let b = Bsdf::new(
+            Vec3::new(0.8, 0.3, 0.1),
+            0.5,
+            0.5,
+            1.5,
+            0.0,
+            0.0,
+            Vec3::splat(0.3),
+        );
+        let n = Vec3::new(0.0, 0.0, 1.0);
+        let wo = Vec3::new(0.3, 0.2, (1.0f32 - 0.13).sqrt()).normalize();
+        let wi = Vec3::new(-0.1, 0.4, (1.0f32 - 0.17).sqrt()).normalize();
+        let a = b.eval(wo, wi, n);
+        let c = b.eval(wo, wi, n);
+        assert_eq!(a.x.to_bits(), c.x.to_bits());
+        assert_eq!(a.y.to_bits(), c.y.to_bits());
+        assert_eq!(a.z.to_bits(), c.z.to_bits());
+    }
 }

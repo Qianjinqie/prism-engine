@@ -226,8 +226,8 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 | 后端 | 状态 | 证据 |
 | --- | --- | --- |
 | **Vulkan** | 真实运行 | compute + 光追双管线；Mesa lavapipe 软件 ICD 上无 GPU 可验证；`render_scene` 出帧与 CPU 参考**逐字节 0 差异**；`is_available()` 是 compute ∧ render 双自检 |
-| **Metal** | 编译门控，不点亮 | 同构移植完成，未实机验证，`is_available()` 恒 false |
-| **WebGPU** | 只出结论 | 可行性评估完成（迁移量 4–6 人日），渲染路径未实现 |
+| **Metal** | 代码就绪（经 MoltenVK 翻译层复用 Vulkan 后端），未实机验证 | 同构移植完成，`is_available()` 恒 false，探测链就绪 |
+| **WebGPU** | 代码就绪（T1/T2/T3 绿），仅 Chrome/Edge 可行 | 可行性评估完成（迁移量 4–6 人日），渲染路径 T03 落地，T3 为 SwiftShader 非用户设备 |
 
 <a id="engineering"></a>
 ## 工程事实
@@ -239,6 +239,8 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 | 零第三方代码依赖 | 110 条运行期 + 20 条测试依赖全是仓内 `path` 依赖；无 `build.rs`、无原生链接、构建不联网 | 每种格式、每个算法、字体、编解码器全部自己写 |
 | 逐字节确定性 | 定点 IDCT、固定采样序列、四维配置哈希；同输入跨平台逐位一致 | 放弃浮点快路径，不能依赖无序容器的遍历顺序 |
 | 单文件分发 | 642 个文件、28 个 crate 合并成一个 18.9 MB 的 UTF-8 文本，`node unpack.cjs` 还原 | 放弃「在 GitHub 上直接点开看源码」的便利 |
+
+> ⚠️ **v2.2 分发更正**：v2.1 单文件分发（`dist/prism-engine-v2.1-source.txt`，打包于 2026-10-27）含 BSDF 多散射补偿缺陷（高饱和金属掠射角偏色），**v2.2 已修**。使用 v2.1 单文件分发渲染高饱和金属者请升级至 v2.2。
 
 ### 确定性如何被验证
 
@@ -313,16 +315,16 @@ node tools/pack_source_txt.mjs --verify      # 打包并解包回环校验（逐
 <a id="boundaries"></a>
 ## 诚实的边界
 
-| 边界 | 现状 | 出路 |
-| --- | --- | --- |
-| DNG `Compression=7`（lossless JPEG） | 未实现，真实相机 DNG 读不了 | 先转 16 bit TIFF / PNG |
-| mp3 / AAC / FLAC | 解码走外部 ffmpeg 探测；编码不自研 | 装 ffmpeg，或只用 WAV |
-| 曲线图元 GPU | 仅 CPU 路径 | 三角化后走 SAH-BVH |
-| Metal | 编译门控就绪，未实机验证，不点亮 | 有 Apple 设备后接 |
-| WebGPU | 可行性结论已出，渲染未实现 | 4–6 人日 |
-| 硬件编码 | 三平台探测骨架，未接实现 | 按目标平台填 |
-| GPU 加速比 | 只在 lavapipe 上验证了正确性，未在真实 GPU 实测 | 需目标硬件实测 |
-| 卫生扫描 | 源码注释有存量命中 | 逐条清理，脚本可追踪 |
+| 边界 | 现状 | 出路 | 实证 / 拒绝点 |
+| --- | --- | --- | --- |
+| DNG `Compression=1/7/8`（含 32946 Deflate） | 已支持 1/7/8（含 32946 Deflate）；真实机型未经样本验证 | 无需转存；真实相机样本可追加 golden（未支持取值 6/34892/34712/52546 结构化拒绝） | `raw.rs:3282,3287`（读端分派 1/7/8/32946）+ `raw_dng_synth.rs:260`（合成支持 1/7/8/32946）+ 设计 §7.3 / Q10（真机登记表） |
+| mp3 / AAC / FLAC | 解码走外部 ffmpeg 探测；编码不自研 | 装 ffmpeg，或只用 WAV | `README.md:213`（AAC/mp3 编码不自研，走 ffmpeg 协作） |
+| 曲线图元 GPU | 仅 CPU 路径 | 三角化后走 SAH-BVH | 结构化拒绝点：无 GPU kernel（`prism-vector/src/path.rs:8` CPU 平铺；GPU 曲线为 T06 待办，设计 §6 WP-A） |
+| Metal | 代码就绪（经 MoltenVK 翻译层复用 Vulkan 后端）；`is_available()` 恒 false，未实机验证 | 有 Apple 设备后接 | `prism-gpu/src/metal/mod.rs:9,189`（is_available 恒 false）+ `metal/render.rs:1`（未点亮）+ 设计 §7.2 Metal 行 |
+| WebGPU | 代码就绪（T1/T2/T3 绿），仅 Chrome/Edge 可行；渲染路径 T03 落地，T3 为 SwiftShader 非用户设备 | 4–6 人日 | `docs/v2.1-WebGPU可行性评估.md:13,152`（条件可行，Chrome/Edge 优先）+ 设计 §7.2 WebGPU 行 |
+| 硬件编码 | 三平台探测骨架，未接实现（绑定就绪待 C-2） | 按目标平台填 | `prism-ffi-hwenc/src/lib.rs:14`（不 link 任何平台库）+ 设计 §7.2 硬件编码行 |
+| GPU 加速比 | 登记待验：仅在 lavapipe 验证正确性，真实 GPU 加速比不测、不写数字（lavapipe 为伪值） | 需目标硬件实测 | `README.md:228`（lavapipe 软件 ICD 无 GPU 可验证）+ 设计 §7.2 GPU 加速比行（不得写任何数字） |
+| 卫生扫描 | 源码注释有存量命中（C-3 移出本期，门禁保留） | 逐条清理，脚本可追踪 | `README.md:299,307`（hygiene_scan 门禁，文档层已清零）+ C-3 移出（设计 §6.2） |
 
 这些不是「以后再说」，是当前状态下明确不支持的。写在这里，比藏在 issue 里好。
 

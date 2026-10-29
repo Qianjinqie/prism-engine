@@ -225,8 +225,8 @@ Cada tipo de nó do motor é uma **solução particular** de uma tripla “kerne
 | Backend | Estado | Evidência |
 | --- | --- | --- |
 | **Vulkan** | Funciona de verdade | Pipelines compute + ray tracing; verificável sem GPU no ICD de software lavapipe do Mesa; a saída de `render_scene` é **idêntica byte a byte (0 diferença)** à referência em CPU; `is_available()` é uma autoverificação compute ∧ render |
-| **Metal** | Compilado atrás de gate, não ativado | Port isomórfico concluído, não verificado em hardware, `is_available()` sempre false |
-| **WebGPU** | Apenas conclusão | Avaliação de viabilidade feita (4–6 pessoas-dia de port), caminho de renderização não implementado |
+| **Metal** | Código pronto (reutiliza o backend Vulkan via a camada de tradução MoltenVK), não verificado em hardware | Port isomórfico concluído, `is_available()` sempre false, cadeia de sondagem pronta |
+| **WebGPU** | Código pronto (T1/T2/T3 verdes), apenas Chrome/Edge | Avaliação de viabilidade feita (4–6 pessoas-dia de port), caminho de render em T03, T3 é SwiftShader, não dispositivos do usuário |
 
 <a id="engineering"></a>
 ## Fatos de engenharia
@@ -238,6 +238,8 @@ Três restrições e o que cada uma custa:
 | Zero código de terceiros | As 110 dependências de execução + 20 de teste são dependências `path` dentro do repositório; sem `build.rs`, sem linkedição nativa, sem rede na compilação | Todo formato, algoritmo, fonte e codec precisa ser escrito aqui |
 | Determinismo byte a byte | IDCT de ponto fixo, sequências de amostragem fixas, um hash de configuração de quatro dimensões; idêntico entre plataformas para a mesma entrada | Abre mão de atalhos rápidos em ponto flutuante e de depender da ordem de iteração de hashmaps |
 | Distribuição em arquivo único | 642 arquivos de 28 crates fundidos em um texto UTF-8 de 18,9 MB, restaurado por `node unpack.cjs` | Abre mão de folhear o código direto no GitHub |
+
+> ⚠️ **Correção de distribuição v2.2**: a distribuição em arquivo único v2.1 (`dist/prism-engine-v2.1-source.txt`, empacotada em 2026-10-27) continha um defeito de compensação multidifusão BSDF (deslocamento de cor em metais supersaturados em ângulo rasante); **corrigido no v2.2**. Usuários que renderizam metais supersaturados com a distribuição v2.1 em arquivo único devem atualizar para o v2.2.
 
 ### Como o determinismo é verificado
 
@@ -312,16 +314,16 @@ Quatro scripts de portão sem dependências (só Node): defesa contra escrita fa
 <a id="boundaries"></a>
 ## Limites honestos
 
-| Limite | Estado | Saída |
-| --- | --- | --- |
-| DNG `Compression=7` (lossless JPEG) | Não implementado; DNGs de câmeras reais não são legíveis | Converter antes para TIFF/PNG 16 bit |
-| mp3 / AAC / FLAC | Decodificação via sonda de ffmpeg externo; codificação não implementada | Instalar ffmpeg, ou ficar em WAV |
-| Primitivas curvas na GPU | Apenas caminho CPU | Triangular e passar pelo SAH-BVH |
-| Metal | Gate compilado, não verificado em hardware, não ativado | Ligar quando houver hardware Apple |
-| WebGPU | Viabilidade concluída, renderização não implementada | 4–6 pessoas-dia |
-| Codificação em hardware | Esqueleto de sondagem para três plataformas, sem implementação | Preencher por plataforma alvo |
-| Aceleração GPU | Correção verificada só no lavapipe, nunca medida em GPU real | Medir no hardware alvo |
-| Varredura de higiene | Ocorrências existentes em comentários | Limpar uma a uma; o script rastreia |
+| Limite | Estado | Saída | Prova / ponto de rejeição |
+| --- | --- | --- | --- |
+| DNG `Compression=1/7/8` (incl. 32946 Deflate) | 1/7/8 suportado (incl. 32946 Deflate) ; modelos de câmeras reais não validados por amostra | Nenhuma conversão necessária ; amostras de câmeras reais podem adicionar golden (valores não suportados 6/34892/34712/52546 rejeitados estruturalmente) | `raw.rs:3282,3287` (leitor reparte 1/7/8/32946) + `raw_dng_synth.rs:260` (synth suporta 1/7/8/32946) + 设计 §7.3 / Q10 (registro de dispositivos reais) |
+| mp3 / AAC / FLAC | Decodificação via sonda de ffmpeg externo; codificação não implementada internamente | Instalar ffmpeg, ou ficar em WAV | `README.md:213` (codificação AAC/mp3 não interna, via ffmpeg) |
+| Primitivas curvas na GPU | Apenas caminho CPU | Triangular e passar pelo SAH-BVH | Ponto de rejeição estruturado: nenhum kernel GPU (`prism-vector/src/path.rs:8` achatamento CPU ; curvas GPU são T06 TODO, 设计 §6 WP-A) |
+| Metal | Código pronto (reutiliza o backend Vulkan via a camada de tradução MoltenVK) ; `is_available()` sempre false, não verificado em hardware | Ligar quando houver hardware Apple | `prism-gpu/src/metal/mod.rs:9,189` (is_available sempre false) + `metal/render.rs:1` (não aceso) + 设计 §7.2 linha Metal |
+| WebGPU | Código pronto (T1/T2/T3 verdes), apenas Chrome/Edge possível ; caminho de render em T03, T3 é SwiftShader, não dispositivos do usuário | 4–6 pessoas-dia | `docs/v2.1-WebGPU可行性评估.md:13,152` (condicionalmente viável, Chrome/Edge primeiro) + 设计 §7.2 linha WebGPU |
+| Codificação em hardware | Esqueleto de sondagem para três plataformas, sem implementação (pronto para vincular aguardando C-2) | Preencher por plataforma alvo | `prism-ffi-hwenc/src/lib.rs:14` (não linka biblioteca de plataforma) + 设计 §7.2 linha 硬件编码 |
+| Aceleração GPU | Registrada aguardando verificação : correção verificada só no lavapipe ; aceleração GPU real não medida, nenhum número escrito (lavapipe é um pseudovalor) | Medir no hardware alvo | `README.md:228` (ICD de software lavapipe, nenhum GPU para verificar) + 设计 §7.2 linha GPU 加速比 (nenhum número permitido) |
+| Varredura de higiene | Ocorrências existentes em comentários (C-3 removido desta versão ; gate mantido) | Limpar uma a uma ; o script rastreia | `README.md:299,307` (gate hygiene_scan, camada de documentação esvaziada) + C-3 removido (设计 §6.2) |
 
 Não são itens de “depois”. Hoje não são suportados, explicitamente. Melhor aqui do que escondido em uma issue.
 

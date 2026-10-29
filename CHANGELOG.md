@@ -40,7 +40,12 @@
   归 V2.2-C-4。
 - **分发包说明**：`prism-engine-v2.1-source.txt` 打包于本修复之前，**含此缺陷**；
   源码树修复按计划随 v2.2 分发，不单独发 v2.1.1。v2.2 分发说明须显式载明此行。
-- **验收**：钉子待 V2.2-C-4 落地（金/铜补偿单调性 + 白炉退化逐位 + 旧形式差异锁定）。
+- **验收（已闭环）**：钉子随 V2.2-C-4（T12）落地于 `crates/prism-rt/src/bsdf.rs` 测试段 ——
+  `multiscatter_compensation_monotonic_in_f0`（金/铜 α×cosθ 网格补偿随 F0 单调不减）、
+  `white_metal_compensation_equals_white_furnace_form`（白金属 f0=1 补偿逐位等于白炉标准形）、
+  `old_colored_multiscatter_form_is_dead`（旧逐通道 F0 查表回填形式负向自证，必须判红）、
+  `eval_is_deterministic`（两遍求值逐位一致，G3）。既有白炉 / 电介质上界断言零回归。
+  发布说明草稿见 `docs/v2.2-release-note-draft.md`；九语言 README 同步归 PM 的 T02。
 
 ### R-2026-xx-03：T4 结清——sRGB ↔ ACEScg（AP1）矩阵由 Hill 拟合件换为官方原色推导（V2.1 流 C）
 
