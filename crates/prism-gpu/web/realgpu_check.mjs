@@ -61,6 +61,7 @@ if (HAS("help")) {
     "  node realgpu_check.mjs --url http://127.0.0.1:8080/index.html\n" +
     "  node realgpu_check.mjs --timeout 900           # SwiftShader 很慢，默认 600s\n" +
     "  node realgpu_check.mjs --allow-skip            # 允许全 SKIP（仅环境自检用）\n" +
+      "  node realgpu_check.mjs --dump-report        # 末尾打印 harness 报告全文（含 adapter 字段）\n" +
     "\n" +
     "退出码：0 = 至少 1 项 PASS 且无 FAIL；1 = 有 FAIL 或前置检查失败；2 = 本帮助。\n" +
     "任何环境问题（Xvfb 起不来 / Playwright 未装 / adapter 拿不到）都会非 0 退出，\n" +
@@ -72,6 +73,10 @@ if (HAS("help")) {
 const TIMEOUT_S = Number(arg("timeout", "600"));
 const URL_ARG = arg("url", null);
 const ALLOW_SKIP = HAS("allow-skip");
+// --dump-report：把 harness 的报告全文打出来。用途：核对 adapter 字段（vendor /
+// architecture / device / isFallbackAdapter）与哨兵诊断——这些只在报告文本里，
+// 上方的环境摘要表覆盖不到。
+const DUMP_REPORT = HAS("dump-report");
 
 const problems = [];
 function die(msg, code = 1) {
@@ -270,6 +275,10 @@ if (!pageUrl) {
         "content-type": MIME[extname(file)] || "application/octet-stream",
         // wasm 侧若将来用 SharedArrayBuffer 需要这两行；先写上避免以后踩坑。
         "cache-control": "no-store",
+        // 【必须显式给】harness 用 content-length 作为"wasm 文件大小"写进报告。
+        // 缺了它，页面会退化成显示线性内存大小（1,441,792 B 量级），
+        // 而"同一份 wasm 字节"是 A-1 的核心判据——本地回归不能给出错误读数。
+        "content-length": body.length,
       });
       res.end(body);
     } catch (e) {
@@ -399,6 +408,9 @@ try {
         errs,
         env: document.getElementById("env")?.textContent?.trim() || "",
         errcount: document.getElementById("errcount")?.textContent?.trim() || "",
+        // renderReport() 已挂在每次状态变更上，跑完时 textarea 里就是完整报告。
+        // 不必调 renderReport（页面是 type="module"，它不挂在 window 上）。
+        report: document.getElementById("report")?.value || "",
       };
     }).catch((e) => ({ items: [], errs: [`收集结果失败：${e.message}`], env: "", errcount: "" }));
 
@@ -406,6 +418,13 @@ try {
     const tally = { PASS: 0, FAIL: 0, SKIP: 0, PENDING: 0, BAD_ARG: 0, "?": 0 };
     for (const it of result.items) {
       tally[it.state] = (tally[it.state] || 0) + 1;
+    }
+
+    if (DUMP_REPORT) {
+      console.log(`\n${"=".repeat(66)}`);
+      console.log("--- harness 报告全文（--dump-report）---");
+      console.log(result.report || "(报告为空：renderReport 未产出)");
+      console.log(`${"=".repeat(66)}\n`);
     }
 
     console.log(`\n${"=".repeat(66)}`);

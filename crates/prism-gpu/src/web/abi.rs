@@ -931,7 +931,7 @@ static TESTS: &[TestItem] = &[
     },
     TestItem {
         id: "wgsl.compile",
-        name: "真 WebGPU：11 个内嵌 shader 批量 createShaderModule 编译（include 已展开）",
+        name: "真 WebGPU：全部内嵌 shader 批量 createShaderModule 编译（include 已展开，份数见详情）",
         needs_gpu: true,
         run: t_wgsl_compile,
         collect: Some(c_wgsl_compile),
@@ -952,7 +952,7 @@ static TESTS: &[TestItem] = &[
     },
     TestItem {
         id: "shader.dispatch_census",
-        name: "覆盖台账：9 份 WGSL 的 compute 入口逐份核对（可 dispatch / 数据竞争 / 多 bind group / 零入口）",
+        name: "覆盖台账：全部 WGSL 的 compute 入口逐份核对（可 dispatch / 数据竞争 / 多 bind group / 零入口）",
         needs_gpu: false,
         run: t_shader_dispatch_census,
         collect: None,

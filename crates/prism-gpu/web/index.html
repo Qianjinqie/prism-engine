@@ -150,7 +150,7 @@ const ST_NAME = ["PASS","FAIL","PENDING","SKIP","BAD_ARG"];
 // 构建后用 wasm 的 sha256 前 8 位替换下面的 `__WASM_VER__` 占位符（幂等），
 // 内容一变小 URL 就变，缓存自然失效。未跑过 build.sh 时占位符原样保留，
 // 仍可正常加载（只是不做缓存破坏）。
-const WASM_URL = "prism_gpu.wasm?v=54d66a8e";
+const WASM_URL = "prism_gpu.wasm?v=8772008b";
 
 // 句柄表在 wasm 线性内存里的元素宽度：句柄是 u32 ⇒ 4 字节。
 // 命名常量而非字面量：bind group 那段要把 n 个句柄的数组整段读出来，
@@ -205,7 +205,17 @@ async function loadWasm(){
   // 链接成功但导出不可用（历史上出现过：实例存在而 exports 为空）。
   if (!instance.exports || typeof instance.exports.prism_test_count !== "function")
     throw new Error("链接成功但导出缺失：prism_test_count 不可用");
-  return { instance, how, size: total || (instance.exports.memory.buffer.byteLength) };
+  // 【教训·2026-10-31】size 必须是**文件字节数**，不能用 memory.buffer.byteLength 顶替：
+  // 后者是 wasm **线性内存**（本次实测 1,441,792 B），与文件大小（453,239 B）不是同一个量。
+  // 历史 bug：静态服务不给 content-length 时，报告写成 "wasm: loaded (…, 1441792B …)"，
+  // 而 A-1 的核心判据之一恰恰是「跑的是同一份 wasm 字节」——字段说谎会让该判据失效。
+  // 拿不到就如实说拿不到，不拿另一个量凑数。
+  return {
+    instance, how,
+    size: total || 0,
+    sizeUnknown: !total,
+    memBytes: instance.exports.memory.buffer.byteLength,
+  };
 }
 
 // ===========================================================================
@@ -689,8 +699,36 @@ function renderReport(){
   // 有路径会返回空导出的实例）。此时直接调 prism_abi_version() 会二次抛错，
   // 把真正的链接错误盖掉 —— 报告区必须能在**任何**状态下渲染出来。
   const abi = abiVersionText();
-  lines.push("wasm: " + (wasm ? `loaded (${LOAD_INFO.how}, ${LOAD_INFO.size}B, ${abi})` : "NOT LOADED"));
-  lines.push("adapter: " + JSON.stringify(adapterInfo||{}));
+  lines.push("wasm: " + (wasm
+    ? `loaded (${LOAD_INFO.how}, ` +
+      (LOAD_INFO.size
+        ? `${LOAD_INFO.size}B`
+        : `文件大小未知（服务器未给 content-length；线性内存 ${LOAD_INFO.memBytes}B 不等于文件大小）`) +
+      `, ${abi})`
+    : "NOT LOADED"));
+  // 【D-14 教训·2026-10-31】GPUAdapterInfo 的属性全部定义在**原型 getter** 上，
+  // JSON.stringify 只序列化自有可枚举属性 → 恒得 `{}`。之前每份真机报告都因此
+  // 丢失硬件指纹，事后只能追问用户机型。必须逐字段显式取值。
+  // 更要紧的是 isFallbackAdapter：若浏览器回退到软件适配器，19/19 全 PASS
+  // 也只是第二个 SwiftShader，**不能算真机证据**——这一条必须能自证。
+  const ai = adapterInfo || {};
+  const aiFields = {
+    vendor: ai.vendor ?? null,
+    architecture: ai.architecture ?? null,
+    device: ai.device ?? null,
+    description: ai.description ?? null,
+    subgroupMinSize: ai.subgroupMinSize ?? null,
+    subgroupMaxSize: ai.subgroupMaxSize ?? null,
+    isFallbackAdapter: ai.isFallbackAdapter ?? null,
+  };
+  lines.push("adapter: " + JSON.stringify(aiFields));
+  if (aiFields.isFallbackAdapter === true) {
+    lines.push("⚠️ adapter 为 FALLBACK（软件实现）—— 本次结果**不计入真机证据**，"
+             + "等价于 SwiftShader 回归，请换有硬件 GPU 的浏览器重跑");
+  } else if (aiFields.isFallbackAdapter === null) {
+    lines.push("⚠️ adapter.isFallbackAdapter 不可读（实现未暴露），**无法排除软件回退**："
+             + "请人工核对 chrome://gpu 的 \"Graphics Feature Status\" 再采信本报告");
+  }
   lines.push("--- WGSL 源码清单（Rust 内嵌）---");
   for (const s of SRCS) lines.push(`  ${s.label}  ${s.len} B`);
   lines.push("--- 测试项 ---");

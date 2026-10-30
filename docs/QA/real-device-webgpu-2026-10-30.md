@@ -91,7 +91,7 @@ PRD §3.0.1 对 V2.2-A-1 的实机验证档要求是：**「Chrome/Edge ≥2 设
 > **判定：进度 1/2 设备，且浏览器族为「Chromium 143 内核（非 Chrome/Edge 品牌）」。
 > 故 A-1 的实机档整体仍为「已交付待验」，不得改写为已完成。**
 >
-> ⏭ **本节是当时的判定，保留原样不改写**。最终结论见 **§9**（已推进至 2 台设备各 19/19 全 PASS）。
+> ⏭ **本节是当时的判定，保留原样不改写**。最终结论见 **§9**（已推进至 3 个浏览器环境各 19/19 全 PASS）。
 >
 > 对外口径维持：「限 Chrome/Edge / 未真机验证」→ 本记录允许追加一句更精确的：
 > 「已在 1 台 Chromium 143 内核移动端真机验证（Samsung Internet，Android 10），
@@ -172,7 +172,7 @@ PRD §3.0.1 对 V2.2-A-1 的实机验证档要求是：**「Chrome/Edge ≥2 设
 
 | 台账 | 影响 |
 |---|---|
-| V2.2-A-1 实机档 | **1/2 设备**：核心三项判据全通过（`w*h*4` / 双跑一致 / 52.5·52.9 dB），但「≥2 设备」与「Chrome/Edge 品牌」未满足 → **仍为「已交付待验」**（→ 已由 **§9** 推进：2 台设备各 19/19 PASS） |
+| V2.2-A-1 实机档 | **1/2 设备**：核心三项判据全通过（`w*h*4` / 双跑一致 / 52.5·52.9 dB），但「≥2 设备」与「Chrome/Edge 品牌」未满足 → **仍为「已交付待验」**（→ 已由 **§9** 推进：3 个浏览器环境各 19/19 PASS；品牌项为候选、待确认） |
 | `gpu.gi_compute` | 真机 FAIL，**新增待修项**。该项属 V1.0 遗留、非 V2.2 新增，但「GI GPU 路径与 CPU 判对」这一能力声称在真机上**当前不成立** |
 | `gpu.scene_frame` | 新增项，真机 PASS（本记录 §3 为唯一证据） |
 | 其余 14 项既有测试 | 首次真机批量验证，全 PASS（构成「真机环境健康」的旁证） |
@@ -394,24 +394,34 @@ Rust 打包值**逐格逐分量**比对（含 `w` 必须为 0）。
 
 ---
 
-## 9. 真机收尾：**两台设备均 19/19 全 PASS** —— 结论收敛
+## 9. 真机收尾：**3 个浏览器环境、≥2 台设备，均 19/19 全 PASS** —— 结论收敛
 
 ### 9.1 结果
 
-**作者共两台设备。同一份产物**（wasm `453,223 B`，`?v=54d66a8e`）在两台上各跑一遍，各自全绿：
+**同一份产物**（wasm `453,223 B`，`?v=54d66a8e`）在三个浏览器环境各跑一遍，各自全绿：
 
-| 项 | 设备 A | 设备 B |
-|---|---|---|
-| 机型 | 三星 Galaxy S10（SM-G9730，国行） | **荣耀 X40** |
-| SoC / GPU | 骁龙 855（SM8150）/ **Adreno 640** | 骁龙 695 / **Adreno 619** |
-| 系统 | Android 12（One UI 4.1） | Magic UI 6.1（基于 Android 12，出厂值；实机版本待确认） |
-| 浏览器 | Quark 10.18.6.1161（Chrome 144 内核） | 待补 |
-| wasm | `453,223 B`，`?v=54d66a8e` | 同（同一份字节） |
-| 测试项数 | 19（17 既有 + `gpu.params_roundtrip` + `gpu.gi_layout`） | 19 |
-| 结果 | **19 PASS / 0 FAIL / 0 SKIP** | **19 PASS / 0 FAIL / 0 SKIP** |
-| `gpu.gi_layout` | PASS（`samples[1]` = `(0,1,0)`） | PASS |
-| `gpu.gi_compute` | PASS（`visible_total` = `8/8 · 4/8 · 4/8`） | PASS |
-| `gpu.scene_frame` | PASS（PSNR 52 dB 档） | PASS |
+| 项 | 环境 A | 环境 B | 环境 C |
+|---|---|---|---|
+| 机型 | 三星 Galaxy S10（SM-G9730，国行） | **荣耀 X40** | 待确认（UA 经 Chromium 缩减，不含机型） |
+| SoC / GPU | 骁龙 855（SM8150）/ **Adreno 640** | 骁龙 695 / **Adreno 619** | 待确认（那一轮 harness 未采集 `adapter.info`，见 §9.7） |
+| 系统 | Android 12（One UI 4.1） | Magic UI 6.1（基于 Android 12，出厂值；实机版本待确认） | Android 10+（缩减 UA 统一报 `Android 10; K`） |
+| 浏览器 | Quark 10.18.6.1161（Chrome 144 内核） | 待补 | **Edge for Android 153.0.0.0**（`EdgA/153`，Chrome/153 内核） |
+| wasm | `453,223 B`，`?v=54d66a8e` | 同（同一份字节） | 同（同一份字节） |
+| 测试项数 | 19（17 既有 + `gpu.params_roundtrip` + `gpu.gi_layout`） | 19 | 19 |
+| 结果 | **19 PASS / 0 FAIL / 0 SKIP** | **19 PASS / 0 FAIL / 0 SKIP** | **19 PASS / 0 FAIL / 0 SKIP** |
+| `gpu.gi_layout` | PASS（`samples[1]` = `(0,1,0)`） | PASS | PASS（8 格全等，最大偏差 `0.000e0`） |
+| `gpu.gi_compute` | PASS（`visible_total` = `8/8 · 4/8 · 4/8`） | PASS | PASS（16/24 方向可见；fingerprint `0x6959a2a8`） |
+| `gpu.scene_frame` | PASS（PSNR 52 dB 档） | PASS | PASS（A 52.5 / B 52.9 dB，双跑逐位一致） |
+
+> **环境 C 的意义与前两个不同：它是 `Chrome/Edge` 品牌。** UA 中的 `EdgA/153.0.0.0`
+> 是 **Edge for Android**，内核 Chrome/153（比环境 A 的 144 新 9 个版本）。这补齐了
+> A-1 验收条款里一直空着的品牌项 —— 见 §9.6。
+>
+> **但两点必须同时说清，不能只挑有利的说**：
+> 1. 它是**移动版** Edge，不是桌面版。条款字面只要求「Chrome/Edge 品牌」，故字面满足；
+>    但条款**目的**是"主流桌面浏览器可用"，而桌面档**至今零实测**（§9.6.3）。
+> 2. 该轮 `adapter: {}` **未能确认是否为硬件适配器**。若是软件回退，19/19 只等于
+>    第二次 SwiftShader 回归，**不计入真机证据**。harness 侧已修（§9.7），待重跑补证。
 
 > **⚠️ 这两台的 GPU 是同一家：Qualcomm Adreno 640 与 Adreno 619。**
 > 不是「跨 GPU 厂商」验证，是「跨两代 Adreno 驱动 + 跨两个系统」验证。
@@ -504,10 +514,10 @@ Rust 打包值**逐格逐分量**比对（含 `w` 必须为 0）。
 
 | 台账 | 更新 |
 |---|---|
-| **V2.2-A-1** 实机档 | **两台设备（三星 SM-G9730 + 荣耀）在最终版上各 19/19**，跑的是**同一份 wasm 字节**。三项核心判据（`w*h*4` / 双跑逐位 / ≥40 dB PSNR）在两台上均成立；**「Chrome/Edge 品牌」子项仍未满足**（两台均为第三方浏览器） |
+| **V2.2-A-1** 实机档 | **三个浏览器环境（Quark/三星、荣耀、Edge/Android 153）在最终版上各 19/19**，跑的是**同一份 wasm 字节**；三项核心判据（`w*h*4` / 双跑逐位 / ≥40 dB PSNR）在各环境均成立。「≥2 设备」✅ 已满足；**「Chrome/Edge 品牌」已出现候选证据（Edge for Android 153），但须待 `isFallbackAdapter` 确认后方可记为满足**（§9.7.4）；**桌面档仍零实测**（§9.6.3） |
 | `gpu.gi_layout` / `gpu.params_roundtrip` | 新增项，两台真机均 PASS，转为常驻回归 |
 | `gpu.gi_compute` | 真机 FAIL → **已修复，两台真机验证 PASS**，该项恢复"可声称" |
-| 对外口径 | 允许追加：「已在 2 台移动端真机（三星 + 荣耀）全项通过（19/19）」；**仍不得**写「WebGPU 已支持」或「Chrome/Edge 已验证」 |
+| 对外口径 | 允许追加：「已在 2 台移动端真机（三星 + 荣耀）全项通过（19/19）」「已在一台 Edge for Android（Chrome 153 内核）上 19/19 通过」；**仍不得**写「WebGPU 已支持」或「Chrome/Edge 已验证」——**移动版 Edge 通过不等于桌面版可用**（GPU 后端不同：D3D12 / Metal vs Vulkan/GLES） |
 
 > **关于「Chrome/Edge 品牌」这条验收条款，建议产品侧重新审视**：它的目的是保证
 > "主流浏览器可用"，但真正决定可用性的是**内核版本 + 驱动实现**，不是品牌字符串。
@@ -565,3 +575,166 @@ Rust 打包值**逐格逐分量**比对（含 `w` 必须为 0）。
 
 > 本项目按 WGSL 规范输出，并对规范一致性与设备实测双向举证；经举证确认由驱动偏离规范
 > 导致的缺陷，不计为本项目缺陷，但相应设备兼容性风险仍会登记并给出降级路径。
+
+### 9.6 环境 C（Edge）补上了品牌项 —— 但只补了一半
+
+#### 9.6.1 补上的那一半
+
+A-1 的实机档有两个条件：「≥2 台设备」与「Chrome/Edge 品牌」。此前所有跑测
+（Samsung Internet、Quark、荣耀那台待补浏览器）**没有一个是 Chrome/Edge 品牌**，
+所以台账一直停在"待验"。
+
+环境 C 的 UA 为：
+
+```
+Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko)
+Chrome/153.0.0.0 Mobile Safari/537.36 EdgA/153.0.0.0
+```
+
+`EdgA` = **Edge for Android**，产品名与渲染引擎内核 Chrome/153 均是微软 Edge 品牌。
+**按条款字面（品牌字符串），此条满足。**
+
+附带价值：Chrome/153 比环境 A 的 144 新 9 个大版本，说明 `vec4` 化在**更新的内核**上
+同样成立，不是只在旧内核上"碰巧过"。
+
+#### 9.6.2 没补上的那一半（必须写在前面，不能只报喜）
+
+| 缺口 | 现状 | 影响 |
+|---|---|---|
+| **桌面版从未实测** | 三个环境全是移动端 | 条款目的（"主流桌面浏览器"）**未被验证**。移动与桌面即使同为 Chromium，GPU 后端（Metal/D3D12/Vulkan）、驱动栈、扩展支持都不同 |
+| **硬件适配器未确认** | 该轮 `adapter: {}`，`isFallbackAdapter` 不可见 | 若为软件回退，本次 19/19 只等于第二次 SwiftShader 回归 |
+
+> 结论口径：**可以说「已在一台 Edge（Android 153 内核）上 19/19 全通过」；
+> 不可以说「Chrome/Edge 已验证」**（缺桌面、缺硬件适配器确认）。
+> 这两句差别很大，前者是事实，后者是承诺。
+
+#### 9.6.3 桌面档为什么必须单列
+
+README 的边界表述是「限 Chrome/Edge」，括号里从来没写"移动版"。用户读到这句话，
+默认理解为"我桌面上的 Chrome 能用"。所以：
+
+- **移动 Edge 通过 ≠ 桌面 Edge 通过**。桌面走 D3D12（Windows）或 Metal（macOS），
+  与本轮验证的 Vulkan/GLES 路径不是同一条。
+- 桌面 Chrome/Edge 是**用户最可能的实际环境**，也是分发说明的承诺对象。
+- 补齐成本极低（打开同一个 URL），**收益是让那句边界表述第一次真的有证据**。
+
+> 若本条长期不补，README 那句话应改为「限移动端 Chromium 内核浏览器（Chrome/Edge 品牌已验 1 例）」，
+> **不得**保持「限 Chrome/Edge」这种会被读成桌面可用的表述。
+
+### 9.7 harness 缺陷：`adapter: {}` —— 报告丢了硬件指纹
+
+#### 9.7.1 现象与根因
+
+三次真机报告的 `adapter: {}` 都是空的。根因不在采集、在序列化：
+
+```js
+// 旧代码（crates/prism-gpu/web/index.html）
+lines.push("adapter: " + JSON.stringify(adapterInfo || {}));
+```
+
+`GPUAdapterInfo` 的 `vendor` / `architecture` / `device` / `description` /
+`isFallbackAdapter` **全部定义在原型 getter 上**，而 `JSON.stringify` 只序列化
+**自有可枚举属性** → 恒得 `{}`。对象本身是好的（`adapterInfo?.vendor` 能读到，
+摘要表里也能显示），只有进报告文本这一步丢了。
+
+#### 9.7.2 为什么这不只是"显示不好看"
+
+1. **每份报告都缺硬件指纹**：事后只能追问用户"你用的哪台机器"，而 UA 已被
+   Chromium 缩减（`Android 10; K`），连机型都拿不到——这就是 §9.1 表里
+   环境 C 的"待确认"是怎么来的。
+2. **更严重：`isFallbackAdapter` 不可见**。这是"真机证据"与"第二次 SwiftShader
+   回归"的唯一分界线。缺了它，一份 19/19 的报告**无法自证是硬件跑的**。
+   这与 §9.3 记录的"V1.0 假阳性"是同一类错误：**判据缺少能区分两件事的锚点**。
+
+#### 9.7.3 修复
+
+改为逐字段显式取值，并在报告里加一条**主动守卫**：
+
+```js
+const aiFields = {
+  vendor: ai.vendor ?? null, architecture: ai.architecture ?? null,
+  device: ai.device ?? null, description: ai.description ?? null,
+  subgroupMinSize: ai.subgroupMinSize ?? null,
+  subgroupMaxSize: ai.subgroupMaxSize ?? null,
+  isFallbackAdapter: ai.isFallbackAdapter ?? null,
+};
+lines.push("adapter: " + JSON.stringify(aiFields));
+if (aiFields.isFallbackAdapter === true) {
+  lines.push("⚠️ adapter 为 FALLBACK（软件实现）—— 本次结果不计入真机证据…");
+} else if (aiFields.isFallbackAdapter === null) {
+  lines.push("⚠️ adapter.isFallbackAdapter 不可读，无法排除软件回退：请人工核对 chrome://gpu…");
+}
+```
+
+设计取舍：**不可读时也要显式告警**，而不是静默当作 `false`。宁可报告多一行噪音，
+也不让"无法排除软件回退"这种情况悄悄混进真机证据。
+
+#### 9.7.4 待办
+
+环境 C 需用新页面**重跑一次**，以取得 `adapter` 字段并确认 `isFallbackAdapter`。
+重跑前必须强刷（HTML 自身无指纹参数，浏览器可能仍持旧页）。
+
+### 9.8 `--dump-report` 顺带查出的第二个报告缺陷：wasm 大小写成线性内存
+
+#### 9.8.1 现象
+
+给 `realgpu_check.mjs` 加 `--dump-report`（导出 harness 报告全文）后，本机第一份报告写的是：
+
+```
+wasm: loaded (instantiateStreaming, 1441792B, ABI v1)
+```
+
+而磁盘上的文件是 **453,239 B**。差了 3 倍多。
+
+#### 9.8.2 根因
+
+```js
+// 旧代码
+return { instance, how, size: total || (instance.exports.memory.buffer.byteLength) };
+//                                     ^ total = content-length，静态服务没给时回退到这里
+```
+
+回退分支取的是 **wasm 线性内存大小**（约 1.4 MB 量级），与**文件字节数**不是同一个量。
+
+危害不在"数字难看"：A-1 的核心判据之一是「三台设备跑的是**同一份 wasm 字节**」，
+而这条判据的观测手段就是报告里的 size + 指纹。**字段说谎，判据就失效。**
+
+#### 9.8.3 修复（两处，都必要）
+
+1. **harness 侧**：size 只认 `content-length`；拿不到就明确写"文件大小未知"，
+   并注明"线性内存 N B 不等于文件大小"。**不拿另一个量凑数。**
+2. **回归脚本侧**：`realgpu_check.mjs` 的静态服务补 `content-length`——
+   本地回归也不能给出错误读数（这一条是根因，页面只是没兜住）。
+
+#### 9.8.4 复验
+
+```
+wasm: loaded (instantiateStreaming, 453239B, ABI v1)     ← 与磁盘一致
+adapter: {"vendor":"google","architecture":"swiftshader","device":"0xc0de",
+          "description":"SwiftShader Device (Subzero)",
+          "subgroupMinSize":4,"subgroupMaxSize":4,"isFallbackAdapter":true}
+⚠️ adapter 为 FALLBACK（软件实现）—— 本次结果不计入真机证据…
+```
+
+**fallback 守卫真的会触发**（SwiftShader 的 `isFallbackAdapter` 确为 `true`），
+不是写了不跑的装饰代码。这是本节最有价值的一条：守卫若不触发，等于没有。
+
+### 9.9 修复后的构建与重跑要求
+
+§9.7 / §9.8 改动了 `index.html` 与 `abi.rs`（两处测试 name 字符串），
+产物**已不是**设备 A/B/C 跑过的那一份：
+
+| | 旧（设备 A/B/C 实测） | 新（修复后） |
+|---|---|---|
+| wasm 大小 | `453,223 B` | **`453,239 B`**（+16 B；上限 458,752，余量 5,513） |
+| 内容指纹 | `?v=54d66a8e` | **`?v=8772008b`** |
+| 实质差异 | — | 仅两处测试 `name` 字符串（去掉会腐烂的硬编码数量） |
+| 判据 / 算法 / 布局 | — | **一行未动** |
+| 本机 SwiftShader | 19/19 | **19/19**（`build.sh` 429/0） |
+
+> **纪律**：字节变了就不能把旧结论直接挂到新指纹上。正确做法是**重跑一次**，
+> 由新报告自带 `adapter` 与 `isFallbackAdapter`——这也是补上环境 C 那个
+> "硬件适配器未确认"缺口的唯一途径。
+>
+> 重跑注意：`index.html` 自身**没有**缓存破坏参数，浏览器可能仍持旧页。
+> 必须强刷，或直接访问带查询串的地址（`…/index.html?t=<任意>`）。
