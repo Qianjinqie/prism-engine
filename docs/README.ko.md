@@ -226,7 +226,7 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 | --- | --- | --- |
 | **Vulkan** | 실제 동작 | compute + 레이트레이싱 이중 파이프라인. Mesa lavapipe 소프트웨어 ICD에서 GPU 없이 검증 가능. `render_scene` 출력이 CPU 참조와 **바이트 단위 0 차이**. `is_available()`은 compute ∧ render 이중 자체 점검 |
 | **Metal** | 코드 준비 완료（독립 Metal 백엔드 없음, 미점등）, 실기 미검증 | 동형 이식 완료(역사 자산), `is_available()` 항상 false |
-| **WebGPU** | 코드 준비 완료（T1/T2/T3 녹색）, 지원 범위는 여전히 Chrome/Edge 만；T3 는 Chromium 기반 모바일 기기 2대에서 19/19 전항 통과 (둘 모두 Chrome/Edge 브랜드가 아니므로 브랜드 항목은 미검증) | 타당성 평가 완료(이식량 4–6 인일), 렌더 경로는 T03 에서 착륙; 실기 증거는 `docs/QA/real-device-webgpu-2026-10-30.md` §9 |
+| **WebGPU** | 코드 준비 완료（T1/T2/T3 녹색）, 지원 범위는 여전히 Chrome/Edge 만；T3 는 모바일 기기 2대(Samsung + HONOR, 동일 wasm 바이트)에서 19/19 전항 통과 (둘 모두 Chrome/Edge 브랜드가 아니므로 브랜드 항목은 미검증) | 타당성 평가 완료(이식량 4–6 인일), 렌더 경로는 T03 에서 착륙; 실기 증거는 `docs/QA/real-device-webgpu-2026-10-30.md` §9 |
 
 <a id="engineering"></a>
 ## 엔지니어링 사실
@@ -320,7 +320,7 @@ node tools/pack_source_txt.mjs --verify      # 패키징과 언팩 왕복을 바
 | mp3 / AAC / FLAC | 디코딩은 외부 ffmpeg 탐색 경로, 인코딩은 직접 구현하지 않음 | ffmpeg 설치, 또는 WAV만 사용 | `README.md:213`（AAC/mp3 인코딩 직접 구현 안 함, ffmpeg 경로） |
 | 곡선 프리미티브 GPU | CPU 경로만 | 삼각화 후 SAH-BVH로 | 구조적 거부점：GPU kernel 없음（`prism-vector/src/path.rs:8` CPU 평탄화；GPU 곡선은 T06 TODO, 设计 §6 WP-A） |
 | Metal | 코드 준비 완료（독립 Metal 백엔드 없음, 미점등）；`is_available()` 항상 false, 실기 미검증 | Apple 기기와 독립 백엔드 항목이 생기면 연결 | `prism-gpu/src/metal/mod.rs:9,192`（is_available 항상 false）+ `metal/render.rs:1`（미점등）+ 设计 §7.2 Metal 행 |
-| WebGPU | 코드 준비 완료（T1/T2/T3 녹색）, 지원 범위는 여전히 Chrome/Edge 만；Chromium 기반 모바일 기기 2대에서 19/19 통과, **Chrome/Edge 브랜드는 미검증** | 4–6 인일 (Chrome/Edge 브랜드 기기 1대면 종결) | `docs/v2.1-WebGPU可行性평가.md:13,152`（조건부 실현 가능, Chrome/Edge 우선）+ 设计 §7.2 WebGPU 행 + `docs/QA/real-device-webgpu-2026-10-30.md` §9 (실기 19/19) |
+| WebGPU | 코드 준비 완료（T1/T2/T3 녹색）, 지원 범위는 여전히 Chrome/Edge 만；모바일 기기 2대(Samsung + HONOR, 동일 wasm 바이트)에서 19/19 통과, **Chrome/Edge 브랜드는 미검증** | 4–6 인일 (Chrome/Edge 브랜드 기기 1대면 종결) | `docs/v2.1-WebGPU可行性평가.md:13,152`（조건부 실현 가능, Chrome/Edge 우선）+ 设计 §7.2 WebGPU 행 + `docs/QA/real-device-webgpu-2026-10-30.md` §9 (실기 19/19) |
 | 하드웨어 인코딩 | 세 플랫폼 탐색 골격만, 구현 없음（C-2 대기 중 바인드 준비） | 대상 플랫폼별로 구현 | `prism-ffi-hwenc/src/lib.rs:14`（플랫폼 라이브러리 link 안 함）+ 设计 §7.2 硬件编码 행 |
 | GPU 가속비 | 검증 대기 등록: 정확성은 lavapipe 에서만 검증；실제 GPU 가속비는 미측정·수치 미기재（lavapipe 는 의사값） | 대상 하드웨어에서 측정 필요 | `README.md:228`（lavapipe 소프트웨어 ICD, 검증할 GPU 없음）+ 设计 §7.2 GPU 加速比 행（수치 기재 불가） |
 | 위생 스캔 | 소스 주석에 기존 적중（C-3 는 본 버전에서 제외, gate 유지） | 하나씩 정리, 스크립트로 추적 | `README.md:299,307`（hygiene_scan gate, 문서 계층 제로화）+ C-3 제외（设计 §6.2） |
