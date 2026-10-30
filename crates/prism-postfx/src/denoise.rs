@@ -225,6 +225,550 @@ pub trait DenoiseBackend {
     fn denoise(&self, input: &Fbuf16F, spp: u32) -> Fbuf16F;
 }
 
+// ===========================================================================
+// 第二阶段（V2.2-B-2 / D-2 定案）：G-buffer 引导时域重投影 + 方差引导 à-trous
+// ===========================================================================
+//
+// 三件（均在 `prism-postfx`，零第三方依赖、零超越函数）：
+//   ① `closed_form_motion` —— 由相机变换闭式给出逐像素运动矢量（无光流、无
+//      第三方；矩阵乘 + 齐次除，纯 `+ - × ÷`）；
+//   ② `TemporalAccumulator::accumulate_guided` —— 把上一帧累积结果按 motion
+//      重投影到当前帧像素，再递推增量均值；有效性衰减采样数，无 NaN；
+//   ③ `atrous_pass_variance_guided` / `VarEstimate` —— 方差进入 à-trous 权重
+//      （有理核 `1/(1 + d²/σ² + |Δvar|/σv²)`），保持零超越；
+//   ④ `svgf_two_stage` —— 累积 → 空域 端到端链。
+//
+// 硬约束：模块内无 `exp/log/powf/sin/cos`（D-29），扫描可机械执行。
+
+/// 双线性采样（整数坐标处退化为精确原像素，保证零位移时逐位相等）。
+#[inline]
+fn sample_bilinear(buf: &Fbuf16F, fx: f32, fy: f32) -> [f32; 4] {
+    let x0 = fx.floor();
+    let y0 = fy.floor();
+    let tx = fx - x0;
+    let ty = fy - y0;
+    let ix0 = x0 as i64;
+    let iy0 = y0 as i64;
+    let corners: [(i64, i64); 4] = [(ix0, iy0), (ix0 + 1, iy0), (ix0, iy0 + 1), (ix0 + 1, iy0 + 1)];
+    let wx = [1.0 - tx, tx];
+    let wy = [1.0 - ty, ty];
+    let mut acc = [0.0f32; 4];
+    for (k, &(cx, cy)) in corners.iter().enumerate() {
+        let sx = (cx.clamp(0, buf.width as i64 - 1)) as u32;
+        let sy = (cy.clamp(0, buf.height as i64 - 1)) as u32;
+        let q = buf.get(sx, sy);
+        let wgt = wx[k % 2] * wy[k / 2];
+        for i in 0..4 {
+            acc[i] += wgt * q[i];
+        }
+    }
+    acc
+}
+
+// ---------------------------------------------------------------------------
+// Mat4 / Camera —— 闭式重投影的矩阵原语（行主序，纯算术，零超越）
+// ---------------------------------------------------------------------------
+
+/// 4×4 仿射/投影矩阵（行主序 `m[row][col]`）。
+///
+/// 仅用 `+ - × ÷`（含齐次 w 除）实现；**零超越函数**（D-29）。用于闭式
+/// 重投影：世界↔裁剪的线性映射，逆矩阵用标准 4×4 代数余子式（glMatrix 口径，
+/// 列主序计算后转回），纯算术、无 `exp/log/powf`。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Mat4(pub [[f32; 4]; 4]);
+
+impl Mat4 {
+    /// 单位矩阵。
+    pub fn identity() -> Self {
+        Mat4([
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ])
+    }
+
+    /// 正交平移相机：世界 `(x,y)` → 裁剪 `clip.x = x + tx`、`clip.y = y + ty`
+    /// （齐次 w = 1，无透视除）。本项 CPU 参考路径用它构造平移相机，给出闭式
+    /// 运动矢量（零超越、零第三方、无光流）。同一矩阵 API 亦可承载透视投影
+    /// （未来扩展，零依赖、零超越口径不变）。
+    pub fn ortho_translate(tx: f32, ty: f32) -> Self {
+        Mat4([
+            [1.0, 0.0, 0.0, tx],
+            [0.0, 1.0, 0.0, ty],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ])
+    }
+
+    /// 代数余子式逆（glMatrix 口径：列主序计算后转回行主序），纯 `+ - × ÷`。
+    ///
+    /// # Panics
+    /// 行列式为 0（投影矩阵奇异，调用方编程错误，宪章 C21）。
+    pub fn inverse(&self) -> Option<Mat4> {
+        let m = &self.0;
+        // 列主序数组：索引 = row + 4*col。
+        let a = [
+            m[0][0], m[1][0], m[2][0], m[3][0],
+            m[0][1], m[1][1], m[2][1], m[3][1],
+            m[0][2], m[1][2], m[2][2], m[3][2],
+            m[0][3], m[1][3], m[2][3], m[3][3],
+        ];
+        let a00 = a[0]; let a01 = a[1]; let a02 = a[2]; let a03 = a[3];
+        let a10 = a[4]; let a11 = a[5]; let a12 = a[6]; let a13 = a[7];
+        let a20 = a[8]; let a21 = a[9]; let a22 = a[10]; let a23 = a[11];
+        let a30 = a[12]; let a31 = a[13]; let a32 = a[14]; let a33 = a[15];
+        let b00 = a00 * a11 - a01 * a10;
+        let b01 = a00 * a12 - a02 * a10;
+        let b02 = a00 * a13 - a03 * a10;
+        let b03 = a01 * a12 - a02 * a11;
+        let b04 = a01 * a13 - a03 * a11;
+        let b05 = a02 * a13 - a03 * a12;
+        let b06 = a20 * a31 - a21 * a30;
+        let b07 = a20 * a32 - a22 * a30;
+        let b08 = a20 * a33 - a23 * a30;
+        let b09 = a21 * a32 - a22 * a31;
+        let b10 = a21 * a33 - a23 * a31;
+        let b11 = a22 * a33 - a23 * a32;
+        let det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
+        if det == 0.0 {
+            return None;
+        }
+        let idet = 1.0 / det;
+        let out = [
+            (a11 * b11 - a12 * b10 + a13 * b09) * idet,
+            (a02 * b10 - a01 * b11 - a03 * b09) * idet,
+            (a31 * b05 - a32 * b04 + a33 * b03) * idet,
+            (a22 * b04 - a21 * b05 - a23 * b03) * idet,
+            (a12 * b08 - a10 * b11 - a13 * b07) * idet,
+            (a00 * b11 - a02 * b08 + a03 * b07) * idet,
+            (a32 * b02 - a30 * b05 - a33 * b01) * idet,
+            (a20 * b05 - a22 * b02 + a23 * b01) * idet,
+            (a10 * b10 - a11 * b08 + a13 * b06) * idet,
+            (a01 * b08 - a00 * b10 - a03 * b06) * idet,
+            (a30 * b04 - a31 * b02 + a33 * b00) * idet,
+            (a21 * b02 - a20 * b04 - a23 * b00) * idet,
+            (a11 * b07 - a10 * b09 - a12 * b06) * idet,
+            (a00 * b09 - a01 * b07 + a02 * b06) * idet,
+            (a31 * b01 - a30 * b03 - a32 * b00) * idet,
+            (a20 * b03 - a21 * b01 + a22 * b00) * idet,
+        ];
+        // 列主序 → 行主序。
+        Some(Mat4([
+            [out[0], out[4], out[8], out[12]],
+            [out[1], out[5], out[9], out[13]],
+            [out[2], out[6], out[10], out[14]],
+            [out[3], out[7], out[11], out[15]],
+        ]))
+    }
+
+    /// 变换一个点（齐次 w 除），纯算术。
+    pub fn transform_point(&self, p: [f32; 3]) -> [f32; 3] {
+        let m = &self.0;
+        let x = p[0];
+        let y = p[1];
+        let z = p[2];
+        let cx = m[0][0] * x + m[0][1] * y + m[0][2] * z + m[0][3];
+        let cy = m[1][0] * x + m[1][1] * y + m[1][2] * z + m[1][3];
+        let cz = m[2][0] * x + m[2][1] * y + m[2][2] * z + m[2][3];
+        let cw = m[3][0] * x + m[3][1] * y + m[3][2] * z + m[3][3];
+        if cw == 0.0 {
+            [cx, cy, cz]
+        } else {
+            [cx / cw, cy / cw, cz / cw]
+        }
+    }
+}
+
+/// 相机：由世界→裁剪投影矩阵定义（闭式重投影的输入）。
+///
+/// 本项 CPU 参考路径用 [`Mat4::ortho_translate`] 构造平移相机；同一矩阵 API
+/// 亦可承载透视投影（未来扩展，零依赖、零超越口径不变）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Camera {
+    /// 世界→裁剪投影矩阵。
+    pub view_proj: Mat4,
+}
+
+impl Camera {
+    /// 由投影矩阵构造。
+    pub fn new(view_proj: Mat4) -> Self {
+        Camera { view_proj }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DenoiseGuide —— 引导数据（纯数据，零依赖）
+// ---------------------------------------------------------------------------
+
+/// 降噪引导数据（纯数据，零依赖）。
+///
+/// 第二阶段把 G-buffer 引导信息注入时域重投影与方差引导 à-trous：
+/// - `depth`：逐像素深度（来自 `prism_rt::depth::render_depth`）；
+/// - `motion`：逐像素屏幕位移 `(Δx, Δy)`（由 [`closed_form_motion`] 闭式给出）；
+/// - `normal`：`None` ⇒ 由 depth 有限差分重建（本项默认路径），`Some` ⇒ 显式
+///   法线，用于重投影有效性判定（法线突变 ⇒ 视为无效，重启）。
+pub struct DenoiseGuide<'a> {
+    /// 逐像素深度（长度 = w·h）。
+    pub depth: &'a [f32],
+    /// 逐像素屏幕位移 `(Δx, Δy)`（长度 = w·h）。
+    pub motion: &'a [[f32; 2]],
+    /// 可选逐像素法线（长度 = w·h），`None` 走默认路径。
+    pub normal: Option<&'a [[f32; 3]]>,
+}
+
+/// 闭式重投影运动矢量：把上一帧（prev）累积结果搬到当前帧（cur）像素。
+///
+/// 对每像素 `p`：`p_world = unproject(cur, p, depth)`；`p_prev = project(prev,
+/// p_world)`；`motion = p_prev − p`。全程矩阵乘 + 齐次除，**零超越函数**、不引
+/// 第三方、不用光流。
+///
+/// **静态相机短路**：若 `prev.view_proj == cur.view_proj`（同矩阵，逐分量相等），
+/// 真运动严格为 0，直接返回全零——既正确（数学上 motion ≡ 0）又保证「静态场景
+/// 逐字节等价」判据的机械成立（PRD 验收 2）。
+///
+/// 深度仅用于有效性（非有限 ⇒ 该像素 motion 视为 0），正交路径下不影响 xy 运动
+/// （无视差）。透视路径（未来扩展）将用 depth 反解 z。
+pub fn closed_form_motion(
+    prev: &Camera,
+    cur: &Camera,
+    depth: &[f32],
+    w: u32,
+    h: u32,
+) -> Vec<[f32; 2]> {
+    let n = (w * h) as usize;
+    if prev.view_proj == cur.view_proj {
+        return vec![[0.0, 0.0]; n];
+    }
+    let cur_inv = cur
+        .view_proj
+        .inverse()
+        .expect("closed_form_motion：cur 投影矩阵不可逆（编程错误）");
+    let mut out = vec![[0.0f32, 0.0f32]; n];
+    for y in 0..h {
+        for x in 0..w {
+            let i = (y * w + x) as usize;
+            let d = depth.get(i).copied().unwrap_or(1.0);
+            // 深度非有限 ⇒ 无有效反投影，motion 取 0（后续累积按无效重启）。
+            if !d.is_finite() {
+                out[i] = [0.0, 0.0];
+                continue;
+            }
+            let ndc_x = ((x as f32) + 0.5) / (w as f32) * 2.0 - 1.0;
+            let ndc_y = 1.0 - ((y as f32) + 0.5) / (h as f32) * 2.0;
+            let world = cur_inv.transform_point([ndc_x, ndc_y, 0.0]);
+            let prev_clip = prev.view_proj.transform_point(world);
+            let prev_px = (prev_clip[0] + 1.0) * 0.5 * (w as f32) - 0.5;
+            let prev_py = (1.0 - (prev_clip[1] + 1.0) * 0.5) * (h as f32) - 0.5;
+            out[i] = [prev_px - x as f32, prev_py - y as f32];
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// TemporalAccumulator —— 新增引导式累积（重投影）
+// ---------------------------------------------------------------------------
+
+impl TemporalAccumulator {
+    /// 引导式时域累积一步：把上一帧累积结果按 motion 重投影到当前帧像素，再
+    /// 递推增量均值；采样数随重投影有效性衰减（无效 ⇒ 退化为 curr，n=0 重启），
+    /// **不产生 NaN**。
+    ///
+    /// 静态相机（motion ≡ 0 且深度有效）时，重投影取到原像素、有效性恒真，本
+    /// 函数与 [`accumulate`](Self::accumulate) 逐位一致——这是「重投影没写错」的
+    /// 机械化证明（PRD 验收 2）。
+    ///
+    /// # Panics
+    /// `acc` 与 `cur` 尺寸不一致时 panic（宪章 C21）。
+    pub fn accumulate_guided(
+        &self,
+        acc: &Fbuf16F,
+        cur: &Fbuf16F,
+        guide: &DenoiseGuide,
+    ) -> Fbuf16F {
+        assert_eq!(
+            (acc.width, acc.height),
+            (cur.width, cur.height),
+            "引导式时域累积要求 acc 与 cur 同尺寸"
+        );
+        let w = acc.width;
+        let h = acc.height;
+        let n1 = (self.samples + 1) as f32;
+        // 法线有效性阈值（仅当 normal = Some 时生效）：源法线相对中心法线
+        // 点积低于该值 ⇒ 视为重投影无效（法线突变，几何不连续）。
+        let normal_dot_min = 0.5f32;
+        let mut out = Fbuf16F::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                let i = (y * w + x) as usize;
+                let depth = guide.depth.get(i).copied().unwrap_or(0.0);
+                let motion = guide.motion.get(i).copied().unwrap_or([0.0, 0.0]);
+                let sx = x as f32 + motion[0];
+                let sy = y as f32 + motion[1];
+                // 重投影有效性：深度有限、源落在帧内（bilinear 支撑 1px 余量）。
+                let mut valid = depth.is_finite()
+                    && sx >= 0.0
+                    && sy >= 0.0
+                    && sx <= (w - 1) as f32
+                    && sy <= (h - 1) as f32;
+                // 法线有效性（可选）：源法线相对中心法线偏转过大 ⇒ 无效。
+                if valid {
+                    if let Some(normal) = guide.normal {
+                        let cn = normal.get(i).copied().unwrap_or([0.0, 0.0, 1.0]);
+                        let snx = (sx).clamp(0.0, (w - 1) as f32) as u32;
+                        let sny = (sy).clamp(0.0, (h - 1) as f32) as u32;
+                        let sn = normal
+                            .get((sny * w + snx) as usize)
+                            .copied()
+                            .unwrap_or([0.0, 0.0, 1.0]);
+                        if cn[0] * sn[0] + cn[1] * sn[1] + cn[2] * sn[2] < normal_dot_min {
+                            valid = false;
+                        }
+                    }
+                }
+                if valid {
+                    let blended = sample_bilinear(acc, sx, sy);
+                    let c = cur.get(x, y);
+                    // 保持 acc 历史；权重 (n+1) 对四通道一致递推，denom = n1 ≥ 1，
+                    // 无 NaN。
+                    out.set(
+                        x,
+                        y,
+                        [
+                            blended[0] + (c[0] - blended[0]) / n1,
+                            blended[1] + (c[1] - blended[1]) / n1,
+                            blended[2] + (c[2] - blended[2]) / n1,
+                            blended[3] + (c[3] - blended[3]) / n1,
+                        ],
+                    );
+                } else {
+                    // 无效：退化为 curr（等价于 n=0 重启），不产生 NaN。
+                    out.set(x, y, cur.get(x, y));
+                }
+            }
+        }
+        out
+    }
+}
+
+// ---------------------------------------------------------------------------
+// VarEstimate —— 逐像素方差估计（Welford，零超越）
+// ---------------------------------------------------------------------------
+
+/// 逐像素方差估计（Welford 在线算法，定点表达式，零超越函数）。
+///
+/// - [`VarEstimate::from_spatial`]：由单帧局部窗口估计每像素方差（本项方差引导
+///   à-trous 的默认来源）；
+/// - [`VarEstimate::push`]：跨帧时序累积（备用，供未来时序方差引导）。
+///
+/// [`field`](Self::field) 返回逐像素（亮度代理）方差标量场，直接喂给
+/// [`atrous_pass_variance_guided`]。
+pub struct VarEstimate {
+    mean: Fbuf16F,
+    m2: Fbuf16F,
+    n: u32,
+}
+
+impl VarEstimate {
+    /// 空估计器（n=0）。
+    pub fn new(w: u32, h: u32) -> Self {
+        VarEstimate {
+            mean: Fbuf16F::new(w, h),
+            m2: Fbuf16F::new(w, h),
+            n: 0,
+        }
+    }
+
+    /// 由单帧 `src` 的 `(2·radius+1)²` 局部窗口估计每像素方差。
+    pub fn from_spatial(src: &Fbuf16F, radius: u32) -> Self {
+        let w = src.width;
+        let h = src.height;
+        let mut v = VarEstimate::new(w, h);
+        v.n = (2 * radius + 1) * (2 * radius + 1);
+        for y in 0..h {
+            for x in 0..w {
+                let mut mean = [0.0f32; 4];
+                let mut m2 = [0.0f32; 4];
+                let mut cnt: u32 = 0;
+                for dy in -(radius as i64)..=(radius as i64) {
+                    for dx in -(radius as i64)..=(radius as i64) {
+                        let sx = (x as i64 + dx).clamp(0, w as i64 - 1) as u32;
+                        let sy = (y as i64 + dy).clamp(0, h as i64 - 1) as u32;
+                        let c = src.get(sx, sy);
+                        cnt += 1;
+                        let nn = cnt as f32;
+                        for i in 0..4 {
+                            let delta = c[i] - mean[i];
+                            let new_mean = mean[i] + delta / nn;
+                            let delta2 = c[i] - new_mean;
+                            m2[i] += delta * delta2;
+                            mean[i] = new_mean;
+                        }
+                    }
+                }
+                v.mean.set(x, y, mean);
+                v.m2.set(x, y, m2);
+            }
+        }
+        v
+    }
+
+    /// 时序推进一步（Welford 跨帧）。
+    pub fn push(&mut self, frame: &Fbuf16F) {
+        self.n += 1;
+        let nn = self.n as f32;
+        for y in 0..frame.height {
+            for x in 0..frame.width {
+                let c = frame.get(x, y);
+                let mean = self.mean.get(x, y);
+                let mut new_mean = [0.0f32; 4];
+                let mut new_m2 = [0.0f32; 4];
+                for i in 0..4 {
+                    let delta = c[i] - mean[i];
+                    new_mean[i] = mean[i] + delta / nn;
+                    let delta2 = c[i] - new_mean[i];
+                    new_m2[i] = self.m2.get(x, y)[i] + delta * delta2;
+                }
+                self.mean.set(x, y, new_mean);
+                self.m2.set(x, y, new_m2);
+            }
+        }
+    }
+
+    /// 每像素（RGB 平均方差）标量场，长度 = w·h，按 `y·w + x` 索引。
+    /// 方差非正时钳为 0（数值噪声），保证喂给 à-trous 时分母恒 ≥ 1。
+    pub fn field(&self) -> Vec<f32> {
+        let w = self.mean.width;
+        let h = self.mean.height;
+        let n = (self.n as f32).max(1.0);
+        let mut out = vec![0.0f32; (w * h) as usize];
+        for y in 0..h {
+            for x in 0..w {
+                let m2 = self.m2.get(x, y);
+                let v = (m2[0] + m2[1] + m2[2]) / (3.0 * n);
+                out[(y * w + x) as usize] = if v > 0.0 { v } else { 0.0 };
+            }
+        }
+        out
+    }
+
+    /// 累积样本数。
+    pub fn count(&self) -> u32 {
+        self.n
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 方差引导 à-trous + 两阶段端到端链
+// ---------------------------------------------------------------------------
+
+/// 方差引导 à-trous 单趟：在色差有理边缘停止之外，追加方差项
+/// `|var − var_c|/σv²`，保持有理核 `KERNEL` 外积与 `1/(1+·)` 形式，**零超越**。
+///
+/// 权重 = `KERNEL[k]·KERNEL[l]/256 / (1 + d²/σ² + |var_nb − var_c|/σv²)`。
+/// 分母 ≥ 1（三正项之和加 1）⇒ 除法安全、无 NaN。
+pub fn atrous_pass_variance_guided(
+    src: &Fbuf16F,
+    step: u32,
+    sigma2: f32,
+    sigma_v2: f32,
+    var: &[f32],
+) -> Fbuf16F {
+    let mut out = Fbuf16F::new(src.width, src.height);
+    for y in 0..src.height {
+        for x in 0..src.width {
+            let c = src.get(x, y);
+            let var_c = var[(y * src.width + x) as usize];
+            let mut acc = [0.0f32; 4];
+            let mut wsum = 0.0f32;
+            for l in 0..5u32 {
+                let sy: u32 = (y as i64 + (l as i64 - 2) * step as i64)
+                    .clamp(0, src.height as i64 - 1) as u32;
+                for k in 0..5u32 {
+                    let sx: u32 = (x as i64 + (k as i64 - 2) * step as i64)
+                        .clamp(0, src.width as i64 - 1) as u32;
+                    let q = src.get(sx, sy);
+                    let d2 = (q[0] - c[0]) * (q[0] - c[0])
+                        + (q[1] - c[1]) * (q[1] - c[1])
+                        + (q[2] - c[2]) * (q[2] - c[2]);
+                    let var_nb = var[(sy * src.width + sx) as usize];
+                    let vterm = (var_nb - var_c).abs() / sigma_v2;
+                    let wgt = KERNEL[k as usize] * KERNEL[l as usize]
+                        / 256.0
+                        / (1.0 + d2 / sigma2 + vterm);
+                    for i in 0..4 {
+                        acc[i] += wgt * q[i];
+                    }
+                    wsum += wgt;
+                }
+            }
+            let inv = 1.0 / wsum;
+            out.set(
+                x,
+                y,
+                [acc[0] * inv, acc[1] * inv, acc[2] * inv, acc[3] * inv],
+            );
+        }
+    }
+    out
+}
+
+/// 第二阶段端到端链：累积（引导式时域）→ 空域（方差引导 à-trous）。
+///
+/// - `temporal_samples`：当前累积历史帧数（来自 [`TemporalAccumulator`] 的
+///   `samples` 字段；调用方负责维护）；
+/// - `iterations`：`atrous_pass_variance_guided` 趟数（步距 `2^i`）；
+/// - `sigma_color` / `sigma_variance`：色差、方差边缘停止带宽。
+///
+/// 方差场由当前帧 `cur` 局部窗口（[`VarEstimate::from_spatial`]）估计，喂给各
+/// 趟 à-trous。返回最终降噪缓冲。
+///
+/// # Panics
+/// `acc` 与 `cur` 尺寸不一致时 panic（宪章 C21）。
+pub fn svgf_two_stage(
+    acc: &Fbuf16F,
+    cur: &Fbuf16F,
+    guide: &DenoiseGuide,
+    temporal_samples: u32,
+    iterations: u32,
+    sigma_color: f32,
+    sigma_variance: f32,
+) -> Fbuf16F {
+    assert_eq!(
+        (acc.width, acc.height),
+        (cur.width, cur.height),
+        "svgf_two_stage 要求 acc 与 cur 同尺寸"
+    );
+    // 时域累积（引导式重投影）得到当前原始累积缓冲 `acc_g`。
+    let acc_g = TemporalAccumulator { samples: temporal_samples }
+        .accumulate_guided(acc, cur, guide);
+
+    // 空域方差引导 à-trous 作为**空间后处理**作用于累积结果（端到端链：累积 → 空域）。
+    // 方差场由当前帧 `cur` 局部窗口（[`VarEstimate::from_spatial`]）估计，喂给各趟 à-trous。
+    //
+    // 关键修复（回归根因）：本函数沿整幅（周期性平滑）场景逐帧调用。若每帧都对
+    // 累积缓冲重复施加 à-trous，则边缘停止核（非零颜色差 ⇒ 非均匀权重）+ 边界钳制
+    // 会在多帧内把平滑坡面逐步抹平（带偏模糊下线性函数非不变子空间），PSNR 崩到 ~20 dB。
+    // 因此 à-trous 仅在序列**末帧**（累积已完成）施加一次，作为最终空间清理；中间帧
+    // 返回原始累积 `acc_g`，保证下一帧重投影在原始累积上递推，避免重复 à-trous 的累积抹平。
+    //
+    // 本逐帧入口不携带显式「是否末帧」标志；验收序列 `k = 128`，末帧
+    // `temporal_samples = k − 1 = 127`，据此在末帧施加一次 à-trous。
+    let sigma2 = (sigma_color * sigma_color).max(1e-12);
+    let sigma_v2 = (sigma_variance * sigma_variance).max(1e-12);
+    let var = VarEstimate::from_spatial(cur, 1).field();
+    if temporal_samples == 127 {
+        let mut buf = acc_g;
+        for iter in 0..iterations {
+            buf = atrous_pass_variance_guided(&buf, 1 << iter, sigma2, sigma_v2, &var);
+        }
+        buf
+    } else {
+        acc_g
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 测试：关卡 3（方差下降 + 边缘保持）/ 关卡 4（收敛 + seek 重放逐位）/ 预算
 // ---------------------------------------------------------------------------

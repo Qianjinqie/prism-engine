@@ -458,6 +458,8 @@ impl Parser {
         let mut albedo: Option<(u8, u8, u8)> = None;
         let mut roughness: Option<f32> = None;
         let mut metalness: Option<f32> = None;
+        let mut anisotropy: Option<f32> = None;
+        let mut anisotropy_rotation: Option<f32> = None;
         loop {
             let t: Token = match self.bump() {
                 Some(t) => t,
@@ -484,11 +486,31 @@ impl Parser {
                         }
                         metalness = Some(self.expect_num("metalness 的数字值")?.0);
                     }
+                    // V2.2-B-3（T05）：各向异性字段（与 v2 白名单对齐）。
+                    "anisotropy" => {
+                        if anisotropy.is_some() {
+                            return Err(err_at(t.line, "material 块中字段 'anisotropy' 重复出现"));
+                        }
+                        let v = self.expect_num("anisotropy 的数字值（0–1）")?.0;
+                        if !(0.0..=1.0).contains(&v) {
+                            return Err(err_at(
+                                t.line,
+                                format!("material 块中字段 'anisotropy' 应在 [0,1]，却得到 {v}"),
+                            ));
+                        }
+                        anisotropy = Some(v);
+                    }
+                    "anisotropy_rotation" => {
+                        if anisotropy_rotation.is_some() {
+                            return Err(err_at(t.line, "material 块中字段 'anisotropy_rotation' 重复出现"));
+                        }
+                        anisotropy_rotation = Some(self.expect_num("anisotropy_rotation 的数字值（弧度）")?.0);
+                    }
                     other => {
                         return Err(err_at(
                             t.line,
                             format!(
-                                "material 块中未知字段 '{}'（允许：albedo / roughness / metalness）",
+                                "material 块中未知字段 '{}'（允许：albedo / roughness / metalness / anisotropy / anisotropy_rotation）",
                                 other
                             ),
                         ));
@@ -502,7 +524,7 @@ impl Parser {
                 }
             }
         }
-        Ok(MaterialAst { albedo, roughness, metalness })
+        Ok(MaterialAst { albedo, roughness, metalness, anisotropy, anisotropy_rotation })
     }
 
     /// camera 块：`camera 标识 { orbit { ... } fov 数字 }`（orbit 必填且在前，fov 必填）。

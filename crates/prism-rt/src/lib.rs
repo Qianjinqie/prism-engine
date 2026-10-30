@@ -45,6 +45,8 @@ pub mod gi;
 pub mod hair_scatter;
 pub mod integrator;
 pub mod light;
+/// 材质预设计数真源（V2.2-B-3 / T05；10 项可渲染预设，见 [`material::MaterialPreset`]）。
+pub mod material;
 pub mod media;
 pub mod sampler;
 pub mod sss;

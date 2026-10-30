@@ -8,6 +8,8 @@
 //! * 在非 wasm 目标上，`render_scene` 走 CPU 兜底以保证可编译、可测试；
 //!   在 wasm 目标上，若 device 获取失败亦回退 CPU，绝不 panic（harness 要求）。
 
+use crate::scene_abi::{BindingAccess, SceneAbi};
+use crate::shaders;
 use crate::web::{self, GpuHandle, WebGpuSupport, INVALID_HANDLE};
 use crate::{Framebuffer, GpuDevice, SceneRenderRequest};
 
@@ -306,6 +308,14 @@ fn histogram(@builtin(global_invocation_id) gid: vec3<u32>) {
     atomicAdd(&hist[bucket], 1u);
 }
 "#;
+
+/// 光追场景整帧 kernel 的 WGSL 源（V2.2-A-1 / T03 `scene_frame.wgsl`）。
+///
+/// 与 `crates/prism-gpu/shaders/scene_frame.wgsl` 是**同一份**源（经
+/// `include_str!` 引入，避免与 `SHADERS` 表里的登记副本漂移）。入口 `scene_main`、
+/// 工作组 `[8,8,1]`、4 绑定连续前缀 `{0,1,2,3}` = params/spheres/lights/out，
+/// 全部以 `crate::scene_abi` 为唯一真源（WGSL 内的 `const` 字面量只是其镜像）。
+pub static WGSL_SCENE_FRAME: &str = include_str!("../../shaders/scene_frame.wgsl");
 
 /// [`WGSL_SCAN_BLOCK`] 的 `Params` 结构在 WGSL uniform 地址空间中的字节长度。
 ///

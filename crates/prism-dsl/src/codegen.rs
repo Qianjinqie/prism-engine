@@ -1747,10 +1747,22 @@ fn parse_sdf_profile(f: &NamedField) -> Result<Vec<[f32; 2]>, DslError> {
 }
 
 /// material 条目 → S8 辐射传输节点。albedo 缺省白；roughness / metalness ∈ [0,1]。
+///
+/// V2.2-B-3（T05）扩展：`anisotropy`（0–1，GGX 各向异性强度）与
+/// `anisotropy_rotation`（弧度，各向异性轴旋转）新增进 P1002 白名单，并投影为节点
+/// params（`anisotropy` / `anisotropy_rotation`）。老场景（仅 3 字段）输出逐位不变：
+/// 新键只在显式声明时插入，既有 `albedo_r/g/b` / `roughness` / `metalness` 键值序与取值
+/// 与历史完全一致（Params 为 BTreeMap，键序固定，序列化逐字节确定）。
 fn build_material(b: &mut V2Builder, mat: &MaterialV2Ast, si: usize) -> Result<NodeId, DslError> {
     let mut albedo: (u8, u8, u8) = (255, 255, 255);
     let mut roughness: f32 = DEFAULT_ROUGHNESS;
     let mut metalness: f32 = DEFAULT_METALNESS;
+    let mut anisotropy: f32 = 0.0;
+    let mut anisotropy_rotation: f32 = 0.0;
+    // B-3：仅当材质显式声明各向异性字段时，才在节点 params 中插入对应键；
+    // 老场景（未声明）保持原 5 键，输出逐位不变。
+    let mut has_anisotropy: bool = false;
+    let mut has_anisotropy_rotation: bool = false;
     for f in &mat.fields {
         match f.name.as_str() {
             "albedo" => {
@@ -1782,11 +1794,36 @@ fn build_material(b: &mut V2Builder, mat: &MaterialV2Ast, si: usize) -> Result<N
                 }
                 metalness = m;
             }
+            "anisotropy" => {
+                let a: f32 = num_of(f.value.as_ref()).ok_or_else(|| {
+                    type_err(f.line, "material 块中字段 'anisotropy'", "数字", f.value.as_ref())
+                })?;
+                if !(0.0..=1.0).contains(&a) {
+                    return Err(err_at(
+                        f.line,
+                        format!("[P1024] material.anisotropy 应在 [0, 1] 区间，却得到 {}\n  建议：0 = 各向同性，1 = 最强各向异性；常见 0.3 / 0.6", a),
+                    ));
+                }
+                anisotropy = a;
+                has_anisotropy = true;
+            }
+            "anisotropy_rotation" => {
+                let r: f32 = num_of(f.value.as_ref()).ok_or_else(|| {
+                    type_err(
+                        f.line,
+                        "material 块中字段 'anisotropy_rotation'",
+                        "数字（弧度）",
+                        f.value.as_ref(),
+                    )
+                })?;
+                anisotropy_rotation = r;
+                has_anisotropy_rotation = true;
+            }
             other => {
                 return Err(err_at(
                     f.line,
                     format!(
-                        "[P1002] material 块中未知字段 '{}'（允许：albedo / roughness / metalness）\n  建议：albedo #c0392b roughness 0.3 metalness 0.05",
+                        "[P1002] material 块中未知字段 '{}'（允许：albedo / roughness / metalness / anisotropy / anisotropy_rotation）\n  建议：albedo #c0392b roughness 0.3 metalness 0.05 anisotropy 0.6 anisotropy_rotation 0.5",
                         other
                     ),
                 ));
@@ -1800,6 +1837,14 @@ fn build_material(b: &mut V2Builder, mat: &MaterialV2Ast, si: usize) -> Result<N
     node.params.set("albedo_b", ParamValue::F32(albedo.2 as f32 / 255.0));
     node.params.set("roughness", ParamValue::F32(roughness));
     node.params.set("metalness", ParamValue::F32(metalness));
+    // B-3：新增各向异性键仅在材质显式声明时插入，保证老场景（仅 3 字段）输出逐位
+    // 不变（Params 为 BTreeMap，键序确定；未声明则不产生这两个键）。
+    if has_anisotropy {
+        node.params.set("anisotropy", ParamValue::F32(anisotropy));
+    }
+    if has_anisotropy_rotation {
+        node.params.set("anisotropy_rotation", ParamValue::F32(anisotropy_rotation));
+    }
     b.graph.add_node(node).expect("递增 id 不应重复");
     b.block_nodes.insert((si, "material", mat.name.clone()), id);
     Ok(id)

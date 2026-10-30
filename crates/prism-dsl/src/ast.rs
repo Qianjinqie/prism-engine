@@ -45,10 +45,17 @@ pub(crate) struct SphereAst {
 }
 
 /// material 块。
+///
+/// V2.2-B-3（T05）：新增 `anisotropy` / `anisotropy_rotation` 可选字段（DSL 兼容口径，
+/// 与 v2 `MaterialV2Ast` 的 P1002 白名单对齐）。v1 路径的 `prism_core::Material` 当前
+/// 不携带各向异性（v1 为遗留路径），故这两个字段在 v1 `codegen` 中暂不消费——仅解析
+/// 并保留行列号诊断能力；各向异性实际渲染走 v2 `build_material` 节点参数。
 pub(crate) struct MaterialAst {
     pub(crate) albedo: Option<(u8, u8, u8)>,
     pub(crate) roughness: Option<f32>,
     pub(crate) metalness: Option<f32>,
+    pub(crate) anisotropy: Option<f32>,
+    pub(crate) anisotropy_rotation: Option<f32>,
 }
 
 /// camera 条目。

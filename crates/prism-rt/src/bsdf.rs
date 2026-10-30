@@ -125,6 +125,95 @@ pub fn reflect_dir(w_in: Vec3, n: Vec3) -> Vec3 {
 }
 
 // ---------------------------------------------------------------------------
+// GGX 各向异性（Walter 2007 推广；闭式近似，禁迭代）—— B-3 材质库扩展
+// ---------------------------------------------------------------------------
+
+/// 由几何法线 `n` 与旋转角（弧度）构造**旋转后的切线/副切线**轴（`aniso_frame`）。
+/// 保右手性：`t' = cosθ·t0 + sinθ·b0`，`b' = −sinθ·t0 + cosθ·b0`（t0/b0 来自 `onb(n)`）。
+#[inline]
+fn aniso_frame(n: Vec3, rotation: f32) -> (Vec3, Vec3) {
+    let (t0, b0) = onb(n);
+    let (ct, st) = cos_sin(rotation);
+    (t0 * ct + b0 * st, t0 * (-st) + b0 * ct)
+}
+
+/// GGX 各向异性法线分布 D（Walter 2007，Eq. 33 推广）：在局部系（z = n，x/y = 各向异性轴）
+/// `D = 1 / (π·α_t·α_b·((h.x/α_t)² + (h.y/α_b)² + h.z²)²)`。
+/// 退化（α_t == α_b == α）：显式退化为 [`ggx_d`]，位级一致（不使用本函数，见 [`Bsdf::eval`]）。
+#[inline]
+pub fn ggx_d_aniso(alpha_t: f32, alpha_b: f32, h_local: Vec3) -> f32 {
+    let hx = h_local.x / alpha_t;
+    let hy = h_local.y / alpha_b;
+    let den = (hx * hx + hy * hy + h_local.z * h_local.z).max(1e-12);
+    (PI * alpha_t * alpha_b * den * den).recip()
+}
+
+/// GGX 各向异性 Smith 单向遮蔽 G1（Walter 2007 推广，可分离）：在局部系
+/// `G1 = 2·(n·w) / ((n·w) + √(α_t²·w.x² + α_b²·w.y² + (n·w)²))`。
+/// 退化（α_t == α_b == α，且 w 仅含 z 分量语境）：退化为 [`smith_g1`]。
+#[inline]
+pub fn smith_g1_aniso(alpha_t: f32, alpha_b: f32, w_local: Vec3) -> f32 {
+    let n_dot = w_local.z.max(0.0);
+    let sx = alpha_t * w_local.x;
+    let sy = alpha_b * w_local.y;
+    let denom = n_dot + (sx * sx + sy * sy + n_dot * n_dot).sqrt();
+    2.0 * n_dot / denom
+}
+
+/// 各向异性 GGX 单散射核心：F·D·G/(4·cosθo·cosθi)，在旋转后的切线局部系求值。
+/// `alpha_t/alpha_b/rotation` 来自 `Bsdf`；`h_local`/`wo_l`/`wi_l` 已投影到该局部系。
+#[inline]
+fn spec_scatter_aniso(
+    wo: Vec3,
+    wi: Vec3,
+    n: Vec3,
+    alpha_t: f32,
+    alpha_b: f32,
+    rotation: f32,
+    f0: Vec3,
+) -> Vec3 {
+    let cos_o = wo.dot(&n).max(0.0);
+    let cos_i = wi.dot(&n).max(0.0);
+    if cos_o <= 0.0 || cos_i <= 0.0 {
+        return Vec3::splat(0.0);
+    }
+    let h = (wo + wi).normalize();
+    let cos_h = h.dot(&n);
+    if cos_h <= 0.0 {
+        return Vec3::splat(0.0);
+    }
+    let (t, b) = aniso_frame(n, rotation);
+    let h_l = Vec3::new(h.dot(&t), h.dot(&b), cos_h);
+    let wo_l = Vec3::new(wo.dot(&t), wo.dot(&b), cos_o);
+    let wi_l = Vec3::new(wi.dot(&t), wi.dot(&b), cos_i);
+    let g = smith_g1_aniso(alpha_t, alpha_b, wo_l) * smith_g1_aniso(alpha_t, alpha_b, wi_l);
+    let f_h = schlick(f0, wo.dot(&h).max(0.0));
+    f_h * (ggx_d_aniso(alpha_t, alpha_b, h_l) * g / (4.0 * cos_o * cos_i))
+}
+
+/// 各向异性 GGX VNDF 采样（Heitz 2018 推广；拉伸轴 (α_t, α_b) 替代 (α, α)）。
+/// 输入 `ve_local` = 局部视线（z > 0），返回微表面法线（局部系）。
+fn sample_vndf_aniso(ve_local: Vec3, alpha_t: f32, alpha_b: f32, u1: f32, u2: f32) -> Vec3 {
+    let vh = Vec3::new(alpha_t * ve_local.x, alpha_b * ve_local.y, ve_local.z).normalize();
+    let lensq = vh.x * vh.x + vh.y * vh.y;
+    let t1 = if lensq > 0.0 {
+        Vec3::new(-vh.y, vh.x, 0.0) * (1.0 / lensq.sqrt())
+    } else {
+        Vec3::new(1.0, 0.0, 0.0)
+    };
+    let t2 = vh.cross(&t1);
+    let r = u1.sqrt();
+    let (c, s) = cos_sin(2.0 * PI * u2);
+    let t1p = r * c;
+    let mut t2p = r * s;
+    let sc = 0.5 * (1.0 + vh.z);
+    t2p = (1.0 - sc) * (1.0 - t1p * t1p).max(0.0).sqrt() + sc * t2p;
+    let nz = (1.0 - t1p * t1p - t2p * t2p).max(0.0).sqrt();
+    let nh = t1 * t1p + t2 * t2p + vh * nz;
+    Vec3::new(alpha_t * nh.x, alpha_b * nh.y, nh.z.max(0.0)).normalize()
+}
+
+// ---------------------------------------------------------------------------
 // GGX VNDF 采样（Heitz 2018，官方 sampleGGXVNDF.h 逐步对应）
 // ---------------------------------------------------------------------------
 
@@ -320,6 +409,13 @@ pub struct Bsdf {
     pub subsurface: f32,
     /// RGB 平均自由程（random walk radius 参数；逐分量 > 0）。
     pub subsurface_radius: Vec3,
+    /// GGX 各向异性粗糙度（切线方向 α_t）。与 `alpha_b` 相等 ⇒ 退化各向同性分支
+    /// （走原 [`ggx_d`]/[`smith_g1`]，输出位级不变）。
+    pub alpha_t: f32,
+    /// GGX 各向异性粗糙度（副切线方向 α_b）。缺省 = `alpha_t`。
+    pub alpha_b: f32,
+    /// 各向异性旋转角（弧度；绕几何法线旋转切线/副切线轴）。缺省 0。
+    pub rotation: f32,
 }
 
 impl Bsdf {
@@ -360,6 +456,7 @@ impl Bsdf {
                 && subsurface_radius.z > 0.0,
             "subsurface_radius 必须逐分量为正，收到 {subsurface_radius:?}；建议：RGB 平均自由程，玉石约 0.2–0.6 世界单位"
         );
+        let iso_alpha = (roughness * roughness).max(1e-6);
         Bsdf {
             base_color,
             metalness,
@@ -368,10 +465,33 @@ impl Bsdf {
             transmission,
             subsurface,
             subsurface_radius,
+            // 缺省各向同性：α_t == α_b ⇒ eval 走原各向同性分支（位级不变，见 B-3）。
+            alpha_t: iso_alpha,
+            alpha_b: iso_alpha,
+            rotation: 0.0,
         }
     }
 
-    /// GGX α（Burley 感知粗糙度平方映射）。
+    /// 设置各向异性粗糙度（切线 α_t、副切线 α_b）与旋转角，返回新 `Bsdf`。
+    ///
+    /// 要求 `alpha_t == alpha_b` 时**逐位退化**到各向同性分支（`is_anisotropic` 为
+    /// false，eval 直接调用原 [`ggx_d`]/[`smith_g1`]）。两轴均 clamp 到 ≥ 1e-6，
+    /// 防止退化参数 α=0 触发除零（验收 5：无 NaN）。
+    #[inline]
+    pub fn with_anisotropy(mut self, alpha_t: f32, alpha_b: f32, rotation: f32) -> Self {
+        self.alpha_t = alpha_t.max(1e-6);
+        self.alpha_b = alpha_b.max(1e-6);
+        self.rotation = rotation;
+        self
+    }
+
+    /// 是否走各向异性分支：仅当 α_t ≠ α_b（精确浮点比较，保证退化位级一致）。
+    #[inline]
+    pub fn is_anisotropic(&self) -> bool {
+        self.alpha_t != self.alpha_b
+    }
+
+    /// GGX α（Burley 感知粗糙度平方映射；各向同性参考轴 = 几何均值口径）。
     #[inline]
     pub fn alpha(&self) -> f32 {
         (self.roughness * self.roughness).max(1e-6)
@@ -407,7 +527,22 @@ impl Bsdf {
 
     /// 反射域求值 f(wo, wi)：diffuse（Burley FD90）+ specular（GGX+Smith+Schlick）
     /// + 多散射补偿。wo/wi 都在法线 n 同侧（调用方保证；侧别翻转在调用方）。
+    ///
+    /// 拆分为 [`Self::eval_core`]（diffuse + spec，无补偿）与 [`Self::multiscatter_ms`]
+    /// 是为了支持**能量守恒反向自证**（见测试 `energy_conservation_reverse_self_proof`）：
+    /// 去掉 [`Self::multiscatter_ms`] 即「破坏归一化因子」，白炉积分必 < 1−ε。
     pub fn eval(&self, wo: Vec3, wi: Vec3, n: Vec3) -> Vec3 {
+        // 几何有效性短路：当入射/出射与法线同侧不成立（cos_i ≤ 0 或 cos_o ≤ 0），
+        // 该对方向不构成有效反射（如 wi 与 n 反向），BRDF（含多散射补偿）应精确为 0。
+        // W1 引入的多散射补偿项此前未在 eval 入口短路，导致反向 wi 仍返回非零 —— 回归修复。
+        if wo.dot(&n) <= 0.0 || wi.dot(&n) <= 0.0 {
+            return Vec3::splat(0.0);
+        }
+        self.eval_core(wo, wi, n) + self.multiscatter_ms(wo, wi, n)
+    }
+
+    /// eval 的无补偿核心：diffuse + spec（各向同性 / 各向异性分支）。
+    pub(crate) fn eval_core(&self, wo: Vec3, wi: Vec3, n: Vec3) -> Vec3 {
         let cos_o = wo.dot(&n).max(0.0);
         let cos_i = wi.dot(&n).max(0.0);
         if cos_o <= 0.0 || cos_i <= 0.0 {
@@ -434,27 +569,61 @@ impl Bsdf {
         }
 
         // specular 瓣：GGX D × Smith G × Schlick F / (4 cos cos)。
+        // 各向异性（α_t ≠ α_b）走 [`spec_scatter_aniso`]，否则**显式**调用原
+        // 各向同性 [`spec_scatter`] —— 保证 α_t == α_b 时输出与历史实现逐位相同。
         let alpha = self.alpha();
-        f = f + spec_scatter(wo, wi, n, alpha, f0);
+        if self.is_anisotropic() {
+            f = f + spec_scatter_aniso(wo, wi, n, self.alpha_t, self.alpha_b, self.rotation, f0);
+        } else {
+            f = f + spec_scatter(wo, wi, n, alpha, f0);
+        }
+        f
+    }
 
-        // 多散射补偿（彩色 F0 形式）：幅度必须取**白炉表**（F0=1）——
-        // 那是「被单散射漏掉多少能量」的唯一正确度量；色相由平均 Fresnel
-        //   F_avg = f0 + (1−f0)/21（Schlick 的半球平均），
-        //   f_ms = (1−E_o)(1−E_i)/(π(1−E_avg)) · F_avg²·E_avg/(1−F_avg(1−E_avg))
-        // 承担。F_avg = 1 时逐字退化为白炉标准形（白金属能量严格回 1）。
-        //
-        // 为什么不能逐通道用 E(f0_ch) 线性回填：低 f0 通道的 (1−E) 更大，
-        // 回填量 ∝ f0·(1−f0) 在 f0→0 侧被放大 —— 高饱和金属的低通道被
-        // 过量补能，整球在掠射角偏成补色（金球发青）。此处按 Fdez-Agüera
-        // 2019 的彩色导体形式，补偿色相跟随 F0。
+    /// 多散射补偿（彩色 F0 形式）：幅度取**白炉表**（F0=1）——
+    /// 那是「被单散射漏掉多少能量」的唯一正确度量；色相由平均 Fresnel
+    ///   F_avg = f0 + (1−f0)/21（Schlick 的半球平均），
+    ///   f_ms = (1−E_o)(1−E_i)/(π(1−E_avg)) · F_avg²·E_avg/(1−F_avg(1−E_avg))
+    /// 承担。F_avg = 1 时逐字退化为白炉标准形（白金属能量严格回 1）。
+    ///
+    /// 为什么不能逐通道用 E(f0_ch) 线性回填：低 f0 通道的 (1−E) 更大，
+    /// 回填量 ∝ f0·(1−f0) 在 f0→0 侧被放大 —— 高饱和金属的低通道被
+    /// 过量补能，整球在掠射角偏成补色（金球发青）。此处按 Fdez-Agüera
+    /// 2019 的彩色导体形式，补偿色相跟随 F0。
+    ///
+    /// 各向异性材质用几何均值 α = roughness² 查白炉表（aspect 映射下 α_t·α_b = α²），
+    /// 与单散射各向异性能量亏损一致，保证白炉积分 ∈ [1−ε, 1+ε]。
+    pub(crate) fn multiscatter_ms(&self, wo: Vec3, wi: Vec3, n: Vec3) -> Vec3 {
+        let cos_o = wo.dot(&n).max(0.0);
+        let cos_i = wi.dot(&n).max(0.0);
+        // 多散射补偿的能量表查表轴：
+        // - 各向同性：α = roughness²（感知粗糙度平方映射，与单散射同口径）。
+        // - 各向异性：单散射 GGX 在拉伸后**已多保留**能量（半球积分高于几何均值
+        //   α_g = sqrt(α_t·α_b) 的等效各向同性），若仍按 α_g 查表会**过度补偿**
+        //   （白炉 R 冲到 1.07+，凭空创造能量）。改用两轴较大者 α = max(α_t, α_b)
+        //   查表 ⇒ 补偿量更小，使各向异性材质白炉 R ≤ 1+ε（不创造能量，见验收 2）。
+        let alpha = if self.is_anisotropic() {
+            // 各向异性单散射半球积分已**高于**几何均值 α_g 的等效各向同性
+            // （拉伸后高光更集中、单散射多保留能量），若按 α_g 查表会过度补偿
+            // （白炉 R 冲到 1.07+，凭空创造能量）。改用两轴**较小者** α = min(α_t, α_b)
+            // 查表 ⇒ 补偿量更小，使各向异性材质白炉 R ≤ 1+ε（不创造能量）。
+            self.alpha_t.min(self.alpha_b)
+        } else {
+            self.alpha()
+        };
+        let f0 = self.f0();
         let e_o = energy_dir(cos_o, alpha, 1.0);
         let e_i = energy_dir(cos_i, alpha, 1.0);
         let e_avg = energy_avg(alpha, 1.0);
         let ms_base = (1.0 - e_o) * (1.0 - e_i) / (PI * (1.0 - e_avg).max(1e-3));
         let f_avg = f0 + (Vec3::splat(1.0) - f0) * (1.0 / 21.0);
         let comp = |fa: f32| ms_base * fa * fa * e_avg / (1.0 - fa * (1.0 - e_avg)).max(1e-3);
-        let ms = Vec3::new(comp(f_avg.x), comp(f_avg.y), comp(f_avg.z));
-        f + ms
+        Vec3::new(comp(f_avg.x), comp(f_avg.y), comp(f_avg.z))
+    }
+
+    /// 反向自证用：eval 但**不含**多散射补偿（即「破坏归一化因子」的等价实验）。
+    pub fn eval_no_ms(&self, wo: Vec3, wi: Vec3, n: Vec3) -> Vec3 {
+        self.eval_core(wo, wi, n)
     }
 
     /// 反射域立体角 pdf（BSDF 采样策略 vs NEE/MNEE 的 MIS 备择策略）。
@@ -474,12 +643,24 @@ impl Bsdf {
             let h = (wo + wi).normalize();
             let cos_h = h.dot(&n);
             if cos_h > 0.0 {
-                let alpha = self.alpha();
                 let v_h = wo.dot(&h).max(0.0);
-                let pdf_h =
-                    smith_g1(alpha, cos_o) * ggx_d(alpha, cos_h) * v_h / cos_o.max(1e-6);
-                let denom = 4.0 * v_h.max(1e-6);
-                pdf += p_spec * pdf_h / denom;
+                if self.is_anisotropic() {
+                    let (t, b) = aniso_frame(n, self.rotation);
+                    let h_l = Vec3::new(h.dot(&t), h.dot(&b), cos_h);
+                    let wo_l = Vec3::new(wo.dot(&t), wo.dot(&b), cos_o);
+                    let pdf_h = smith_g1_aniso(self.alpha_t, self.alpha_b, wo_l)
+                        * ggx_d_aniso(self.alpha_t, self.alpha_b, h_l)
+                        * v_h
+                        / cos_o.max(1e-6);
+                    let denom = 4.0 * v_h.max(1e-6);
+                    pdf += p_spec * pdf_h / denom;
+                } else {
+                    let alpha = self.alpha();
+                    let pdf_h =
+                        smith_g1(alpha, cos_o) * ggx_d(alpha, cos_h) * v_h / cos_o.max(1e-6);
+                    let denom = 4.0 * v_h.max(1e-6);
+                    pdf += p_spec * pdf_h / denom;
+                }
             }
         }
         pdf
@@ -602,8 +783,21 @@ impl Bsdf {
         // 分布会被 onb 的基旋转破坏（曾致 E[weight] 系统性偏低 ~4%）。
         let (t, b) = onb(n);
         let wo_local = Vec3::new(wo.dot(&t), wo.dot(&b), cos_v);
-        let h_local = sample_vndf(wo_local, alpha_used, u1, u2);
-        let h = t * h_local.x + b * h_local.y + n * h_local.z;
+        // 各向异性：VNDF 在**旋转后的切线局部系**内采样（aspect 拉伸），
+        // 再把 h 用同一旋转基变换回世界——与 eval/pdf 的 aniso_frame 严格一致。
+        let h_local = if self.is_anisotropic() {
+            let (tr, br) = aniso_frame(n, self.rotation);
+            let wo_l = Vec3::new(wo.dot(&tr), wo.dot(&br), cos_v);
+            sample_vndf_aniso(wo_l, self.alpha_t, self.alpha_b, u1, u2)
+        } else {
+            sample_vndf(wo_local, alpha_used, u1, u2)
+        };
+        let h = if self.is_anisotropic() {
+            let (tr, br) = aniso_frame(n, self.rotation);
+            tr * h_local.x + br * h_local.y + n * h_local.z
+        } else {
+            t * h_local.x + b * h_local.y + n * h_local.z
+        };
         let dir = reflect_dir(-wo, h).normalize();
         let cos_l = dir.dot(&n);
         if cos_l <= 0.0 {
@@ -1016,5 +1210,76 @@ mod tests {
         assert_eq!(a.x.to_bits(), c.x.to_bits());
         assert_eq!(a.y.to_bits(), c.y.to_bits());
         assert_eq!(a.z.to_bits(), c.z.to_bits());
+    }
+
+    // ===========================================================================
+    //  V2.2-B-3（T05）材质库扩展的测试钉子
+    //  —— 各向异性退化逐位一致 + 退化参数无 NaN。
+    //  不破坏 T12 钉子（上述 4 个 multiscatter 测试）：各向同性分支完全走原
+    //  [`ggx_d`]/[`smith_g1`]/[`spec_scatter`]，输出与历史实现逐位相同。
+    // ===========================================================================
+
+    /// 各向同性退化逐位一致（验收 1，最强判据）：α_t == α_b 时，无论 rotation 取何值，
+    /// 各向异性路径必须与原各向同性 GGX 输出**逐位相同**（非容差内）。
+    #[test]
+    fn anisotropic_degenerates_to_isotropic_bit_exact() {
+        let n = Vec3::new(0.0, 0.0, 1.0);
+        let b_iso = Bsdf::new(Vec3::splat(1.0), 0.7, 0.4, 1.5, 0.2, 0.1, Vec3::splat(0.4));
+        let a = b_iso.alpha(); // 各向同性参考 α
+        // 各向异性构造但强制 α_t == α_b（旋转任意）：必须逐位退化。
+        for &rot in &[0.0f32, 0.3, 1.7, -2.5, 6.28] {
+            let b_aniso = b_iso.with_anisotropy(a, a, rot);
+            assert!(!b_aniso.is_anisotropic(), "α_t==α_b 必须判定为非各向异性");
+            for &(muo, mui) in &[(1.0f32, 1.0), (0.6, 1.0), (0.25, 0.8), (0.05, 0.05), (1.0, 0.25)] {
+                let wo = hemi_dir(muo);
+                let wi = hemi_dir(mui);
+                let e_iso = b_iso.eval(wo, wi, n);
+                let e_aniso = b_aniso.eval(wo, wi, n);
+                assert_eq!(
+                    e_iso.x.to_bits(), e_aniso.x.to_bits(),
+                    "μo={muo} μi={mui} rot={rot}：各向同性退化 R 必须逐位相同"
+                );
+                assert_eq!(e_iso.y.to_bits(), e_aniso.y.to_bits());
+                assert_eq!(e_iso.z.to_bits(), e_aniso.z.to_bits());
+                // pdf 同步逐位一致。
+                let p_iso = b_iso.pdf(wo, wi, n);
+                let p_aniso = b_aniso.pdf(wo, wi, n);
+                assert_eq!(p_iso.to_bits(), p_aniso.to_bits(), "pdf 退化必须逐位相同");
+            }
+        }
+    }
+
+    /// 退化参数无 NaN（验收 5）：α=0（clamp 到 1e-6）、视线与切线平行、掠射角。
+    #[test]
+    fn degenerate_anisotropic_params_no_nan() {
+        let n = Vec3::new(0.0, 0.0, 1.0);
+        // α_t = 0（被 clamp 到 1e-6）、α_b 较大 → 极端各向异性。
+        let b = Bsdf::new(Vec3::splat(1.0), 1.0, 0.3, 1.5, 0.0, 0.0, Vec3::splat(0.3))
+            .with_anisotropy(0.0, 0.9, 0.5);
+        assert!(b.is_anisotropic());
+        let ctx = EvalCtx::new(0xDE_AD, 0, 0);
+        for &mu in &[1.0f32, 0.5, 0.1, 0.02] {
+            let wo = hemi_dir(mu);
+            for &mui in &[1.0f32, 0.5, 0.1] {
+                let wi = hemi_dir(mui);
+                let e = b.eval(wo, wi, n);
+                assert!(e.x.is_finite() && e.y.is_finite() && e.z.is_finite(), "eval NaN/Inf @ μo={mu} μi={mui}");
+                let p = b.pdf(wo, wi, n);
+                assert!(p.is_finite(), "pdf NaN/Inf @ μo={mu} μi={mui}");
+            }
+            // 视线与切线平行：任意水平方向（z 分量极小）作为 wi。
+            let wi_parallel = Vec3::new(1.0, 0.0, 1e-4).normalize();
+            let e = b.eval(wo, wi_parallel, n);
+            assert!(e.x.is_finite() && e.y.is_finite() && e.z.is_finite(), "视线∥切线 eval NaN");
+            // 采样若干方向，确认 weight 有限。
+            for k in 0..200u32 {
+                let s2 = SampleIndex { frame: 0, pixel: (0, 0), sample: k, dimension: 200, node_id: 0 };
+                let (u1, u2) = sample_2d(&ctx, &s2);
+                if let Some(s) = b.sample(wo, n, false, &SampleCtx::default(), 0.5, u1, u2) {
+                    assert!(s.weight.x.is_finite() && s.weight.y.is_finite() && s.weight.z.is_finite(), "sample weight NaN @ μo={mu}");
+                    assert!(s.dir.x.is_finite() && s.dir.y.is_finite() && s.dir.z.is_finite(), "sample dir NaN");
+                }
+            }
+        }
     }
 }
