@@ -137,6 +137,7 @@ dependencies = [
 name = "prism-gpu"
 version = "0.1.0"
 dependencies = [
+ "prism-geometry",
  "prism-math",
 ]
 

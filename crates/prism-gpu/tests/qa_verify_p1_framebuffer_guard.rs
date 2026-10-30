@@ -42,6 +42,7 @@ fn scene_req(width: u32, height: u32) -> SceneRenderRequest {
             metalness: 0.05,
         }],
         aesthetic: AestheticReq { teal_orange: false, contrast: 1.0, filmic: false },
+    curves: Vec::new(),
     }
 }
 

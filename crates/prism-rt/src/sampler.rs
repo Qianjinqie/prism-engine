@@ -62,6 +62,12 @@ use prism_noise::pcg;
 /// 表覆盖的维度总数（维度 0 = van der Corput + 表内 2..=64）。
 pub const SOBOL_DIMS: u16 = 64;
 
+/// 光谱波长维（T08 切片）：取未占用的高位维度，避开相机段（0–4）与
+/// 弹射段（基 5 + 每弹 6 槽，max_bounces=8 时最高 ≈ 52）。取 60 落在
+/// Sobol 表内（< 64）且不与任何既有维度冲突——单条路径每样本仅抽一次，
+/// 作为 hero wavelength Monte Carlo 的分层坐标（PRD Q3①）。
+pub const DIM_LAMBDA: u16 = 60;
+
 /// 维度 1..=63 的方向数初值（即表中维度 2..=64；下标 d−1 对应维度 d）。
 #[rustfmt::skip]
 const JOE_KUO: [(u8, u8, [u32; 9]); 63] = [
@@ -316,6 +322,14 @@ impl<'a> SampleStream<'a> {
     #[inline]
     pub fn aux_1d(&self, dimension: u16, step: u32) -> f32 {
         aux_1d(self.ctx, &self.si(dimension), step)
+    }
+
+    /// 波长维采样（T08 切片）：返回 [0,1) 均匀量，由调用方经
+    /// [`crate::spectral::hero_wavelength`] 映射为 hero λ（退化模式被钳为
+    /// 固定中值）。每样本仅抽一次，确定性继承自 Sobol 流。
+    #[inline]
+    pub fn sample_lambda(&self) -> f32 {
+        self.sample_1d(DIM_LAMBDA)
     }
 }
 

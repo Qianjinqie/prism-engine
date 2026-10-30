@@ -679,6 +679,7 @@ fn web_backend_native_never_ready_and_falls_back() {
             metalness: 0.1,
         }],
         aesthetic: AestheticReq { teal_orange: false, contrast: 1.0, filmic: false },
+    curves: Vec::new(),
     };
     let gpu_fb = b.render_scene(&req);
     let cpu_fb = CpuRefBackend.render_scene(&req);

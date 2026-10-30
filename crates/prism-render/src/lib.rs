@@ -108,6 +108,7 @@ pub fn build_render_request(
         lights,
         spheres,
         aesthetic,
+    curves: Vec::new(),
     }
 }
 
@@ -279,6 +280,21 @@ pub use exr_seq::{
     frame_file_name, frame_to_planes, plane_value_to_u8, read_exr_frame, write_exr_sequence,
     ExrSeqError, ExrSeqOptions,
 };
+
+// ---------------------------------------------------------------------------
+// D-2：性能剖析——分配/拷贝计数、帧池、零拷贝身份判据（T09 / V2.2-D-2）
+//   设计 §6.2 / Line 516：#[global_allocator] 只在专用测试二进制安装，生产零改动。
+// ---------------------------------------------------------------------------
+
+pub mod measure;
+pub mod frame_pool;
+pub mod zero_copy;
+
+pub use frame_pool::{render_frame_pooled, FramePool, PoolStats, pool_stats, reset_pool_stats};
+pub use measure::{
+    copy_bytes, peak_rss_kib, rss_report, reset_counters, snapshot, Counters, CountingAllocator,
+};
+pub use zero_copy::{buffer_reborrow, is_zero_copy_path, verify_zero_copy, ZERO_COPY_WHITELIST};
 
 #[cfg(test)]
 mod tests {

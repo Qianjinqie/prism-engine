@@ -379,6 +379,7 @@ mod tests {
                 },
             ],
             aesthetic,
+        curves: Vec::new(),
         }
     }
 

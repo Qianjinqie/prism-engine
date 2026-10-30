@@ -191,6 +191,7 @@ pub(crate) fn self_test_request() -> SceneRenderRequest {
             contrast: 1.0,
             filmic: false,
         },
+    curves: Vec::new(),
     }
 }
 

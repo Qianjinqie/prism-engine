@@ -8,7 +8,7 @@
 //! * 在非 wasm 目标上，`render_scene` 走 CPU 兜底以保证可编译、可测试；
 //!   在 wasm 目标上，若 device 获取失败亦回退 CPU，绝不 panic（harness 要求）。
 
-use crate::scene_abi::{BindingAccess, SceneAbi};
+use crate::scene_abi::SceneAbi;
 use crate::shaders;
 use crate::web::{self, GpuHandle, WebGpuSupport, INVALID_HANDLE};
 use crate::{Framebuffer, GpuDevice, SceneRenderRequest};
@@ -171,7 +171,61 @@ impl GpuDevice for WebGpuBackend {
     fn render_scene(&mut self, req: &SceneRenderRequest) -> Framebuffer {
         // 真实 GPU 提交路径（需 WGSL 运行时 + 真机）尚未打通：
         // 这里保持 CPU 兜底，符合 D1 骨架"先出 shader 源 + 绑定骨架"的约定。
+        //
+        // A-2 收口（T06）：dispatch 维度与绑定集**不再就地写死**，而是从
+        // [`crate::scene_abi`] 单一真源派生（[`scene_dispatch_plan`]）——这样
+        // ABI 升 V2（6 绑定）时本宿主自动跟随，且 WGSL 源缺失会在此处立刻暴露。
+        let plan = scene_dispatch_plan(req);
+        debug_assert_eq!(
+            plan.bindings, plan.profile.binding_count(),
+            "绑定个数必须与 scope ABI 剖面一致"
+        );
+        debug_assert!(plan.wgsl_present, "scene_frame.wgsl 未注册进 SHADERS 表");
         self.cpu_fallback.render_scene(req)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 场景 dispatch 规划（A-2：从 `scene_abi` 单一真源派生，不写死常量）
+// ---------------------------------------------------------------------------
+
+/// 一次光追场景 dispatch 的静态规划（工作组数 / 绑定集 / 入口）。
+///
+/// 全部取自 [`crate::scene_abi`]（入口名、工作组尺寸、绑定剖面），**本模块不写
+/// 任何字面量**——这是 A-1「场景 ABI 真源」设计（§1.1）在 WebGPU 宿主侧的落实点。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SceneDispatchPlan {
+    /// 入口名（与 SPIR-V `OpEntryPoint` / MSL kernel 名同字）。
+    pub entry: &'static str,
+    /// 每组线程数 `(x, y, z)`。
+    pub workgroup: [u32; 3],
+    /// dispatch 的工作组数 `(x, y, z)` = `ceil(像素 / workgroup)`。
+    pub groups: [u32; 3],
+    /// 该剖面声明的绑定个数（bind group layout 的 entry 数）。
+    pub bindings: usize,
+    /// 所用 ABI 剖面。
+    pub profile: crate::scene_abi::SceneAbiProfile,
+    /// `scene_frame.wgsl` 是否已注册进 WGSL 源表（缺失即装配错误）。
+    pub wgsl_present: bool,
+}
+
+/// 由场景请求派生 dispatch 规划（纯函数；native/wasm 同口径）。
+pub fn scene_dispatch_plan(req: &SceneRenderRequest) -> SceneDispatchPlan {
+    let profile = SceneAbi::PROFILE;
+    let wg = SceneAbi::WORKGROUP;
+    let w = req.width.max(1);
+    let h = req.height.max(1);
+    SceneDispatchPlan {
+        entry: SceneAbi::ENTRY,
+        workgroup: wg,
+        groups: [
+            w.div_ceil(wg[0].max(1)),
+            h.div_ceil(wg[1].max(1)),
+            wg[2].max(1),
+        ],
+        bindings: profile.binding_count(),
+        profile,
+        wgsl_present: shaders::source("scene_frame.wgsl").is_some(),
     }
 }
 
@@ -374,6 +428,7 @@ pub fn histogram_params_bytes(count: u32, buckets: u32, shift: u32) -> [u8; HIST
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scene_abi::BindingAccess;
     use prism_math::Vec3;
 
     #[test]
@@ -441,11 +496,48 @@ mod tests {
                 contrast: 1.0,
                 filmic: false,
             },
+        curves: Vec::new(),
         };
         let gpu_fb = backend.render_scene(&req);
         let cpu_fb = crate::CpuRefBackend.render_scene(&req);
         assert_eq!(gpu_fb.width, cpu_fb.width);
         assert_eq!(gpu_fb.pixels, cpu_fb.pixels, "降级路径应与 CPU 参考逐字节一致");
+    }
+
+    /// A-2 收口：dispatch 规划与绑定集**从 `scene_abi` 派生**（本模块零字面量）。
+    #[test]
+    fn scene_dispatch_plan_derives_from_scene_abi() {
+        let req = SceneRenderRequest {
+            width: 33,
+            height: 17,
+            camera: crate::CameraReq {
+                eye: Vec3::new(0.0, 0.0, -4.0),
+                target: Vec3::new(0.0, 0.0, 0.0),
+                fov: 60.0_f32.to_radians(),
+                aspect: 33.0 / 17.0,
+            },
+            lights: Vec::new(),
+            spheres: Vec::new(),
+            aesthetic: crate::AestheticReq { teal_orange: false, contrast: 1.0, filmic: false },
+            curves: Vec::new(),
+        };
+        let plan = super::scene_dispatch_plan(&req);
+        assert_eq!(plan.entry, SceneAbi::ENTRY, "入口名必须来自 scene_abi");
+        assert_eq!(plan.workgroup, SceneAbi::WORKGROUP, "工作组尺寸必须来自 scene_abi");
+        assert_eq!(plan.profile, SceneAbi::PROFILE);
+        assert_eq!(plan.bindings, SceneAbi::bindings().len(), "绑定数必须跟随真源");
+        assert_eq!(plan.bindings, 6, "A-2 起默认剖面为 V2（6 绑定）");
+        // 33x17 / (8,8) → (5, 3, 1)
+        assert_eq!(plan.groups, [33u32.div_ceil(8), 17u32.div_ceil(8), 1]);
+        assert_eq!(plan.groups, [5, 3, 1]);
+        assert!(plan.wgsl_present, "scene_frame.wgsl 必须在 WGSL 源表内");
+
+        // 绑定访问属性：除输出外全部只读，输出可读写（bind group layout 的硬要求）。
+        let bs = SceneAbi::bindings();
+        for b in &bs[..bs.len() - 1] {
+            assert_eq!(b.access, BindingAccess::ReadOnly, "{} 必须只读", b.name);
+        }
+        assert_eq!(bs[bs.len() - 1].access, BindingAccess::ReadWrite);
     }
 
     #[test]

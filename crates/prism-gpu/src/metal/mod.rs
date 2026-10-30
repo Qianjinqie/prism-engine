@@ -277,6 +277,7 @@ mod tests {
                 contrast: 1.0,
                 filmic: false,
             },
+        curves: Vec::new(),
         }
     }
 

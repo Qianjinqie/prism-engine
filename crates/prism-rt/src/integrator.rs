@@ -55,6 +55,9 @@ use crate::light::{ambient_background, nee_mis_weight, sample_nee};
 pub use crate::light::Light;
 use crate::media::Medium;
 use crate::sampler::SampleStream;
+use crate::spectral::{
+    cauchy_ior, flat_spectral_value, hero_wavelength, spectral_to_rgb, SpectralConfig,
+};
 use crate::sss::random_walk;
 
 // ---------------------------------------------------------------------------
@@ -2055,12 +2058,26 @@ fn trace_one(
                     } else {
                         // 无 subsurface：折射续弹（玻璃内部行进，贡献经 BSDF 权重）。
                         st.throughput = hadamard(st.throughput, bs.weight);
+                        // 折射是**δ（镜面）事件**：后续发光命中必须走「权重 1」分支而不是
+                        // MIS。原先置 `prev_specular = false` + `prev_pdf_dir = 0`，使
+                        // `power_heuristic(0, pdf) ≡ 0` —— 透过玻璃看到的发光体贡献被乘成
+                        // **精确 0**，玻璃在图像上与不透明遮挡体无差别（T08 实测根因）。
                         st.prev_pdf_dir = 0.0;
-                        st.prev_specular = false;
+                        st.prev_specular = true;
                         if !rr_survive(&mut st, stream, ev + 1) {
                             break;
                         }
-                        ray = Ray { origin: p - n * SURFACE_EPS, dir: bs.dir, time: ray.time };
+                        // 折射续弹的落点侧别：`dir·n > 0` ⇒ 出射（表面外侧），
+                        // `< 0` ⇒ 入射（表面内侧）。仅靠 `entered` 标志无法区分二者
+                        // （BSDF 的折射瓣两个方向都回 `entered = true`），一律取
+                        // `p - n·ε` 会让出射射线从**内侧**起步、立刻自交玻璃，
+                        // 路径在表面上反复弹射直至 bounce 耗尽 → 玻璃全黑、色散不可见。
+                        let eps = if bs.dir.dot(&n) > 0.0 {
+                            SURFACE_EPS
+                        } else {
+                            -SURFACE_EPS
+                        };
+                        ray = Ray { origin: p + n * eps, dir: bs.dir, time: ray.time };
                     }
                 } else {
                     // 反射域（diffuse / specular 瓣）：BSDF 权重即吞吐乘子。
@@ -2070,7 +2087,16 @@ fn trace_one(
                     if !rr_survive(&mut st, stream, ev + 1) {
                         break;
                     }
-                    ray = Ray { origin: p + nv * SURFACE_EPS, dir: bs.dir, time: ray.time };
+                    // 出射侧判定：`dir·n > 0` ⇒ 新射线在表面**外侧**（外部反射 / 介质
+                    // 出射折射）；`< 0` ⇒ 仍在**内侧**（介质内全反射）。`entered` 一个
+                    // 标志区分不出这两种「非入射」情形（原先一律用 `nv`，介质出射折射
+                    // 会被放回介质内侧 → 出射面自交、路径夭折）。
+                    let eps = if bs.dir.dot(&n) > 0.0 {
+                        SURFACE_EPS
+                    } else {
+                        -SURFACE_EPS
+                    };
+                    ray = Ray { origin: p + n * eps, dir: bs.dir, time: ray.time };
                 }
             } else {
                 break; // 采样失败（纯黑材质 / VNDF 翻面）：终止
@@ -2101,6 +2127,263 @@ pub fn render_pixel(
 /// 自由函数形式的相机射线投射（任务接口字面形式；实现委托 [`Camera::cast_ray`]）。
 pub fn cast_ray(camera: &Camera, stream: &SampleStream<'_>, resolution: (u32, u32)) -> Ray {
     camera.cast_ray(stream, resolution)
+}
+
+// ---------------------------------------------------------------------------
+// 光谱渲染切片（V2.2-B-1 / T08）：标量路径 + 退化一致性
+// ---------------------------------------------------------------------------
+//
+// 本组与 [`trace_one`]（RGB Vec3）同构，但吞吐/辐亮度为标量 `f32`：每个彩色
+// 量经 [`flat_spectral_value`] 降维为标量（灰反照率口径），末端经
+// [`spectral_to_rgb`] 升采样回 RGB（退化=单位复制 `K=(1,1,1)`，色散=CMF 加权）。
+//
+// # 退化一致性（验收 1，核心）
+// 退化配置下 `spectral_to_rgb` 为单位复制 `Vec3::splat(s)`、且 `cauchy_b=0`
+// （ior 恒 = `cauchy_a`，不被覆盖），故被积函数与 λ 无关；标量算术 `a·b` /
+// `a+b` / `a/q` 与其在灰 RGB 路径单通道上的位模式**逐位一致**（IEEE f32
+// 乘法/加法/除法不随载体是标量还是 Vec3 分量而改变）。于是：**对灰材质场景，
+// 光谱退化路径与 RGB 路径输出逐字节相等**（由 `qa_spectral_degeneracy` 钉死）。
+
+/// 光谱单路径游走状态（标量切片）。
+#[derive(Debug, Clone, Copy)]
+struct PathStateSpectral {
+    /// 路径吞吐（标量）。
+    throughput: f32,
+    /// 已累计光谱辐亮度（标量）。
+    radiance: f32,
+    /// 上一段方向立体角 pdf（发光命中 MIS 用）。
+    prev_pdf_dir: f32,
+    /// 上一段是否镜面。
+    prev_specular: bool,
+}
+
+/// 间接贡献标量钳制（与 [`clamp_indirect`] 逐位同口径：灰输入下
+/// `Vec3::splat(c).min(t)` = `Vec3::splat(c.min(t))`）。
+#[inline]
+fn clamp_indirect_scalar(c: f32, ev: u32, limit: Option<f32>) -> f32 {
+    match limit {
+        Some(t) if ev >= 2 => c.min(t),
+        _ => c,
+    }
+}
+
+/// RR 存活判定（标量版；与 [`rr_survive`] 同口径，灰度下 `clamp(0.05,0.95)`
+/// 单通道值 == 标量值，决策位一致）。
+fn rr_survive_spectral(
+    st: &mut PathStateSpectral,
+    stream: &SampleStream<'_>,
+    next_ev: u32,
+) -> bool {
+    if next_ev < 3 {
+        return true;
+    }
+    let q = st.throughput.max(0.05).min(0.95);
+    let u = stream.sample_1d(bounce_dim(next_ev, SLOT_RR));
+    if u >= q {
+        return false;
+    }
+    st.throughput = st.throughput / q;
+    true
+}
+
+/// 追踪一条完整光谱路径（单样本）→ rgba。
+///
+/// 与 [`trace_one`] 同构：几何（射线/命中/法线）与 Sobol 维度完全一致，仅
+/// 颜色以标量传递；末端 [`spectral_to_rgb`] 升采样回 RGB（退化=单位复制，
+/// 色散=CMF 加权）。退化配置下与灰 RGB [`trace_one`] 逐字节相等。
+fn trace_one_spectral(
+    scene: &Scene,
+    cam: &Camera,
+    _ctx: &EvalCtx,
+    resolution: (u32, u32),
+    stream: &SampleStream<'_>,
+    params: &RenderParams,
+    cfg: &SpectralConfig,
+) -> [f32; 4] {
+    let lambda = hero_wavelength(stream.sample_lambda(), cfg);
+    let mut ray = cam.cast_ray(stream, resolution);
+    let mut st = PathStateSpectral {
+        throughput: 1.0,
+        radiance: 0.0,
+        prev_pdf_dir: 0.0,
+        prev_specular: true, // 相机段视为镜面链起点
+    };
+    let mut aux_steps: u32 = 0;
+    for bounce in 0..params.max_bounces {
+        let ev = bounce + 1;
+        let aux_dim = bounce_dim(ev, SLOT_AUX);
+        let hit = scene.intersect(ray.origin, ray.dir, MISS_T, None);
+
+        // 表面事件（或逃逸）。本切片不接入体积光谱（介质内散射留 V2.3），
+        // 直接走表面事件——与退化一致性的简单场景口径一致，不引入回归。
+        let h = match hit {
+            None => {
+                let bg = ambient_background(&scene.lights);
+                let bg_s = flat_spectral_value(bg);
+                if bg_s > 0.0 {
+                    let c = st.throughput * bg_s;
+                    st.radiance = st.radiance + clamp_indirect_scalar(c, ev, params.clamp_indirect);
+                }
+                break;
+            }
+            Some(h) => h,
+        };
+        let p = ray.at(h.t);
+        let n = scene.normal_at(h.shape, p);
+        let mat = scene.material(h.shape);
+
+        // 发光命中（MIS 权重 vs 光源立体角 pdf）。
+        if let MaterialKind::Emissive { radiance } = mat {
+            let w_em = if params.nee_only && ev > 1 {
+                0.0
+            } else if ev == 1 || st.prev_specular {
+                1.0
+            } else {
+                match scene.light_pdf_sa(ray.origin, h.shape) {
+                    Some(pdf_l) => crate::light::power_heuristic(st.prev_pdf_dir, pdf_l),
+                    None => 1.0,
+                }
+            };
+            let c = st.throughput * flat_spectral_value(*radiance) * w_em;
+            st.radiance = st.radiance + clamp_indirect_scalar(c, ev, params.clamp_indirect);
+        }
+
+        // BSDF（Pbr；Lambert/Mirror 映射等价 Disney 参数）。
+        let mut bsdf = match material_bsdf(mat) {
+            Some(b) => b,
+            None => break, // 发光面不续弹（基线简化）
+        };
+        // 色散：用 Cauchy 折射率覆盖材质 ior（退化模式保持原 ior，确保与
+        // RGB 路径逐字节一致——见模块文档 §退化一致性）。
+        if !cfg.degenerate {
+            bsdf.ior = cauchy_ior(cfg, lambda);
+        }
+        let from_inside = ray.dir.dot(&n) > 0.0;
+        let nv = if from_inside { -n } else { n };
+        let wo = -ray.dir;
+
+        // 反射域 NEE（除镜面瓣占优外）。
+        {
+            let (u_l1, u_l2) = stream.sample_2d(bounce_dim(ev, SLOT_LIGHT));
+            for light in &scene.lights {
+                let skip = light_skip(scene, light);
+                let ls = match sample_nee(light, p, u_l1, u_l2) {
+                    Some(ls) => ls,
+                    None => continue,
+                };
+                let cos_l = nv.dot(&ls.wi);
+                if cos_l <= 0.0 {
+                    continue;
+                }
+                let f = flat_spectral_value(surface_brdf(mat, &bsdf, wo, ls.wi, nv));
+                let f_cos = f * cos_l;
+                let alt_pdf = surface_pdf(mat, &bsdf, wo, ls.wi, nv);
+                let ro = p + nv * SURFACE_EPS;
+                let vis = visibility(
+                    scene, ro, ls.wi, ls.dist, skip, stream, aux_dim, &mut aux_steps,
+                );
+                if vis <= 0.0 {
+                    continue;
+                }
+                let w = nee_mis_weight(light, ls.pdf_w, alt_pdf);
+                let ls_rad = flat_spectral_value(ls.radiance);
+                let c = st.throughput * f_cos * ls_rad * (vis * w / ls.pdf_w);
+                st.radiance = st.radiance + clamp_indirect_scalar(c, ev, params.clamp_indirect);
+            }
+        }
+
+        // BSDF 抽样续弹（Lambert / Mirror / Pbr 三型）。
+        let (u_lobe, _) = stream.sample_2d(bounce_dim(ev, SLOT_BSDF));
+        let (u1, u2) = stream.sample_2d(bounce_dim(ev, SLOT_BSDF) + 1);
+        if let MaterialKind::Lambert { albedo } = mat {
+            let d_local = crate::sampler::cosine_hemisphere(u1, u2);
+            let (t, b) = crate::sampler::onb(n);
+            let dir = (t * d_local.x + b * d_local.y + n * d_local.z).normalize();
+            st.throughput = st.throughput * flat_spectral_value(*albedo);
+            st.prev_pdf_dir = d_local.z * FRAC_1_PI;
+            st.prev_specular = false;
+            if !rr_survive_spectral(&mut st, stream, ev + 1) {
+                break;
+            }
+            ray = Ray { origin: p + n * SURFACE_EPS, dir, time: ray.time };
+        } else if let MaterialKind::Mirror = mat {
+            let dir = ray.dir - n * (2.0 * ray.dir.dot(&n));
+            st.prev_pdf_dir = 0.0;
+            st.prev_specular = true;
+            if !rr_survive_spectral(&mut st, stream, ev + 1) {
+                break;
+            }
+            ray = Ray { origin: p + n * SURFACE_EPS, dir, time: ray.time };
+        } else {
+            let sctx = SampleCtx {
+                psr_rough: if bsdf.roughness < 1e-3 { 1e-3 } else { 0.0 },
+            };
+            if let Some(bs) = bsdf.sample(wo, n, from_inside, &sctx, u_lobe, u1, u2) {
+                if bs.entered {
+                    if material_subsurface(mat).is_some() {
+                        // 切片范围：SSS 随机游走不在本切片（V2.3 留名）。
+                        break;
+                    }
+                    // 无 subsurface：折射续弹（玻璃内部行进）。
+                    st.throughput = st.throughput * flat_spectral_value(bs.weight);
+                    // 同上（[`trace_one`] 的 δ 事件口径）：折射后续发光命中权重 = 1。
+                    st.prev_pdf_dir = 0.0;
+                    st.prev_specular = true;
+                    if !rr_survive_spectral(&mut st, stream, ev + 1) {
+                        break;
+                    }
+                    // 落点侧别同 [`trace_one`]：`dir·n > 0` ⇒ 出射（表面外侧）。
+                    let eps = if bs.dir.dot(&n) > 0.0 {
+                        SURFACE_EPS
+                    } else {
+                        -SURFACE_EPS
+                    };
+                    ray = Ray { origin: p + n * eps, dir: bs.dir, time: ray.time };
+                } else {
+                    // 反射域（diffuse / specular 瓣）。
+                    st.throughput = st.throughput * flat_spectral_value(bs.weight);
+                    st.prev_pdf_dir = bs.pdf;
+                    st.prev_specular = bs.specular;
+                    if !rr_survive_spectral(&mut st, stream, ev + 1) {
+                        break;
+                    }
+                    // 出射侧判定（与 [`trace_one`] 逐字同一规则）：`dir·n > 0` ⇒ 外侧。
+                    let eps = if bs.dir.dot(&n) > 0.0 {
+                        SURFACE_EPS
+                    } else {
+                        -SURFACE_EPS
+                    };
+                    ray = Ray { origin: p + n * eps, dir: bs.dir, time: ray.time };
+                }
+            } else {
+                break; // 采样失败：终止
+            }
+        }
+    }
+    // 末端升采样：退化=单位复制（Vec3::splat），色散=CMF 加权。
+    let rgb = spectral_to_rgb(st.radiance, lambda, cfg);
+    [rgb.x, rgb.y, rgb.z, 1.0]
+}
+
+/// 像素渲染（光谱切片，纯函数）：spp 样本经 [`mean_samples`] 同口径归约
+/// （与 [`render_pixel`] 共用，保证退化模式与 RGB 路径逐字节一致）。
+pub fn render_pixel_spectral(
+    scene: &Scene,
+    cam: &Camera,
+    ctx: &EvalCtx,
+    pixel: (u32, u32),
+    resolution: (u32, u32),
+    params: &RenderParams,
+    cfg: &SpectralConfig,
+) -> [f32; 4] {
+    let mut samples = Vec::with_capacity(params.spp as usize);
+    for s in 0..params.spp {
+        let stream = SampleStream::new(ctx, pixel, s);
+        samples.push(trace_one_spectral(
+            scene, cam, ctx, resolution, &stream, params, cfg,
+        ));
+    }
+    mean_samples(&samples)
 }
 
 // ---------------------------------------------------------------------------

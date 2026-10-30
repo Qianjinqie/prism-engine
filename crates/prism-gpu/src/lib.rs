@@ -30,6 +30,13 @@
 
 use prism_math::Vec3;
 
+/// 曲线图元请求（A-2）：几何权威在叶子 crate `prism-geometry`（`curve_tess`）。
+///
+/// `prism-gpu → prism-geometry` 为单向 path 依赖（设计 §9-Q5 已拍板）；本 crate
+/// **不重写**三角化/BVH，只做扁平化编码（[`scene_abi::encode_curve_buffers`]）与
+/// CPU 参考的求交接线。
+pub use prism_geometry::curve_tess::CurveReq;
+
 // ----------------------------------------------------------------------------
 // WGSL shader sources + structural self-check (D2/D3/D4)
 // ----------------------------------------------------------------------------
@@ -367,7 +374,22 @@ pub struct SceneRenderRequest {
     pub lights: Vec<LightReq>,
     pub spheres: Vec<SphereReq>,
     pub aesthetic: AestheticReq,
+    /// 曲线图元（V2.2-A-2 方案乙）。
+    ///
+    /// **缺省空 ⇒ 与 V2.1 输出逐位相同**（这是 A-2 不回归的机械保证，见设计
+    /// §4.3）：空集时 CPU 参考不建 BVH、GPU 侧遍历段整段跳过。
+    pub curves: Vec<CurveReq>,
 }
+
+/// 曲线命中面的着色反照率（A-2 切片口径）。
+///
+/// `CurveReq` 只携带**几何**（中心/半径/轴/轮廓），不带材质——A-2 只承诺"曲线
+/// 图元进入既有 Möller–Trumbore + 直接光管线"，材质参数化留 V2.3。中性灰
+/// 反照率使曲线与球的直接光响应可对拍（球带 albedo，曲线固定此值）。
+pub const CURVE_ALBEDO: [f32; 3] = [0.72, 0.74, 0.78];
+
+/// 曲线求交的 `t_min`（避免自交；与三角化弦高无关，纯数值守卫）。
+pub const CURVE_T_MIN: f32 = 1e-4;
 
 // ----------------------------------------------------------------------------
 // Device abstraction
@@ -437,6 +459,20 @@ impl GpuDevice for CpuRefBackend {
         }
         let cam = &req.camera;
 
+        // --- A-2 曲线：三角化 → SAH-BVH（一次性，逐帧复用）-----------------
+        // 权威在 `prism-geometry`（叶子 crate）：本 crate 只接线，不重写。
+        // 曲线为空 ⇒ `None` ⇒ 下面整段跳过，输出与 V2.1 逐位相同（不回归保证）。
+        let curve_tris = if req.curves.is_empty() {
+            Vec::new()
+        } else {
+            prism_geometry::curve_tess::tessellate_all(&req.curves, scene_abi::CURVE_TESS_TOL)
+        };
+        let curve_bvh = if curve_tris.is_empty() {
+            None
+        } else {
+            Some(prism_geometry::bvh::Bvh::build(&curve_tris))
+        };
+
         // --- Camera orthonormal basis -------------------------------------
         let forward = (cam.target - cam.eye).normalize();
         let world_up = Vec3::new(0.0, 1.0, 0.0);
@@ -474,6 +510,26 @@ impl GpuDevice for CpuRefBackend {
                     }
                 }
 
+                // --- A-2 曲线：扁平 BVH 遍历最近命中（覆盖球命中若更近）----
+                // 求交语义与 `prism-geometry/src/bvh.rs::ray_intersect` 逐式一致
+                // （Möller–Trumbore + 近子先入栈 + `(t, tri)` 字典序 tie-break），
+                // 故 CPU 参考 ≡ BVH 权威件，GPU 侧照抄同式即可对齐。
+                let mut curve_hit: Option<Vec3> = None;
+                if let Some(bvh) = &curve_bvh {
+                    if let Some(h) = bvh.ray_intersect(origin, dir, CURVE_T_MIN, closest_t) {
+                        closest_t = h.t;
+                        let tri = &curve_tris[h.tri as usize];
+                        let mut n = tri.normal_unnormalized().normalize();
+                        // 法线朝向来光侧（与球面 `(p - center).normalize()` 同口径：
+                        // 球面法线恒朝外，这里按射线侧翻转，保证漫反射不出现负半球）。
+                        if dot(n, dir) > 0.0 {
+                            n = n * -1.0;
+                        }
+                        curve_hit = Some(n);
+                        hit = None;
+                    }
+                }
+
                 // --- Shading -------------------------------------------------
                 let mut color = Vec3::new(0.04, 0.05, 0.08); // background
                 if let Some(s) = hit {
@@ -487,6 +543,18 @@ impl GpuDevice for CpuRefBackend {
                         // albedo * (ambient + diff * intensity * color)
                         let term = ambient + light.color * (diff * light.intensity);
                         acc = acc + vmul(s.albedo, term);
+                    }
+                    color = acc;
+                } else if let Some(n) = curve_hit {
+                    // 曲线命中：几何法线 + 固定中性反照率（[`CURVE_ALBEDO`]），
+                    // 直接光项与球分支**逐式相同**（同 ambient、同 light 循环）。
+                    let albedo = Vec3::new(CURVE_ALBEDO[0], CURVE_ALBEDO[1], CURVE_ALBEDO[2]);
+                    let ambient = Vec3::splat(0.08);
+                    let mut acc = Vec3::splat(0.0);
+                    for light in &req.lights {
+                        let diff = dot(n, light.direction.normalize()).max(0.0);
+                        let term = ambient + light.color * (diff * light.intensity);
+                        acc = acc + vmul(albedo, term);
                     }
                     color = acc;
                 }
@@ -626,6 +694,7 @@ mod tests {
                 contrast: 1.0,
                 filmic: false,
             },
+        curves: Vec::new(),
         }
     }
 
@@ -742,6 +811,7 @@ mod framebuffer_bounds {
                 contrast: 1.0,
                 filmic: false,
             },
+        curves: Vec::new(),
         }
     }
 

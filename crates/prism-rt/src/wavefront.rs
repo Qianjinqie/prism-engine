@@ -450,15 +450,23 @@ fn advance_one(
                     }
                 } else {
                     st.throughput = hadamard(st.throughput, bs.weight);
+                    // 折射是 δ（镜面）事件（与 [`crate::integrator::trace_one`] 同口径）：
+                    // 后续发光命中取权重 1，不得走 MIS（`power_heuristic(0, ·) ≡ 0`）。
                     st.prev_pdf_dir = 0.0;
-                    st.prev_specular = false;
+                    st.prev_specular = true;
                     if !rr_survive(st, stream, ev + 1) {
                         stats.terminated += 1;
                         return false;
                     }
                     stats.extended += 1;
+                    // 落点侧别：`dir·n > 0` ⇒ 出射（表面外侧），否则入射（内侧）。
+                    let eps = if bs.dir.dot(&n) > 0.0 {
+                        SURFACE_EPS
+                    } else {
+                        -SURFACE_EPS
+                    };
                     st.ray = Ray {
-                        origin: p - n * SURFACE_EPS,
+                        origin: p + n * eps,
                         dir: bs.dir,
                         time: st.ray.time,
                     };
@@ -472,7 +480,13 @@ fn advance_one(
                     return false;
                 }
                 stats.extended += 1;
-                st.ray = Ray { origin: p + nv * SURFACE_EPS, dir: bs.dir, time: st.ray.time };
+                // 出射侧判定（与 integrator 同一规则，见 `trace_one`）。
+                let eps = if bs.dir.dot(&n) > 0.0 {
+                    SURFACE_EPS
+                } else {
+                    -SURFACE_EPS
+                };
+                st.ray = Ray { origin: p + n * eps, dir: bs.dir, time: st.ray.time };
             }
         } else {
             stats.terminated += 1;

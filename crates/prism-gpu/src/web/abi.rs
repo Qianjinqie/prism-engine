@@ -2443,6 +2443,16 @@ static COVERAGE: &[(&str, &[(&str, &str, &str)])] = &[
             ("accumulate", ST_COVERED, ""),
         ],
     ),
+    (
+        "scene_frame.wgsl",
+        &[(
+            "scene_main",
+            ST_SKIP,
+            "WGSL 宿主侧未接真 dispatch（T3 轨 SwiftShader 不进 native 门禁）；同一语义由 \
+             `gpu.rt_scene` 用发射器产物 `spv_scene` 在 Vulkan 路径真 dispatch。A-2 把本文件 \
+             扩到 V2 六绑定 + 栈式 BVH 遍历段后，WGSL 侧的曲线遍历仍需交付前 CI/真机验证",
+        )],
+    ),
     ("rt_bvh.wgsl", &[]),
     ("rt_shade.wgsl", &[]),
     ("rt_common.wgsl", &[]),

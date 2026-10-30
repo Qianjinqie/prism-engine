@@ -49,5 +49,7 @@ pub mod light;
 pub mod material;
 pub mod media;
 pub mod sampler;
+/// 光谱渲染切片（V2.2-B-1 / T08）：λ 轴 + 自研 CMF 分段有理 + 退化一致性。
+pub mod spectral;
 pub mod sss;
 pub mod wavefront;

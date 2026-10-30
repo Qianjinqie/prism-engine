@@ -10,3 +10,4 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 prism-math = { path = "../prism-math" }
+prism-geometry = { path = "../prism-geometry" }

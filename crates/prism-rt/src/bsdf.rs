@@ -703,7 +703,13 @@ impl Bsdf {
         u1: f32,
         u2: f32,
     ) -> Option<BsdfSample> {
-        let cos_v = wo.dot(&n).max(0.0);
+        // 面向入射侧的界面法线：`from_inside` 时入射侧在介质内 ⇒ 翻转为 −n。
+        // **所有 Fresnel 余弦必须用它**（`cos_v` 与折射/反射的 `n_in` 同一口径）：
+        // 用几何外向法线时，介质内 `wo·n < 0` 被钳成 0 ⇒ `schlick(F0, 0) = 1.0`
+        // ⇒ 出射面 `p_reflect ≈ 1`（几乎恒全反射）、`w_spec ≈ 1`（透射瓣概率腰斩），
+        // 两条叠加使玻璃内部路径整体夭折（T08 诊断：「玻璃球 = 不透明遮挡」）。
+        let n_facing = if from_inside { n * -1.0 } else { n };
+        let cos_v = wo.dot(&n_facing).max(0.0);
         let (p_spec, p_diff, p_trans) = self.lobe_probs(cos_v, from_inside);
         if p_spec + p_diff + p_trans <= 0.0 {
             return None; // 纯黑材质：吸收
@@ -713,20 +719,34 @@ impl Bsdf {
         if u_lobe < p_trans {
             let eta = if from_inside { self.ior } else { 1.0 / self.ior };
             let w_in = -wo; // 指向表面
-            let refr = refract_dir(w_in, n, eta);
-            let p_reflect = refr.map_or(1.0, |_| luminance(schlick(self.f0(), cos_v)).clamp(1e-3, 1.0 - 1e-3));
+            // 界面法线必须朝向**入射侧**：`refract_dir` 的 Snell 约定是
+            // `cos_i = −w_in·n ≥ 0`、`t = eta·w_in + (eta·cos_i − cos_t)·n`。
+            // `n` 入参是**几何外向**法线，故从介质内出射（`from_inside`）时必须翻转。
+            // 不翻转时 `cos_i < 0`，`refract_dir` 返回一条折回介质内部的伪方向
+            // （`t·n = −cos_t < 0`），玻璃出射面永远走不通 —— 表现为「玻璃球是不透明
+            // 遮挡体」，且 ior 对图像**零效应**（T08 实测：ior 1.0 / 1.5 / 2.5 三帧
+            // 逐位相同，色散因此完全不可见）。反射对该翻转不敏感
+            // （`reflect_dir(w, −n) ≡ reflect_dir(w, n)`），故只需修正折射调用。
+            let n_in = if from_inside { n * -1.0 } else { n };
+            // Fresnel 余弦同样必须取**面向入射侧**的法线：`cos_v` 是 `wo·n_几何`，
+            // 介质内出射时为负、被钳成 0 ⇒ `schlick(F0, 0) = 1.0` ⇒
+            // `p_reflect ≈ 0.999`，出射面几乎**恒走全反射**，路径在玻璃内反复弹射
+            // 直到 max_bounces 耗尽 —— 这就是「玻璃球当不透明遮挡」的第二层成因。
+            let cos_i_s = wo.dot(&n_in).max(0.0);
+            let refr = refract_dir(w_in, n_in, eta);
+            let p_reflect = refr.map_or(1.0, |_| luminance(schlick(self.f0(), cos_i_s)).clamp(1e-3, 1.0 - 1e-3));
             if refr.is_none() || u1 < p_reflect {
                 // 镜面反射（δ；PSR 打开时方向加切平面微抖动挤过链）。
-                let dir = reflect_dir(w_in, n).normalize();
+                let dir = reflect_dir(w_in, n_in).normalize();
                 let dir = if ctx.psr_rough > 0.0 {
                     jitter_dir(dir, n, ctx.psr_rough, u2)
                 } else {
                     dir
                 };
                 let weight = if refr.is_none() {
-                    schlick(self.f0(), cos_v) // TIR：全反射（概率 1）
+                    schlick(self.f0(), cos_i_s) // TIR：全反射（概率 1）
                 } else {
-                    schlick(self.f0(), cos_v) * (1.0 / p_reflect)
+                    schlick(self.f0(), cos_i_s) * (1.0 / p_reflect)
                 };
                 return Some(BsdfSample {
                     dir,
@@ -743,7 +763,7 @@ impl Bsdf {
             } else {
                 dir
             };
-            let weight = hadamard(self.base_color, Vec3::splat(1.0) - schlick(self.f0(), cos_v))
+            let weight = hadamard(self.base_color, Vec3::splat(1.0) - schlick(self.f0(), cos_i_s))
                 * (1.0 / (1.0 - p_reflect));
             return Some(BsdfSample {
                 dir,

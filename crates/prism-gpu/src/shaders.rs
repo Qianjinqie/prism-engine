@@ -51,6 +51,13 @@ pub static SHADERS: &[(&str, &str)] = &[
         "spv_mul2_probe.wgsl",
         include_str!("../shaders/spv_mul2_probe.wgsl"),
     ),
+    // 光追场景整帧 kernel（V2.2-A-1 / T03 的第 4 份手写源；A-2 扩到 V2 六绑定 +
+    // 栈式 BVH 遍历段）。登记进本表后自动纳入结构自检（入口 / 括号 / 禁 libm /
+    // 无未解析符号），与 `web::device::WGSL_SCENE_FRAME` 是同一份文本。
+    (
+        "scene_frame.wgsl",
+        include_str!("../shaders/scene_frame.wgsl"),
+    ),
 ];
 
 /// 库文件：只被 `//!include` 引用，**不**作为独立测试项上传 GPU。

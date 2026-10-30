@@ -8,6 +8,7 @@
 //! - [`sdf`] — SDF 域算子（并/交/差/平滑变体）、displace（接 prism-noise）与 sphere tracing。
 //! - [`csg`] — CSG 树：组合方式直接复用 [`sdf`] 域算子函数（D-16 避免双实现）。
 //! - [`bvh`] — SAH-BVH：射线求交 + 最近点 + 广义 winding number（一树两用）。
+//! - [`curve_tess`] — 曲线图元三角化（V2.2-A-2 方案乙）：圆柱/圆锥/圆环/旋转曲面 → 网格。
 //! - [`mesh_sdf`] — mesh→SDF 烘焙：brick 8³ 稀疏化 + winding number 符号。
 //! - [`det_math`] — D-29 确定性数学件（det_atan2/det_asin/det_cos_sin；禁 libm）。
 //! - [`gltf`] — glTF 精简导入（手写 JSON 子集解析，禁 serde）。
@@ -25,6 +26,7 @@
 pub mod aabb_bvh;
 pub mod bvh;
 pub mod csg;
+pub mod curve_tess;
 pub mod det_math;
 pub mod gltf;
 pub mod lod;

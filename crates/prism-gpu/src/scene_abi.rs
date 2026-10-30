@@ -14,12 +14,20 @@
 //! `metal/render.rs` 的同构 MSL 编码、以及它们的单测）**完全不改**——
 //! `spirv_rt` 用 `pub use crate::scene_abi::*` 重导出本模块的符号，语义逐位一致。
 //!
-//! # 绑定剖面（V1）
+//! # 绑定剖面（V1 / V2）
 //!
-//! 4 绑定连续前缀 `{0,1,2,3}` = params / spheres / lights / out，满足
-//! `web/mod.rs` 的「每个 group 的绑定须从 0 起连续」硬约束。
-//! A-2（曲线图元）将在此基础上升级到 6 绑定（追加 triangles / nodes），届时只需
-//! 本模块 + 三份源同步改，单测（[`qa_scene_frame_abi`]）会自动跟随。
+//! 两个剖面并存（[`SceneAbiProfile`]），**输出恒为最后一个绑定**，
+//! 「每个 group 的绑定须从 0 起连续」的硬约束在两者上都成立：
+//!
+//! | 剖面 | 绑定 | 顺序 |
+//! |---|---|---|
+//! | [`SceneAbiProfile::V1`] | 4 | params / spheres / lights / **out** |
+//! | [`SceneAbiProfile::V2`]（A-2 起的默认） | 6 | params / spheres / lights / triangles / nodes / **out** |
+//!
+//! V1 是 V2.1 及以前三份源与 `vulkan::scene` dispatch 编码所使用的剖面，**永久可用、
+//! 不得回归**（[`SceneAbi::bindings_for`]`(`[`SceneAbiProfile::V1`]`)`）。A-2 只把
+//! **默认**剖面升到 V2（[`SceneAbiProfile::CURRENT`]），并在参数块尾部追加
+//! `P_NUM_TRIS` / `P_NUM_NODES` 两字（[`PARAMS_WORDS_V2`]，V1 的 22 字前缀逐字节不变）。
 //!
 //! # 参数块（binding 0）
 //!
@@ -94,6 +102,26 @@ pub const P_FILMIC: u32 = 19;
 pub const P_NUM_SPHERES: u32 = 20;
 /// 光源个数。
 pub const P_NUM_LIGHTS: u32 = 21;
+/// （V2）三角形个数。
+pub const P_NUM_TRIS: u32 = 22;
+/// （V2）扁平 BVH 节点个数。
+pub const P_NUM_NODES: u32 = 23;
+
+/// **V2** 参数块字数：V1 的 22 字前缀逐字节不变，尾部追加
+/// `P_NUM_TRIS` / `P_NUM_NODES` 两字。
+pub const PARAMS_WORDS_V2: usize = 24;
+
+/// 每三角形占用的 f32 槽数：`{a.xyz, pad, b.xyz, pad, c.xyz, pad, pad, pad}`（12 = 48 B，
+/// 满足 WGSL `vec3<f32>` 的 16 B 对齐：每个 `vec3` 后补 1 个 pad）。
+pub const TRIANGLE_SLOTS: u32 = 12;
+
+/// 每 BVH 节点占用的 f32 槽数：`{bmin.xyz, pad, bmax.xyz, pad, start, count, right_child, pad}`
+/// （12 = 48 B，与设计 §1.2.2 的扁平化布局一致）。
+pub const NODE_SLOTS: u32 = 12;
+
+/// 曲线三角化的弦高容忍（世界单位）。三角化在 **CPU** 侧一次完成（
+/// `prism_geometry::curve_tess`），GPU 只见三角形与扁平 BVH。
+pub const CURVE_TESS_TOL: f32 = 0.02;
 
 /// 背景色（与 [`crate::CpuRefBackend`] 的 `render_scene` 的 `(0.04, 0.05, 0.08)` 同值）。
 pub const BG_COLOR: [f32; 3] = [0.04, 0.05, 0.08];
@@ -132,35 +160,105 @@ pub struct SceneBinding {
     pub access: BindingAccess,
 }
 
-/// 场景 ABI 单一真源（V1：4 绑定连续前缀）。
+/// 场景 ABI 单一真源（V1：4 绑定连续前缀 / V2：6 绑定连续前缀）。
 ///
 /// 所有宿主（SPIR-V 发射器、WGSL、WebGPU 胶水、测试断言）都从这里派生期望值；
 /// 改绑定/槽位/入口只改本结构 + 同步三份源，禁止在源里写字面量。
 pub struct SceneAbi;
+
+/// 场景 ABI 剖面（A-2 起引入；**输出恒为最后一个绑定**，连续前缀约束不破）。
+///
+/// * [`SceneAbiProfile::V1`]：`{0 params, 1 spheres, 2 lights, 3 out}`（4 绑定）。
+///   V2.1 及以前的三份源、`vulkan::scene` 的 dispatch 编码、既有单测全部按此剖面，
+///   **不得回归**——本剖面永远可用。
+/// * [`SceneAbiProfile::V2`]：`{0 params, 1 spheres, 2 lights, 3 triangles, 4 nodes, 5 out}`
+///   （6 绑定）。A-2 曲线图元（三角化 → 扁平 BVH）走此剖面；参数块追加
+///   `P_NUM_TRIS` / `P_NUM_NODES` 两字（[`PARAMS_WORDS_V2`]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SceneAbiProfile {
+    /// 4 绑定（params / spheres / lights / out）。
+    V1,
+    /// 6 绑定（params / spheres / lights / triangles / nodes / out）。
+    V2,
+}
+
+impl SceneAbiProfile {
+    /// 当前默认剖面（A-2 交付后为 [`SceneAbiProfile::V2`]）。
+    pub const CURRENT: SceneAbiProfile = SceneAbiProfile::V2;
+
+    /// 该剖面的绑定集（连续前缀 `0..N-1`，末位恒为输出）。
+    pub fn bindings(self) -> &'static [SceneBinding] {
+        match self {
+            SceneAbiProfile::V1 => &[
+                SceneBinding { binding: 0, name: "params", access: BindingAccess::ReadOnly },
+                SceneBinding { binding: 1, name: "spheres", access: BindingAccess::ReadOnly },
+                SceneBinding { binding: 2, name: "lights", access: BindingAccess::ReadOnly },
+                SceneBinding { binding: 3, name: "out", access: BindingAccess::ReadWrite },
+            ],
+            SceneAbiProfile::V2 => &[
+                SceneBinding { binding: 0, name: "params", access: BindingAccess::ReadOnly },
+                SceneBinding { binding: 1, name: "spheres", access: BindingAccess::ReadOnly },
+                SceneBinding { binding: 2, name: "lights", access: BindingAccess::ReadOnly },
+                SceneBinding { binding: 3, name: "triangles", access: BindingAccess::ReadOnly },
+                SceneBinding { binding: 4, name: "nodes", access: BindingAccess::ReadOnly },
+                SceneBinding { binding: 5, name: "out", access: BindingAccess::ReadWrite },
+            ],
+        }
+    }
+
+    /// 该剖面的绑定个数（连续前缀长度）。
+    pub fn binding_count(self) -> usize {
+        self.bindings().len()
+    }
+
+    /// 该剖面输出绑定的编号（**恒为最后一个**：`binding_count() - 1`）。
+    pub fn out_binding(self) -> u32 {
+        (self.binding_count() - 1) as u32
+    }
+
+    /// 该剖面参数块的字数（u32 个数）。
+    pub fn params_words(self) -> usize {
+        match self {
+            SceneAbiProfile::V1 => PARAMS_WORDS,
+            SceneAbiProfile::V2 => PARAMS_WORDS_V2,
+        }
+    }
+
+    /// 剖面名（诊断/断言用）。
+    pub fn name(self) -> &'static str {
+        match self {
+            SceneAbiProfile::V1 => "V1",
+            SceneAbiProfile::V2 => "V2",
+        }
+    }
+}
 
 impl SceneAbi {
     /// 入口名（WGSL `fn scene_main` / SPIR-V `OpEntryPoint`）。
     pub const ENTRY: &'static str = ENTRY;
     /// 工作组尺寸 `[8, 8, 1]`。
     pub const WORKGROUP: [u32; 3] = WORKGROUP;
-    /// 参数块字数。
+    /// 参数块字数（**V1** 契约；V2 见 [`PARAMS_WORDS_V2`]）。
     pub const PARAMS_WORDS: usize = PARAMS_WORDS;
     /// 每球 f32 槽数。
     pub const SPHERE_SLOTS: u32 = SPHERE_SLOTS;
     /// 每灯 f32 槽数。
     pub const LIGHT_SLOTS: u32 = LIGHT_SLOTS;
 
-    /// V1 绑定剖面：连续前缀 `{0,1,2,3}` = params / spheres / lights / out。
+    /// 当前默认剖面。
+    pub const PROFILE: SceneAbiProfile = SceneAbiProfile::CURRENT;
+
+    /// 默认剖面（[`SceneAbiProfile::CURRENT`]）的绑定集。
     ///
-    /// A-2（曲线图元）升级到 6 绑定时，只需在此追加 `triangles` / `nodes`，
-    /// 输出恒为最后一个绑定（「连续前缀」约束不被破坏）。
+    /// A-2 起默认升 V2（6 绑定）。V1 剖面仍可经
+    /// [`SceneAbi::bindings_for`]`(`[`SceneAbiProfile::V1`]`)` 取得，**不回归**。
     pub fn bindings() -> &'static [SceneBinding] {
-        &[
-            SceneBinding { binding: 0, name: "params", access: BindingAccess::ReadOnly },
-            SceneBinding { binding: 1, name: "spheres", access: BindingAccess::ReadOnly },
-            SceneBinding { binding: 2, name: "lights", access: BindingAccess::ReadOnly },
-            SceneBinding { binding: 3, name: "out", access: BindingAccess::ReadWrite },
-        ]
+        Self::bindings_for(SceneAbiProfile::CURRENT)
+    }
+
+    /// 指定剖面的绑定集（连续前缀 `0..N-1`，末位恒为输出）。
+    pub fn bindings_for(profile: SceneAbiProfile) -> &'static [SceneBinding] {
+        profile.bindings()
     }
 
     /// 把一个场景渲染请求编码为三块输入缓冲（与 [`crate::CpuRefBackend`] 逐位一致）。
@@ -168,6 +266,8 @@ impl SceneAbi {
     /// 返回 `(params, spheres, lights)`：相机基在内部由 [`camera_basis`] 算好，
     /// 浮点一律位型（`to_bits()`），shader 侧 `bitcast<f32>` 还原。本方法是
     /// `spirv_rt` / `web::device` 等宿主的统一入口——禁止在宿主里另写字面量编码。
+    ///
+    /// V1 剖面（4 绑定）专用；V2 走 [`SceneAbi::encode_v2`]。
     pub fn encode(
         req: &SceneRenderRequest,
     ) -> ([u8; PARAMS_WORDS * 4], Vec<u8>, Vec<u8>) {
@@ -176,6 +276,38 @@ impl SceneAbi {
         let spheres = encode_spheres(&req.spheres);
         let lights = encode_lights(&req.lights);
         (params, spheres, lights)
+    }
+
+    /// V2 剖面编码：在 V1 三块缓冲之外追加 `triangles` / `nodes`（扁平 SAH-BVH）。
+    ///
+    /// 返回 `(params, spheres, lights, triangles, nodes)`；`params` 为
+    /// [`PARAMS_WORDS_V2`] 个字（V1 的 22 字前缀**逐字节不变**，仅在尾部追加
+    /// `P_NUM_TRIS` / `P_NUM_NODES`）。曲线为空 ⇒ `triangles`/`nodes` 皆空、
+    /// 两计数为 0，WGSL 侧遍历段整体跳过 ⇒ 与 V1 输出逐位相同（A-2 的不回归
+    /// 机械保证，设计 §4.3）。
+    pub fn encode_v2(
+        req: &SceneRenderRequest,
+    ) -> (
+        [u8; PARAMS_WORDS_V2 * 4],
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+    ) {
+        let basis = camera_basis(&req.camera);
+        let mut params = [0u8; PARAMS_WORDS_V2 * 4];
+        let v1 = encode_params(req, &basis);
+        params[..v1.len()].copy_from_slice(&v1);
+        let spheres = encode_spheres(&req.spheres);
+        let lights = encode_lights(&req.lights);
+        let (tris, nodes) = encode_curve_buffers(&req.curves);
+        put_u32(&mut params, P_NUM_TRIS as usize, (tris.len() / (TRIANGLE_SLOTS as usize * 4)) as u32);
+        put_u32(
+            &mut params,
+            P_NUM_NODES as usize,
+            (nodes.len() / (NODE_SLOTS as usize * 4)) as u32,
+        );
+        (params, spheres, lights, tris, nodes)
     }
 }
 
@@ -315,12 +447,71 @@ pub fn encode_lights(lights: &[LightReq]) -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
+// V2：曲线图元 → 三角形 + 扁平 BVH（单一权威在 `prism-geometry`）
+// ---------------------------------------------------------------------------
+//
+// 曲线三角化与 BVH 构建**不在此处重写**：权威在叶子 crate `prism-geometry`
+// （`curve_tess::tessellate_all` + `bvh::Bvh::build`），本模块只做**扁平化编码**
+// （`Aabb`/`Triangle` → `array<f32>` 槽位）。依赖方向 `prism-gpu → prism-geometry`
+// 单向无环：`prism-rt → prism-gpu` 已存在，故 `prism-gpu` **不得**反引 `prism-rt`。
+
+/// 把场景里的曲线图元三角化并构建 SAH-BVH，输出两份**扁平** storeage 缓冲。
+///
+/// 返回 `(triangles, nodes)`：都是 little-endian 的 f32 位型字节流，
+/// 步长分别为 [`TRIANGLE_SLOTS`] / [`NODE_SLOTS`] 个 f32。
+///
+/// 空曲线 ⇒ 两份缓冲皆空（WGSL 遍历段按 `num_tris == 0` 整段跳过）。
+pub fn encode_curve_buffers(curves: &[prism_geometry::curve_tess::CurveReq]) -> (Vec<u8>, Vec<u8>) {
+    if curves.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let tris = prism_geometry::curve_tess::tessellate_all(curves, CURVE_TESS_TOL);
+    if tris.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let bvh = prism_geometry::bvh::Bvh::build(&tris);
+    let mut tri_bytes = Vec::with_capacity(bvh.tris.len() * TRIANGLE_SLOTS as usize * 4);
+    for t in &bvh.tris {
+        let mut block = [0u8; TRIANGLE_SLOTS as usize * 4];
+        put_f32(&mut block, 0, t.a.x);
+        put_f32(&mut block, 1, t.a.y);
+        put_f32(&mut block, 2, t.a.z);
+        // 槽 3 = pad
+        put_f32(&mut block, 4, t.b.x);
+        put_f32(&mut block, 5, t.b.y);
+        put_f32(&mut block, 6, t.b.z);
+        // 槽 7 = pad
+        put_f32(&mut block, 8, t.c.x);
+        put_f32(&mut block, 9, t.c.y);
+        put_f32(&mut block, 10, t.c.z);
+        // 槽 11 = pad
+        tri_bytes.extend_from_slice(&block);
+    }
+    let mut node_bytes = Vec::with_capacity(bvh.nodes.len() * NODE_SLOTS as usize * 4);
+    for nd in &bvh.nodes {
+        let mut block = [0u8; NODE_SLOTS as usize * 4];
+        put_f32(&mut block, 0, nd.bounds.min.x);
+        put_f32(&mut block, 1, nd.bounds.min.y);
+        put_f32(&mut block, 2, nd.bounds.min.z);
+        put_f32(&mut block, 4, nd.bounds.max.x);
+        put_f32(&mut block, 5, nd.bounds.max.y);
+        put_f32(&mut block, 6, nd.bounds.max.z);
+        put_u32(&mut block, 8, nd.start);
+        put_u32(&mut block, 9, nd.count);
+        put_u32(&mut block, 10, nd.right_child);
+        node_bytes.extend_from_slice(&block);
+    }
+    (tri_bytes, node_bytes)
+}
+
+// ---------------------------------------------------------------------------
 // 单元测试（native：编码器与常数自洽；不触碰 GPU）
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::CurveReq;
 
     fn sample_request() -> SceneRenderRequest {
         SceneRenderRequest {
@@ -349,6 +540,7 @@ mod tests {
                 contrast: 1.0,
                 filmic: false,
             },
+        curves: Vec::new(),
         }
     }
 
@@ -389,17 +581,105 @@ mod tests {
         assert!((len - 1.0).abs() < 1e-5, "编码前必须已归一化（与 CPU 参考同口径）");
     }
 
+    /// **V1 剖面不回归**：4 绑定连续前缀 `{0,1,2,3}` 仍可取用、语义不变。
+    ///
+    /// A-2 把**默认**剖面升到 V2，但 V1 剖面必须一直可用（`vulkan::scene` 的既有
+    /// dispatch 编码与 V2.1 基线按此剖面），故本断言改为显式指定 V1 剖面。
     #[test]
-    fn bindings_are_continuous_prefix_zero_through_three() {
+    fn bindings_v1_profile_is_continuous_prefix_zero_through_three() {
         // 「连续前缀」硬约束：binding 必须从 0 起连续，且输出恒为最后一个。
-        let bs = SceneAbi::bindings();
-        assert_eq!(bs.len(), 4);
+        let bs = SceneAbi::bindings_for(SceneAbiProfile::V1);
+        assert_eq!(bs.len(), 4, "V1 剖面恒为 4 绑定");
         for (i, b) in bs.iter().enumerate() {
             assert_eq!(b.binding, i as u32, "绑定必须从 0 起连续");
         }
         assert_eq!(bs[3].name, "out");
         assert_eq!(bs[3].access, BindingAccess::ReadWrite, "输出缓冲可读写");
         assert_eq!(bs[0].access, BindingAccess::ReadOnly);
+        // 剖面元数据自洽。
+        assert_eq!(SceneAbiProfile::V1.binding_count(), 4);
+        assert_eq!(SceneAbiProfile::V1.out_binding(), 3);
+        assert_eq!(SceneAbiProfile::V1.params_words(), PARAMS_WORDS);
+        assert_eq!(SceneAbiProfile::V1.name(), "V1");
+    }
+
+    /// **V2 剖面（A-2）**：6 绑定连续前缀，输出恒为最后一个（`binding(5) == out`）。
+    #[test]
+    fn bindings_v2_profile_is_continuous_prefix_zero_through_five() {
+        let bs = SceneAbi::bindings_for(SceneAbiProfile::V2);
+        assert_eq!(bs.len(), 6, "V2 剖面为 6 绑定");
+        for (i, b) in bs.iter().enumerate() {
+            assert_eq!(b.binding, i as u32, "绑定必须从 0 起连续（连续前缀约束）");
+        }
+        // 顺序即语义：params / spheres / lights / triangles / nodes / out。
+        let names: Vec<&str> = bs.iter().map(|b| b.name).collect();
+        assert_eq!(
+            names,
+            vec!["params", "spheres", "lights", "triangles", "nodes", "out"],
+            "V2 绑定顺序必须与设计 §1.2.2 逐字一致"
+        );
+        // 输出**恒为最后一个绑定**。
+        let last = bs[bs.len() - 1];
+        assert_eq!(last.name, "out");
+        assert_eq!(last.access, BindingAccess::ReadWrite);
+        assert_eq!(SceneAbiProfile::V2.out_binding(), last.binding);
+        assert_eq!(SceneAbiProfile::V2.out_binding(), 5);
+        assert_eq!(SceneAbiProfile::V2.binding_count(), 6);
+        // 除输出外全部只读。
+        for b in &bs[..bs.len() - 1] {
+            assert_eq!(b.access, BindingAccess::ReadOnly, "{} 必须只读", b.name);
+        }
+        assert_eq!(SceneAbiProfile::V2.params_words(), PARAMS_WORDS_V2);
+        assert_eq!(PARAMS_WORDS_V2, PARAMS_WORDS + 2, "V2 仅在 V1 尾部追加两字");
+    }
+
+    /// 默认剖面 = V2（A-2 交付后）；`SceneAbi::bindings()` 跟随默认。
+    #[test]
+    fn default_profile_is_v2_and_agrees_with_current() {
+        assert_eq!(SceneAbi::PROFILE, SceneAbiProfile::V2);
+        assert_eq!(SceneAbi::PROFILE, SceneAbiProfile::CURRENT);
+        assert_eq!(SceneAbi::bindings(), SceneAbi::bindings_for(SceneAbiProfile::V2));
+        assert_eq!(SceneAbi::bindings().len(), 6);
+    }
+
+    /// V2 参数块的 V1 前缀**逐字节不变**（只追加 P_NUM_TRIS / P_NUM_NODES）。
+    #[test]
+    fn v2_params_prefix_is_bytewise_v1() {
+        let req = sample_request();
+        let (p1, _, _) = SceneAbi::encode(&req);
+        let (p2, _, _, t2, n2) = SceneAbi::encode_v2(&req);
+        assert_eq!(p2.len(), PARAMS_WORDS_V2 * 4);
+        assert_eq!(&p2[..p1.len()], &p1[..], "V2 的 22 字前缀必须与 V1 逐字节相同");
+        // 空曲线 ⇒ 两份曲线缓冲皆空、两计数为 0（A-2 不回归的机械保证）。
+        assert!(t2.is_empty() && n2.is_empty());
+        let num_tris = u32::from_le_bytes([p2[88], p2[89], p2[90], p2[91]]);
+        let num_nodes = u32::from_le_bytes([p2[92], p2[93], p2[94], p2[95]]);
+        assert_eq!((num_tris, num_nodes), (0, 0), "空曲线 ⇒ 计数必须为 0");
+    }
+
+    /// 曲线编码：三角化 → 扁平 BVH，槽位步长与计数自洽。
+    #[test]
+    fn v2_curve_buffers_are_flat_and_counted() {
+        let mut req = sample_request();
+        req.curves = vec![CurveReq::Torus {
+            center: Vec3::new(0.0, 0.0, 0.0),
+            major: 0.7,
+            minor: 0.3,
+            axis: Vec3::new(0.0, 1.0, 0.0),
+        }];
+        let (p, _, _, tris, nodes) = SceneAbi::encode_v2(&req);
+        assert!(!tris.is_empty() && !nodes.is_empty(), "合法曲线必须产出三角形与节点");
+        assert_eq!(tris.len() % (TRIANGLE_SLOTS as usize * 4), 0, "三角形步长自洽");
+        assert_eq!(nodes.len() % (NODE_SLOTS as usize * 4), 0, "节点步长自洽");
+        let num_tris = u32::from_le_bytes([p[88], p[89], p[90], p[91]]) as usize;
+        let num_nodes = u32::from_le_bytes([p[92], p[93], p[94], p[95]]) as usize;
+        assert_eq!(num_tris, tris.len() / (TRIANGLE_SLOTS as usize * 4));
+        assert_eq!(num_nodes, nodes.len() / (NODE_SLOTS as usize * 4));
+        assert!(num_nodes >= 1, "至少一个根节点");
+        // 确定性：同输入两次编码逐字节相同。
+        let (_, _, _, tris2, nodes2) = SceneAbi::encode_v2(&req);
+        assert_eq!(tris, tris2);
+        assert_eq!(nodes, nodes2);
     }
 
     #[test]

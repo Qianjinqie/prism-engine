@@ -74,6 +74,7 @@ fn a03_vulkan_backend_render_scene_does_not_panic() {
         },
         width: 4,
         height: 4,
+    curves: Vec::new(),
     };
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let fb = backend.render_scene(&req);
@@ -168,6 +169,7 @@ fn base_req(w: u32, h: u32) -> SceneRenderRequest {
         },
         width: w,
         height: h,
+    curves: Vec::new(),
     }
 }
 

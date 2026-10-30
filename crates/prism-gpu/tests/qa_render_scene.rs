@@ -234,6 +234,7 @@ fn scene_request(w: u32, h: u32, aesthetic: AestheticReq) -> SceneRenderRequest 
             },
         ],
         aesthetic,
+    curves: Vec::new(),
     }
 }
 
