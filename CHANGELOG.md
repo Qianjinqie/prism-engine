@@ -56,9 +56,10 @@
   （驱动与规范分歧），保留开关等于保留崩溃路径。若某设备真的严格按规范实现，
   vec4 写法与旧写法逐字节等价，行为完全相同，故不需要开关。
 - **真机验证（2026-10-30，已闭环，2 台设备）**：`?v=54d66a8e` 在
-  **三星 SM-G9730（Android 12 / Quark / Chrome 144 内核）** 与 **荣耀（HONOR）**
-  上分别跑 **19/19 全 PASS**，且两轮是**同一份 wasm 字节**——换厂商换驱动仍全绿，
-  排除「针对某台设备调参」。上述"新值"全部命中：`gpu.gi_layout` 的 `samples[1]` 读出
+  **三星 Galaxy S10（SM-G9730 / 骁龙 855 / Adreno 640 / Android 12 / Quark）** 与
+  **荣耀 X40（骁龙 695 / Adreno 619）** 上分别跑 **19/19 全 PASS**，且两轮是
+  **同一份 wasm 字节**——换机型换驱动代际仍全绿，排除「针对某台设备调参」。
+  （两台的 GPU 同为 Qualcomm Adreno，**不构成"跨厂商"证据**；Mali / PowerVR 未覆盖。）上述"新值"全部命中：`gpu.gi_layout` 的 `samples[1]` 读出
   `(0,1,0)`（不再是 `-1`）、`gpu.gi_compute` 的 `visible_total` 为 `8/8 · 4/8 · 4/8`、
   `gpu.scene_frame` PSNR 52 dB 档。
   **结论：责任在驱动侧**（偏离 WGSL 对 `vec3<f32>` 的 `size=12/align=16` 规定），
