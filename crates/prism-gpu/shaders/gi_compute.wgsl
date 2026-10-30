@@ -24,12 +24,14 @@
 //      硬绑到 `binding: i`）；
 //  (3) 多 uniform 的 shader 逐个校验每个 uniform（本文件只 1 个 uniform：`gi_params`）。
 //
-//  三个 entry 的静态引用集合（binding 编号见下方 var 声明）：
+//  四个 entry 的静态引用集合（binding 编号见下方 var 声明）：
 //      gi_probe_trace        → { gi_probes(0), gi_params(1) }        = 前缀 {0,1} ✓
 //      gi_sh_project         → { gi_probes(0), gi_params(1) }        = 前缀 {0,1} ✓
 //      gi_probe_interpolate  → { gi_probes(0), gi_params(1), gi_points(2) } = 前缀 {0,1,2} ✓
+//      gi_layout_census      → { gi_probes(0), gi_params(1) }        = 前缀 {0,1} ✓
+//                                                                    （布局自检，见文件末）
 //  每个集合都是前缀（`{0,1}` ⊂ `{0,1,2}` 嵌套成立），故**同一条前缀编号方案**
-//  对三个 entry 同时成立。若把 scene/coeffs/points 拆成互不包含的独立 binding，
+//  对全部 entry 同时成立。若把 scene/coeffs/points 拆成互不包含的独立 binding，
 //  集合两两互不包含（前缀必嵌套）→ 无解；这正是把"逐方向采样 + SH 系数"合并进
 //  单个 `GiProbe`（AoS）的原因（同 sim_sph 的 SphState 论证）。
 //
@@ -46,37 +48,53 @@ const GI_MAX_PRIMS: u32 = 4u; // uniform 内 SDF 图元容量
 
 // ---------------------------------------------------------------------------
 // uniform / storage 结构（16 字节对齐 + 显式 _pad）
+//
+// # 【V2.2 真机 bug】布局里禁止 `vec3<f32>`，三元组一律 `vec4<f32>`（w 恒 0）
+//
+// 真机（Android 12 / Chrome 144 内核 / Quark 10.18 / 真 GPU）实测：驱动对结构体
+// 成员 `vec3<f32>` 的 **size 处理与 WGSL 规范不一致**（规范 size=12 / align=16，
+// 真机更大）→ 后续字段偏移整体重排：`GiProbe.normal`（应 @16）被推到 `samples`
+// 区读到哨兵 -1，`samples`/`sh` 被压缩（`samples[6]` 落到 `sh[0]` 上）。判定实验：
+// 用 normal=(-1,-1,-1) 跑 CPU 参考得到位掩码 `[0,0,1,0,1,0,0,0]`，与真机 GPU
+// **逐位相同**。SwiftShader 严格按规范实现 → 本地/CI 永远 PASS，测不出这一类。
+//
+// # 修复原则：布局零变化
+// `vec4<f32>` 的 align/size 都是 16，与原「vec3 + 填充」逐字节等价 → Rust 侧
+// `gi_pack_probes` / `gi_params_bytes` / `gi_unpack_sh` 的全部偏移**一字节未动**。
+// 语义一分不改：`.xyz` 只取回原三分量，w=0 不参与任何运算。
+// 静态门禁：`web/wgsl_lint.mjs` 规则 H（布局内禁 `array<vec3<f32>>`）。
 // ---------------------------------------------------------------------------
 
 /// SDF 图元（球 / 盒）：`kind=0` 球（center+radius），`kind=1` 盒（center+half）。
 ///
-/// 布局：`kind:u32@0` / `radius:f32@4` / `center:vec3<f32>@16` / `_pad:vec3<u32>@28`
-/// → 末成员末尾 40 → 对齐 16 → **48 字节**（stride 48）。
+/// 布局（与 `abi.rs::GI_PRIM_STRIDE_BYTES` = 48 逐字节一致）：
+///   `kind:u32@0(4)` `radius:f32@4(4)` `_pad0:vec2<u32>@8(8)` `center:vec4@16(16)`
+///   `_pad1:vec4<u32>@32(16)` → align 16，末 48 → **size 48**
 struct GiPrim {
   kind: u32,
   radius: f32,
-  center: vec3<f32>,
-  _pad: vec3<u32>,
+  _pad0: vec2<u32>,
+  center: vec4<f32>,
+  _pad1: vec4<u32>,
 }
 
 /// GI 参数（uniform，16 字节对齐）。
 ///
-/// 布局：`probe_count@0` / `point_count@4` / `prim_count@8` / `n_dirs@12` /
-/// `env_radiance:vec3@16` / `_pad0@28` / `albedo:vec3@32` / `_pad1@44` /
-/// `t_max@48` / `hit_eps@52` / `safety@56` / `max_steps@60` /
-/// `prims:array<GiPrim,4>@64`（4×48=192）→ 末尾 256 → 对齐 16 → **256 字节**。
+/// 布局（与 `abi.rs::GI_PARAMS_BYTES` = 256 逐字节一致）：
+///   `probe_count@0` `point_count@4` `prim_count@8` `n_dirs@12`
+///   `env_radiance:vec4@16`（原 vec3@16 + _pad0@28）`albedo:vec4@32`（原 vec3@32 + _pad1@44）
+///   `t_max@48` `hit_eps@52` `safety@56` `max_steps@60`
+///   `prims:array<GiPrim,4>@64`（4×48=192）→ align 16 → **size 256**
 ///
-/// 注意：`vec3<f32>` 后的 4 字节是**对齐填充**（自动）；结构体末尾的显式 `_pad*`
-/// 是**尾部填充**（消隐式），两者语义不同（前者 WGSL 自动补，后者我们手写以固定布局）。
+/// 注意：vec4 化后**原先紧跟其后的 `_pad0`/`_pad1` 必须删掉**——vec4 自带 16 字节，
+/// 再补 f32 会把 `t_max` 推到 @64，布局就不再零变化了。
 struct GiParams {
   probe_count: u32,
   point_count: u32,
   prim_count: u32,
   n_dirs: u32,
-  env_radiance: vec3<f32>,
-  _pad0: f32,
-  albedo: vec3<f32>,
-  _pad1: f32,
+  env_radiance: vec4<f32>,
+  albedo: vec4<f32>,
   t_max: f32,
   hit_eps: f32,
   safety: f32,
@@ -86,30 +104,28 @@ struct GiParams {
 
 /// 一条 GI 探针（AoS）：位置 + 法线 + 逐方向采样辐亮度 + SH-L2 系数。
 ///
-/// 布局：`pos:vec3@0` / `_pad0@12` / `normal:vec3@16` / `_pad1@28` /
-/// `samples:array<vec3<f32>,8>@32`（8×16=128 → 末 160）/
-/// `sh:array<vec3<f32>,9>@160`（9×16=144 → 末 304）→ 对齐 16 → **304 字节**。
+/// 布局（与 `abi.rs::GI_PROBE_STRIDE_BYTES` = 304 逐字节一致）：
+///   `pos:vec4@0(16)` `normal:vec4@16(16)` `samples:array<vec4,8>@32(128)`
+///   `sh:array<vec4,9>@160(144)` → align 16，末 304 → **size 304**
 ///
-/// 【为何 AoS】见文件头"三条硬约束"：把逐方向采样与 SH 系数并进同一 binding，
-/// 使三个 entry 的引用集合都是前缀。
+/// 【为何 AoS】见文件头"三条硬约束"：逐方向采样与 SH 系数并入同一 binding，
+/// 使各 entry 的引用集合都是连续前缀。
+/// 【为何 vec4 而非 vec3】`vec3<f32>` 的 size 正是真机驱动与规范分歧的唯一落点；
+/// `vec4` 的 size/stride（16/16）在规范与实现上都无歧义。
 struct GiProbe {
-  pos: vec3<f32>,
-  _pad0: f32,
-  normal: vec3<f32>,
-  _pad1: f32,
-  samples: array<vec3<f32>, 8>,
-  sh: array<vec3<f32>, 9>,
+  pos: vec4<f32>,
+  normal: vec4<f32>,
+  samples: array<vec4<f32>, 8>,
+  sh: array<vec4<f32>, 9>,
 }
 
 /// 插值查询点（AoS）：位置 + 出射辐照度（重建结果）。
 ///
-/// 布局：`pos:vec3@0` / `_pad0@12` / `irradiance:vec3@16` / `_pad1@28`
-/// → 对齐 16 → **32 字节**。
+/// 布局（与 `abi.rs::GI_POINT_STRIDE_BYTES` = 32 逐字节一致）：
+///   `pos:vec4@0(16)` `irradiance:vec4@16(16)` → align 16 → **size 32**
 struct GiPoint {
-  pos: vec3<f32>,
-  _pad0: f32,
-  irradiance: vec3<f32>,
-  _pad1: f32,
+  pos: vec4<f32>,
+  irradiance: vec4<f32>,
 }
 
 // ---- 绑定（binding 编号即"连续前缀"方案的编号，勿随意重排）----
@@ -131,16 +147,17 @@ struct GiPoint {
 /// 无限大板**而不是球——`abs(p-c)-r` 的三个分量只有在「仅一个坐标有差」时才相等，
 /// 故"任取一分量即 |p-c|"的理由不成立。真机实测暴露后改为标准球 SDF。
 fn gi_prim_dist(prim: GiPrim, p: vec3<f32>) -> f32 {
+  // `center` 是 `vec4<f32>`（w=0，不入算），故取 `.xyz`（见 GiPrim 的布局表）。
   if (prim.kind == 1u) {
     // 轴对齐盒：r 为半尺寸（用同一 radius 字段承载，测试里盒取等半尺寸）。
-    let q = abs(p - prim.center) - prim.radius;
+    let q = abs(p - prim.center.xyz) - prim.radius;
     let qc = vec3<f32>(max(q.x, 0.0), max(q.y, 0.0), max(q.z, 0.0));
     let outside = length(qc);
     let inside = min(max(q.x, max(q.y, q.z)), 0.0);
     return outside + inside;
   }
   // 球：SDF = |p - c| - radius。
-  return length(p - prim.center) - prim.radius;
+  return length(p - prim.center.xyz) - prim.radius;
 }
 
 /// 场景距离场：全部图元的 Union = min（对齐 `Csg::Union`）。
@@ -225,9 +242,10 @@ fn gi_probe_trace(@builtin(global_invocation_id) gid: vec3<u32>) {
   let n_probes = min(gi_params.probe_count, arrayLength(&gi_probes));
   if (i >= n_probes) { return; }
   var probe = gi_probes[i];
-  let nlen = length(probe.normal);
+  // `normal` / `pos` 是 `vec4<f32>`（w=0，不入算），故一律取 `.xyz`。
+  let nlen = length(probe.normal.xyz);
   if (nlen < 0.5) { return; } // 退化法线：不采样（C18 同构）
-  let n = probe.normal * (1.0 / nlen);
+  let n = probe.normal.xyz * (1.0 / nlen);
   let m = onb(n);
   // onb 返回 mat3x3(t, b, n)（列主序）→ t = m[0], b = m[1], n = m[2]。
   let t = m[0];
@@ -238,12 +256,13 @@ fn gi_probe_trace(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (d >= n_dirs) { break; }
     let local = gi_hemi_dir(d, n_dirs);
     let world = normalize(t * local.x + b * local.y + n * local.z);
-    let ro = probe.pos + n * 1e-3;
+    let ro = probe.pos.xyz + n * 1e-3;
     var rad = vec3<f32>(0.0, 0.0, 0.0);
     if (!sphere_trace_sdf(ro, world, gi_params.prim_count)) {
-      rad = gi_params.env_radiance; // 未遮挡 → 环境辐亮度
+      rad = gi_params.env_radiance.xyz; // 未遮挡 → 环境辐亮度
     }
-    probe.samples[d] = rad;
+    // `samples[d]` 是 `vec4<f32>`：三分量写入，w 恒 0（不参与任何运算）。
+    probe.samples[d] = vec4<f32>(rad, 0.0);
     d = d + 1u;
   }
   gi_probes[i] = probe;
@@ -280,9 +299,10 @@ fn gi_sh_project(@builtin(global_invocation_id) gid: vec3<u32>) {
   let n_probes = min(gi_params.probe_count, arrayLength(&gi_probes));
   if (i >= n_probes) { return; }
   var probe = gi_probes[i];
-  let nlen = length(probe.normal);
+  // `normal` 是 `vec4<f32>`（w=0），取 `.xyz`。
+  let nlen = length(probe.normal.xyz);
   if (nlen < 0.5) { return; }
-  let n = probe.normal * (1.0 / nlen);
+  let n = probe.normal.xyz * (1.0 / nlen);
   let m = onb(n);
   let t = m[0];
   let b = m[1];
@@ -298,7 +318,7 @@ fn gi_sh_project(@builtin(global_invocation_id) gid: vec3<u32>) {
     let local = gi_hemi_dir(d, n_dirs);
     let world = normalize(t * local.x + b * local.y + n * local.z);
     let yb = gi_sh_basis_l2(world);
-    let rad = probe.samples[d];
+    let rad = probe.samples[d].xyz; // vec4 的 w 不入算
     var k = 0u;
     loop {
       if (k >= 9u) { break; }
@@ -313,7 +333,7 @@ fn gi_sh_project(@builtin(global_invocation_id) gid: vec3<u32>) {
   var k2 = 0u;
   loop {
     if (k2 >= 9u) { break; }
-    probe.sh[k2] = vec3<f32>(acc_r[k2], acc_g[k2], acc_b[k2]);
+    probe.sh[k2] = vec4<f32>(acc_r[k2], acc_g[k2], acc_b[k2], 0.0);
     k2 = k2 + 1u;
   }
   gi_probes[i] = probe;
@@ -348,7 +368,8 @@ fn gi_reconstruct(probe: GiProbe, dir: vec3<f32>) -> vec3<f32> {
   var k = 0u;
   loop {
     if (k >= 9u) { break; }
-    e = e + probe.sh[k] * (gi_cosine_lobe(gi_band_of(k)) * yb[k]);
+    // `sh[k]` 是 `vec4<f32>`（w=0），取 `.xyz`。
+    e = e + probe.sh[k].xyz * (gi_cosine_lobe(gi_band_of(k)) * yb[k]);
     k = k + 1u;
   }
   return e;
@@ -379,7 +400,8 @@ fn gi_probe_interpolate(@builtin(global_invocation_id) gid: vec3<u32>) {
   var j = 0u;
   loop {
     if (j >= n_probes) { break; }
-    let diff = gi_probes[j].pos - pt.pos;
+    // `pos` 两侧都是 `vec4<f32>`（w=0）→ 取 `.xyz` 后做三维差。
+    let diff = gi_probes[j].pos.xyz - pt.pos.xyz;
     let d2 = vdot(diff, diff);
     if (d2 < best_d2) { best_d2 = d2; best = j; }
     j = j + 1u;
@@ -389,7 +411,49 @@ fn gi_probe_interpolate(@builtin(global_invocation_id) gid: vec3<u32>) {
   let dir = vec3<f32>(0.0, 0.0, 1.0);
   let e = gi_reconstruct(probe, dir);
   // Lambert：L_o = albedo · E · (1/π)。
-  let lo = gi_params.albedo * e * (1.0 / 3.141592653589793);
-  pt.irradiance = lo;
+  let lo = gi_params.albedo.xyz * e * (1.0 / 3.141592653589793);
+  // `irradiance` 是 `vec4<f32>`：三分量写入，w 恒 0。
+  pt.irradiance = vec4<f32>(lo, 0.0);
   gi_points[i] = pt;
+}
+
+// ---------------------------------------------------------------------------
+// 布局自检入口（只为「让下一轮真机能一眼判死布局」而存在，不参与渲染语义）
+// ---------------------------------------------------------------------------
+//
+// # 为什么必须有这个 entry
+// 本轮的 bug（驱动对 `vec3<f32>` 的 struct size 处理与规范不一致）**只在真机上
+// 出现**：SwiftShader 严格按规范实现，`realgpu_check.mjs` 永远 PASS。也就是说
+// "本地全绿"证不了"真机修好"。故把「shader 自己读到的四个关键字段」原样导出到
+// `samples[0..7]`，由宿主 `gpu.gi_layout` 与 Rust 打包值**逐字段**比对：
+//   samples[0..1] = probe0.pos / probe0.normal      ← normal 可读即本轮 bug 已修
+//   samples[2..3] = probe2.pos / probe2.normal      ← 读 probe2 = 验 stride 304 生效
+//   samples[4..5] = probe1.pos / probe1.normal
+//   samples[6]    = (probe_count, prim_count, env_radiance.x, albedo.x)  ← 混合字段
+// 若 `normal` 又被推到 samples 区，samples[1] 会读出哨兵 -1（samples 初值）。
+//
+// # 为什么读 `gi_probes[2]`
+// `array<GiProbe>` 的 stride 若与宿主不一致（例如按 vec3 的 12 字节算成 292 或
+// 按规范外的更大值算），读 `gi_probes[2]` 就会落到错误的字节位置上，读出别人的
+// 字段。**stride 错位在这一格上一眼可见**，而读 probe0 永远是对的。
+@compute @workgroup_size(1)
+fn gi_layout_census(@builtin(global_invocation_id) gid: vec3<u32>) {
+  if (gid.x != 0u) { return; }
+  // 越界守卫：探针数不足以取 [1]/[2] 时不做任何写入（缓冲保持哨兵 → 宿主判红）。
+  if (arrayLength(&gi_probes) < 3u) { return; }
+  var p0 = gi_probes[0];
+  let p1 = gi_probes[1];
+  let p2 = gi_probes[2];
+  p0.samples[0] = p0.pos;                    // 期望 probe0.pos    = (0,1,0,0)
+  p0.samples[1] = p0.normal;                 // 期望 probe0.normal = (0,1,0,0) ← 本轮 bug 直接判据
+  p0.samples[2] = p2.pos;                    // 期望 probe2.pos    = (0,1,0,0) ← stride 304 判据
+  p0.samples[3] = p2.normal;                 // 期望 probe2.normal = (1,0,0,0)
+  p0.samples[4] = p1.pos;                    // 期望 probe1.pos    = (1,1,0,0)
+  p0.samples[5] = p1.normal;                 // 期望 probe1.normal = (1,0,0,0)
+  p0.samples[6] = vec4<f32>(
+    f32(gi_params.probe_count), f32(gi_params.prim_count),
+    gi_params.env_radiance.x, gi_params.albedo.x,
+  );                                         // 期望 = (3, 2, 0.9, 0.8)
+  p0.samples[7] = vec4<f32>(0.0, 0.0, 0.0, 0.0); // 清零：证明 8 格全由本 entry 覆写
+  gi_probes[0] = p0;
 }

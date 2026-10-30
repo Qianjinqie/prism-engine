@@ -8,6 +8,54 @@
 
 ## 渲染行为变化清单
 
+### R-2026-xx-08：修复 GI 存储布局对 `vec3<f32>` 的依赖（真机驱动 size 与规范不一致 → 字段整体错位）
+
+- **受影响特性**：`prism-gpu` 实时 GI 的 GPU 路径存储布局——`gi_compute.wgsl` 的四个
+  布局结构体 `GiPrim` / `GiParams` / `GiProbe` / `GiPoint`，以及新增的布局自检入口
+  `gi_layout_census` + 新测试项 `gpu.gi_layout`。Rust 侧 `gi_pack_probes` /
+  `gi_params_bytes` / `gi_unpack_sh` 的**偏移一个字节都没改**（布局零变化）。
+- **变化原因**：真机（Android 12 / Chrome 144 内核 / Quark 10.18 / 真 GPU）实测：
+  驱动对**结构体成员** `vec3<f32>` 的 `size` 处理与 WGSL 规范不一致（规范
+  `size=12 / align=16`，真机表现为更大）→ 后续字段偏移整体重排：
+  `GiProbe.normal`（应 `@16`）被推移到 `samples` 区（读到哨兵 `-1`），`samples`/`sh`
+  被压缩（`samples[6]` 落到 `sh[0]` 的位置）。判定实验（沙箱内用真实 Rust 代码）：
+  用候选 normal `(-1,-1,-1)` 跑 CPU 参考 `gi_probe_trace_ref`，**逐方向位掩码**
+  `[0,0,1,0,1,0,0,0]` 与真机 GPU 的位掩码**逐位完全相同**；用正确 normal `(0,1,0)`
+  得到全 1；用 `(0.9,0.8,0.7)`（`GI_TEST.env`）与 `(0,0,1)` 均不吻合。同时
+  `gpu.params_roundtrip` 真机 **PASS**（256/256 字节回环一致）→ uniform 传输链无问题，
+  排除"参数没到 GPU"。旁证：`gi_compute.wgsl` 是全仓**唯一**用 `array<vec3<f32>>`
+  做存储布局的 shader，也是**唯一**真机 FAIL 的项；其余全部用 `array<vec4<f32>>` 的
+  storage shader（`rt_wavefront` / `sim_particles` / `sim_sph` / `sim_cloth` /
+  `scene_frame`）真机全 PASS。（`rt_wavefront.wgsl:79` 的 `array<vec3<f32>, 2>` 是
+  函数返回值，不涉 buffer 布局，不受影响。）
+  修复：把参与存储布局的 `vec3<f32>` 全部换成 `vec4<f32>`（第 4 分量恒 0）。
+  `vec4` 的 `align/size` 都是 16，与原「`vec3` + 隐式/隐式填充」**逐字节等价**，
+  故 Rust 侧全部偏移常量不变；shader 内对 vec3 字段的访问一律加 `.xyz`、写入
+  一律 `vec4(xyz, 0.0)`，数学语义一分不改（`w=0` 不参与任何运算）。
+  同时新增两侧静态门禁：`web/wgsl_lint.mjs` **规则 H**（存储布局禁 `array<vec3<f32>>`，
+  函数返回类型白名单仅 `rt_wavefront.wgsl::cast_ray` 3 处）+ `web/host_test.mjs` 第 4 节
+  同口径断言 + `web::abi::tests::gi_wgsl_layout_matches_abi_constants`（从 WGSL 源码
+  按规范算逐字段偏移与 size，与 `GI_*_STRIDE_BYTES` 交叉核对）。
+- **视觉影响描述**：这是**布局修复**，不改任何数学。**旧值 → 新值**（同一组固定输入）：
+  - 新测试项 `gpu.gi_layout`：真机 `samples[1]`（= `GiProbe.normal`）**旧值读到 `-1`
+    （samples 的哨兵）→ 新值应为 `(0,1,0)`**；`samples[3]`（`probe2.normal`）
+    **旧值 `-1` → 新值 `(1,0,0)`**；`samples[6]` = `(probe_count, prim_count,
+    env_radiance.x, albedo.x)` **旧值读到错位内容 → 新值 `(3, 2, 0.9, 0.8)`**。
+  - `gpu.gi_compute` 遮挡统计 `visible_total`：真机**旧值 2/8 · 2/8 · 2/8（= 2-2-2）
+    → 新值应为 8/8 · 4/8 · 4/8（= 8-4-4）**（与 CPU 参考一致）。
+  - 本地（SwiftShader）预期**无变化**：`gpu.gi_compute` 的判据量与
+    `gi_cpu_reference_fingerprint_matches_independent_js` 的指纹
+    （`0x6adb7c92`）都**不变**——SwiftShader 严格按规范实现，vec3/vec4 两种写法
+    在它上面逐字节等价。**这正是"客户端自洽对拍"的盲区：本地只能证明「没改坏」，
+    证明不了「真机修好了」**，故本轮专门交付 `gpu.gi_layout` 作为真机判读锚点。
+  - wasm 体积：**439,539 B → 453,223 B**（+13,684 B，上限 458,752 B，余量 5,529 B）。
+    增量归因：新增 entry `gi_layout_census` 及四个结构体的布局表注释（WGSL 源码
+    原文进数据段）+ `gpu.gi_layout` 的 run/collect 代码与诊断文案。已做无损压缩
+    （布局表由 Markdown 表格改为单行偏移表，诊断成功路径文案精简），未改任何阈值。
+- **是否有开关**：无。旧行为不保留——`vec3<f32>` 做存储布局在真机上是**不可用**的
+  （驱动与规范分歧），保留开关等于保留崩溃路径。若某设备真的严格按规范实现，
+  vec4 写法与旧写法逐字节等价，行为完全相同，故不需要开关。
+
 ### R-2026-xx-07：修复 GI SDF 的球分支（`q.x` 是沿 x 的无限大板，不是球）+ 容量填充图元改为不可能命中
 
 - **受影响特性**：`prism-gpu` 实时 GI 的 SDF 遮挡求值——CPU 参考

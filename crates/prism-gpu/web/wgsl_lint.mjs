@@ -444,6 +444,9 @@ function ruleA(ctx) {
     // 核"宿主尺寸 ↔ WGSL 声明"的自洽性——否则新测试项的 uniform 缓冲会落进
     // "未登记内核标签"分支而误报。
     "gpu.params_roundtrip": "gi_compute.wgsl",
+    // `gpu.gi_layout` 的布局 census 同样建一块 `GiParams` uniform（census 入口要读
+    // `probe_count/prim_count/env_radiance/albedo` 四个字段来验 GiParams 的偏移）。
+    "gpu.gi_layout": "gi_compute.wgsl",
   };
   const calls = [...abi.matchAll(/make_buffer\(\s*"([^"]+)"\s*,\s*dev\s*,\s*([^,]+?)\s*,\s*usage::UNIFORM/g)];
   checks.push({
@@ -1994,6 +1997,153 @@ function ruleG(ctx) {
 }
 
 // ---------------------------------------------------------------------------
+// 规则 H：存储布局禁止 `array<vec3<f32>>`（V2.2 真机 bug 的静态门禁）
+// ---------------------------------------------------------------------------
+//
+// # 这条规则为什么存在（真机实测，不是理论洁癖）
+// `gi_compute.wgsl` 曾用 `samples: array<vec3<f32>, 8>` / `sh: array<vec3<f32>, 9>`
+// 做存储布局。WGSL 规范说 `vec3<f32>` 是 `align=16 / size=12`，数组元素 stride =
+// roundUp(size, align) = **16**；但真机驱动（Android 12 / Chrome 144 内核 /
+// Quark 10.18 / 真 GPU）对**结构体成员** `vec3<f32>` 的 size 处理与规范不一致
+// （表现更大），于是后续字段偏移整体重排：
+//   * `GiProbe.normal`（应 @16）被推移到 `samples` 区 → GPU 读到 -1 哨兵；
+//   * `samples` / `sh` 被压缩 → `samples[6]` 落到 `sh[0]` 的位置。
+// 逐方向位掩码判定实验（用 normal=(-1,-1,-1) 跑 CPU 参考）与真机 GPU 位掩码
+// **逐位相同**，钉死了这条因果。
+//
+// # 为什么本地/CI 抓不到
+// SwiftShader 严格按规范实现 → 本地永远 PASS。`realgpu_check.mjs` 只能证明
+// 「没改坏」，证不了「真机修好」。故必须把这条约束**静态固化**在提交前。
+//
+// # 判据（三条，全部硬断言）
+//   H1 任何 `struct` 体内出现 `array<vec3<f32>`            → 红（存储布局）
+//   H2 任何 `var<storage|uniform>` 的顶层类型是 `array<vec3<f32>>` → 红（存储布局）
+//   H3 其余出现（值类型语境）必须**全部**落在 `rt_wavefront.wgsl` 且恰好 3 处
+//      （`cast_ray` 的返回类型 + 两个 `array<vec3<f32>, 2>(…)` 构造式）——那是
+//      **函数返回值**，不参与 buffer 布局，`vec3` 的 size 解释差异不影响它。
+//      白名单外的值类型用法一律红：新增一处必须**显式**改本规则并写理由，
+//      而不是让"下一个人以为 vec3 在布局里是安全的"。
+// 元素类型模式（**不**要求尾部逗号）：`array<vec3<f32>, 8>` 与运行时长度
+// `array<vec3<f32>>` 都要命中。早期写成 `/…\s*,/` 会漏掉运行时长度那种形态——
+// 而"漏一种形态"正是门禁最常见的失效方式（自证用例立刻抓到了这一点）。
+const H_VEC3_ARRAY = /array\s*<\s*vec3\s*<\s*f32\s*>/;
+
+/** 定位 `struct <name> { … }` 的体（花括号配对），返回 `{name, body, index}`。 */
+function structBodies(src) {
+  const out = [];
+  for (const m of src.matchAll(/struct\s+(\w+)\s*\{/g)) {
+    const open = m.index + m[0].length - 1;
+    let depth = 0;
+    let close = -1;
+    for (let i = open; i < src.length; i += 1) {
+      if (src[i] === "{") depth += 1;
+      else if (src[i] === "}") {
+        depth -= 1;
+        if (depth === 0) { close = i; break; }
+      }
+    }
+    if (close < 0) continue;
+    out.push({ name: m[1], body: src.slice(open + 1, close), index: open });
+  }
+  return out;
+}
+
+/** 1 基行号（供报错文案定位）。 */
+function lineOf(src, index) {
+  return src.slice(0, index).split("\n").length;
+}
+
+function ruleH(ctx) {
+  const checks = [];
+  // 自证用例可注入改写后的源集（负向验证必须能真的改内容）。
+  const srcs = ctx && ctx.srcs !== undefined ? ctx.srcs : collectWgslSources();
+  // 值类型语境的**显式白名单**（文件 → 允许处数）。每加一处都要写清为什么安全。
+  const VALUE_CTX_ALLOW = { "rt_wavefront.wgsl": 3 };
+
+  let layoutHits = 0;
+  const valueOcc = []; // 值类型语境的命中：{ label, index, src }
+  const valueByFile = new Map();
+  for (const { label, src } of srcs) {
+    // ---- H1：结构体体内（存储布局）----
+    const bodies = structBodies(src);
+    for (const s of bodies) {
+      if (H_VEC3_ARRAY.test(s.body)) {
+        layoutHits += 1;
+        checks.push({
+          name: `H1 ${label}: struct ${s.name} 体内出现 array<vec3<f32>>（第 ${lineOf(src, s.index)} 行附近）`,
+          ok: false,
+          detail:
+            "存储布局禁用 array<vec3<f32>>：真机驱动对 struct 成员 vec3<f32> 的 size 处理" +
+            "与规范不一致（规范 12，实现更大），数组 stride 随之上浮 → 后续字段偏移整体重排。" +
+            "改用 array<vec4<f32>>（w 恒 0，布局逐字节等价）。见 V2.2 真机 bug（gpu.gi_layout）",
+        });
+      }
+    }
+    // ---- H2：var<storage|uniform> 的顶层类型 ----
+    const varRanges = [];
+    for (const m of src.matchAll(/var\s*<\s*(storage|uniform)[^>]*>\s*(\w+)\s*:\s*[\w<>,\s]+?\s*;/g)) {
+      varRanges.push([m.index, m.index + m[0].length]);
+      if (H_VEC3_ARRAY.test(m[0])) {
+        layoutHits += 1;
+        checks.push({
+          name: `H2 ${label}: var<${m[1]}> ${m[2]} 的绑定类型是 array<vec3<f32>>（第 ${lineOf(src, m.index)} 行）`,
+          ok: false,
+          detail: "同上：绑定缓冲的元素 stride 会依赖 vec3<f32> 的 size 解释，改 array<vec4<f32>>",
+        });
+      }
+    }
+    // ---- H3：值类型语境（函数返回 / 构造式）----
+    // 先把 H1/H2 覆盖的字节区间排除，剩下的命中才算"值类型用法"。
+    const layoutRanges = [
+      ...bodies.map((s) => [s.index, s.index + s.body.length]),
+      ...varRanges,
+    ];
+    for (const m of src.matchAll(new RegExp(H_VEC3_ARRAY.source, "g"))) {
+      const idx = m.index;
+      if (layoutRanges.some(([a, b]) => idx >= a && idx <= b)) continue;
+      valueOcc.push({ label, index: idx, src });
+      valueByFile.set(label, (valueByFile.get(label) || 0) + 1);
+    }
+  }
+  // 值类型用法逐条判定：白名单文件内的**前 N 处**放行（N = 白名单给出的处数），
+  // 其余一律红——这样白名单既不是恒真（多一处就红），也不会误伤既有 3 处。
+  const seen = new Map();
+  for (const occ of valueOcc) {
+    const allowed = VALUE_CTX_ALLOW[occ.label] || 0;
+    const nth = (seen.get(occ.label) || 0) + 1;
+    seen.set(occ.label, nth);
+    const ok = nth <= allowed;
+    checks.push({
+      name:
+        `H3 ${occ.label}: array<vec3<f32>> 的第 ${nth} 处值类型用法` +
+        `（第 ${lineOf(occ.src, occ.index)} 行）${ok ? "在白名单内" : "**白名单外**"}`,
+      ok,
+      detail: ok
+        ? "函数返回值 / 构造式，不参与 buffer 布局（vec3 的 size 解释差异影响不到它）"
+        : "值类型语境本不受布局影响，但只允许既有的 rt_wavefront.wgsl::cast_ray 那 3 处。" +
+          "新增用法请先确认它真的不进 buffer 布局，再把该文件加进 VALUE_CTX_ALLOW 并写理由" +
+          "——不要让 vec3 悄悄回到布局里",
+    });
+  }
+  // 白名单核对：允许的文件必须**恰好**用到白名单给出的处数（少一处也要回来改白名单，
+  // 否则白名单会慢慢变成"允许任意处"的空话）。
+  for (const [file, allowed] of Object.entries(VALUE_CTX_ALLOW)) {
+    const got = valueByFile.get(file) || 0;
+    checks.push({
+      name: `H3 ${file} 的值类型 array<vec3<f32>> 用法处数 = 白名单值`,
+      ok: got === allowed,
+      detail: `实际 ${got} 处 / 白名单 ${allowed} 处`,
+    });
+  }
+  checks.push({
+    name: "H 全仓扫描完成（结构体 / 绑定声明内 0 处 array<vec3<f32>>）",
+    ok: layoutHits === 0 && srcs.length > 0,
+    detail: `布局命中 ${layoutHits} 处 / 值类型 ${valueOcc.length} 处（共扫 ${srcs.length} 份源码）`,
+  });
+  return checks;
+}
+
+// ---------------------------------------------------------------------------
 // 自证非恒真：故意违反的样例
 // ---------------------------------------------------------------------------
 
@@ -2407,6 +2557,44 @@ ${extra}
         return ruleG({ giSrc: injected }).filter((c) => c.name.startsWith("G8") && !c.ok);
       },
     },
+    // ---- H 的三条反向用例（存储布局 vec3 门禁）----
+    //
+    // 【为什么这三条必须存在】规则 H 守的正是本轮真机 bug（`array<vec3<f32>>` 做
+    // 存储布局 → 驱动把 vec3 的 size 算得更大 → 后续字段整体错位）。若 H 恒真，
+    // 下一个人把 vec3 改回布局时门禁照样全绿——那就是"有门禁等于没门禁"。
+    {
+      rule: "H",
+      desc: "把 array<vec3<f32>> 塞回 struct 体（本轮真机 bug 的原形态）",
+      expectFail: "H1",
+      run: () => {
+        const synth = "struct Probe { pos: vec4<f32>, samples: array<vec3<f32>, 8> }\n";
+        return ruleH({ srcs: [{ label: "gi_compute.wgsl", src: synth }] })
+          .filter((c) => c.name.startsWith("H1") && !c.ok);
+      },
+    },
+    {
+      rule: "H",
+      desc: "storage 绑定直接声明成 array<vec3<f32>>",
+      expectFail: "H2",
+      run: () => {
+        const synth = "@group(0) @binding(0) var<storage, read_write> pts: array<vec3<f32>>;\n";
+        return ruleH({ srcs: [{ label: "sim_common.wgsl", src: synth }] })
+          .filter((c) => c.name.startsWith("H2") && !c.ok);
+      },
+    },
+    {
+      rule: "H",
+      desc: "新增一处白名单外的「值类型」用法（白名单不是恒真）",
+      expectFail: "H3",
+      run: () => {
+        // 模拟"某个新 shader 抄了 cast_ray 的返回值写法"：值类型语境合法，
+        // 但**不在**白名单里 → 必须红（否则白名单等于沉默地放宽成"任意处"）。
+        const synth = "fn cast(x: vec3<f32>) -> array<vec3<f32>, 2> {\n" +
+          "  return array<vec3<f32>, 2>(x, x);\n}\n";
+        return ruleH({ srcs: [{ label: "some_new.wgsl", src: synth }] })
+          .filter((c) => c.name.startsWith("H3") && !c.ok);
+      },
+    },
     // ---- F18 反向用例：把库件从真编译清单里删掉 → 必须判红 ----
     //
     // 【这条反向用例为什么是 Task B 的核心自证】F18 的正向形态是"6 份库件全部
@@ -2630,7 +2818,7 @@ function ctxModule() {
 // 主入口
 // ---------------------------------------------------------------------------
 
-const RULES = { A: ruleA, B: ruleB, C: ruleC, D: ruleD, E: ruleE, F: ruleF, G: ruleG };
+const RULES = { A: ruleA, B: ruleB, C: ruleC, D: ruleD, E: ruleE, F: ruleF, G: ruleG, H: ruleH };
 
 /** 跑门禁。可只跑指定规则（`only: ["A"]`）。 */
 export function runWgslLint({ only = null } = {}) {

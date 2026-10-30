@@ -766,6 +766,24 @@ section("4. WGSL 源导出（宿主可直接复用 Rust 侧同一份源码）");
   // 绝对数断言（此前写 `n === 11`）会把"新增 shader"误判成回归。
   check("shader 数 ≥ 4（核心库件齐备）", n >= 4, `${n} 个`);
   let total = 0;
+  // 【V2.2 真机 bug 的静态锚点】存储布局禁止 `array<vec3<f32>>`。
+  //
+  // 真机（Android 12 / Chrome 144 内核 / 真 GPU）实测：驱动对结构体成员
+  // `vec3<f32>` 的 size 处理与 WGSL 规范不一致（规范 12，实现更大），而
+  // `array<vec3<f32>>` 的元素 stride 直接由该 size 决定 → 后续字段偏移整体重排。
+  // `gi_compute.wgsl` 曾因此把 `GiProbe.normal` 推到 `samples` 区（GPU 读到 -1 哨兵）、
+  // 把 `samples[6]` 压到 `sh[0]` 上。SwiftShader 严格按规范实现，本地永远 PASS
+  // ——故这条必须**静态**守住，不能指望 `gpu.gi_compute` 在本地报红。
+  //
+  // 与 `wgsl_lint.mjs` 规则 H 同口径（两处都要有：lint 是提交前门禁，本脚本是
+  // 真机回归入口；只留一处就会出现"某人只跑了其中一个"的漏网）。
+  // 值类型语境（函数返回 `-> array<vec3<f32>, N>` / 构造式）允许——不进 buffer
+  // 布局；本仓仅 `rt_wavefront.wgsl::cast_ray` 3 处（白名单见下）。
+  const VEC3_ARR = /array\s*<\s*vec3\s*<\s*f32\s*>/g;
+  const VALUE_CTX_ALLOW = { "rt_wavefront.wgsl": 3 };
+  let vec3LayoutHits = 0;
+  let vec3ValueHits = 0;
+  const vec3ValueByFile = new Map();
   for (let i = 0; i < n; i += 1) {
     const nm = readStr(x.prism_shader_name(i), x.prism_shader_name_len(i));
     const src = readStr(x.prism_shader_src(i), x.prism_shader_src_len(i));
@@ -782,7 +800,60 @@ section("4. WGSL 源导出（宿主可直接复用 Rust 侧同一份源码）");
     // 规则本就是"去注释后扫"，这里与它对齐，避免两个门禁对同一事实给出相反结论。
     const codeOnly = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
     if (/[^"]\b(sin|cos|tan|exp|pow|log|atan)\(/.test(codeOnly)) check(`${nm} 无 libm 超越函数（D-29）`, false);
+
+    // ---- 存储布局隔离区：struct 体 + var<storage|uniform> 声明 ----
+    const layoutZones = [];
+    for (const m of codeOnly.matchAll(/struct\s+\w+\s*\{/g)) {
+      const open = m.index + m[0].length - 1;
+      let depth = 0;
+      for (let j = open; j < codeOnly.length; j += 1) {
+        if (codeOnly[j] === "{") depth += 1;
+        else if (codeOnly[j] === "}") {
+          depth -= 1;
+          if (depth === 0) { layoutZones.push(codeOnly.slice(open + 1, j)); break; }
+        }
+      }
+    }
+    for (const m of codeOnly.matchAll(/var\s*<\s*(?:storage|uniform)[^>]*>\s*\w+\s*:\s*[\w<>,\s]+?\s*;/g)) {
+      layoutZones.push(m[0]);
+    }
+    let layoutLocal = 0;
+    for (const zone of layoutZones) {
+      const hits = (zone.match(VEC3_ARR) || []).length;
+      layoutLocal += hits;
+    }
+    const totalLocal = (codeOnly.match(VEC3_ARR) || []).length;
+    vec3LayoutHits += layoutLocal;
+    vec3ValueHits += totalLocal - layoutLocal;
+    if (totalLocal - layoutLocal > 0) {
+      vec3ValueByFile.set(nm, (vec3ValueByFile.get(nm) || 0) + (totalLocal - layoutLocal));
+    }
+    check(
+      `${nm} 存储布局无 array<vec3<f32>>（真机 vec3 size 与规范不一致）`,
+      layoutLocal === 0,
+      layoutLocal ? `${layoutLocal} 处在 struct/绑定声明内 → 必须改 array<vec4<f32>>（w 恒 0，布局零变化）` : "",
+    );
   }
+  check(
+    "全部 shader 的存储布局 0 处 array<vec3<f32>>（规则 H 同口径）",
+    vec3LayoutHits === 0,
+    `布局命中 ${vec3LayoutHits} 处 / 值类型 ${vec3ValueHits} 处`,
+  );
+  // 值类型白名单：只允许 `rt_wavefront.wgsl::cast_ray` 那 3 处（返回类型 + 两处构造式）。
+  // 多任何一处都红——新增用法必须先确认它真的不进 buffer 布局，再显式改白名单。
+  for (const [file, allowed] of Object.entries(VALUE_CTX_ALLOW)) {
+    const got = vec3ValueByFile.get(file) || 0;
+    check(
+      `${file} 的值类型 array<vec3<f32>> 用法处数 == 白名单（${allowed}）`,
+      got === allowed,
+      `实际 ${got} 处`,
+    );
+  }
+  check(
+    "值类型 array<vec3<f32>> 只出现在白名单文件里（无新增溢出）",
+    vec3ValueHits === Object.values(VALUE_CTX_ALLOW).reduce((a, b) => a + b, 0),
+    `全仓值类型命中 ${vec3ValueHits} 处 / 白名单合计 ${Object.values(VALUE_CTX_ALLOW).reduce((a, b) => a + b, 0)} 处`,
+  );
   check("全部 WGSL 源码可读且结构合法", true, `合计 ${total} 字节`);
   const k0 = readStr(x.prism_kernel_wgsl(0), x.prism_kernel_wgsl_len(0));
   const k1 = readStr(x.prism_kernel_wgsl(1), x.prism_kernel_wgsl_len(1));
@@ -1043,7 +1114,7 @@ section("6. 无 WebGPU 时的行为（不白屏、不误报、不 panic）");
   for (const id of [
     "device.init", "wgsl.compile", "gpu.scan_block", "gpu.histogram",
     "gpu.sim_particles", "gpu.sim_sph", "gpu.sim_cloth", "gpu.rt_wavefront",
-    "gpu.rt_wavefront_multi", "gpu.gi_compute",
+    "gpu.rt_wavefront_multi", "gpu.params_roundtrip", "gpu.gi_layout", "gpu.gi_compute",
   ]) {
     const m = byId[id];
     check(`GPU 项 ${id} 存在且标注 needs_gpu`, !!m && m.needsGpu === 1,

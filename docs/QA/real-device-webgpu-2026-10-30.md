@@ -263,3 +263,129 @@ PRD §3.0.1 对 V2.2-A-1 的实机验证档要求是：**「Chrome/Edge ≥2 设
 | `build.sh` | **395 通过 / 0 失败**；wasm 439,539 B（上限 458,752） |
 | **真机复测** | **待测**（需作者用新版本重跑一次，见 §7.4 第 6 条缓存破坏） |
 
+
+---
+
+## 8. 真机复测（同日第二轮，设备/浏览器更换）—— 暴露第二个根因：`vec3<f32>` 布局错位
+
+### 8.1 测试环境（第二台设备）
+
+| 项 | 值 |
+|---|---|
+| UA | `Android 12; SM-G9730; Chrome/144.0.7559.86 Quark/10.18.6.1161 Mobile` |
+| WebGPU | available（真 GPU） |
+| wasm | `439539B`（= W7 修复版，`?v=5c99f623`） |
+| 结果 | **17 PASS / 1 FAIL / 0 SKIP（新增 `gpu.params_roundtrip` PASS）** |
+
+**`gpu.params_roundtrip` PASS 是本轮最有价值的一条否定证据**：256/256 字节回环全等、
+`probe_count@0=3 / point_count@4=4 / prim_count@8=2 / n_dirs@12=8` 全部正确 ⇒
+**uniform 传输链无问题，`prim_count` 误读假设彻底排除**。
+
+### 8.2 诊断块给出的决定性数据
+
+```
+probe 0: pos GPU(0.000,1.000,0.000) ✓  normal GPU(-1.000,-1.000,-1.000)   ← Rust 写的是 (0,1,0)
+          可见 GPU 2/8 vs CPU 8/8
+          GPU |s|[0.000 0.000 1.393 0.000 1.393 0.000 0.000 0.000]
+probe 1: pos GPU(1.000,1.000,0.000) ✓  normal GPU(0.900,0.800,0.700)       ← Rust 写的是 (1,0,0)
+          GPU |s|[1.393 0.000 1.393 0.000 0.000 0.000 -3.464 -3.464]      ← 末两格 = |(-2,-2,-2)|
+probe 2: pos GPU(0.000,1.000,0.000) ✓  normal GPU(-1.000,-1.000,-1.000)
+```
+
+三个值互相印证：
+
+| 观测值 | 它是谁 | 出现在哪个字段 |
+|---|---|---|
+| `(-1,-1,-1)` | samples 哨兵 `GI_SENTINEL_SAMPLE` | `GiProbe.normal`（应 `@16`） |
+| `(0.9,0.8,0.7)` | `GiParams.env_radiance`（`@16`） | `GiProbe.normal` |
+| `-3.464 = |(-2,-2,-2)|` | sh 哨兵 `GI_SENTINEL_SH` | `GiProbe.samples[6]`（`@128`，而 `sh[0]` 在 `@160`） |
+
+**哨兵值跨字段出现 ⇒ 结构体内部偏移整体重排，不是数值问题。**
+
+### 8.3 判定实验（沙箱内可做，结论确定）
+
+`gi_pack_probes()` 打包后的 buffer 字节经 dump **完全正确**（三探针 normal 分别为
+`(0,1,0)` / `(1,0,0)` / `(1,0,0)`，pos 全对，samples 全 `-1`，sh 全 `-2`）。
+再用真实 Rust 参考实现跑**候选 normal**，比对**逐方向位掩码**：
+
+| 候选 normal | probe0 位掩码 | 与真机 GPU `[0,0,1,0,1,0,0,0]` |
+|---|---|---|
+| **`(-1,-1,-1)`** | **`[0,0,1,0,1,0,0,0]`** | **逐位完全相同 ✅** |
+| `(0,1,0)`（Rust 写的正确值） | `[1,1,1,1,1,1,1,1]` | 不吻合 |
+| `(0.9,0.8,0.7)`（`env`） | `[0,1,0,1,1,0,1,1]` | 不吻合 |
+| `(0,0,1)`（紧凑布局假设） | `[0,1,0,1,1,0,1,0]` | 不吻合 |
+
+**结论：GPU 读 `probe.normal` 时读到的是 samples 区的哨兵 `-1`。**
+
+### 8.4 根因
+
+**真机驱动对结构体成员 `vec3<f32>` 的 `size` 处理与 WGSL 规范不一致**（规范
+`size=12 / align=16`；真机表现为更大），导致后续字段偏移整体重排：
+`normal`（应 `@16`）被推到 `samples` 区（`@32`），`samples`/`sh` 被压缩
+（`samples[6]` 落到 `sh[0]` 原应所在的 `@160` 之前的 `@128` 起算位置）。
+
+**旁证（强，且是独立维度的证据）**：
+
+| shader | 存储布局写法 | 真机结果 |
+|---|---|---|
+| `gi_compute.wgsl` | **全仓唯一**用 `array<vec3<f32>, N>` 做布局 | **唯一 FAIL** |
+| `rt_wavefront` / `sim_particles` / `sim_sph` / `sim_cloth` / `scene_frame` | 全部 `array<vec4<f32>>` | **全部 PASS** |
+
+`rt_wavefront.wgsl:79` 的 `array<vec3<f32>, 2>` 是**函数返回值**（值类型，不进 buffer 布局），不受影响。
+
+### 8.5 修复：把所有参与存储布局的 `vec3<f32>` 换成 `vec4<f32>`
+
+`vec4` 的 `align/size` 都恒为 16，与原「`vec3` + 显式/隐式填充」**逐字节等价**，
+故 **Rust 侧全部偏移常量一字节未改**（`gi_pack_probes` / `gi_params_bytes` /
+`gi_unpack_sh` 的偏移行根本没出现在 diff 里）。四个结构体：
+
+| 结构体 | 变化 | size |
+|---|---|---|
+| `GiProbe` | `pos`/`normal` → `vec4`；`samples`/`sh` → `array<vec4,N>` | 304（不变） |
+| `GiPoint` | `pos`/`irradiance` → `vec4` | 32（不变） |
+| `GiParams` | `env_radiance`/`albedo` → `vec4` 并删掉其后 `_pad0`/`_pad1` | 256（不变） |
+| `GiPrim` | `center` → `vec4`；`_pad: vec3<u32>` → `_pad1: vec4<u32>` | 48（不变） |
+
+shader 内对 vec3 字段的读取一律加 `.xyz`，写入一律 `vec4(xyz, 0.0)`；`w=0` 不参与任何运算，**数学语义一分不改**。
+
+### 8.6 新增真机判读锚点：`gpu.gi_layout`
+
+新增 shader 入口 `gi_layout_census`（`@workgroup_size(1)`）+ 测试项 `gpu.gi_layout`：
+它把 shader **自己读到的** 8 个字段原样写进 `probes[0].samples[0..7]`，宿主读回后与
+Rust 打包值**逐格逐分量**比对（含 `w` 必须为 0）。
+
+7 条硬判据，每条对应一种布局失效模式：
+
+| 格 | 内容 | 失效含义 |
+|---|---|---|
+| `samples[1]` | `probe0.normal` = `(0,1,0)` | **本轮 bug 的直接判据**（读到 `-1` ⇒ vec3 布局仍未修正） |
+| `samples[3]` | `probe2.normal` = `(1,0,0)` | `array<GiProbe>` 的 stride 304 未生效 |
+| `samples[2]`/`[4]` | `probe2.pos` / `probe1.pos` | 跨元素读取正确 |
+| `samples[6]` | `(3, 2, 0.9, 0.8)` | `GiParams` 的 u32 与 vec4 字段混合偏移错 |
+| `samples[7]` | `0`（Rust 预填 `-1`） | **证明 8 格确由本 entry 覆写**，排除"没执行却判绿" |
+
+### 8.7 静态门禁（把教训固化成门禁，防回归）
+
+- `web/wgsl_lint.mjs` **规则 H**：struct 体内 `array<vec3<f32>>` 判红；`var<storage|uniform>`
+  顶层 `array<vec3<f32>>` 判红；其余命中按「值类型语境」白名单（仅
+  `rt_wavefront.wgsl` 3 处：`cast_ray` 返回类型 + 两处 `return array<vec3<f32>,2>(...)`），
+  且**白名单处数必须精确相等**（多一处/少一处都判红）。自证 46 例抓到 46 例。
+- `web/host_test.mjs` 第 4 节同口径 per-shader 断言。
+- `web::abi::tests::gi_wgsl_layout_matches_abi_constants`：**读 WGSL 源码按规范算逐字段
+  偏移与 size**，与四个 `GI_*_STRIDE_BYTES` 常量交叉核对（已两次反向演练证明非恒真）。
+
+### 8.8 当前状态
+
+| 项 | 状态 |
+|---|---|
+| 修复后 SwiftShader（`realgpu_check.mjs`） | **19/19 PASS**（含 `gpu.gi_layout`、`gpu.gi_compute`、`gpu.scene_frame`） |
+| `cargo xtest` | **4029 passed / 0 failed / 0 ignored / 188 段** |
+| `build.sh` | **429 通过 / 0 失败**；wasm **453,223 B**（上限 458,752，余量 5,529） |
+| **真机复测** | **待测**（第三轮，需作者用 `?v=54d66a8e` 版本重跑） |
+
+> **方法论（本轮新增，与 §7.5 并列）**：
+> **「本地能跑通」与「规范正确」是两件事。** 软件适配器严格按规范实现，
+> 因此它既不能暴露「两端同错」（§7.5），也**不能暴露「实现方对规范的偏离」**（本节）。
+> 对存储布局这类"规范有明确定义、但驱动实现可能偏离"的环节，
+> 判据必须是**直接读回结构体字段并与宿主打包值逐字节比对**（`gpu.gi_layout`），
+> 而不是"跑一遍看结果对不对"——后者只在两端算法都正确时才有判别力。

@@ -284,23 +284,37 @@ pub const GI_DIRS: u32 = 8;
 /// uniform 内 SDF 图元容量（= `gi_compute.wgsl::GI_MAX_PRIMS`）。
 pub const GI_MAX_PRIMS: u32 = 4;
 /// `gi_compute.wgsl::GiPrim` 的字节数（`kind:u32@0` / `radius:f32@4` /
-/// `center:vec3<f32>@16` / `_pad:vec3<u32>@28`，末 40 → 对齐 16 → **48**）。
+/// `_pad0:vec2<u32>@8` / `center:vec4<f32>@16` / `_pad1:vec4<u32>@32`，
+/// 末 48 → 对齐 16 → **48**）。
+///
+/// 【V2.2 真机 bug 的修复只改类型、不改数字】`center` 原为 `vec3<f32>@16` +
+/// 隐式 padding，真机驱动对 struct 内 `vec3<f32>` 的 size 处理与规范不一致
+/// （规范 12，实现更大），导致后续字段整体重排。改为 `vec4<f32>` 后 align/size
+/// 都是 16，**逐字节等价**——故本常量与 [`gi_params_bytes`] 里的 `o+16/20/24`
+/// 全部一字节未动。详见 `gi_compute.wgsl` 结构体段的整段说明。
 pub const GI_PRIM_STRIDE_BYTES: u32 = 48;
 /// `gi_compute.wgsl::GiParams` 的 uniform 字节数。
 ///
 /// 布局：`probe_count@0` / `point_count@4` / `prim_count@8` / `n_dirs@12` /
-/// `env_radiance:vec3@16` / `_pad0@28` / `albedo:vec3@32` / `_pad1@44` /
+/// `env_radiance:vec4<f32>@16`（原 `vec3@16`+`_pad0@28`）/
+/// `albedo:vec4<f32>@32`（原 `vec3@32`+`_pad1@44`）/
 /// `t_max@48` / `hit_eps@52` / `safety@56` / `max_steps@60` /
 /// `prims:array<GiPrim,4>@64`（4×48=192）→ 末尾 256 → 对齐 16 → **256 字节**。
 pub const GI_PARAMS_BYTES: u32 = 256;
 /// `gi_compute.wgsl::GiProbe` 的字节数。
 ///
-/// 布局：`pos:vec3@0` / `_pad0@12` / `normal:vec3@16` / `_pad1@28` /
-/// `samples:array<vec3<f32>,8>@32`（8×16=128 → 末 160）/
-/// `sh:array<vec3<f32>,9>@160`（9×16=144 → 末 304）→ 对齐 16 → **304 字节**。
+/// 布局：`pos:vec4<f32>@0` / `normal:vec4<f32>@16` /
+/// `samples:array<vec4<f32>,8>@32`（8×16=128 → 末 160）/
+/// `sh:array<vec4<f32>,9>@160`（9×16=144 → 末 304）→ 对齐 16 → **304 字节**。
+///
+/// 【为什么是 vec4 而不是 vec3】`array<vec3<f32>, N>` 的元素 stride 依赖
+/// `vec3` 的 **size**（规范 12，故 stride=16）。真机驱动把它算得更大 → 每个
+/// 元素多占字节 → `normal`/`samples`/`sh` 的偏移全部错位（真机实测 `normal`
+/// 读到 samples 的 -1 哨兵、`samples[6]` 落到 `sh[0]` 上）。`vec4<f32>` 的
+/// size/stride 在规范与实现上都无歧义（16/16）→ 布局零变化且不再有解释空间。
 pub const GI_PROBE_STRIDE_BYTES: u32 = 304;
-/// `gi_compute.wgsl::GiPoint` 的字节数（`pos:vec3@0` / `_pad0@12` /
-/// `irradiance:vec3@16` / `_pad1@28` → 对齐 16 → **32**）。
+/// `gi_compute.wgsl::GiPoint` 的字节数（`pos:vec4<f32>@0` /
+/// `irradiance:vec4<f32>@16` → 对齐 16 → **32**）。
 pub const GI_POINT_STRIDE_BYTES: u32 = 32;
 /// GI 测试的探针数（1 个工作组内，3×64 覆盖边界守卫用 1 组即可）。
 pub const GI_N_PROBES: u32 = 3;
@@ -510,6 +524,15 @@ struct Scratch {
     /// CPU 打包字节逐字节对读）。**必须与 `gi_params` 分开两块**：后者是"要写进去的
     /// 源"，若复用同一块，读回会覆写源，比对就退化成"自己和自己比"（恒真）。
     gi_params_echo: [u8; GI_PARAMS_BYTES as usize],
+    /// `gpu.gi_layout` 的读回落点：**只**装 `gi_probes[0]` 一个元素
+    /// （[`GI_PROBE_STRIDE_BYTES`] 字节）。
+    ///
+    /// 【为什么不复用 `gi_probes`】`gi_probes` 是 `gpu.gi_compute` 的输入源，
+    /// 而 `gpu.gi_layout` 与它在宿主清单里相邻、可能被并发 run；若两者共用一块
+    /// 暂存，`gpu.gi_layout` 的读回会覆写 `gpu.gi_compute` 尚未提交完的输入字节
+    /// → 后者读到被 census 改写过的 samples（假失败）。独立一块从根上排除这个
+    /// 竞态，代价只有 304 字节的零初始化静态区（`.bss`，不进 wasm 数据段）。
+    gi_layout_out: [u8; GI_PROBE_STRIDE_BYTES as usize],
 }
 
 impl Scratch {
@@ -549,6 +572,7 @@ impl Scratch {
             gi_points: [0; GI_POINTS_BYTES as usize],
             gi_params: [0; GI_PARAMS_BYTES as usize],
             gi_params_echo: [0; GI_PARAMS_BYTES as usize],
+            gi_layout_out: [0; GI_PROBE_STRIDE_BYTES as usize],
         }
     }
 }
@@ -976,6 +1000,15 @@ static TESTS: &[TestItem] = &[
         needs_gpu: true,
         run: t_gpu_params_roundtrip,
         collect: Some(c_gpu_params_roundtrip),
+    },
+    TestItem {
+        // 放在 `gpu.gi_compute` **之前**：布局错了，下游 SH/辐照度的偏差全都没有
+        // 解读价值。本项先把「shader 到底把哪些字节读成了自己的字段」逐格摊开。
+        id: "gpu.gi_layout",
+        name: "真 WebGPU：GI 存储布局 census（probe0/1/2 的 pos/normal + GiParams 混合字段逐格判对）",
+        needs_gpu: true,
+        run: t_gpu_gi_layout,
+        collect: Some(c_gpu_gi_layout),
     },
     TestItem {
         id: "gpu.gi_compute",
@@ -2523,6 +2556,15 @@ static COVERAGE: &[(&str, &[(&str, &str, &str)])] = &[
                 ST_COVERED,
                 "由 `gpu.gi_compute` 真 dispatch：最近探针 SH 重建 + Lambert 转辐亮度，\
                  查询点出射辐亮度逐字段判对",
+            ),
+            (
+                "gi_layout_census",
+                ST_COVERED,
+                "由 `gpu.gi_layout` 真 dispatch（1 工作组）：把 shader 自己读到的 \
+                 probe0/1/2 的 pos/normal 与 GiParams 的 (probe_count, prim_count, \
+                 env_radiance.x, albedo.x) 原样写进 samples[0..7]，宿主与 Rust 打包值\
+                 逐格判对——这是「真机驱动对 vec3<f32> 的 struct size 处理与规范不一致」\
+                 这类**只有真机才暴露**的布局缺陷的唯一直接判据",
             ),
         ],
     ),
@@ -5523,16 +5565,16 @@ fn gi_params_bytes(p: &GiTestParams) -> [u8; GI_PARAMS_BYTES as usize] {
     pack_f32(&mut b, 16, p.env[0]);
     pack_f32(&mut b, 20, p.env[1]);
     pack_f32(&mut b, 24, p.env[2]);
-    // _pad0 @28
+    // env_radiance 的 w @28 —— vec4 的第 4 分量保持 0（缓冲由 [0u8; N] 初始化）。
     pack_f32(&mut b, 32, p.albedo[0]);
     pack_f32(&mut b, 36, p.albedo[1]);
     pack_f32(&mut b, 40, p.albedo[2]);
-    // _pad1 @44
+    // albedo 的 w @44 —— 同上，恒 0。
     pack_f32(&mut b, 48, p.t_max);
     pack_f32(&mut b, 52, p.hit_eps);
     pack_f32(&mut b, 56, p.safety);
     pack_u32(&mut b, 60, p.max_steps);
-    // prims @64，每条 48 字节：kind@0 / radius@4 / center@16 / _pad@28。
+    // prims @64，每条 48 字节：kind@0 / radius@4 / _pad0@8(8B) / center@16(vec4, w=0) / _pad1@32。
     for (i, prim) in GI_PRIMS.iter().enumerate() {
         let o = 64 + i * GI_PRIM_STRIDE_BYTES as usize;
         pack_u32(&mut b, o, prim.kind);
@@ -5540,6 +5582,7 @@ fn gi_params_bytes(p: &GiTestParams) -> [u8; GI_PARAMS_BYTES as usize] {
         pack_f32(&mut b, o + 16, prim.center[0]);
         pack_f32(&mut b, o + 20, prim.center[1]);
         pack_f32(&mut b, o + 24, prim.center[2]);
+        // center 的 w @28 —— 恒 0（vec4 语义；与 WGSL 的 `center:vec4<f32>` 对齐）。
     }
     b
 }
@@ -5547,8 +5590,13 @@ fn gi_params_bytes(p: &GiTestParams) -> [u8; GI_PARAMS_BYTES as usize] {
 /// 把探针输入（位置 + 法线）打包进 `array<GiProbe>`，并给"入口应覆写"的字段预填哨兵。
 ///
 /// 布局（与 WGSL `GiProbe` 逐字段一致，[`GI_PROBE_STRIDE_BYTES`] 有完整推导）：
-/// `pos@0` / `_pad0@12` / `normal@16` / `_pad1@28` /
-/// `samples[k]@32+16k`（k=0..8）/ `sh[k]@160+16k`（k=0..9）。
+/// `pos:vec4@0` / `normal:vec4@16` /
+/// `samples[k]:vec4@32+16k`（k=0..8）/ `sh[k]:vec4@160+16k`（k=0..9）。
+///
+/// # 第 4 分量（w）恒 0
+/// 每个 vec4 只写 xyz，w 保持 `fill(0)` 的 0——与 shader 侧 `vec4(xyz, 0.0)` 的
+/// 写法完全一致。w 不参与任何运算，故它不是"契约的一部分"，只是让 vec4 化的
+/// 布局零变化**不引入未初始化的字节**（否则读回比对会因为随机 padding 而抖）。
 ///
 /// # 哨兵（见 [`GI_SENTINEL_SAMPLE`] / [`GI_SENTINEL_SH`] 的整段说明）
 /// `samples` 全段预填 `-1`、`sh` 全段预填 `-2`。它们只影响 **GPU 输入缓冲的初值**；
@@ -5559,14 +5607,14 @@ fn gi_pack_probes() {
         v.gi_probes.fill(0);
         for i in 0..GI_N_PROBES as usize {
             let o = i * GI_PROBE_STRIDE_BYTES as usize;
-            // 逐方向采样段：8 个 vec3（stride 16），三分量都填哨兵。
+            // 逐方向采样段：8 个 vec4（stride 16），三个分量填哨兵，w 保持 0。
             for d in 0..GI_DIRS as usize {
                 let so = o + 32 + d * VEC3_STRIDE_BYTES as usize;
                 pack_f32(&mut v.gi_probes, so, GI_SENTINEL_SAMPLE);
                 pack_f32(&mut v.gi_probes, so + 4, GI_SENTINEL_SAMPLE);
                 pack_f32(&mut v.gi_probes, so + 8, GI_SENTINEL_SAMPLE);
             }
-            // SH-L2 系数段：9 个 vec3（stride 16）@160。
+            // SH-L2 系数段：9 个 vec4（stride 16）@160。
             for k in 0..9usize {
                 let so = o + 160 + k * VEC3_STRIDE_BYTES as usize;
                 pack_f32(&mut v.gi_probes, so, GI_SENTINEL_SH);
@@ -5610,11 +5658,15 @@ fn gi_pack_points() {
 }
 
 /// 把探针 buffer 的读回字节解析为 CPU 参考态（SH 系数 9 项）。
+///
+/// 步长 16 = [`VEC3_STRIDE_BYTES`] = [`VEC4_STRIDE_BYTES`]——**这正是 vec3→vec4
+/// 化能"布局零变化"的原因**：`array<vec3<f32>>` 的 stride 本来就是 roundUp(16,12)=16，
+/// 与 `array<vec4<f32>>` 的 16 相同，故 `sh[k]@160+16k` 的取值偏移一字未改。
 fn gi_unpack_sh(buf: &[u8], probe_idx: usize) -> [[f32; 3]; 9] {
     let base = probe_idx * GI_PROBE_STRIDE_BYTES as usize;
     let mut sh = [[0.0f32; 3]; 9];
     for k in 0..9 {
-        let o = base + 160 + k * 16; // sh 起始 @160，每项 stride 16
+        let o = base + 160 + k * VEC4_STRIDE_BYTES as usize; // sh 起始 @160，每项 stride 16
         sh[k] = [unpack_f32(buf, o), unpack_f32(buf, o + 4), unpack_f32(buf, o + 8)];
     }
     sh
@@ -5739,9 +5791,9 @@ fn gi_diag_text(got_probes: &[u8], got_points: &[u8]) -> String {
         let nrm_ok = gnrm == [inp[3], inp[4], inp[5]];
         pos_all_ok &= pos_ok;
         nrm_all_ok &= nrm_ok;
-        // GPU 侧 samples（stride 16 的 vec3，取 0..3 通道）。
+        // GPU 侧 samples（`array<vec4<f32>>`，stride 16，取前 3 个通道；w 不入算）。
         let g_sample = |d: usize| -> [f32; 3] {
-            let o = base + 32 + d * 16;
+            let o = base + 32 + d * VEC4_STRIDE_BYTES as usize;
             [
                 unpack_f32(got_probes, o),
                 unpack_f32(got_probes, o + 4),
@@ -6018,6 +6070,292 @@ fn c_gpu_params_roundtrip() -> Status {
          prim_count@8={got_prim} / n_dirs@12={got_dirs}（与 `gi_compute.wgsl::GiParams` 布局一致）\n\
          结论：uniform 传输链（create → write → copyBufferToBuffer → map → copy_out）可用，\
          `gpu.gi_compute` 的任何偏差都不能再归因到「参数没到达 GPU」"
+    ));
+    Status::Pass
+}
+
+// ---------------------------------------------------------------------------
+// 测试项：`gpu.gi_layout`（存储布局 census —— **只有真机才暴露**的那一类缺陷）
+// ---------------------------------------------------------------------------
+//
+// # 为什么必须把「布局」做成独立判据
+// `gpu.gi_compute` 的 FAIL 只能给出"数值不一致"，而**布局错位**与**算法算错**在
+// 读回里长得完全一样（都是"某些字段是哨兵值"）。V2.2 的真机 bug 正是这一类：
+// 驱动对结构体成员 `vec3<f32>` 的 size 处理与 WGSL 规范不一致（规范 12，实现更大），
+// 于是 `GiProbe.normal`（应 @16）被推到 `samples` 区、读到哨兵 -1，`samples`/`sh`
+// 被压缩（`samples[6]` 落到 `sh[0]` 上）。
+//
+// # 为什么本地（SwiftShader）永远测不出，而本项仍是必需的
+// SwiftShader 严格按规范实现 → 本地全绿；本地能证明的只有"没改坏"，**证不了
+// "真机修好"**。故本项的价值不在本地，而在**下一轮真机重跑时能一眼判死**：
+// 它把「shader 自己读到的四个关键字段」原样导出（`gi_compute.wgsl::gi_layout_census`
+// 写进 `gi_probes[0].samples[0..7]`），与 Rust 打包值**逐格**比对：
+//   samples[0..1] = probe0.pos / normal   ← normal 可读 = 本轮 bug 已修
+//   samples[2..3] = probe2.pos / normal   ← 读 probe2 = 验 stride 304 生效
+//   samples[4..5] = probe1.pos / normal
+//   samples[6]    = (probe_count, prim_count, env.x, albedo.x) ← GiParams 混合字段
+//
+// # 判据为什么比 `gpu.gi_compute` 更"硬"
+// 本项不涉及任何数学（不做 SDF、不做 SH），只做"把读到的值搬出来"。故它 FAIL 时
+// 不可能被"算法精度"掩盖——失败即等于**布局与宿主假设不一致**，可直接照着文案
+// 归因，不需要再跑一轮。
+
+/// `gpu.gi_layout` 的期望值：`samples[0..8]`，每格 4 个分量。
+///
+/// **全部由既有单一真源导出**（[`gi_probe_inputs`] / [`GI_TEST`] / [`GI_N_PROBES`]），
+/// 不写死字面量：否则改输入值就会让本项与 `gpu.gi_compute` 判据各说各话。
+/// 第 4 分量期望恒 0（宿主打包只写 xyz、`fill(0)` 保证 w=0；shader 侧
+/// `vec4(xyz, 0.0)` 同口径）。
+///
+/// 【编译期前置】census 入口要读 `gi_probes[0]` / `[1]` / `[2]`，而本函数要按
+/// `gi_probe_inputs()[2]` 给期望值——两者都依赖 `GI_N_PROBES >= 3`。若把探针数
+/// 调小，下方 `inp[2]` 会**越界 panic**（`gpu.gi_layout` 在真机上崩掉比 FAIL 更糟），
+/// 故在编译期就把这条前置钉死：改小探针数必须同时改本项。
+const _: () = assert!(
+    GI_N_PROBES >= 3,
+    "gpu.gi_layout 的 census 至少需要 3 条探针（它要读 gi_probes[0]/[1]/[2]）"
+);
+
+fn gi_layout_expect() -> [[f32; 4]; 8] {
+    let inp = gi_probe_inputs();
+    [
+        // samples[0] = probe0.pos（`p0.samples[0] = p0.pos`）
+        [inp[0][0], inp[0][1], inp[0][2], 0.0],
+        // samples[1] = probe0.normal  ← 本轮 bug 的直接判据
+        [inp[0][3], inp[0][4], inp[0][5], 0.0],
+        // samples[2] = probe2.pos     ← stride 304 的判据
+        [inp[2][0], inp[2][1], inp[2][2], 0.0],
+        // samples[3] = probe2.normal
+        [inp[2][3], inp[2][4], inp[2][5], 0.0],
+        // samples[4] = probe1.pos
+        [inp[1][0], inp[1][1], inp[1][2], 0.0],
+        // samples[5] = probe1.normal
+        [inp[1][3], inp[1][4], inp[1][5], 0.0],
+        // samples[6] = (probe_count, prim_count, env_radiance.x, albedo.x)
+        [GI_N_PROBES as f32, GI_TEST.prims as f32, GI_TEST.env[0], GI_TEST.albedo[0]],
+        // samples[7] = 0（证明 8 格全由 census 入口覆写，不是残留值）
+        [0.0, 0.0, 0.0, 0.0],
+    ]
+}
+
+/// 每格的语义标签（`samples[k]` 读到的是什么），用于逐格打印与失败归因。
+const GI_LAYOUT_CELLS: [(&str, &str); 8] = [
+    ("probe0.pos", "GiProbe.pos @0（第一个字段）"),
+    ("probe0.normal", "GiProbe.normal @16 ← 本轮 bug 直接判据"),
+    ("probe2.pos", "GiProbe[2].pos（stride 304 判据）"),
+    ("probe2.normal", "GiProbe[2].normal"),
+    ("probe1.pos", "GiProbe[1].pos"),
+    ("probe1.normal", "GiProbe[1].normal"),
+    ("params 混合", "probe_count / prim_count / env_radiance.x / albedo.x"),
+    ("清零", "常量 0（证明 8 格全被覆写）"),
+];
+
+/// 从读回缓冲解析 `gi_probes[0].samples[k]`（`samples` 起始 @32，每项 stride 16）。
+fn gi_layout_read(buf: &[u8], k: usize) -> [f32; 4] {
+    let o = 32 + k * VEC4_STRIDE_BYTES as usize;
+    [unpack_f32(buf, o), unpack_f32(buf, o + 4), unpack_f32(buf, o + 8), unpack_f32(buf, o + 12)]
+}
+
+/// `gpu.gi_layout` 的 run：打包探针 → 建 storage/uniform → dispatch census → 读回 probe0。
+fn t_gpu_gi_layout() -> Status {
+    let dev = match ready_device("gpu.gi_layout") {
+        Ok(d) => d,
+        Err(s) => return s,
+    };
+    let wgsl = match expanded_named("gi_compute.wgsl") {
+        Some(w) => w,
+        None => return fail("gpu.gi_layout：gi_compute.wgsl 展开结果缺失"),
+    };
+    // 输入与 `gpu.gi_compute` **完全同源**（同一 `gi_pack_probes` / `gi_params_bytes`），
+    // 故本项期望值可以直接由 `gi_layout_expect()` 给出而不必再写一份打包逻辑。
+    gi_pack_probes();
+    let par_bytes = gi_params_bytes(&GI_TEST);
+    let par_ptr = SCRATCH.with(|s| {
+        let mut v = s.borrow_mut();
+        v.gi_params.copy_from_slice(&par_bytes);
+        v.gi_params.as_ptr() as usize as u32
+    });
+    let probe_buf = match make_buffer("gpu.gi_layout", dev, GI_PROBES_BYTES, usage::STORAGE, || {
+        (addr_of_slice(|s| &s.gi_probes[..]), GI_PROBES_BYTES)
+    }) {
+        Ok(h) => h,
+        Err(s) => return s,
+    };
+    let par_buf = match make_buffer("gpu.gi_layout", dev, GI_PARAMS_BYTES, usage::UNIFORM, || {
+        (par_ptr, GI_PARAMS_BYTES)
+    }) {
+        Ok(h) => h,
+        Err(s) => return s,
+    };
+    // census 入口静态引用 { gi_probes(0), gi_params(1) } = 连续前缀 {0,1}。
+    // （`@workgroup_size(1)` → 1 个工作组；入口内再按 gid.x != 0u 早退，双保险。）
+    let steps = [("gi_layout_census", 1, &[probe_buf, par_buf][..])];
+    // 只读回 **probe0 一个元素**（304B）：census 只写 `gi_probes[0]`。
+    let out = addr_of_buf(|x| &mut x.gi_layout_out[..]);
+    set_result(&format!(
+        "已提交 GI 布局 census（entry `gi_layout_census`，1 工作组）：probes={probe_buf}\
+         （{GI_PROBES_BYTES}B）params={par_buf}（{GI_PARAMS_BYTES}B uniform）\n\
+         读回 probe0（{GI_PROBE_STRIDE_BYTES}B）→ 8 格 × 4 分量逐格判对：\
+         [0]probe0.pos [1]probe0.normal [2]probe2.pos [3]probe2.normal \
+         [4]probe1.pos [5]probe1.normal [6](counts,env.x,albedo.x) [7]0，容差 {F32_TOL:e}"
+    ));
+    if let Err(s) = submit_chain("gpu.gi_layout", dev, wgsl, &steps) {
+        return s;
+    }
+    if let Err(s) = readback_to("gpu.gi_layout", dev, probe_buf, GI_PROBE_STRIDE_BYTES, out) {
+        return s;
+    }
+    Status::Pending
+}
+
+/// `gpu.gi_layout` 的 collect：逐格逐分量比对 + **带归因的失败文案**。
+///
+/// # 为什么失败文案里要写"推断"
+/// 本项的唯一用途是**下一轮真机重跑时的判读依据**。沙箱里 SwiftShader 永远 PASS，
+/// 所以这段文案的价值全部落在真机：它必须能让读报告的人在**不再重跑**的前提下
+/// 说出"是 vec3 的 size 还没修好，还是 stride 没生效，还是 GiParams 的 vec4 偏移错"。
+/// 因此下面把三种典型形态分别写成显式条件，并给出「这说明什么」。
+fn c_gpu_gi_layout() -> Status {
+    let dev = match ready_device("gpu.gi_layout") {
+        Ok(d) => d,
+        Err(s) => return s,
+    };
+    if let Err(s) = check_errors("gpu.gi_layout", dev) {
+        return s;
+    }
+    if gpu::device_lost(dev) != 0 {
+        return fail("device 在布局 census 期间 lost");
+    }
+    let want = gi_layout_expect();
+    let got_buf = SCRATCH.with(|s| s.borrow().gi_layout_out);
+    let mut got = [[0.0f32; 4]; 8];
+    for k in 0..8 {
+        got[k] = gi_layout_read(&got_buf, k);
+    }
+    // ---- 逐格逐分量比对（4 个分量全比：w 必须是 0，否则说明写侧构造错了）----
+    let mut bad_cells: Vec<usize> = Vec::new();
+    let mut bad_comps = 0usize;
+    let mut first_msg = String::new();
+    let mut max_dev = 0.0f32;
+    for k in 0..8 {
+        let mut cell_bad = false;
+        for c in 0..4 {
+            let d = (got[k][c] - want[k][c]).abs();
+            if d > max_dev {
+                max_dev = d;
+            }
+            if !(d <= F32_TOL) {
+                if first_msg.is_empty() {
+                    first_msg = format!(
+                        "首个不一致 samples[{k}].{}（{}）：GPU {} vs Rust 打包 {}",
+                        ["x", "y", "z", "w"][c],
+                        GI_LAYOUT_CELLS[k].0,
+                        got[k][c],
+                        want[k][c]
+                    );
+                }
+                cell_bad = true;
+                bad_comps += 1;
+            }
+        }
+        if cell_bad {
+            bad_cells.push(k);
+        }
+    }
+    // ---- 逐格表（PASS/FAIL 全列，便于"哪一格错"一眼可见）----
+    let mut table = String::new();
+    for k in 0..8 {
+        let cell_bad = bad_cells.contains(&k);
+        table.push_str(&format!(
+            "\n  samples[{k}] {:<14}（{}）\n    期望 ({}, {}, {}, {}) / 实测 ({}, {}, {}, {}) → {}",
+            GI_LAYOUT_CELLS[k].0,
+            GI_LAYOUT_CELLS[k].1,
+            want[k][0], want[k][1], want[k][2], want[k][3],
+            got[k][0], got[k][1], got[k][2], got[k][3],
+            if cell_bad { "FAIL" } else { "PASS" },
+        ));
+    }
+    if !bad_cells.is_empty() {
+        // ---- 归因推断（顺序即"从最可能的根因到最不可能"，逐条独立判定）----
+        let mut why: Vec<&str> = Vec::new();
+        // 判据：某个 vec3 槽的 x 分量读到 samples 的哨兵 -1。
+        let sentinel_hit = |v: [f32; 4]| {
+            v[0] == GI_SENTINEL_SAMPLE && v[1] == GI_SENTINEL_SAMPLE && v[2] == GI_SENTINEL_SAMPLE
+        };
+        if sentinel_hit(got[1]) {
+            why.push(
+                "samples[1] 读到哨兵 -1 → **normal 仍被推到 samples 区**：结构体成员 \
+                 `vec3<f32>` 的 size 在本驱动上仍非 12（vec4 化没生效，或改回 vec3 了）。\
+                 修法：GiProbe.normal 必须是 vec4<f32>，且 Rust 侧 offset 仍写 +16/+20/+24。",
+            );
+        }
+        if sentinel_hit(got[3]) && !sentinel_hit(got[1]) {
+            why.push(
+                "samples[1] 对、samples[3] 读到哨兵 -1 → **`array<GiProbe>` 的 stride 未按 304 \
+                 生效**：`gi_probes[2]` 落到了别的字节上（304 是 Rust 侧 \
+                 GI_PROBE_STRIDE_BYTES；若 shader 结构体多/少了字节，这里必然错位）。",
+            );
+        }
+        if !(got[6][2] - GI_TEST.env[0]).abs().le(&F32_TOL) {
+            why.push(
+                "samples[6] 的 env_radiance.x ≠ 0.9 → **GiParams 的 vec4 字段偏移错**：\
+                 env_radiance 应 @16（vec3+_pad0 的旧形态会让它偏 0 字节但把 albedo 推错），\
+                 albedo 应 @32。注意 vec4 化后**不能再补 `_pad0`/`_pad1`**。",
+            );
+        }
+        if !(got[6][0] - GI_N_PROBES as f32).abs().le(&F32_TOL)
+            || !(got[6][1] - GI_TEST.prims as f32).abs().le(&F32_TOL)
+        {
+            why.push(
+                "samples[6] 的 u32 字段（probe_count / prim_count）读错 → **uniform 头部偏移错**\
+                 或 uniform 根本没绑上（先看 `gpu.params_roundtrip` 是否 PASS）。",
+            );
+        }
+        if bad_cells.contains(&0) {
+            why.push(
+                "samples[0]（GiProbe.pos @0）就读错 → 连**第一个字段**的偏移都不对，\
+                 这不是 vec3 的问题：先查 bind group 的 binding 顺序（GiProbe 必须 binding 0）、\
+                 缓冲字节数与 `GI_PROBE_STRIDE_BYTES` 是否自洽。",
+            );
+        }
+        if bad_cells.contains(&6) && got[6][3] != 0.0 && (got[6][3] - GI_TEST.albedo[0]).abs() > F32_TOL {
+            why.push(
+                "samples[6].w（albedo.x）读错 → GiParams.albedo 的偏移错（应 @32）。",
+            );
+        }
+        if bad_cells.contains(&7) {
+            why.push(
+                "samples[7] 不是 0 → census 入口**没有把 8 格全部覆写**（读到的是哨兵/旧值）：\
+                 检查 entry 是否真的 dispatch 到（工作组数 / entry 名）。",
+            );
+        }
+        if why.is_empty() {
+            why.push(
+                "以上三条典型形态都不成立：请对照逐格表定位——差异集中在某个字段的 \
+                 起始偏移附近时，优先怀疑该字段自身的类型 size（vec3/vec2 混用）。",
+            );
+        }
+        return fail(format!(
+            "gpu.gi_layout：GI 存储布局 census 不通过——8 格 × 4 分量中 {bad_comps} 个分量超容差 \
+             {F32_TOL:e}（{}/8 格 FAIL，最大偏差 {max_dev:.3e}）；{first_msg}\n\
+             [逐格判定]（samples 起始 @32，每项 stride 16）{table}\n\
+             [布局事实] 宿主假设：GiProbe = pos@0 / normal@16 / samples@32 / sh@160 → stride \
+             {GI_PROBE_STRIDE_BYTES}；GiParams = env_radiance@16 / albedo@32 / t_max@48 / \
+             prims@64 → {GI_PARAMS_BYTES}B；GiPoint = pos@0 / irradiance@16 → \
+             {GI_POINT_STRIDE_BYTES}B；GiPrim = kind@0 / radius@4 / center@16 → \
+             {GI_PRIM_STRIDE_BYTES}B\n\
+             [推断]（按概率序，逐条独立判定）\n  - {}",
+            bad_cells.len(),
+            why.join("\n  - ")
+        ));
+    }
+    set_result(&format!(
+        "GI 存储布局 census 逐格一致 ✓（8 格 × 4 分量全在容差 {F32_TOL:e} 内，最大偏差 {max_dev:.3e}）\
+         {table}\n\
+         结论：shader 读到的 pos/normal/samples 偏移与 Rust 打包一致，`gi_probes[2]` 落在 \
+         stride {GI_PROBE_STRIDE_BYTES} 的正确位置。\n\
+         **注意**：SwiftShader 严格按规范实现 → 本项本地 PASS 只证明「没改坏」，不证明\
+         「真机修好」；真机判读直接看 samples[1] 是否 (0,1,0)、samples[3] 是否 (1,0,0)。"
     ));
     Status::Pass
 }
@@ -7685,6 +8023,258 @@ mod tests {
         }
     }
 
+    /// 解析 `struct <name> { … }` 的成员表（`(成员名, 类型串)`），按**顶层逗号**切分。
+    ///
+    /// 顶层 = `<>` / `()` / `[]` 深度为 0；`array<GiPrim, 4>` 里的逗号不算分隔符。
+    /// 注释先剥掉（注释里的 `pos: vec3<f32>` 字样曾把别的门禁误导过，见 wgsl_lint 的注记）。
+    fn wgsl_struct_members(src: &str, name: &str) -> Vec<(String, String)> {
+        let head = match src.find(&format!("struct {name}")) {
+            Some(i) => i,
+            None => panic!("gi_compute.wgsl 里找不到 `struct {name}`"),
+        };
+        let open = match src[head..].find('{') {
+            Some(i) => head + i,
+            None => panic!("`struct {name}` 缺 `{{`"),
+        };
+        let mut depth = 0i32;
+        let mut close = None;
+        for (i, c) in src[open..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(open + i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let body = &src[open + 1..close.expect("`struct {name}` 括号不配平")];
+        // 剥行注释（WGSL 无块注释）。
+        let body: String = body
+            .lines()
+            .map(|l| match l.find("//") {
+                Some(i) => &l[..i],
+                None => l,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut out = Vec::new();
+        let mut depth = 0i32;
+        let mut cur = String::new();
+        for ch in body.chars() {
+            match ch {
+                '<' | '(' | '[' => depth += 1,
+                '>' | ')' | ']' => depth -= 1,
+                ',' if depth == 0 => {
+                    if let Some(m) = split_member(&cur) {
+                        out.push(m);
+                    }
+                    cur.clear();
+                    continue;
+                }
+                _ => {}
+            }
+            cur.push(ch);
+        }
+        if let Some(m) = split_member(&cur) {
+            out.push(m);
+        }
+        out
+    }
+
+    /// `name: type` → `("name", "type")`；空片段返回 `None`。
+    fn split_member(piece: &str) -> Option<(String, String)> {
+        let t = piece.trim();
+        if t.is_empty() {
+            return None;
+        }
+        let (n, ty) = t.split_once(':').expect("WGSL 成员必须是 `name: type`");
+        Some((n.trim().to_string(), ty.trim().to_string()))
+    }
+
+    /// 按 WGSL 规范求类型 `(align, size)`（本仓出现的子集：标量 / `vecN<T>` /
+    /// `array<T, N>` / 已算过的结构体名）。
+    ///
+    /// 数组 stride 按**规范**取 `roundUp(size, align)`（`array<vec3<f32>>` 因此是
+    /// 16 而非 12——这正是本文件 V2.2 踩过的那个坑）。结构体走 `known` 表递归。
+    fn wgsl_type_layout(t: &str, known: &[(String, usize, usize)]) -> Option<(usize, usize)> {
+        let t = t.trim();
+        match t {
+            "u32" | "i32" | "f32" => return Some((4, 4)),
+            _ => {}
+        }
+        if let Some(rest) = t.strip_prefix("vec") {
+            let (n, inner) = rest.split_once('<')?;
+            let inner = inner.trim_end_matches('>').trim();
+            if !matches!(inner, "u32" | "i32" | "f32") {
+                return None;
+            }
+            return match n {
+                "2" => Some((8, 8)),
+                "3" => Some((16, 12)),
+                "4" => Some((16, 16)),
+                _ => None,
+            };
+        }
+        if let Some(rest) = t.strip_prefix("array<") {
+            let body = rest.strip_suffix('>')?;
+            // 元素类型可含 `<>`，故从右找逗号（元素类型里没有逗号：本仓 `array<GiPrim,4>` /
+            // `array<vec4<f32>,8>` 两种）。
+            let (el, n) = body.rsplit_once(',')?;
+            let count: usize = n.trim().parse().ok()?;
+            let (ea, es) = wgsl_type_layout(el, known)?;
+            let stride = es.div_ceil(ea) * ea;
+            return Some((ea, stride * count));
+        }
+        known.iter().find(|(n, _, _)| n == t).map(|(_, a, s)| (*a, *s))
+    }
+
+    /// `gi_compute.wgsl` 的四个**存储布局**结构体：从 WGSL 源码文本按规范算出的
+    /// 逐字段偏移 / 总 size，必须与 abi.rs 的四个 `GI_*_STRIDE_BYTES` 一致。
+    ///
+    /// # 为什么不是「断言常量等于 304」
+    /// 那是自证恒真：常量本来就是 304，`assert_eq!(GI_PROBE_STRIDE_BYTES, 304)` 永远绿。
+    /// 本测试读的是**shader 源码**，故能抓住两类真实漂移：
+    ///   1. 改了 WGSL 结构体（增删字段 / 换类型）却没同步 Rust 打包偏移；
+    ///   2. 有人把 vec4 化的字段改回 `vec3<f32>` / 用 `array<vec3<f32>>` 做布局
+    ///      ——那是 V2.2 真机 bug 的形态（`vec3` 的 size 在真机驱动上不是 12）。
+    /// 它**抓不住**「驱动不按规范实现」（那是真机 `gpu.gi_layout` 的职责），但能保证
+    /// 「静态门禁 / Rust 打包 / shader 声明」三者始终在说同一件事。
+    #[test]
+    fn gi_wgsl_layout_matches_abi_constants() {
+        let raw = include_str!("../../shaders/gi_compute.wgsl");
+        // 先把 `//` 注释剥掉：本文件的注释里**成篇**引用 `vec3<f32>` 与偏移表，
+        // 不剥会把文档当声明解析（wgsl_lint.mjs 也踩过同样的坑）。
+        let src: String = raw
+            .lines()
+            .map(|l| match l.find("//") {
+                Some(i) => &l[..i],
+                None => l,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // 递归求一个结构体的 size 与其成员偏移表。
+        fn layout(
+            src: &str,
+            name: &str,
+            known: &[(String, usize, usize)],
+        ) -> (usize, Vec<(String, usize, usize)>) {
+            let members = wgsl_struct_members(src, name);
+            assert!(!members.is_empty(), "`struct {name}` 解析出 0 个成员");
+            let mut off = 0usize;
+            let mut max_align = 1usize;
+            let mut table = Vec::new();
+            for (mn, mt) in &members {
+                let (a, s) = wgsl_type_layout(mt, known)
+                    .unwrap_or_else(|| panic!("`{name}.{mn}` 的类型 `{mt}` 无法解析"));
+                off = off.div_ceil(a) * a;
+                table.push((mn.clone(), off, s));
+                off += s;
+                max_align = max_align.max(a);
+            }
+            (off.div_ceil(max_align) * max_align, table)
+        }
+
+        // --- GiPrim（无嵌套）---
+        let (prim_size, prim) = layout(&src, "GiPrim", &[]);
+        let want_prim = [
+            ("kind", 0usize),
+            ("radius", 4),
+            ("_pad0", 8),
+            ("center", 16),
+            ("_pad1", 32),
+        ];
+        for (mn, off) in want_prim {
+            let got = prim
+                .iter()
+                .find(|(n, _, _)| n == mn)
+                .unwrap_or_else(|| panic!("GiPrim 缺成员 `{mn}`"));
+            assert_eq!(got.1, off, "GiPrim.{mn} 偏移变了（期望 @{off}，实际 @{}）", got.1);
+        }
+        assert_eq!(
+            prim_size, GI_PRIM_STRIDE_BYTES as usize,
+            "GiPrim size 与 GI_PRIM_STRIDE_BYTES 不一致（Rust 打包偏移会整体错位）"
+        );
+
+        let known = vec![("GiPrim".to_string(), 16usize, prim_size)];
+
+        // --- GiParams（含 `array<GiPrim, 4>`）---
+        let (par_size, par) = layout(&src, "GiParams", &known);
+        let want_par = [
+            ("probe_count", 0usize),
+            ("point_count", 4),
+            ("prim_count", 8),
+            ("n_dirs", 12),
+            ("env_radiance", 16),
+            ("albedo", 32),
+            ("t_max", 48),
+            ("hit_eps", 52),
+            ("safety", 56),
+            ("max_steps", 60),
+            ("prims", 64),
+        ];
+        for (mn, off) in want_par {
+            let got = par
+                .iter()
+                .find(|(n, _, _)| n == mn)
+                .unwrap_or_else(|| panic!("GiParams 缺成员 `{mn}`（vec4 化时把 _pad* 补回去了？）"));
+            assert_eq!(got.1, off, "GiParams.{mn} 偏移变了（期望 @{off}，实际 @{}）", got.1);
+        }
+        assert_eq!(
+            par_size, GI_PARAMS_BYTES as usize,
+            "GiParams size 与 GI_PARAMS_BYTES 不一致（`gpu.params_roundtrip` 会 256B 对不上）"
+        );
+
+        // --- GiProbe ---
+        let (probe_size, probe) = layout(&src, "GiProbe", &known);
+        let want_probe = [("pos", 0usize), ("normal", 16), ("samples", 32), ("sh", 160)];
+        for (mn, off) in want_probe {
+            let got = probe
+                .iter()
+                .find(|(n, _, _)| n == mn)
+                .unwrap_or_else(|| panic!("GiProbe 缺成员 `{mn}`"));
+            assert_eq!(got.1, off, "GiProbe.{mn} 偏移变了（期望 @{off}，实际 @{}）", got.1);
+        }
+        assert_eq!(
+            probe_size, GI_PROBE_STRIDE_BYTES as usize,
+            "GiProbe size 与 GI_PROBE_STRIDE_BYTES 不一致：`array<GiProbe>` 的 stride 会错位，\
+             真机上 `gi_probes[2]` 就会读到别人的字段"
+        );
+
+        // --- GiPoint ---
+        let (point_size, point) = layout(&src, "GiPoint", &known);
+        for (mn, off) in [("pos", 0usize), ("irradiance", 16)] {
+            let got = point
+                .iter()
+                .find(|(n, _, _)| n == mn)
+                .unwrap_or_else(|| panic!("GiPoint 缺成员 `{mn}`"));
+            assert_eq!(got.1, off, "GiPoint.{mn} 偏移变了（期望 @{off}，实际 @{}）", got.1);
+        }
+        assert_eq!(point_size, GI_POINT_STRIDE_BYTES as usize, "GiPoint size 与常量不一致");
+
+        // --- 结构体内**禁止**任何 `vec3<…>`（本轮真机 bug 的形态）---
+        // 这是本测试存在的核心理由：`vec3<f32>` 的 size 在真机驱动上与规范分歧
+        // （规范 12，实现更大），而 `array<vec3<f32>>` 的 stride 直接由该 size 决定
+        // → 整个结构体的后续字段偏移错位。故四个布局结构体里**一个 vec3 都不许有**：
+        // 三元组一律用 `vec4<f32>` 承载（w 恒 0，布局与 `vec3 + padding` 逐字节等价）。
+        for sname in ["GiPrim", "GiParams", "GiProbe", "GiPoint"] {
+            for (mn, mt) in wgsl_struct_members(&src, sname) {
+                let compact = mt.replace(' ', "");
+                assert!(
+                    !compact.contains("vec3<"),
+                    "`{sname}.{mn}: {mt}` 又在存储布局里用了 `vec3<…>`——\
+                     真机驱动对 vec3 的 size 处理与规范不一致（V2.2 真机 bug 的根因：\
+                     GiProbe.normal 被推到 samples 区、读到 -1 哨兵），\
+                     必须用 `vec4<f32>`（w 恒 0，布局零变化）"
+                );
+            }
+        }
+    }
+
     /// 覆盖台账必须与 WGSL 实际入口逐份一致（`shader.dispatch_census` 的 native 版本）。
     #[test]
     fn coverage_ledger_matches_actual_entries() {
@@ -7723,8 +8313,8 @@ mod tests {
             .filter(|(_, st, _)| *st == ST_COVERED)
             .count();
         assert_eq!(
-            covered, 18,
-            "COVERED 入口应为 18 个（particles 3 + sph 3 + cloth 3 + wavefront 5 + GI 3 \
+            covered, 19,
+            "COVERED 入口应为 19 个（particles 3 + sph 3 + cloth 3 + wavefront 5 + GI 4 \
              + scene_frame 1）"
         );
     }
