@@ -126,28 +126,40 @@ struct GiPoint {
 /// - `kind == 0`：球 —— `|p - c| - r`（对齐 `Csg::Sphere`）；
 /// - `kind == 1`：盒 —— 标准的盒 SDF（`q = |p-c| - r` 三分量 →
 ///   `|max(q,0)| + min(max(q.x,max(q.y,q.z)), 0)`，对齐 `Csg::Box`）。
+///
+/// 【V2.2 修复】球分支曾写 `return abs(p - c).x - r`（只取 x 分量），那是**沿 x 的
+/// 无限大板**而不是球——`abs(p-c)-r` 的三个分量只有在「仅一个坐标有差」时才相等，
+/// 故"任取一分量即 |p-c|"的理由不成立。真机实测暴露后改为标准球 SDF。
 fn gi_prim_dist(prim: GiPrim, p: vec3<f32>) -> f32 {
-  let q = abs(p - prim.center) - prim.radius;
   if (prim.kind == 1u) {
     // 轴对齐盒：r 为半尺寸（用同一 radius 字段承载，测试里盒取等半尺寸）。
+    let q = abs(p - prim.center) - prim.radius;
     let qc = vec3<f32>(max(q.x, 0.0), max(q.y, 0.0), max(q.z, 0.0));
     let outside = length(qc);
     let inside = min(max(q.x, max(q.y, q.z)), 0.0);
     return outside + inside;
   }
-  // 球：q 的三分量相等，任取一分量即 |p-c|；radius 为半径。
-  return q.x;
+  // 球：SDF = |p - c| - radius。
+  return length(p - prim.center) - prim.radius;
 }
 
 /// 场景距离场：全部图元的 Union = min（对齐 `Csg::Union`）。
 ///
 /// 空场（prim_count == 0）恒返回一个远大于任何场景尺度的大正距离（对齐 CPU
 /// `EMPTY_FAR`），使 sphere tracing 永不命中（空场景全可见）。
+///
+/// 【越界守卫】`prim_count` 来自 uniform（宿主写入），若被误写（例如读到相邻的
+/// `point_count`）就会越过 `prims` 的编译期容量。WGSL 对定长数组的越界索引是
+/// 动态错误（行为未定义，部分后端夹紧到末元素）：一旦越界读到容量填充图元，
+/// 整个场景可能被判成"起点即在体内"→ 全方向遮挡 → 输出整块零值。故此处把上界
+/// **clamp 到编译期容量** `GI_MAX_PRIMS`。这是纯防御：正常路径 `prim_count<=容量`，
+/// 数值一分不变。
 fn gi_scene_dist(p: vec3<f32>, prim_count: u32) -> f32 {
+  let n = min(prim_count, GI_MAX_PRIMS);
   var d = 1.0e6;
   var i = 0u;
   loop {
-    if (i >= prim_count) { break; }
+    if (i >= n) { break; }
     d = min(d, gi_prim_dist(gi_params.prims[i], p));
     i = i + 1u;
   }
@@ -208,7 +220,10 @@ fn gi_hemi_dir(d: u32, n: u32) -> vec3<f32> {
 @compute @workgroup_size(64)
 fn gi_probe_trace(@builtin(global_invocation_id) gid: vec3<u32>) {
   let i = gid.x;
-  if (i >= gi_params.probe_count) { return; }
+  // 越界守卫：上界 clamp 到 storage 的真实元素数（`arrayLength`），防止
+  // `probe_count` 被误读成更大的相邻字段时越界写 `gi_probes`。正常路径不变。
+  let n_probes = min(gi_params.probe_count, arrayLength(&gi_probes));
+  if (i >= n_probes) { return; }
   var probe = gi_probes[i];
   let nlen = length(probe.normal);
   if (nlen < 0.5) { return; } // 退化法线：不采样（C18 同构）
@@ -261,7 +276,9 @@ fn gi_sh_basis_l2(d: vec3<f32>) -> array<f32, 9> {
 @compute @workgroup_size(64)
 fn gi_sh_project(@builtin(global_invocation_id) gid: vec3<u32>) {
   let i = gid.x;
-  if (i >= gi_params.probe_count) { return; }
+  // 越界守卫（同 `gi_probe_trace`）：上界 clamp 到 storage 元素数。
+  let n_probes = min(gi_params.probe_count, arrayLength(&gi_probes));
+  if (i >= n_probes) { return; }
   var probe = gi_probes[i];
   let nlen = length(probe.normal);
   if (nlen < 0.5) { return; }
@@ -349,15 +366,19 @@ fn gi_reconstruct(probe: GiProbe, dir: vec3<f32>) -> vec3<f32> {
 @compute @workgroup_size(64)
 fn gi_probe_interpolate(@builtin(global_invocation_id) gid: vec3<u32>) {
   let i = gid.x;
-  if (i >= gi_params.point_count) { return; }
-  if (gi_params.probe_count == 0u) { return; }
+  // 越界守卫（同 `gi_probe_trace`）：query 点与最近探针搜索的上界都 clamp 到
+  // 各自 storage 的真实元素数。正常路径 `count<=容量`，数值一分不变。
+  let n_points = min(gi_params.point_count, arrayLength(&gi_points));
+  let n_probes = min(gi_params.probe_count, arrayLength(&gi_probes));
+  if (i >= n_points) { return; }
+  if (n_probes == 0u) { return; }
   var pt = gi_points[i];
   // 最近探针（平方距离最小；tie-break 为索引序 → 确定性）。
   var best = 0u;
   var best_d2 = 3.4028234e38;
   var j = 0u;
   loop {
-    if (j >= gi_params.probe_count) { break; }
+    if (j >= n_probes) { break; }
     let diff = gi_probes[j].pos - pt.pos;
     let d2 = vdot(diff, diff);
     if (d2 < best_d2) { best_d2 = d2; best = j; }

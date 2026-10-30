@@ -76,6 +76,35 @@ cp "$OUT_DIR/$WASM_NAME" "$OUT_WASM"
 SIZE=$(wc -c < "$OUT_WASM")
 echo "==> 产物：$OUT_WASM（$SIZE 字节）"
 
+# ---------------------------------------------------------------------------
+# 缓存破坏：把产物内容指纹注入 index.html 的 WASM_URL（`?v=<sha256 前 8 位>`）。
+#
+# 【为什么必须做】浏览器与 CDN 会对 .wasm 做**强缓存**，而 URL 不变时 `fetch`
+# 可能直接命中旧二进制——现象是"代码改了、页面也刷新了，跑出来还是旧的失败结果"，
+# 排查时极易被误导成"改了没用"（本轮真机重测复现同一条错就是这么来的）。
+#
+# 【幂等性怎么保证】替换目标是一个**定长 token**：未构建过时是占位符 `__WASM_VER__`，
+# 构建过之后是上一轮的 8 位十六进制指纹。两种形态都被同一条正则覆盖，且写入值只
+# 由产物内容决定 ⇒ 同一份 wasm 反复构建时文件字节不变（`git status` 不会反复抖动）。
+#
+# 【为什么不破坏工具链】`host_test.mjs` 只读 wasm 产物与 index.html 的**静态结构**
+# （门禁 D3 数 `prism_gpu.wasm` 出现次数，加查询串后仍是一处），`ci_wasm_verify.mjs`
+# 只读 wasm 二进制，二者都不解析查询串。
+#
+# 【为什么用临时文件 + mv 而不是 sed -i】macOS(BSD) 与 GNU 的 `-i` 参数语法不同，
+# 用重定向 + 原子替换可以两边都跑。
+# ---------------------------------------------------------------------------
+if command -v sha256sum >/dev/null 2>&1; then
+  WASM_VER=$(sha256sum "$OUT_WASM" | cut -c1-8)
+else
+  WASM_VER=$(shasum -a 256 "$OUT_WASM" | cut -c1-8)
+fi
+HTML_FILE="$HERE/index.html"
+HTML_TMP="$HTML_FILE.ver.tmp"
+sed -E "s/(\\?v=)[A-Za-z0-9_.-]+/\\1${WASM_VER}/" "$HTML_FILE" > "$HTML_TMP"
+mv "$HTML_TMP" "$HTML_FILE"
+echo "==> index.html 的 wasm URL 版本指纹 → v=$WASM_VER（防浏览器强缓存旧二进制）"
+
 if [[ "$RUN_TEST" == "1" ]]; then
   if ! command -v node >/dev/null 2>&1; then
     echo "!! 未找到 node：跳过本地验证（安装 node 后跑 node $HERE/host_test.mjs）" >&2

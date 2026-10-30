@@ -439,6 +439,11 @@ function ruleA(ctx) {
     "gpu.rt_wavefront": "rt_wavefront.wgsl",
     "gpu.rt_wavefront_multi": "rt_wavefront.wgsl",
     "gpu.gi_compute": "gi_compute.wgsl",
+    // `gpu.params_roundtrip` 建的就是 `gi_compute.wgsl::GiParams` 那块 uniform
+    // （写 → `copyBufferToBuffer` 读回 → 逐字节比对）。登记进来，规则 A 才能继续
+    // 核"宿主尺寸 ↔ WGSL 声明"的自洽性——否则新测试项的 uniform 缓冲会落进
+    // "未登记内核标签"分支而误报。
+    "gpu.params_roundtrip": "gi_compute.wgsl",
   };
   const calls = [...abi.matchAll(/make_buffer\(\s*"([^"]+)"\s*,\s*dev\s*,\s*([^,]+?)\s*,\s*usage::UNIFORM/g)];
   checks.push({

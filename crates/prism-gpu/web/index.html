@@ -143,7 +143,14 @@ function gpuErr(kind, ctx, err){
 const ST = { PASS:0, FAIL:1, PENDING:2, SKIP:3, BAD_ARG:4 };
 const ST_NAME = ["PASS","FAIL","PENDING","SKIP","BAD_ARG"];
 
-const WASM_URL = "prism_gpu.wasm";   // 与本HTML 同目录（发布时整个 web/ 一起发布）
+// 与本HTML 同目录（发布时整个 web/ 一起发布）。
+// 【为什么必须带版本参数】浏览器/CDN 会对 .wasm 做强缓存，而 URL 不变时
+// `fetch` 可能直接命中旧二进制——表现为"代码已改、页面重载后仍是旧的失败结果"，
+// 排查时极易被误导成"改了没用"。故 URL 带 `?v=<内容指纹>`：`build.sh` 每次
+// 构建后用 wasm 的 sha256 前 8 位替换下面的 `__WASM_VER__` 占位符（幂等），
+// 内容一变小 URL 就变，缓存自然失效。未跑过 build.sh 时占位符原样保留，
+// 仍可正常加载（只是不做缓存破坏）。
+const WASM_URL = "prism_gpu.wasm?v=5c99f623";
 
 // 句柄表在 wasm 线性内存里的元素宽度：句柄是 u32 ⇒ 4 字节。
 // 命名常量而非字面量：bind group 那段要把 n 个句柄的数组整段读出来，
@@ -372,8 +379,11 @@ const glue = {
   prism_create_buffer: (h, size, usage) => {
     const d = get(h); if (!d) return 0;
     const isUniform = (usage & 2) !== 0;
+    // UNIFORM 也带 COPY_SRC：`gpu.params_roundtrip` 要把 uniform 缓冲原样读回、
+    // 与 CPU 打包字节逐字节比对（`copyBufferToBuffer` 要求源缓冲带 COPY_SRC，
+    // 缺了它验证静默失败、读回拿到零初始化内容）。这是**扩能力位，不新增 glue**。
     const u = isUniform
-      ? (GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST)
+      ? (GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC)
       : (GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST);
     return reg(d.createBuffer({ size, usage:u, label:`prism_${isUniform?"uniform":"storage"}_${size}` }));
   },

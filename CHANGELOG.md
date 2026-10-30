@@ -8,6 +8,58 @@
 
 ## 渲染行为变化清单
 
+### R-2026-xx-07：修复 GI SDF 的球分支（`q.x` 是沿 x 的无限大板，不是球）+ 容量填充图元改为不可能命中
+
+- **受影响特性**：`prism-gpu` 实时 GI 的 SDF 遮挡求值——CPU 参考
+  `crates/prism-gpu/src/web/abi.rs::gi_prim_dist_ref` 与 GPU 镜像
+  `crates/prism-gpu/shaders/gi_compute.wgsl::gi_prim_dist` 的**球分支**（`kind == 0`）。
+  连带影响 `gpu.gi_compute` 的全部判据量：逐方向可见性 → SH-L2 系数 → 查询点辐照度；
+  以及测试侧的容量填充图元 `GI_PRIMS[2..4]`。
+- **变化原因**：球分支返回 `q[0]`，即 `|p.x − c.x| − r`——**只与 x 有关，是沿 x 的无限大板**。
+  原注释「q 的三分量相等，任取一分量即 |p−c|」不成立：`abs(p−c) − r` 的三个分量
+  只有在「仅一个坐标有差」时才相等。后果是测试里**「球」这个图元从未被真实测到**，
+  它实际是一个贯穿 y/z 的板：任意 x∈[c.x−r, c.x+r] 的点都被判为"在体内"。
+  真机实测（`gpu.gi_compute` FAIL、GPU 侧 `sh` 整块为零）暴露后，两端**同步**改为
+  标准球 SDF `|p − c| − r`（同式同精度路径：先差、再平方和、再 `sqrt`、再减半径；
+  **不用 `powi`**，以与 WGSL 的 `x*x` 同一条代码生成路径）。两端必须一起改——
+  否则 CPU 参考与 WGSL 不再同式，跨端判对失去意义。
+  同时把**容量填充图元**从「球心原点 + r=1」改为「半径 0 + 心在 −Y 轴 1e6」：
+  填充数据只占 `GiParams.prims` 的定长容量（`prim_count=2` 时不用），但一旦
+  `prim_count` 在任一环节被读成 4，原点 r=1 的球就会把探针起点判成"在球内"
+  （`|p|−1 ≈ 5e−7 ≤ hit_eps`）→ 该探针 8/8 全遮挡 → `samples`/`sh`/`irradiance`
+  整块零值。安全填充的 SDF 恒 ≈1e6（远大于 `t_max`=20），即使被误用也绝不命中。
+- **视觉影响描述**：bug 修复导致**判据参考值变化**（不是画面变化——本路径的 GPU 结果
+  与 CPU 参考比对，两者现在都按真球求值）。**旧值 → 新值**（同一组 `GI_TEST` 固定输入）：
+  - `web::abi::tests::gi_diag_block_distinguishes_zero_from_reference`：
+    逐探针可见方向数 `[5, 0, 1]` → **`[8, 4, 4]`**（probe 0 由 5/8 变 8/8；
+    probe 1 由 0/8 变 4/8——旧板把起点 (1.001, 1, 0) 判成 −1e−3「在体内」，
+    真球距离是 0.414「在体外」；probe 2 由 1/8 变 4/8）。
+    probe 0 的 `sh[0]` `(0.997005, 0.886227, 0.775449)` → **`(1.595208, 1.417963, 1.240718)`**。
+  - `gpu.gi_compute` 的 `visible_total`（24 个方向里的可见数）：**6/24 → 16/24**。
+  - `web::abi::tests::gi_cpu_reference_fingerprint_matches_independent_js` 的跨实现锚：
+    **`0xaf8429a3` → `0x6adb7c92`**。Rust CPU 参考与 `web/host_test.mjs` 的 JS 第三份
+    实现**两端同步更新**，指纹仍逐位相等（`js_gi_fingerprint=0x6adb7c92`）。
+  - 新增回归钉子 `web::abi::tests::gi_prim_count_misread_does_not_blind_the_scene`
+    钉住机制：旧球 SDF + 旧填充在 `prim_count=4` 时 CPU 侧实测 `[0, 0, 0]`
+    （三探针全 8/8 遮挡、9 个 SH 系数整块为零），而 `prim_count=2` 是 `[5, 0, 1]`
+    ——与真机「GPU 全零 vs CPU `0.9970052`，60 个字段超容差」的形态一致；
+    换成安全填充后 `prim_count=2` 与 `=4` **逐位相同**（`[8, 4, 4]`）。
+- **为什么 V1.0 真机能 PASS、V2.2 真机不能（本版最重要的一条结论）**：
+  把 V1.0 原件（错误球 SDF，未修复）重新构建后在 **SwiftShader 软件适配器**上跑
+  `web/realgpu_check.mjs`：**17/17 全 PASS，含 `gpu.gi_compute`**。而同一份构建
+  （432,052 B，字节可比）在真机（Android 10 / Chromium 143 内核 / 真 GPU）上 FAIL、
+  GPU 侧 `samples`/`sh`/`irradiance` 整块零值。
+  ⇒ 该缺陷的性质是**病态 SDF 的球 tracing**：`q.x` 这张板在 y/z 方向梯度恒为 0
+  （SDF 不随射线前进变化），迭代收敛与否对浮点实现细节极度敏感——软件适配器的浮点
+  行为接近 CPU，两端"同错得一致"；真 GPU 的 FMA 收缩/精度路径一变，就整体翻到
+  "全遮挡"一侧。**V1.0 那次全 PASS 是碰巧落在与 CPU 同一侧，不是验对了。**
+  ⇒ 方法论结论：**「CPU 参考 vs GPU 镜像」的自洽对拍，只有在两端算法本身正确时才有
+  判别力。两端同错时它恒绿，且软件适配器（SwiftShader）永远无法暴露——只有真硬件
+  GPU 能。** 该结论已写入 `docs/QA/real-device-webgpu-2026-10-30.md`，并作为
+  `gpu.gi_compute` 保留「真机档」而非降级为软件适配器档的理由。
+- **是否有开关**：无。旧行为不保留——`q.x` 不是球的 SDF，是缺陷；保留开关等于保留
+  一个"看起来测了球、实际测了板"的假判据。
+
 ### R-2026-xx-06：修复折射界面法线朝向与 Fresnel 余弦口径（玻璃/折射体曾是「不透明遮挡」，ior 零效应）
 
 - **受影响特性**：`prism-rt` 电介质（`transmission > 0`）的折射瓣——`crates/prism-rt/src/bsdf.rs`

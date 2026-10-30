@@ -180,9 +180,11 @@ function field(detail, key) {
 // 于是"指纹等于全零特征值"就是**空转的直接证据**，必须判红。这条把断言从
 // 「格式合法」升级为「值域排除」：真正跑过 dispatch 的 GPU 指纹绝不可能等于它。
 //
-// 【为什么这个判据不会误伤真机】真机实测指纹为 0x87ac3cf3（GPU 允许 FMA 收缩，
-// 与 CPU 锚0xaf8429a3 不同），距全零特征值极远。判据只排除"全零"这一个点，
-// 不与 CPU 锚比较，故不受 FMA 影响——跨端判对仍由 abi.rs 的 F32_TOL 逐字段负责。
+// 【为什么这个判据不会误伤真机】真机实测指纹（旧口径）为 0x87ac3cf3（GPU 允许 FMA
+// 收缩，与 CPU 锚不同），距全零特征值极远。判据只排除"全零"这一个点，不与 CPU 锚
+// 比较，故不受 FMA 影响——跨端判对仍由 abi.rs 的 F32_TOL 逐字段负责。
+// 注：球 SDF 修正后 CPU 锚由 0xaf8429a3 变为 0x6adb7c92，真机指纹同样会变，
+// 但本判据只做"值域排除"，故与具体锚值无关。
 
 /** GI 输出打包的 u32 元素数（3 探针 × 9 SH × RGB + 4 查询点 × RGB），与 abi.rs `gi_fingerprint_of` 同口径。 */
 const GI_FP_U32_COUNT = 3 * 9 * 3 + 4 * 3;
@@ -229,7 +231,7 @@ if (process.argv.includes("--self-test")) {
     { desc: "指纹字段缺失（null）", fp: null, wantIdle: true },
     { desc: "格式非法（位数不足）", fp: "0x1a2", wantIdle: true },
     { desc: "真机实测指纹 0x87ac3cf3（真跑过的形态）", fp: "0x87ac3cf3", wantIdle: false },
-    { desc: "CPU 口径锚0xaf8429a3（真跑过的形态）", fp: "0xaf8429a3", wantIdle: false },
+    { desc: "CPU 口径锚0x6adb7c92（真跑过的形态）", fp: "0x6adb7c92", wantIdle: false },
   ];
   console.log("== host_test GI 指纹空转判定自证（故意喂坏值，必须判红）==");
   let bad = 0;
@@ -240,7 +242,7 @@ if (process.argv.includes("--self-test")) {
     console.log(`  ${ok ? "ok  " : "FAIL"}  ${c.desc} → ${got ? "判红(不可信)" : "放行(可信)"}`);
   }
   // 附加：全零特征值必须与真机实测指纹/CPU 锚三者两两不同，否则判据失去区分力。
-  const distinct = new Set([idle, "00000000", "87ac3cf3", "af8429a3"]).size === 4;
+  const distinct = new Set([idle, "00000000", "87ac3cf3", "6adb7c92"]).size === 4;
   if (!distinct) bad += 1;
   console.log(`  ${distinct ? "ok  " : "FAIL"}  空转特征值与真机/CPU 指纹两两不同（判据有区分力）`);
   console.log(`\n自证 ${cases.length + 1} 例，失败 ${bad} 例`);
@@ -536,13 +538,16 @@ function runItem(id) {
   ];
   const POINT_INPUTS = [[0.0, 1.0, 0.0], [0.5, 1.0, 0.0], [1.0, 1.0, 0.0], [2.5, 1.0, 0.0]];
 
+  // SDF：球 = |p−c|−r，盒 = |max(q,0)| + min(max(q),0)。
+  // 【V2.2 修复】球分支此前返回 q[0]（= |p.x−c.x|−r，沿 x 的无限大板），
+  // 与 abi.rs::gi_prim_dist_ref、shaders/gi_compute.wgsl::gi_prim_dist 同步改为真球。
   function primDist(prim, p) {
-    const q = [
-      f(f(Math.abs(f(p[0] - prim.center[0])) - prim.radius)),
-      f(f(Math.abs(f(p[1] - prim.center[1])) - prim.radius)),
-      f(f(Math.abs(f(p[2] - prim.center[2])) - prim.radius)),
-    ];
     if (prim.kind === 1) {
+      const q = [
+        f(f(Math.abs(f(p[0] - prim.center[0])) - prim.radius)),
+        f(f(Math.abs(f(p[1] - prim.center[1])) - prim.radius)),
+        f(f(Math.abs(f(p[2] - prim.center[2])) - prim.radius)),
+      ];
       const cx = Math.max(q[0], 0);
       const cy = Math.max(q[1], 0);
       const cz = Math.max(q[2], 0);
@@ -550,7 +555,11 @@ function runItem(id) {
       const inside = Math.min(Math.max(Math.max(q[0], q[1]), q[2]), 0);
       return f(outside + inside);
     }
-    return q[0];
+    // 球：与 Rust 同序 `((dx*dx + dy*dy) + dz*dz)` 再 sqrt，最后减半径。
+    const dx = f(p[0] - prim.center[0]);
+    const dy = f(p[1] - prim.center[1]);
+    const dz = f(p[2] - prim.center[2]);
+    return f(f(Math.sqrt(f(f(f(dx * dx) + f(dy * dy)) + f(dz * dz)))) - prim.radius);
   }
   function sceneDist(p) {
     let d = 1.0e6;
@@ -711,12 +720,14 @@ function runItem(id) {
   // JS 独立实现的指纹锚定：与 `abi.rs::gi_cpu_reference_fingerprint_matches_independent_js`
   // 里断言的常量必须一致（同一份固定输入的 GI 全链路 CPU 结果）。两边任一漂移都会红。
   // ⚠️ 注意：此指纹是**纯 CPU 口径**（无 FMA）。真机上 GPU 允许 FMA 收缩，逐位指纹会
-  // 不同（实测真机 fingerprint=0x87ac3cf3，与 CPU 锚 0xaf8429a3 差在若干 ULP），
+  // 不同（旧口径实测真机 fingerprint=0x87ac3cf3，与 CPU 锚差在若干 ULP），
   // 故**不以逐位指纹判对 GPU**——GPU vs CPU 的判对在 abi.rs 的 `c_gpu_gi_compute`
   // 里按 F32_TOL 逐字段做（真机实测最大偏差 1.2e-7，mismatch=0）。真机指纹的用途是
   // 「同机两次运行一致」的确定性核对，不参与跨端逐位比较。
-  check("JS GI CPU 口径指纹 == Rust CPU 参考锚定值 0xaf8429a3",
-    (jsFp >>> 0) === 0xaf8429a3,
+  // 锚值 0x6adb7c92 = 球 SDF 修正（|p−c|−r）后的 CPU 口径值，与 abi.rs 的
+  // `gi_cpu_reference_fingerprint_matches_independent_js` 逐位对齐。
+  check("JS GI CPU 口径指纹 == Rust CPU 参考锚定值 0x6adb7c92",
+    (jsFp >>> 0) === 0x6adb7c92,
     `js_gi_fingerprint=0x${(jsFp >>> 0).toString(16).padStart(8, "0")}`);
   // 真机 PASS 时的指纹断言。**本路加固**：原判据只查"8 位十六进制"（恒可通过），
   // 现升级为值域排除——指纹若等于"全零缓冲特征值"（WebGPU 缓冲零初始化），

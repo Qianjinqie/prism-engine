@@ -95,7 +95,15 @@ pub mod status {
 pub(crate) mod usage {
     /// `GPUBufferUsage.STORAGE | COPY_SRC | COPY_DST`。
     pub const STORAGE: u32 = 1;
-    /// `GPUBufferUsage.UNIFORM | COPY_DST`。
+    /// `GPUBufferUsage.UNIFORM | COPY_DST | COPY_SRC`。
+    ///
+    /// # 为什么必须带 `COPY_SRC`
+    /// `gpu.params_roundtrip` 的判据是「把 uniform 缓冲原样读回、与 CPU 打包字节
+    /// 逐字节比对」——这是"参数真的到达 GPU"唯一的直接证据。而
+    /// `copyBufferToBuffer` **要求源缓冲带 `COPY_SRC`**，否则验证失败、拷贝静默
+    /// 不执行、读回拿到零初始化内容（表现成"参数全错"，而根因只是缺一个 usage 位）。
+    /// 该能力位由 `web/index.html` 的 `prism_create_buffer` 的 UNIFORM 分支提供
+    /// （`UNIFORM | COPY_DST | COPY_SRC`），不新增 glue 函数、不改导入表。
     pub const UNIFORM: u32 = 2;
 }
 
@@ -498,6 +506,10 @@ struct Scratch {
     gi_points: [u8; GI_POINTS_BYTES as usize],
     /// GI uniform 参数（独立于 `params2` 共享区，避免与并行改动争用参数区）。
     gi_params: [u8; GI_PARAMS_BYTES as usize],
+    /// `gpu.params_roundtrip` 的读回落点（uniform 缓冲原样读回 → 与本字段比对的
+    /// CPU 打包字节逐字节对读）。**必须与 `gi_params` 分开两块**：后者是"要写进去的
+    /// 源"，若复用同一块，读回会覆写源，比对就退化成"自己和自己比"（恒真）。
+    gi_params_echo: [u8; GI_PARAMS_BYTES as usize],
 }
 
 impl Scratch {
@@ -536,6 +548,7 @@ impl Scratch {
             gi_probes: [0; GI_PROBES_BYTES as usize],
             gi_points: [0; GI_POINTS_BYTES as usize],
             gi_params: [0; GI_PARAMS_BYTES as usize],
+            gi_params_echo: [0; GI_PARAMS_BYTES as usize],
         }
     }
 }
@@ -954,6 +967,15 @@ static TESTS: &[TestItem] = &[
         needs_gpu: true,
         run: t_gpu_rt_wavefront_multi,
         collect: Some(c_gpu_rt_wavefront_multi),
+    },
+    TestItem {
+        // 放在 `gpu.gi_compute` **之前**：报告里先看到"参数自检结论"，再看下游数值。
+        // 一旦 uniform 传输坏了，读者第一眼就能定位到根因，不必从 SH 偏差反推。
+        id: "gpu.params_roundtrip",
+        name: "真 WebGPU：GiParams uniform 写入 → 读回逐字节回环（256B 全等 + 4 个关键字段解释值）",
+        needs_gpu: true,
+        run: t_gpu_params_roundtrip,
+        collect: Some(c_gpu_params_roundtrip),
     },
     TestItem {
         id: "gpu.gi_compute",
@@ -5146,15 +5168,48 @@ struct GiPrimRef {
 }
 
 /// 本测试的 SDF 场景图元（一个球 + 一块地板盒，语义上"某点上方有遮挡"）。
+///
+/// # 容量填充必须是「即使被误用也绝不遮挡」的安全值（V2.2 修复）
+/// `GI_TEST.prims = 2`，后两条只是**把 `GiParams.prims` 的定长容量填满**。此前填的是
+/// 「球心在原点 + r=1」，一旦 `prim_count` 在任一环节被读成 4（例如读到相邻的
+/// `point_count@4`），三个探针起点都会被判成"在球内"→ 8/8 全遮挡 → `samples`/`sh`/
+/// `irradiance` 整块零值。**填充数据的危险性来自「它离探针起点太近」，而不是来自
+/// 「它被用到」**，故改为「半径 0 + 远在 −Y 轴 1e6 处」：
+/// `SDF = |p − (0,−1e6,0)| − 0 ≈ 1e6`，远大于 `t_max`(=20) 与任何场景尺度，
+/// 无论 `prim_count` 被误读成几都不会命中，也不会把 Union 的 min 拉低。
 const GI_PRIMS: [GiPrimRef; GI_MAX_PRIMS as usize] = [
     // 球：位于 +X 侧，作为探针射线的遮挡体。
     GiPrimRef { kind: 0, radius: 1.0, center: [2.0, 0.0, 0.0] },
     // 盒（半尺寸 10³）作为"地板/大遮挡"，覆盖 x∈[-10,10] 等。
     GiPrimRef { kind: 1, radius: 10.0, center: [0.0, -10.0, 0.0] },
-    // 容量内其余图元不参与（prim_count=2）。
-    GiPrimRef { kind: 0, radius: 1.0, center: [0.0, 0.0, 0.0] },
-    GiPrimRef { kind: 0, radius: 1.0, center: [0.0, 0.0, 0.0] },
+    // 容量填充（不参与 `prim_count=2`）：半径 0 + 远在 −Y 轴 1e6 处 →
+    // `SDF ≈ 1e6`，即使 `prim_count` 被误读成 4 也绝不命中。
+    GiPrimRef { kind: 0, radius: 0.0, center: [0.0, -1.0e6, 0.0] },
+    GiPrimRef { kind: 0, radius: 0.0, center: [0.0, -1.0e6, 0.0] },
 ];
+
+// ---- 哨兵初值（GPU 输入缓冲的初值，用于把「入口没跑」与「跑了但结果为零」分开）----
+//
+// # 为什么需要哨兵
+// 真机 FAIL 时读回缓冲里"整块 0"至少有三种不兼容机制（入口没跑 / 跑了但全遮挡 /
+// 跑了但 project 早退），而**零初始化缓冲与"真的算出 0"读回字节完全相同**，宿主无法
+// 区分。故在打包阶段给"入口应覆写"的字段预填**负值哨兵**（物理上不可能出现的值：
+// 辐亮度非负、辐照度非负）：
+//   * `samples`        预填 [`GI_SENTINEL_SAMPLE`]（-1）→ 读回仍是 -1 = `gi_probe_trace` 没写过这一段；
+//   * `sh`             预填 [`GI_SENTINEL_SH`]（-2）→ 读回仍是 -2 = `gi_sh_project` 没写过这一段；
+//   * `irradiance`     预填 [`GI_SENTINEL_IRRADIANCE`]（-3）→ 读回仍是 -3 = `gi_probe_interpolate` 没写过。
+//
+// # 为什么不影响判据
+// 哨兵只改 **GPU 输入缓冲的初值**。CPU 参考走 [`gi_probe_inputs`] / [`gi_point_inputs`]
+// 独立重算（`gi_probe_trace_ref` / `gi_sh_project_ref` / `gi_interpolate_ref`），
+// **完全不读这两块缓冲**，故 CPU 参考值与哨兵无关、判据语义不变。
+// 且正常路径下三个 entry 都会覆写各自的全部字段，哨兵不会漏进结果。
+/// `samples` 段未写入的哨兵（负值：辐亮度不可能为负）。
+const GI_SENTINEL_SAMPLE: f32 = -1.0;
+/// `sh` 段未写入的哨兵。
+const GI_SENTINEL_SH: f32 = -2.0;
+/// `irradiance` 段未写入的哨兵。
+const GI_SENTINEL_IRRADIANCE: f32 = -3.0;
 
 /// 探针输入（位置 + 法线）。
 fn gi_probe_inputs() -> [[f32; 6]; GI_N_PROBES as usize] {
@@ -5174,13 +5229,23 @@ fn gi_point_inputs() -> [[f32; 3]; GI_N_POINTS as usize] {
 // ---- CPU 参考：与 WGSL 逐式同构 ----
 
 /// `gi_compute.wgsl::gi_prim_dist`（对齐 `Csg::Sphere` / `Csg::Box`）。
+///
+/// # 球分支为什么是 `|p − c| − r`（V2.2 修复）
+/// 此前球分支返回 `q[0]`，即 `|p.x − c.x| − r`——**只与 x 有关，是沿 x 的无限大板**，
+/// 不是球。原注释"q 的三分量相等，任取一分量即 |p−c|"不成立：`abs(p−c)−r` 的三个
+/// 分量只有在「仅一个坐标有差」时才相等。真机实测（GPU 侧 `sh` 整块为零）暴露后
+/// 两端同步改为标准球 SDF。
+///
+/// 与 WGSL 同式、同精度路径：先算三个分量差 → 平方和（左结合 `((a+b)+c)`，
+/// 与 `length(vec3)` 的实现顺序一致）→ `sqrt()` → 减半径。**不用 `powi`**
+/// （`powi(2)` 走的是另一条代码生成路径，可能与 WGSL 的 `x*x` 不同精度）。
 fn gi_prim_dist_ref(prim: &GiPrimRef, p: [f32; 3]) -> f32 {
-    let q = [
-        (p[0] - prim.center[0]).abs() - prim.radius,
-        (p[1] - prim.center[1]).abs() - prim.radius,
-        (p[2] - prim.center[2]).abs() - prim.radius,
-    ];
     if prim.kind == 1 {
+        let q = [
+            (p[0] - prim.center[0]).abs() - prim.radius,
+            (p[1] - prim.center[1]).abs() - prim.radius,
+            (p[2] - prim.center[2]).abs() - prim.radius,
+        ];
         let cx = q[0].max(0.0);
         let cy = q[1].max(0.0);
         let cz = q[2].max(0.0);
@@ -5188,21 +5253,43 @@ fn gi_prim_dist_ref(prim: &GiPrimRef, p: [f32; 3]) -> f32 {
         let inside = q[0].max(q[1]).max(q[2]).min(0.0);
         outside + inside
     } else {
-        q[0]
+        // 球：SDF = |p − c| − radius。
+        let dx = p[0] - prim.center[0];
+        let dy = p[1] - prim.center[1];
+        let dz = p[2] - prim.center[2];
+        let d2 = dx * dx + dy * dy + dz * dz;
+        // 不写 `debug_assert!(d2 >= 0.0)`：NaN 输入下该断言会 panic，与 C18
+        // 「不 panic」相冲突；且平方和非负是平凡事实，断言无信息量。
+        d2.sqrt() - prim.radius
     }
 }
 
-/// `gi_compute.wgsl::gi_scene_dist`（Union = min；空场返回 EMPTY_FAR）。
-fn gi_scene_dist_ref(p: [f32; 3], prim_count: u32) -> f32 {
+/// `gi_compute.wgsl::gi_scene_dist` 的**显式图元表**版本（Union = min；空场 EMPTY_FAR）。
+///
+/// 生产路径经 [`gi_sphere_trace_ref`] 传入「按 `prim_count` clamp 后的 `GI_PRIMS` 前缀」；
+/// 本变体之所以把图元表做成参数，是为回归钉子
+/// [`tests::gi_prim_count_misread_does_not_blind_the_scene`] 服务——那条测试要用
+/// **另一套**（危险的旧填充）图元跑同一份实现，从而在不改仓库常量、不复制算法的
+/// 前提下证明"`prim_count` 误读成 4 + 危险填充 ⇒ 全遮挡"这个机制。
+///
+/// `prim_count` 的 clamp 在 [`gi_sphere_trace_ref`] 里做（与 WGSL 侧 `gi_scene_dist`
+/// 的越界守卫同构：上界 = 编译期容量 [`GI_MAX_PRIMS`]）。
+fn gi_scene_dist_prims(p: [f32; 3], prims: &[GiPrimRef]) -> f32 {
     let mut d = 1.0e6f32;
-    for i in 0..prim_count as usize {
-        d = d.min(gi_prim_dist_ref(&GI_PRIMS[i], p));
+    for prim in prims {
+        d = d.min(gi_prim_dist_ref(prim, p));
     }
     d
 }
 
-/// `gi_compute.wgsl::sphere_trace_sdf`（对齐 `prism-geometry::sdf::sphere_trace`）。
-fn gi_sphere_trace_ref(ro: [f32; 3], rd: [f32; 3], prim_count: u32, p: &GiTestParams) -> bool {
+/// `gi_compute.wgsl::sphere_trace_sdf`（对齐 `prism-geometry::sdf::sphere_trace`）的
+/// **显式图元表**版本（供回归钉子用；生产路径见 [`gi_sphere_trace_ref`]）。
+fn gi_sphere_trace_prims(
+    ro: [f32; 3],
+    rd: [f32; 3],
+    prims: &[GiPrimRef],
+    p: &GiTestParams,
+) -> bool {
     for k in 0..3 {
         if !rd[k].is_finite() {
             return false;
@@ -5215,7 +5302,10 @@ fn gi_sphere_trace_ref(ro: [f32; 3], rd: [f32; 3], prim_count: u32, p: &GiTestPa
     let dir = [rd[0] / rl, rd[1] / rl, rd[2] / rl];
     let mut t = 0.0f32;
     for _ in 0..p.max_steps {
-        let d = gi_scene_dist_ref([ro[0] + dir[0] * t, ro[1] + dir[1] * t, ro[2] + dir[2] * t], prim_count);
+        let d = gi_scene_dist_prims(
+            [ro[0] + dir[0] * t, ro[1] + dir[1] * t, ro[2] + dir[2] * t],
+            prims,
+        );
         if d <= p.hit_eps {
             return true;
         }
@@ -5225,6 +5315,22 @@ fn gi_sphere_trace_ref(ro: [f32; 3], rd: [f32; 3], prim_count: u32, p: &GiTestPa
         }
     }
     false
+}
+
+/// `gi_compute.wgsl::sphere_trace_sdf`（对齐 `prism-geometry::sdf::sphere_trace`）。
+///
+/// **仅测试使用**：生产路径（`gpu.gi_compute` 的 CPU 参考）经
+/// [`gi_probe_trace_ref`] → [`gi_probe_trace_prims`] 直接调 `_prims` 变体，
+/// 故本函数标注 `#[cfg(test)]` 以免在 wasm 产物里留下死代码。
+/// 它存在的意义是给 `gi_sdf_occlusion_matches_analytic` 一个"按 `prim_count` 取
+/// `GI_PRIMS` 前缀"的入口，与 WGSL 的调用形态逐字对应。
+///
+/// `prim_count` 的 clamp 与 WGSL 侧 `gi_scene_dist` 的越界守卫同构（上界 = 编译期
+/// 容量 [`GI_MAX_PRIMS`]）。
+#[cfg(test)]
+fn gi_sphere_trace_ref(ro: [f32; 3], rd: [f32; 3], prim_count: u32, p: &GiTestParams) -> bool {
+    let n = (prim_count as usize).min(GI_PRIMS.len());
+    gi_sphere_trace_prims(ro, rd, &GI_PRIMS[..n], p)
 }
 
 /// `gi_compute.wgsl::gi_hemi_dir`（立体角均匀半球；三角走 `wf_cos_sin`）。
@@ -5281,7 +5387,20 @@ struct GiProbeRef {
 }
 
 /// CPU 参考：`gi_probe_trace`（半球 SDF 遮挡 → 采样辐亮度）。
+///
+/// `prim_count` 的 clamp 与越界守卫见 [`gi_sphere_trace_ref`]（与 WGSL 同构）。
 fn gi_probe_trace_ref(pos: [f32; 3], normal: [f32; 3], p: &GiTestParams) -> GiProbeRef {
+    let n = (p.prims as usize).min(GI_PRIMS.len());
+    gi_probe_trace_prims(pos, normal, &GI_PRIMS[..n], p)
+}
+
+/// [`gi_probe_trace_ref`] 的**显式图元表**版本（回归钉子用；算法只有一份）。
+fn gi_probe_trace_prims(
+    pos: [f32; 3],
+    normal: [f32; 3],
+    prims: &[GiPrimRef],
+    p: &GiTestParams,
+) -> GiProbeRef {
     let mut out = GiProbeRef { samples: [[0.0; 3]; GI_DIRS as usize], sh: [[0.0; 3]; 9] };
     let nl = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
     if nl < 0.5 {
@@ -5298,7 +5417,7 @@ fn gi_probe_trace_ref(pos: [f32; 3], normal: [f32; 3], p: &GiTestParams) -> GiPr
             t[2] * local[0] + b[2] * local[1] + n[2] * local[2],
         ]);
         let ro = [pos[0] + n[0] * 1e-3, pos[1] + n[1] * 1e-3, pos[2] + n[2] * 1e-3];
-        if !gi_sphere_trace_ref(ro, world, p.prims, p) {
+        if !gi_sphere_trace_prims(ro, world, prims, p) {
             out.samples[d as usize] = p.env; // 未遮挡 → 环境辐亮度
         }
     }
@@ -5307,10 +5426,37 @@ fn gi_probe_trace_ref(pos: [f32; 3], normal: [f32; 3], p: &GiTestParams) -> GiPr
 
 /// CPU 参考：`gi_sh_project`（投影采样辐亮度到 SH-L2，**不乘 cos**）。
 fn gi_sh_project_ref(pos: [f32; 3], normal: [f32; 3], p: &GiTestParams) -> GiProbeRef {
-    let mut r = gi_probe_trace_ref(pos, normal, p);
+    let n = (p.prims as usize).min(GI_PRIMS.len());
+    gi_sh_project_prims(pos, normal, &GI_PRIMS[..n], p)
+}
+
+/// [`gi_sh_project_ref`] 的**显式图元表**版本（回归钉子用；算法只有一份）。
+fn gi_sh_project_prims(
+    pos: [f32; 3],
+    normal: [f32; 3],
+    prims: &[GiPrimRef],
+    p: &GiTestParams,
+) -> GiProbeRef {
+    let mut r = gi_probe_trace_prims(pos, normal, prims, p);
+    r.sh = gi_sh_project_samples(normal, &r.samples, p);
+    r
+}
+
+/// SH-L2 投影的**纯函数**部分：把已知的逐方向采样辐亮度投到 9 个系数。
+///
+/// 与 `gi_compute.wgsl::gi_sh_project` 的累加段逐式一致（方向序 × 系数序固定）。
+/// 从 [`gi_sh_project_prims`] 里抽出来的理由：回归钉子
+/// `gi_prim_count_misread_does_not_blind_the_scene` 需要"用**历史** trace 产出的
+/// samples 走**现行**投影"，从而证明"全遮挡 ⇒ sh 整块为零"这一步本身没有第二份实现。
+fn gi_sh_project_samples(
+    normal: [f32; 3],
+    samples: &[[f32; 3]],
+    p: &GiTestParams,
+) -> [[f32; 3]; 9] {
+    let mut sh = [[0.0f32; 3]; 9];
     let nl = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
     if nl < 0.5 || p.n_dirs == 0 {
-        return r;
+        return sh;
     }
     let n = [normal[0] / nl, normal[1] / nl, normal[2] / nl];
     let (t, b, _nn) = wf_onb(n);
@@ -5324,15 +5470,15 @@ fn gi_sh_project_ref(pos: [f32; 3], normal: [f32; 3], p: &GiTestParams) -> GiPro
             t[2] * local[0] + b[2] * local[1] + n[2] * local[2],
         ]);
         let yb = gi_sh_basis_l2_ref(world);
-        let rad = r.samples[d as usize];
+        let rad = samples[d as usize];
         for k in 0..9 {
             let w = yb[k] * d_omega;
-            r.sh[k][0] += rad[0] * w;
-            r.sh[k][1] += rad[1] * w;
-            r.sh[k][2] += rad[2] * w;
+            sh[k][0] += rad[0] * w;
+            sh[k][1] += rad[1] * w;
+            sh[k][2] += rad[2] * w;
         }
     }
-    r
+    sh
 }
 
 /// CPU 参考：`gi_probe_interpolate`（最近探针 SH 重建 + Lambert 转辐亮度）。
@@ -5398,11 +5544,36 @@ fn gi_params_bytes(p: &GiTestParams) -> [u8; GI_PARAMS_BYTES as usize] {
     b
 }
 
-/// 把探针输入（位置 + 法线）打包进 `array<GiProbe>`（其余字段建 buffer 时零初始化）。
+/// 把探针输入（位置 + 法线）打包进 `array<GiProbe>`，并给"入口应覆写"的字段预填哨兵。
+///
+/// 布局（与 WGSL `GiProbe` 逐字段一致，[`GI_PROBE_STRIDE_BYTES`] 有完整推导）：
+/// `pos@0` / `_pad0@12` / `normal@16` / `_pad1@28` /
+/// `samples[k]@32+16k`（k=0..8）/ `sh[k]@160+16k`（k=0..9）。
+///
+/// # 哨兵（见 [`GI_SENTINEL_SAMPLE`] / [`GI_SENTINEL_SH`] 的整段说明）
+/// `samples` 全段预填 `-1`、`sh` 全段预填 `-2`。它们只影响 **GPU 输入缓冲的初值**；
+/// CPU 参考走 [`gi_probe_inputs`] 独立重算、**不读本缓冲**，故判据语义不变。
 fn gi_pack_probes() {
     SCRATCH.with(|s| {
         let mut v = s.borrow_mut();
         v.gi_probes.fill(0);
+        for i in 0..GI_N_PROBES as usize {
+            let o = i * GI_PROBE_STRIDE_BYTES as usize;
+            // 逐方向采样段：8 个 vec3（stride 16），三分量都填哨兵。
+            for d in 0..GI_DIRS as usize {
+                let so = o + 32 + d * VEC3_STRIDE_BYTES as usize;
+                pack_f32(&mut v.gi_probes, so, GI_SENTINEL_SAMPLE);
+                pack_f32(&mut v.gi_probes, so + 4, GI_SENTINEL_SAMPLE);
+                pack_f32(&mut v.gi_probes, so + 8, GI_SENTINEL_SAMPLE);
+            }
+            // SH-L2 系数段：9 个 vec3（stride 16）@160。
+            for k in 0..9usize {
+                let so = o + 160 + k * VEC3_STRIDE_BYTES as usize;
+                pack_f32(&mut v.gi_probes, so, GI_SENTINEL_SH);
+                pack_f32(&mut v.gi_probes, so + 4, GI_SENTINEL_SH);
+                pack_f32(&mut v.gi_probes, so + 8, GI_SENTINEL_SH);
+            }
+        }
         for (i, pr) in gi_probe_inputs().iter().enumerate() {
             let o = i * GI_PROBE_STRIDE_BYTES as usize;
             pack_f32(&mut v.gi_probes, o, pr[0]);        // pos.x @0
@@ -5415,11 +5586,20 @@ fn gi_pack_probes() {
     });
 }
 
-/// 把查询点输入打包进 `array<GiPoint>`（irradiance 建 buffer 时零初始化）。
+/// 把查询点输入打包进 `array<GiPoint>`，`irradiance` 预填 [`GI_SENTINEL_IRRADIANCE`]。
+///
+/// 布局：`pos@0` / `_pad0@12` / `irradiance@16` / `_pad1@28`。哨兵只影响 GPU 输入
+/// 初值；CPU 参考走 [`gi_point_inputs`] 独立重算，不读本缓冲。
 fn gi_pack_points() {
     SCRATCH.with(|s| {
         let mut v = s.borrow_mut();
         v.gi_points.fill(0);
+        for i in 0..GI_N_POINTS as usize {
+            let o = i * GI_POINT_STRIDE_BYTES as usize + 16; // irradiance @16
+            pack_f32(&mut v.gi_points, o, GI_SENTINEL_IRRADIANCE);
+            pack_f32(&mut v.gi_points, o + 4, GI_SENTINEL_IRRADIANCE);
+            pack_f32(&mut v.gi_points, o + 8, GI_SENTINEL_IRRADIANCE);
+        }
         for (i, q) in gi_point_inputs().iter().enumerate() {
             let o = i * GI_POINT_STRIDE_BYTES as usize;
             pack_f32(&mut v.gi_points, o, q[0]);
@@ -5483,8 +5663,10 @@ fn gi_fingerprint_of(shs: &[[[f32; 3]; 9]], points: &[[f32; 3]]) -> u32 {
 
 /// 把一条探针的 `samples` 逐方向模长压成一行（空格分隔，3 位小数）。
 ///
-/// 用**模长**而非三分量：`rad` 只可能是 `(0,0,0)` 或 `env_radiance (0.9,0.8,0.7)`，
-/// 模长 `0.000` / `1.388` 一眼能读，且一行塞得下 8 个方向。
+/// 用**带符号的模长**而非三分量：`rad` 正常只可能是 `(0,0,0)` 或
+/// `env_radiance (0.9,0.8,0.7)`，模长 `0.000` / `1.388` 一眼能读，且一行塞得下 8 个方向。
+/// 三分量之和为负时输出负号（如 `-1.732`）——这正是 [`GI_SENTINEL_SAMPLE`] 的形态，
+/// 即「`gi_probe_trace` 没写过这一段」，与「算出来是 0」（`0.000`）截然可分。
 fn gi_mags_text(get: impl Fn(usize) -> [f32; 3], dirs: usize) -> String {
     let mut s = String::with_capacity(dirs * 7);
     for d in 0..dirs {
@@ -5492,6 +5674,9 @@ fn gi_mags_text(get: impl Fn(usize) -> [f32; 3], dirs: usize) -> String {
         let m = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
         if d != 0 {
             s.push(' ');
+        }
+        if v[0] + v[1] + v[2] < 0.0 {
+            s.push('-'); // 负值哨兵：该方向没被 gi_probe_trace 覆写
         }
         s.push_str(&format!("{m:.3}"));
     }
@@ -5528,10 +5713,15 @@ fn gi_diag_text(got_probes: &[u8], got_points: &[u8]) -> String {
     let mut nrm_all_ok = true;
     let mut gpu_any_sample = false;
     let mut gpu_any_sh = false;
+    // 哨兵在场标记：值为 -1（samples）/ -2（sh）的字段说明**该入口没写过这一段**。
+    // 这是把「入口没跑」与「跑了但算出 0」分开的唯一手段——两种情形的全零字节相同。
+    let mut sent_samples = false;
+    let mut sent_sh = false;
     let mut cpu_visible_total = 0usize;
 
     s.push_str("[诊断] 三个 entry 的中间态（GPU 读回 vs CPU 参考；pos/normal 来自同一 buffer，用于确认句柄身份）\n");
-    s.push_str("[中间态 1/3] gi_probe_trace → samples（逐方向模长；模长>0 = 该方向可见）\n");
+    s.push_str("[中间态 1/3] gi_probe_trace → samples（逐方向模长；模长>0 = 该方向可见，\
+                带负号 = 该段仍是哨兵初值 ⇒ 入口没写过）\n");
     for (i, inp) in inputs.iter().enumerate() {
         let base = i * stride;
         let gpos = [
@@ -5567,6 +5757,12 @@ fn gi_diag_text(got_probes: &[u8], got_points: &[u8]) -> String {
         if gvis != 0 {
             gpu_any_sample = true;
         }
+        for d in 0..dirs {
+            let v = g_sample(d);
+            if v[0] == GI_SENTINEL_SAMPLE || v[1] == GI_SENTINEL_SAMPLE || v[2] == GI_SENTINEL_SAMPLE {
+                sent_samples = true;
+            }
+        }
         s.push_str(&format!(
             "  probe {i}: pos GPU({:.3},{:.3},{:.3}) {}  normal GPU({:.3},{:.3},{:.3}) |n|={nlen:.3} {}  ← {}\n",
             gpos[0], gpos[1], gpos[2], if pos_ok { "✓" } else { "✗" },
@@ -5582,13 +5778,19 @@ fn gi_diag_text(got_probes: &[u8], got_points: &[u8]) -> String {
     for (i, inp) in inputs.iter().enumerate() {
         let gsh = gi_unpack_sh(got_probes, i);
         let csh = gi_sh_project_ref([inp[0], inp[1], inp[2]], [inp[3], inp[4], inp[5]], &p).sh;
-        if gsh.iter().any(|k| k[0] != 0.0 || k[1] != 0.0 || k[2] != 0.0) {
+        // 三态：哨兵未写 / 写入但全零 / 写入且有值。**哨兵不算"有值"**——
+        // 否则"入口没跑"会被误判成"sh 已写入"，把诊断引到错误的机制族。
+        let all_sentinel = gsh.iter().all(|k| k.iter().all(|c| *c == GI_SENTINEL_SH));
+        let all_zero = gsh.iter().all(|k| k.iter().all(|c| *c == 0.0));
+        if all_sentinel {
+            sent_sh = true;
+        } else if !all_zero {
             gpu_any_sh = true;
         }
         s.push_str(&format!(
-            "  probe {i}: sh[0] GPU({:.6},{:.6},{:.6}) vs CPU({:.6},{:.6},{:.6})  GPU全零={}\n",
+            "  probe {i}: sh[0] GPU({:.6},{:.6},{:.6}) vs CPU({:.6},{:.6},{:.6})  写入状态={}\n",
             gsh[0][0], gsh[0][1], gsh[0][2], csh[0][0], csh[0][1], csh[0][2],
-            if gsh.iter().all(|k| k[0] == 0.0 && k[1] == 0.0 && k[2] == 0.0) { "是" } else { "否" },
+            if all_sentinel { "哨兵未写(-2)" } else if all_zero { "已写但全零" } else { "已写有值" },
         ));
     }
 
@@ -5631,27 +5833,47 @@ fn gi_diag_text(got_probes: &[u8], got_points: &[u8]) -> String {
              或 GiProbe 布局在这台设备上漂移（优先查 make_buffer→submit_chain→readback_to 的句柄链）",
         );
     } else if !gpu_any_sample && !gpu_any_sh {
+        // 哨兵把 (A)/(B) 两族**彻底分开**（这两族的"全零"读回字节完全相同，
+        // 只有输入侧的负值初值能区分）：
+        //   sent_sh && sent_samples → 两个入口都没写过 → (A)；
+        //   !sent_sh && !sent_samples → 写过、但结果恰为零 → (B)；
+        //   只有一半带哨兵 → 入口边界不一致（更可疑，单列）。
+        let family = if sent_sh && sent_samples {
+            "(A) 两个入口都没有真正写入：sh 仍是 -2 哨兵、samples 仍是 -1 哨兵 ⇒ \
+             uniform 未生效（probe_count==0 → 三个 entry 全部早退）或 bind group 绑到了别的 buffer"
+        } else if !sent_sh && !sent_samples {
+            "(B) 两个入口都写过（哨兵已被覆写），但结果恰为零 ⇒ 全方向被判遮挡：\
+             查 hit_eps / t_max / prim_count 的读取值"
+        } else {
+            "(混合) 只有部分字段带哨兵 ⇒ 两个 entry 的覆写范围不一致，\
+             优先查 probe_count 的读取值（它同时是两个入口的循环上界）"
+        };
         s.push_str(&format!(
-            "pos/normal 完好但 samples 与 sh **全为零** ⇒ 宿主读回无法区分以下两族（读回字节完全相同）：\n\
-             \x20  (A) 三个入口都没有真正写入——uniform 未生效（probe_count==0 → 三个 entry 全部早退），\
-             或 bind group 绑到了别的/全零 buffer（nlen<0.5 → 两个入口早退）；\n\
-             \x20  (B) 写入生效但判定为「全方向遮挡」——hit_eps/prim_count/prims 之一读成异常值，\
-             使 24/24 条射线在 t≈0 即命中（同一场景 CPU 侧实测 {cpu_visible_total} 条可见）\n"
+            "pos/normal 完好但 samples 与 sh **全为零**；哨兵判定：{family}\n\
+             \x20  (A) 的判据：sh 仍为 -2、samples 仍为 -1（本轮由 gi_pack_probes 预填）；\n\
+             \x20  (B) 的判据：两个哨兵都不在场，说明入口执行过；\
+             同一场景 CPU 侧实测 {cpu_visible_total} 条方向可见\n"
         ));
         // (B) 族在本场景下可**静态推导**出极窄的必要条件，直接写进文本，
         // 免得下一轮又从头猜：
-        //   · probe 0 的 8 个方向里有 4 个 world.x < 0（离 x∈[1,3] 的球面图元越来越远），
-        //     在 CPU 的图元集下它们**永远**不会命中 ⇒ 只有「t=0 即命中」能判遮挡；
-        //   · t=0 处三个起点的场景距离分别是 1.0 / −1e−3 / 0.999 ⇒ 需 hit_eps ≥ 1.0。
-        //   · GiParams 里唯一 ≥1.0 的标量是 t_max@48 = 20.0 ⇒ 疑 hit_eps 读到了 t_max；
-        //   · 另一条通路是 prim_count 读到 4（= point_count@4），使容量内第 3/4 号图元
-        //     （kind=0/radius=1/center=原点 → 本实现取 q.x，即 |x|−1 的板）参与 min：
-        //     probe 0 的 |0|−1 = −1、probe 2 的 |0.001|−1 ≈ −0.999 直接命中，
-        //     probe 1 的 |1.001|−1 = 9.9999e−4 ≤ hit_eps 也命中 → 24/24 全遮挡。
+        //   · probe 0 的 8 个方向里有若干个 world.x < 0（离 x∈[1,3] 的球面图元
+        //     越来越远），在 CPU 的图元集下它们**永远**不会命中 ⇒ 只有「t=0 即命中」
+        //     能判遮挡；
+        //   · t=0 处三个起点的场景距离分别是 ~1.24 / ~0.41 / ~1.0（本轮球 SDF 修正后
+        //     的实测值）⇒ 要"起点即命中"需 hit_eps 远大于 1e-3。
+        //   · `GiParams` 里唯一量级 ≥1.0 且**不是** hit_eps 的标量是 t_max@48 = 20.0
+        //     ⇒ 疑 hit_eps 读到了 t_max。
+        //   · 另一条通路 `prim_count` 读到 4（= point_count@4）**本轮已被封住**：
+        //     容量填充图元从"球心原点 / r=1"改成"半径 0 / 心在 -Y 轴 1e6"，
+        //     SDF 恒 ≈1e6，即使越界参与 min 也不会命中（回归钉子见 native 测试
+        //     `gi_prim_count_misread_does_not_blind_the_scene`）。故此刻若仍观测到
+        //     全遮挡，`prim_count` 误读已**不再是**候选，应优先查 hit_eps / t_max。
         s.push_str(concat!(
-            "[研判] (B) 在本场景的必要条件（可静态推导，非猜测）：",
-            "要么 hit_eps ≥ 1.0（GiParams 里唯一 ≥1.0 的标量是 t_max@48=20.0 → 疑读到 t_max）；",
-            "要么 prim_count == 4（疑读到 point_count@4，容量内第 3/4 号图元 |x|−1 恰好含住三个起点）。\n",
+            "[研判] 若落到 (B)，本场景的必要条件（可静态推导，非猜测）：",
+            "hit_eps 被读成大值（GiParams 里唯一 ≥1.0 的标量是 t_max@48=20.0 → 疑读到 t_max）。",
+            "`prim_count` 误读成 4 这条通路已由「容量填充改为半径 0 + 远点」封住",
+            "（native 回归钉子 gi_prim_count_misread_does_not_blind_the_scene 钉住），",
+            "故不应再把全遮挡归因于容量填充图元。\n",
         ));
     } else if gpu_any_sample && !gpu_any_sh {
         s.push_str(
@@ -5663,11 +5885,141 @@ fn gi_diag_text(got_probes: &[u8], got_points: &[u8]) -> String {
         );
     }
     s.push_str(
-        "\n[下一步] 若落在 (A)/(B) 不可分辨区：需在 `gi_probe_trace` 入口写一行 witness（\
-         `probe._pad0 = 1.0;`，零成本、不改 304B 布局、不动判据）才能把「没跑」与「全遮挡」分开；\
-         本轮不擅自加（shader 变更须先由数据确认根因）。\n",
+        "\n[下一步] 本轮已把 input buffer 的 samples/sh/irradiance 预填负值哨兵\
+         （-1/-2/-3，见 gi_pack_probes/gi_pack_points），因此上面出现\
+         **带负号的模长**（如 -1.732）、或 sh/辐照度字段直接打印 -2.000000 / -3.000000，\
+         即可判定「该段入口没执行」，无需再加 witness；\
+         若打印的是 0.000 / 正常正值，则入口执行过、断在遮挡判定或早退分支。\n",
     );
     s
+}
+
+// ---------------------------------------------------------------------------
+// 测试项：`gpu.params_roundtrip`（参数是否真的到达 GPU）
+// ---------------------------------------------------------------------------
+//
+// # 为什么必须把「uniform 传输」做成独立判据
+// `gpu.gi_compute` 的 FAIL 只能是"数值不一致"这一个笼统结论，而**uniform 没生效**
+// 与**算法算错**在下游读回里是同一种形态（都是整块零值）。本项把"传输"这一层
+// 单独拿出来，判据是**纯字节级回环**：
+//   写 `gi_params_bytes(&GI_TEST)`（256B）→ `copyBufferToBuffer` 读回 → 逐字节比对。
+// 若 256/256 全等且 4 个关键字段解释值正确，则「uniform 传输」这一层可以**整体排除**，
+// 后续 `gpu.gi_compute` 的任何偏差都必须归因到 shader 语义或 dispatch，而不是接线。
+//
+// # 为什么这需要 `COPY_SRC`
+// `copyBufferToBuffer` 要求源缓冲带 `GPUBufferUsage.COPY_SRC`。uniform 缓冲原先只有
+// `UNIFORM | COPY_DST`，故本轮把宿主 `prism_create_buffer` 的 UNIFORM 分支扩为
+// `UNIFORM | COPY_DST | COPY_SRC`（**扩能力位，不新增 glue**，导入表仍 14 个）。
+// 若宿主未同步该改动，`copyBufferToBuffer` 验证失败 → 拷贝静默不执行 → 读回全是
+// 建缓冲时的零初始化内容 → 本项报"256 个字节不一致"，并在失败文案里直接点名此根因。
+//
+// # 为什么不做成 `make_buffer` 之外的旁路
+// 复用 `make_buffer` / `readback_to` 与 `gpu.gi_compute` **同一条**建缓冲/读回路径，
+// 才能保证"本项通过 ⇒ 同一路径上的 gi_compute 也拿到了正确的 uniform"。
+// （静态门禁 `wgsl_lint.mjs` 规则 A 会按测试项 id 核对该缓冲尺寸与
+// `gi_compute.wgsl::GiParams` 的声明自洽，故已在本轮把本项登记进其 KERNEL_OF。）
+
+/// `gpu.params_roundtrip` 的 run：写 uniform → 发起读回（判对在 collect）。
+fn t_gpu_params_roundtrip() -> Status {
+    let dev = match ready_device("gpu.params_roundtrip") {
+        Ok(d) => d,
+        Err(s) => return s,
+    };
+    // CPU 侧打包（与 `gpu.gi_compute` 用**同一个** `gi_params_bytes(&GI_TEST)`，
+    // 故本项通过即证明 gi_compute 的那份 uniform 字节也完全一致）。
+    let want = gi_params_bytes(&GI_TEST);
+    let src_ptr = SCRATCH.with(|s| {
+        let mut v = s.borrow_mut();
+        v.gi_params.copy_from_slice(&want);
+        // 读回落点先清零：若宿主读回链路静默失败，这里保持全 0 而不会残留上一轮的值
+        // （否则本项可能"读到上一次的正确内容"→ 假绿）。
+        v.gi_params_echo.fill(0);
+        v.gi_params.as_ptr() as usize as u32
+    });
+    let buf = match make_buffer(
+        "gpu.params_roundtrip",
+        dev,
+        GI_PARAMS_BYTES,
+        usage::UNIFORM,
+        || (src_ptr, GI_PARAMS_BYTES),
+    ) {
+        Ok(h) => h,
+        Err(s) => return s,
+    };
+    let dst = addr_of_buf(|x| &mut x.gi_params_echo[..]);
+    if let Err(s) = readback_to("gpu.params_roundtrip", dev, buf, GI_PARAMS_BYTES, dst) {
+        return s;
+    }
+    // 本项不登记错误槽位（`err_slots`）：全程没有 shader / dispatch 的验证错误 scope，
+    // 而 `err_slots` 是**跨项共享**的计数——擅自清点会打乱下一项（gi_compute）的记账。
+    // 传输链的任何失败都已经由 `make_buffer` / `readback_to` 的返回值即时判 FAIL。
+    set_result(&format!(
+        "已提交 GiParams uniform 回环：写 {GI_PARAMS_BYTES}B → 读回 {GI_PARAMS_BYTES}B\
+         （usage = UNIFORM | COPY_DST | COPY_SRC，缓冲句柄 {buf}）\n\
+         待 settle 后与 CPU 打包字节逐字节比对；判据：256/256 全等 + 4 个关键字段解释值\
+         （probe_count@0={} / point_count@4={} / prim_count@8={} / n_dirs@12={}）",
+        GI_N_PROBES, GI_N_POINTS, GI_TEST.prims, GI_DIRS
+    ));
+    Status::Pending
+}
+
+/// `gpu.params_roundtrip` 的 collect：逐字节比对 + 关键字段解释值校验。
+fn c_gpu_params_roundtrip() -> Status {
+    let dev = match ready_device("gpu.params_roundtrip") {
+        Ok(d) => d,
+        Err(s) => return s,
+    };
+    if gpu::device_lost(dev) != 0 {
+        return fail("device 在 uniform 回环期间 lost");
+    }
+    let want = gi_params_bytes(&GI_TEST);
+    let got = SCRATCH.with(|s| s.borrow().gi_params_echo);
+    let n = GI_PARAMS_BYTES as usize;
+    let mut diff = 0usize;
+    let mut first_off = 0usize;
+    for (i, (&g, &w)) in got.iter().zip(want.iter()).enumerate().take(n) {
+        if g != w {
+            if diff == 0 {
+                first_off = i;
+            }
+            diff += 1;
+        }
+    }
+    let equal = n - diff;
+    // 4 个关键字段的**解释值**（不是字节）：证明偏移语义也对，而不只是"字节搬对了"。
+    let got_probe = unpack_u32(&got, 0);
+    let got_point = unpack_u32(&got, 4);
+    let got_prim = unpack_u32(&got, 8);
+    let got_dirs = unpack_u32(&got, 12);
+    let fields_ok = got_probe == GI_N_PROBES
+        && got_point == GI_N_POINTS
+        && got_prim == GI_TEST.prims
+        && got_dirs == GI_DIRS;
+    if diff != 0 || !fields_ok {
+        return fail(format!(
+            "gpu.params_roundtrip：GiParams uniform 读回与 CPU 打包不一致——\
+             {equal}/{n} 字节相等（{diff} 字节不同，首个不同偏移 @{first_off}：\
+             读回 {} vs 期望 {}）；字段解释值 probe_count@0={got_probe}(期望{GI_N_PROBES}) \
+             point_count@4={got_point}(期望{GI_N_POINTS}) prim_count@8={got_prim}(期望{}) \
+             n_dirs@12={got_dirs}(期望{GI_DIRS})\n\
+             常见根因（按概率序）：\n\
+             \x20 (1) 宿主 `prism_create_buffer` 的 UNIFORM 分支缺 COPY_SRC →\
+             `copyBufferToBuffer` 验证失败、拷贝静默不执行，读回是建缓冲时的零初始化内容；\n\
+             \x20 (2) `prism_write_buffer` 用的长度/偏移与 `GI_PARAMS_BYTES` 不一致；\n\
+             \x20 (3) 读回落到与写入同一块内存（比对退化成「自己比自己」，此时会全等而无差异——\
+             本项已用独立 `gi_params_echo` 落点排除）。\n\
+             若整块全 0（{equal}==0 且全零）请直接查 (1)。",
+            got[first_off], want[first_off], GI_TEST.prims
+        ));
+    }
+    set_result(&format!(
+        "GiParams uniform 回环逐字节一致 ✓（{equal}/{n} 字节全等，0 处差异）\n\
+         字段解释值：probe_count@0={got_probe} / point_count@4={got_point} / \
+         prim_count@8={got_prim} / n_dirs@12={got_dirs}（与 `gi_compute.wgsl::GiParams` 布局一致）\n\
+         结论：uniform 传输链（create → write → copyBufferToBuffer → map → copy_out）可用，\
+         `gpu.gi_compute` 的任何偏差都不能再归因到「参数没到达 GPU」"
+    ));
+    Status::Pass
 }
 
 fn t_gpu_gi_compute() -> Status {
@@ -5725,7 +6077,13 @@ fn t_gpu_gi_compute() -> Status {
          params={par_buf}（{GI_PARAMS_BYTES}B uniform）points={point_buf}（{GI_POINTS_BYTES}B={GI_N_POINTS}×{GI_POINT_STRIDE_BYTES}）\n\
          group 前缀：trace/project={{(0,1)}} interpolate={{(0,1,2)}}（连续前缀，无跳号）\n\
          构型：{GI_N_PROBES} 探针 × {GI_DIRS} 采样方向 → SH-L2（9 系数 RGB）→ {GI_N_POINTS} 查询点重建\n\
-         读回 probes→{out_probes} points→{out_points}（各 {GI_PROBES_BYTES}/{GI_POINTS_BYTES}B），待 settle 后与 CPU 参考逐字段判对"
+         读回 probes→{out_probes} points→{out_points}（各 {GI_PROBES_BYTES}/{GI_POINTS_BYTES}B），待 settle 后与 CPU 参考逐字段判对\n\
+         [哨兵] GPU 输入缓冲的初值带负值哨兵，读回若仍是负值即「该段入口没写过」：\
+         samples 预填 {GI_SENTINEL_SAMPLE:.0}（gi_probe_trace 未写）、\
+         sh 预填 {GI_SENTINEL_SH:.0}（gi_sh_project 未写）、\
+         irradiance 预填 {GI_SENTINEL_IRRADIANCE:.0}（gi_probe_interpolate 未写）。\
+         物理上辐亮度/辐照度非负，故负值不可能是「算出来的」，只能是「没被覆写」。\
+         哨兵只改 GPU 输入初值；CPU 参考走 gi_probe_inputs()/gi_point_inputs() 独立重算、不读这两块缓冲。"
     ));
     if let Err(s) = submit_chain("gpu.gi_compute", dev, wgsl, &steps) {
         return s;
@@ -7562,6 +7920,75 @@ mod tests {
         assert_eq!(b.len(), GI_PARAMS_BYTES as usize);
     }
 
+    /// `gpu.params_roundtrip` 的判据口径自证：4 个关键字段的偏移与解释值。
+    ///
+    /// 真机 collect 阶段用的就是这 4 个 `unpack_u32`，若偏移写错（例如把 `n_dirs@12`
+    /// 写成 `@8`），判据会在真机上给出误导性的失败。本测把口径钉在 CPU 侧。
+    #[test]
+    fn params_roundtrip_field_offsets_decode_as_expected() {
+        let b = gi_params_bytes(&GI_TEST);
+        assert_eq!(unpack_u32(&b, 0), GI_N_PROBES, "probe_count@0");
+        assert_eq!(unpack_u32(&b, 4), GI_N_POINTS, "point_count@4");
+        assert_eq!(unpack_u32(&b, 8), GI_TEST.prims, "prim_count@8");
+        assert_eq!(unpack_u32(&b, 12), GI_DIRS, "n_dirs@12");
+        // 判据里写死的期望值本身也得对（防"两端一起写错"）。
+        assert_eq!(GI_TEST.prims, 2, "本测试的有效图元数应为 2（后两条是容量填充）");
+        assert_eq!(GI_DIRS, 8);
+    }
+
+    /// 输入缓冲的哨兵预填必须真的落进字节（否则真机"没跑"仍会被读成 0）。
+    #[test]
+    fn gi_pack_prefills_negative_sentinels() {
+        gi_pack_probes();
+        gi_pack_points();
+        let (probes, points) = SCRATCH.with(|s| (s.borrow().gi_probes, s.borrow().gi_points));
+        for i in 0..GI_N_PROBES as usize {
+            let base = i * GI_PROBE_STRIDE_BYTES as usize;
+            // samples 全段 -1。
+            for d in 0..GI_DIRS as usize {
+                let o = base + 32 + d * VEC3_STRIDE_BYTES as usize;
+                for c in 0..3 {
+                    assert_eq!(unpack_f32(&probes, o + c * 4), GI_SENTINEL_SAMPLE);
+                }
+            }
+            // sh 全段 -2。
+            for k in 0..9usize {
+                let o = base + 160 + k * VEC3_STRIDE_BYTES as usize;
+                for c in 0..3 {
+                    assert_eq!(unpack_f32(&probes, o + c * 4), GI_SENTINEL_SH);
+                }
+            }
+            // pos/normal 不被哨兵污染。
+            assert_eq!(unpack_f32(&probes, base + 8), gi_probe_inputs()[i][2]);
+            assert_eq!(unpack_f32(&probes, base + 24), gi_probe_inputs()[i][5]);
+        }
+        for i in 0..GI_N_POINTS as usize {
+            let o = i * GI_POINT_STRIDE_BYTES as usize + 16;
+            for c in 0..3 {
+                assert_eq!(unpack_f32(&points, o + c * 4), GI_SENTINEL_IRRADIANCE);
+            }
+        }
+        // 哨兵必须与"正常结果"可区分：物理上辐亮度/辐照度非负。
+        assert!(GI_SENTINEL_SAMPLE < 0.0 && GI_SENTINEL_SH < 0.0 && GI_SENTINEL_IRRADIANCE < 0.0);
+        assert!(GI_SENTINEL_SAMPLE != GI_SENTINEL_SH && GI_SENTINEL_SH != GI_SENTINEL_IRRADIANCE);
+    }
+
+    /// `gpu.params_roundtrip` 无 device 时稳定 SKIP，且清单登记齐全。
+    #[test]
+    fn params_roundtrip_body_skips_without_device() {
+        DEVICE.with(|d| d.set(0));
+        let idx = TESTS
+            .iter()
+            .position(|t| t.id == "gpu.params_roundtrip")
+            .expect("清单含 gpu.params_roundtrip");
+        assert!(TESTS[idx].needs_gpu, "gpu.params_roundtrip 必须标注 needs_gpu");
+        assert!(TESTS[idx].collect.is_some(), "gpu.params_roundtrip 必须有 collect 阶段");
+        assert_eq!(dispatch_panics(TESTS[idx].run, "gpu.params_roundtrip"), status::SKIP);
+        // 必须排在 gi_compute **之前**（报告里先看到参数自检结论）。
+        let gi = TESTS.iter().position(|t| t.id == "gpu.gi_compute").expect("清单含 gpu.gi_compute");
+        assert!(idx < gi, "params_roundtrip 必须排在 gpu.gi_compute 之前（idx={idx}, gi={gi}）");
+    }
+
     /// SDF CPU 参考的几何正确性：球/盒的遮挡判定与解析一致（非恒真自证）。
     #[test]
     fn gi_sdf_occlusion_matches_analytic() {
@@ -7630,8 +8057,14 @@ mod tests {
     /// JS / WGSL 源码）互不共享代码，指纹相等即证明三者的采样序、SH 常数、π 约定、
     /// Lambert 口径全部一致。
     ///
-    /// 该常量 `0xaf8429a3` 由 `host_test.mjs` 的 JS 独立实现产出（见其
+    /// 该常量 `0x6adb7c92` 由 `host_test.mjs` 的 JS 独立实现产出（见其
     /// `js_gi_fingerprint=` 输出）。若日后**有意**改动 GI 口径，两边须同步更新。
+    ///
+    /// # V2.2 变更（球 SDF 修正，CHANGELOG R-2026-07 条）
+    /// 旧锚 `0xaf8429a3` → 新锚 `0x6adb7c92`。原因：`gi_prim_dist` 的球分支由
+    /// `q.x`（沿 x 的无限大板）改为 `|p−c|−r`，probe 0 的可见方向数由 5/8 变 8/8、
+    /// probe 1 由 0/8 变 4/8，故全部 SH 系数与辐照度都变了。**Rust 与 JS 两端同步改**，
+    /// 否则跨实现判对失去意义。
     ///
     /// ⚠️ 这是 **CPU** 指纹，**不含 FMA**。真机 GPU 允许 FMA 收缩（见 `c_gpu_gi_compute`
     /// 文档），逐位指纹与 CPU 不同（实测真机 `0x87ac3cf3`），故 GPU↔CPU 判对走
@@ -7656,8 +8089,8 @@ mod tests {
             gi_point_inputs().iter().map(|q| gi_interpolate_ref(*q, &refs, &p)).collect();
         let fp = gi_fingerprint_of(&shs, &points);
         assert_eq!(
-            fp, 0xaf84_29a3,
-            "GI CPU 参考指纹 {fp:#010x} 与 JS 独立实现 0xaf8429a3 不一致——口径已漂移"
+            fp, 0x6adb_7c92,
+            "GI CPU 参考指纹 {fp:#010x} 与 JS 独立实现 0x6adb7c92 不一致——口径已漂移"
         );
     }
 
@@ -7684,10 +8117,17 @@ mod tests {
     /// 诊断块只在真机 FAIL 时输出，而沙箱永远看不到真机——若它本身有 bug
     /// （例如把模长算成 0、或判定分支写反），真机重跑拿到的就是一段**误导性**
     /// 文本，比没有诊断更贵。本测用三个已知形态钉死它：
-    /// 1. **pos/normal 完好、samples/sh 全零**（= 真机观测到的形态）→ 必须落 (A)/(B) 族；
+    /// 1. **pos/normal 完好、samples/sh 仍是哨兵**（= 入口一个都没跑）→ 必须落 (A) 族；
+    /// 1b. **pos/normal 完好、samples/sh 已写成 0**（= 入口跑了但全遮挡）→ 必须落 (B) 族；
     /// 2. **整块全零**（连 pos/normal 也零）→ 必须指认「上传/读回不是同一块 buffer」；
-    /// 3. **按 CPU 参考打包**（= 正确结果）→ 不得再报未写入，且 probe 0 显示 5/8 可见
-    ///    （这是 `sh[0][0]=0.9970052` 的来源：8 个方向里 5 个可见）。
+    /// 3. **按 CPU 参考打包**（= 正确结果）→ 不得再报未写入，且 probe 0 显示 8/8 可见
+    ///    （`sh[0][0]=1.595208` 的来源）。
+    ///
+    /// # V2.2 数值更新（球 SDF 修正的连带影响，已登记 CHANGELOG）
+    /// 修正前 probe 0 是 5/8 可见、`sh[0][0]=0.9970052`、probe 1 是 0/8；
+    /// 修正后（`|p−c|−r`）probe 0 = 8/8、probe 1/2 = 4/8、`sh[0][0]=1.595208`。
+    /// probe 1 由 0/8 变 4/8 正是缺陷①的可见证据：旧 `q.x` 板把起点 (1.001,1,0)
+    /// 判成 −1e−3（在体内），修正后真实距离是 0.414（在体外）。
     #[test]
     fn gi_diag_block_distinguishes_zero_from_reference() {
         let p = GI_TEST;
@@ -7700,22 +8140,41 @@ mod tests {
         assert!(d0.contains("[中间态 1/3]"), "诊断块缺少 trace 段");
         assert!(d0.contains("[中间态 2/3]"), "诊断块缺少 project 段");
         assert!(d0.contains("[中间态 3/3]"), "诊断块缺少 interpolate 段");
-        assert!(d0.contains("可见 GPU 0/8 vs CPU 5/8"), "probe 0 的可见方向数判错：{d0}");
+        assert!(d0.contains("可见 GPU 0/8 vs CPU 8/8"), "probe 0 的可见方向数判错：{d0}");
         assert!(d0.contains("读回的 pos/normal 与 CPU 输入不一致"), "全零缓冲未指认 buffer 身份：{d0}");
 
-        // ---- 形态 1：pos/normal 完好，samples/sh 保持零（真机观测形态）----
-        let mut bare_probes = [0u8; GI_PROBES_BYTES as usize];
+        // ---- 形态 1：「入口一个都没跑」= 读回等于 gi_pack_probes 的初值（全哨兵）----
+        // 【为什么不再手工填零】本轮给输入缓冲预填了负值哨兵，真实的"没跑"读回
+        // 就是哨兵值（-1 / -2），而不是零。此处直接取 `gi_pack_probes()` 的产物，
+        // 保证夹具与真机初始字节**逐字节同源**。
+        gi_pack_probes();
+        let bare_probes = SCRATCH.with(|s| s.borrow().gi_probes);
+        let d1 = gi_diag_text(&bare_probes, &zero_points);
+        assert!(d1.contains("(A) 两个入口都没有真正写入"), "未写入形态未落到 (A) 族：{d1}");
+        assert_eq!(
+            d1.matches("写入状态=哨兵未写(-2)").count(),
+            3,
+            "未写入形态三个探针的 sh 都应标「哨兵未写」：{d1}"
+        );
+        assert!(!d1.contains("退化法线"), "pos/normal 完好时不应提示法线退化");
+
+        // ---- 形态 1b：「入口跑过但结果为零」= pos/normal 有值、samples/sh 是 0（无哨兵）----
+        // 这正是 (B) 族：哨兵已被覆写、但方向全被判遮挡 ⇒ sh 恰为 0。
+        let mut zeroed_probes = [0u8; GI_PROBES_BYTES as usize];
         for (i, inp) in inputs.iter().enumerate() {
             let base = i * GI_PROBE_STRIDE_BYTES as usize;
             for (k, v) in inp.iter().enumerate() {
                 let off = base + if k < 3 { k * 4 } else { 16 + (k - 3) * 4 };
-                pack_f32(&mut bare_probes, off, *v);
+                pack_f32(&mut zeroed_probes, off, *v);
             }
         }
-        let d1 = gi_diag_text(&bare_probes, &zero_points);
-        assert!(d1.contains("(A) 三个入口都没有真正写入"), "未写入形态未落到 (A)/(B) 族：{d1}");
-        assert_eq!(d1.matches("GPU全零=是").count(), 3, "未写入形态三个探针的 sh 都应标全零");
-        assert!(!d1.contains("退化法线"), "pos/normal 完好时不应提示法线退化");
+        let d1b = gi_diag_text(&zeroed_probes, &zero_points);
+        assert!(d1b.contains("(B) 两个入口都写过"), "全遮挡形态未落到 (B) 族：{d1b}");
+        assert_eq!(
+            d1b.matches("写入状态=已写但全零").count(),
+            3,
+            "全遮挡形态三个探针的 sh 都应标「已写但全零」：{d1b}"
+        );
 
         // ---- 形态 3：按 CPU 参考打包（pos/normal + samples + sh 全填）----
         let mut ok_probes = [0u8; GI_PROBES_BYTES as usize];
@@ -7741,16 +8200,21 @@ mod tests {
         }
         let d2 = gi_diag_text(&ok_probes, &zero_points);
         assert!(!d2.contains("(A) 三个入口都没有真正写入"), "参考态被误判为未写入");
-        // probe 0/2 的参考 SH 非零、probe 1 恰好全零 → 只有 probe 1 该被标全零。
-        assert_eq!(d2.matches("GPU全零=是").count(), 1, "参考态只有 probe 1 的 sh 全零：{d2}");
+        // 球 SDF 修正后三条探针的 CPU 参考 SH 都非零（probe 1/2 同位置同法线 → 同值），
+        // 故参考态**没有任何** probe 会被标"全零"。
+        assert_eq!(
+            d2.matches("写入状态=已写有值").count(),
+            3,
+            "参考态三个探针的 sh 都应标「已写有值」：{d2}"
+        );
         assert!(
-            d2.contains("sh[0] GPU(0.997005,0.886227,0.775449)"),
+            d2.contains("sh[0] GPU(1.595208,1.417963,1.240718)"),
             "参考态 probe 0 的 sh[0] 应按 f32 参考值打印：{d2}"
         );
-        assert!(d2.contains("可见 GPU 5/8 vs CPU 5/8"), "参考态的可见方向数应与 CPU 一致：{d2}");
-        // probe 1 的 CPU 参考恰为全遮挡（起点落在 |x−2|<1 的图元内），
-        // 这正是「60 个字段」里 probe 1 不贡献差异的原因，钉住它防回归误判。
-        assert!(d2.contains("可见 GPU 0/8 vs CPU 0/8"), "probe 1 应为 0/8 可见：{d2}");
+        assert!(d2.contains("可见 GPU 8/8 vs CPU 8/8"), "参考态的可见方向数应与 CPU 一致：{d2}");
+        // probe 1 修正前是 0/8（旧 q.x 板把起点判成"在体内"），修正后是 4/8。
+        // 这条差异是缺陷①的直接可见证据，钉住它防回归。
+        assert!(d2.contains("可见 GPU 4/8 vs CPU 4/8"), "probe 1/2 应为 4/8 可见：{d2}");
     }
 
     /// 遮挡确实起作用（非恒全可见）：朝 +X（正对球）的探针可见方向数应 < 朝上者。
@@ -7770,10 +8234,236 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // 3.7：`prim_count` 误读 = 全遮挡 的机制证明（回归钉子）
+    // -----------------------------------------------------------------------
+
+    /// **危险填充**（= 修复前的 `GI_PRIMS[2]/[3]`）：球心在原点、半径 1。
+    ///
+    /// 保留它作为**历史快照**参与回归测试，是为了永久钉住"为什么填充数据必须安全"
+    /// 这件事——它不是被使用的图元，只是容量占位，但一旦 `prim_count` 被误读，
+    /// 它就会参与 `min`，并且恰好把三个探针起点都包进球内。
+    const UNSAFE_FILLER: [GiPrimRef; GI_MAX_PRIMS as usize] = [
+        GiPrimRef { kind: 0, radius: 1.0, center: [2.0, 0.0, 0.0] },
+        GiPrimRef { kind: 1, radius: 10.0, center: [0.0, -10.0, 0.0] },
+        GiPrimRef { kind: 0, radius: 1.0, center: [0.0, 0.0, 0.0] },
+        GiPrimRef { kind: 0, radius: 1.0, center: [0.0, 0.0, 0.0] },
+    ];
+
+    /// **历史算法快照**（= 修复前的 `gi_prim_dist` 球分支：返回 `q[0]`，沿 x 的无限大板）。
+    ///
+    /// 只出现在测试里，用途单一：证明"旧球 SDF + 旧填充 + prim_count=4"确实能产出
+    /// 真机观测到的"8/8 全遮挡、sh 全 0"。生产代码不得再引用本函数。
+    fn legacy_prim_dist(prim: &GiPrimRef, p: [f32; 3]) -> f32 {
+        let q = [
+            (p[0] - prim.center[0]).abs() - prim.radius,
+            (p[1] - prim.center[1]).abs() - prim.radius,
+            (p[2] - prim.center[2]).abs() - prim.radius,
+        ];
+        if prim.kind == 1 {
+            let cx = q[0].max(0.0);
+            let cy = q[1].max(0.0);
+            let cz = q[2].max(0.0);
+            (cx * cx + cy * cy + cz * cz).sqrt() + q[0].max(q[1]).max(q[2]).min(0.0)
+        } else {
+            q[0] // ← 历史缺陷本体：只取 x 分量
+        }
+    }
+
+    /// 历史版本的 sphere tracing（只用于上面的快照复算）。
+    fn legacy_trace(ro: [f32; 3], rd: [f32; 3], prims: &[GiPrimRef], p: &GiTestParams) -> bool {
+        let rl = (rd[0] * rd[0] + rd[1] * rd[1] + rd[2] * rd[2]).sqrt();
+        if rl < 0.5 {
+            return false;
+        }
+        let dir = [rd[0] / rl, rd[1] / rl, rd[2] / rl];
+        let mut t = 0.0f32;
+        for _ in 0..p.max_steps {
+            let q = [ro[0] + dir[0] * t, ro[1] + dir[1] * t, ro[2] + dir[2] * t];
+            let mut d = 1.0e6f32;
+            for prim in prims {
+                d = d.min(legacy_prim_dist(prim, q));
+            }
+            if d <= p.hit_eps {
+                return true;
+            }
+            t += d * p.safety;
+            if t > p.t_max {
+                return false;
+            }
+        }
+        false
+    }
+
+    /// 对每个探针收集"逐方向采样辐亮度"（用给定图元表 + 给定 trace 实现）。
+    ///
+    /// `p.prims` 决定**取表的前几项**（与生产路径的 `prim_count` clamp 同口径），
+    /// 这样同一张表可以分别按 `prim_count=2` / `=4` 求值——正是"误读 4"要模拟的东西。
+    fn samples_per_probe(
+        prims: &[GiPrimRef],
+        p: &GiTestParams,
+        trace: impl Fn([f32; 3], [f32; 3], &[GiPrimRef], &GiTestParams) -> bool,
+    ) -> Vec<[[f32; 3]; GI_DIRS as usize]> {
+        let prims = &prims[..(p.prims as usize).min(prims.len())];
+        let mut out = Vec::new();
+        for row in gi_probe_inputs().iter() {
+            let pos = [row[0], row[1], row[2]];
+            let normal = [row[3], row[4], row[5]];
+            let nl = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
+            let n = [normal[0] / nl, normal[1] / nl, normal[2] / nl];
+            let (t, b, _nn) = wf_onb(n);
+            let n_dirs = p.n_dirs.min(GI_DIRS);
+            let mut samples = [[0.0f32; 3]; GI_DIRS as usize];
+            for d in 0..n_dirs {
+                let local = gi_hemi_dir_ref(d, n_dirs);
+                let world = wf_normalize([
+                    t[0] * local[0] + b[0] * local[1] + n[0] * local[2],
+                    t[1] * local[0] + b[1] * local[1] + n[1] * local[2],
+                    t[2] * local[0] + b[2] * local[1] + n[2] * local[2],
+                ]);
+                let ro = [pos[0] + n[0] * 1e-3, pos[1] + n[1] * 1e-3, pos[2] + n[2] * 1e-3];
+                if !trace(ro, world, prims, p) {
+                    samples[d as usize] = p.env;
+                }
+            }
+            out.push(samples);
+        }
+        out
+    }
+
+    /// 每条探针的"可见方向数"（= samples 中非零项的个数，与 `visible_total` 同口径）。
+    fn visible_per_probe(
+        prims: &[GiPrimRef],
+        p: &GiTestParams,
+        trace: impl Fn([f32; 3], [f32; 3], &[GiPrimRef], &GiTestParams) -> bool,
+    ) -> Vec<usize> {
+        samples_per_probe(prims, p, trace)
+            .iter()
+            .map(|s| s.iter().filter(|v| v[0] > 0.0 || v[1] > 0.0 || v[2] > 0.0).count())
+            .collect()
+    }
+
+    /// **`prim_count` 误读 = 全遮挡**的机制证明（V2.2 真机 FAIL 的根因验证）。
+    ///
+    /// 四组对照，全部走**同一份** CPU 参考实现（`_prims` 变体），只换图元表与算法快照：
+    /// 1. 出库配置（安全填充 + 修正后的球 SDF）：`prim_count=2` 与 `=4` 必须**逐位一致**
+    ///    ——这是"误读 4 无害"的直接证据。
+    /// 2. 危险填充 + 修正后的球 SDF：probe 0 / probe 2 仍被 8/8 全遮挡
+    ///    ——证明"填充数据的危险性不因球 SDF 修好而消失"，故第 3.2 步的填充替换是必需的。
+    /// 3. 危险填充 + **历史球 SDF**（`q.x` 板）：三个探针全部 8/8 全遮挡、`sh` 全 0
+    ///    ——正是真机观测到的形态（`60 = 27 + 0 + 27 + 6`：probe 1 的 CPU 参考本来全 0）。
+    /// 4. 出库配置下 `prim_count=2` 的 CPU 自比 mismatch 必须为 0（同输入同实现）。
+    ///
+    /// 用 `cargo test -p prism-gpu gi_prim_count_misread -- --nocapture` 可看到全部数字。
+    #[test]
+    fn gi_prim_count_misread_does_not_blind_the_scene() {
+        let p2 = GI_TEST; // prims = 2
+        let mut p4 = GI_TEST;
+        p4.prims = GI_MAX_PRIMS; // 模拟 prim_count 被误读成 4（= point_count@4）
+
+        // ---- 组 1：出库配置，prim_count=2 vs 4 必须一致 ----
+        let ship2 = visible_per_probe(&GI_PRIMS, &p2, gi_sphere_trace_prims);
+        let ship4 = visible_per_probe(&GI_PRIMS, &p4, gi_sphere_trace_prims);
+        println!("[3.7] 出库配置（安全填充）可见方向数：prim_count=2 → {ship2:?}；=4 → {ship4:?}");
+        assert_eq!(ship2, ship4, "安全填充必须让 prim_count=2/4 完全等价");
+
+        let mut sh2: Vec<[[f32; 3]; 9]> = Vec::new();
+        let mut sh4: Vec<[[f32; 3]; 9]> = Vec::new();
+        for row in gi_probe_inputs().iter() {
+            let pos = [row[0], row[1], row[2]];
+            let nrm = [row[3], row[4], row[5]];
+            sh2.push(gi_sh_project_prims(pos, nrm, &GI_PRIMS[..2], &p2).sh);
+            sh4.push(gi_sh_project_prims(pos, nrm, &GI_PRIMS[..4], &p4).sh);
+        }
+        for i in 0..sh2.len() {
+            println!("[3.7] 出库配置 probe {i}: sh[0]（prim_count=2）= {:?}", sh2[i][0]);
+            for k in 0..9 {
+                for c in 0..3 {
+                    assert_eq!(
+                        sh2[i][k][c].to_bits(),
+                        sh4[i][k][c].to_bits(),
+                        "probe {i} sh[{k}][{c}] 在 prim_count=2/4 下必须逐位一致"
+                    );
+                }
+            }
+        }
+        // 出库配置下三个探针都不得是全遮挡（否则"球/地板"这个场景就没意义了）。
+        assert!(ship2.iter().all(|&v| v > 0), "出库配置不应出现全遮挡探针：{ship2:?}");
+
+        // ---- 组 3（先做，作为对照基准）：危险填充 + 历史球 SDF → 8/8 全遮挡 ----
+        let legacy = visible_per_probe(&UNSAFE_FILLER, &p4, legacy_trace);
+        let legacy_legit = visible_per_probe(&UNSAFE_FILLER, &p2, legacy_trace);
+        println!("[3.7] 危险填充+旧SDF 可见方向数：prim_count=2 → {legacy_legit:?}；=4 → {legacy:?}");
+        assert_eq!(
+            legacy,
+            vec![0usize; GI_N_PROBES as usize],
+            "旧球 SDF + 旧填充在 prim_count=4 时必须复现 8/8 全遮挡（真机形态）"
+        );
+        // 对照：旧填充在 **prim_count=2** 下的 sh[0]（= 旧代码出库时的 CPU 参考值，
+        // 即真机报告里 `CPU 0.9970052` 的来源）。
+        let legacy2_samples = samples_per_probe(&UNSAFE_FILLER, &p2, legacy_trace);
+        for (i, row) in gi_probe_inputs().iter().enumerate() {
+            let sh = gi_sh_project_samples([row[3], row[4], row[5]], &legacy2_samples[i], &p2);
+            println!("[3.7] 危险填充+旧SDF prim_count=2 时 probe {i} 的 sh[0] = {:?}", sh[0]);
+        }
+        // 全遮挡 ⇒ 每个方向的采样都是 (0,0,0) ⇒ 任何线性投影必然整块为零。
+        // 这里用**现行**投影函数对**历史** samples 求值，证明"sh 全 0"不是另一条实现的说法。
+        let legacy_samples = samples_per_probe(&UNSAFE_FILLER, &p4, legacy_trace);
+        for (i, row) in gi_probe_inputs().iter().enumerate() {
+            let sh = gi_sh_project_samples([row[3], row[4], row[5]], &legacy_samples[i], &p4);
+            println!("[3.7] 危险填充+旧SDF prim_count=4 时 probe {i} 的 sh[0] = {:?}", sh[0]);
+            assert_eq!(sh[0], [0.0, 0.0, 0.0], "全遮挡时 probe {i} 的 sh[0] 必须为零");
+            assert!(
+                sh.iter().all(|k| *k == [0.0, 0.0, 0.0]),
+                "全遮挡时 probe {i} 的 9 个 SH 系数必须整块为零"
+            );
+        }
+
+        // ---- 组 2：危险填充 + 修正后的球 SDF → probe 2 仍全遮挡 ----
+        // 这一组给出一个**必须诚实说清**的结论：原点 r=1 的球在正确的球 SDF 下，
+        // 只对"起点几乎落在球面上"的 probe 2（(0.001,1,0)，|p|−1 ≈ 5e−7 ≤ hit_eps）
+        // 造成 8/8 全遮挡；probe 0（(0,1.001,0)，|p|−1 ≈ 1.0000e−3 恰好**略大于**
+        // hit_eps=1e−3）与 probe 1（1.41−1=0.41）不再被它遮住。
+        // 换句话说：「**三个探针全部** 8/8」这个真机形态是**旧球 SDF（q.x 无限大板）**
+        // 的产物（组 3 已精确复现 [0,0,0]），而**"填充能遮住探针"**这件事在修正后的
+        // SDF 下依然成立 ⇒ 填充替换仍是必需的（第 3.2 步），只是危险面比原先估计的窄。
+        let unsafe_new = visible_per_probe(&UNSAFE_FILLER, &p4, gi_sphere_trace_prims);
+        println!("[3.7] 危险填充+新SDF 可见方向数：prim_count=4 → {unsafe_new:?}");
+        assert_eq!(
+            unsafe_new[2], 0,
+            "原点 r=1 的球在正确球 SDF 下仍会把 probe 2 变成 8/8 全遮挡"
+        );
+        assert!(
+            unsafe_new[0] > 0 && unsafe_new[1] > 0,
+            "修正球 SDF 后 probe 0/1 不再被原点球遮住（全 8/8 是旧 q.x 板的产物）：{unsafe_new:?}"
+        );
+        assert!(
+            ship2.iter().sum::<usize>() > unsafe_new.iter().sum::<usize>(),
+            "安全填充的可见方向数必须严格多于危险填充（证明填充替换真的消除了遮挡）"
+        );
+
+        // ---- 组 4：CPU 自比 mismatch 必须为 0（prim_count=2，同输入同实现）----
+        let mut mismatch = 0usize;
+        for row in gi_probe_inputs().iter() {
+            let pos = [row[0], row[1], row[2]];
+            let nrm = [row[3], row[4], row[5]];
+            let a = gi_sh_project_prims(pos, nrm, &GI_PRIMS[..2], &p2);
+            let b = gi_sh_project_prims(pos, nrm, &GI_PRIMS[..2], &p2);
+            for k in 0..9 {
+                for c in 0..3 {
+                    if a.sh[k][c].to_bits() != b.sh[k][c].to_bits() {
+                        mismatch += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(mismatch, 0, "prim_count=2 时 CPU 参考自比必须 0 mismatch");
+        println!("[3.7] prim_count=2 CPU 自比 mismatch = {mismatch}");
+    }
+
     /// GI 测试项无 device 时稳定 SKIP（不 panic）。
     #[test]
-    fn gi_test_body_skips_without_device() {
-        DEVICE.with(|d| d.set(0));
+    fn gi_test_body_skips_without_device() {        DEVICE.with(|d| d.set(0));
         let idx = TESTS.iter().position(|t| t.id == "gpu.gi_compute").expect("清单含 gpu.gi_compute");
         assert_eq!(dispatch_panics(TESTS[idx].run, "gpu.gi_compute"), status::SKIP);
     }
