@@ -29,7 +29,7 @@ use std::ffi::{c_char, c_int, c_void};
 /// ⚠️ **平台常量，不可臆测**：POSIX 只规定 `RTLD_LAZY` / `RTLD_NOW` 存在，
 /// **不规定其数值**。Linux/glibc 上分别为 `1` / `2`；macOS 上 `RTLD_LAZY`
 /// 也是 `0x1`。本模块的目标平台是 Linux（Vulkan 原生后端），故取 glibc 值。
-/// 若将来移植 macOS，此常量须复核（macOS 的 Vulkan 走 MoltenVK 且路径不同）。
+/// 若将来移植 macOS，此常量须复核（平台 Vulkan loader 路径不同）。
 ///
 /// 选 `RTLD_LAZY`（而非 `RTLD_NOW`）的理由：`libvulkan.so.1` 体量大且依赖
 /// ICD 加载器；`LAZY` 推迟未用符号重定位，探测失败时的开销更低。

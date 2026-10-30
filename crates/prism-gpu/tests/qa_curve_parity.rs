@@ -1,6 +1,6 @@
-//! V2.2-A-2 曲线图元对拍钉子（任务表 T06「测 2」之二）。
+//! V2.2-A-2 曲线图元对拍钉子（任务表 T06「测 2」之二 + A-2-CURVE-VK 收口）。
 //!
-//! 覆盖 PRD 验收 1 / 2 / 3（GPU 侧 5 见下"留名登记"）：
+//! 覆盖 PRD 验收 1 / 2 / 3 / 5：
 //!
 //! 1. **CPU 参考出有效帧**：含曲线图元的场景经 `CpuRefBackend::render_scene`
 //!    得到 `w*h*4` 的有效帧，且曲线确实参与成像（几何位置可判）。
@@ -9,31 +9,36 @@
 //! 3. **双跑逐位一致**：同请求两次渲染 `to_bits` 全等（CPU 口径 G3）。
 //! 4. **退化形态不 panic**：`r=0 / h=0 / profile 单点 / 非有限 / 空集合` 经
 //!    `render_scene` 全链路不 panic，且输出与"曲线被忽略"一致。
+//! 5. **Vulkan megakernel 曲线路径点亮**（A-2-CURVE-VK）：
+//!    `VULKAN_CURVE_PATH == true` ⇒ 软件 ICD（lavapipe）上
+//!    `max_channel_delta == 0 && differing_pixels == 0` 的**硬判据**生效，
+//!    四种图元（圆柱 / 圆锥 / 圆环 / 旋转曲面）逐一过门。
 //!
-//! # GPU 侧（Vulkan megakernel 曲线支持）——留名登记（设计 §1.2 失败退路）
+//! # 判据纪律（一个字都不放宽）
 //!
-//! 设计 §1.2.2 的失败退路写明：若 megakernel 遍历段的软件 ICD 0 差异在 3 个
-//! 迭代内达不到，则降级交付「三角化器 + CPU 参考 + 保真度界 + WGSL 侧」，Vulkan
-//! megakernel 曲线支持整项**留名**（G9 允许，A-2 为 P1 需记一次变更）。
+//! 软件 ICD 的 0 差异是 PRD 钉死的档位（设计 §1.2.1「软件 ICD 档 0 差异可达」）。
+//! 为了让判据变绿而放宽 `differing_pixels` = **改判据**，不是修实现——本文件
+//! 的 `assert_eq!(.., 0)` 是硬判据，A-2-CURVE-VK 的失败退路是**把开关翻回
+//! `false` 并留名**，不是调阈值。
 //!
-//! 本仓现状：`vulkan::spirv_rt` 的发射器仍是 **V1 四绑定**（params/spheres/lights/out），
-//! 栈式 BVH 遍历段未实装 ⇒ `VulkanBackend::render_scene` 对含曲线场景**忽略曲线**
-//! （与 `curves` 为空逐位相同）。故本文件对 GPU 侧只做**登记式**断言：
-//! `VULKAN_CURVE_PATH` 为 `false` 时校验"曲线被忽略"这一降级语义的确定性；
-//! 置 `true`（遍历段实装后）自动切换为「软件 ICD 上 `max_channel_delta == 0 &&
-//! differing_pixels == 0`」的硬判据——**判据不放宽**，只是尚未点亮。
+//! # 当前状态（V2.2 W3，A-2-CURVE-VK 交付）
+//!
+//! `crates/prism-gpu/src/vulkan/spirv_rt.rs` 的发射器已升到 **V2 六绑定**
+//! （params / spheres / lights / triangles / nodes / out）+ 栈式 BVH 遍历段
+//! （双栈、近子后入栈、`t` 并列先左），语义逐句移植 `shaders/scene_frame.wgsl`；
+//! `VULKAN_CURVE_PATH = true` 即灯亮。回退只需把它改回 `false`（GPU 侧随即
+//! 退回"忽略曲线"的登记语义，见本文件下方 `vulkan_curve_path_off_*` 留档说明）。
 
 use prism_gpu::{
-    AestheticReq, CameraReq, CpuRefBackend, CurveReq, GpuDevice, LightReq, SceneRenderRequest,
-    SphereReq,
+    AestheticReq, CameraReq, CpuRefBackend, CurveReq, Framebuffer, GpuDevice, LightReq,
+    SceneRenderRequest, SphereReq,
 };
 use prism_math::Vec3;
 
 /// Vulkan megakernel 的曲线（栈式 BVH 遍历）支持是否已点亮。
 ///
-/// 见文件头「留名登记」：当前为 `false`（发射器仍 V1 四绑定）。此常量翻 `true`
-/// 即自动启用软件 ICD 的 0 差异硬断言。
-const VULKAN_CURVE_PATH: bool = false;
+/// `true` ⇒ 本文件对 GPU 侧启用软件 ICD 的 0 差异硬判据（见文件头）。
+const VULKAN_CURVE_PATH: bool = true;
 
 fn base_request(w: u32, h: u32) -> SceneRenderRequest {
     SceneRenderRequest {
@@ -79,7 +84,69 @@ fn cylinder_scene(w: u32, h: u32) -> SceneRenderRequest {
     req
 }
 
-fn pixel(fb: &prism_gpu::Framebuffer, x: u32, y: u32) -> Option<[u8; 4]> {
+/// 四种曲线图元各一个对拍场景（**只含曲线 + 一盏灯**，把几何差异隔离出来）。
+///
+/// 尺寸统一取 24×16：足以覆盖"圆弧段 / 轮廓折线 / 上下盖"三类面片，又让
+/// 三角化 + SAH-BVH 构建保持在毫秒级（torus 在 tol=0.02 下会切出上万三角形，
+/// 故取小半径，见每个 case 的注释）。
+fn primitive_cases() -> Vec<(&'static str, CurveReq)> {
+    vec![
+        (
+            // 侧壁 2×seg 四边形 + 上下盖扇形；轴沿 +Z 正对相机。
+            "cylinder",
+            CurveReq::Cylinder {
+                center: Vec3::new(0.0, 0.0, 0.0),
+                radius: 0.9,
+                height: 3.0,
+                axis: Vec3::new(0.0, 0.0, 1.0),
+            },
+        ),
+        (
+            // 侧壁 seg 三角形 + 底盖扇形；锥尖朝 +Z（朝相机）。
+            "cone",
+            CurveReq::Cone {
+                center: Vec3::new(0.0, 0.0, 0.0),
+                radius: 0.9,
+                height: 2.0,
+                axis: Vec3::new(0.0, 0.0, 1.0),
+            },
+        ),
+        (
+            // 主环 × 管：小半径版（major 0.30 / minor 0.10 ⇒ 约 1.8 万三角形）。
+            "torus",
+            CurveReq::Torus {
+                center: Vec3::new(0.0, 0.0, 0.0),
+                major: 0.30,
+                minor: 0.10,
+                axis: Vec3::new(0.0, 1.0, 0.0),
+            },
+        ),
+        (
+            // 轮廓折线 × 周向段：含水平段（环带）与斜段（锥台）。
+            "revolution",
+            CurveReq::Revolution {
+                center: Vec3::new(0.0, 0.0, 0.0),
+                profile: vec![
+                    Vec3::new(0.30, 0.0, 0.0),
+                    Vec3::new(0.50, 0.5, 0.0),
+                    Vec3::new(0.30, 1.0, 0.0),
+                ],
+                segments: 12,
+                axis: Vec3::new(0.0, 1.0, 0.0),
+            },
+        ),
+    ]
+}
+
+/// 单图元场景（清空球，只留曲线 + 一盏灯）。
+fn curve_only_scene(w: u32, h: u32, curve: CurveReq) -> SceneRenderRequest {
+    let mut req = base_request(w, h);
+    req.spheres.clear();
+    req.curves = vec![curve];
+    req
+}
+
+fn pixel(fb: &Framebuffer, x: u32, y: u32) -> Option<[u8; 4]> {
     fb.get_pixel(x, y)
 }
 
@@ -285,60 +352,303 @@ fn degenerate_curves_do_not_panic_through_render_scene() {
 }
 
 // ---------------------------------------------------------------------------
-// GPU 侧：曲线路径留名登记 / 点亮后 0 差异硬判据
+// GPU 侧（Vulkan megakernel 曲线支持）：0 差异硬判据
 // ---------------------------------------------------------------------------
 
-#[test]
-fn vulkan_curve_path_registration() {
-    let req = cylinder_scene(24, 16);
-    let mut be = prism_gpu::vulkan::VulkanBackend::new();
-    let available = be.render_available();
+/// 一帧的逐像素差异摘要（诊断 + 硬判据共用）。
+struct CurveParity {
+    /// 非 alpha 通道的最大绝对差。
+    max_channel_delta: u8,
+    /// 任一通道有差异的像素数。
+    differing_pixels: usize,
+    /// 总像素数。
+    total_pixels: usize,
+    /// 首个差异样本 `(像素下标, CPU, GPU)`。
+    first: Option<(usize, [u8; 4], [u8; 4])>,
+}
 
-    if !VULKAN_CURVE_PATH {
-        // 留名：megakernel 遍历段未实装 ⇒ 曲线被忽略（降级语义确定）。
-        if available {
-            let gpu = be.render_scene(&req);
-            if gpu.is_valid() {
-                let mut req_no_curve = req.clone();
-                req_no_curve.curves.clear();
-                let gpu_no_curve = be.render_scene(&req_no_curve);
-                assert_eq!(
-                    gpu.pixels, gpu_no_curve.pixels,
-                    "留名期：GPU 必须**忽略**曲线（与 curves 为空逐位相同），不得半实现"
-                );
-            }
-        }
-        println!(
-            "留名登记：Vulkan megakernel 曲线支持未点亮（VULKAN_CURVE_PATH=false，\
-             render_available={available}）；按设计 §1.2 失败退路，A-2 降级为\
-             「三角化器 + CPU 参考 + 保真度界 + WGSL 侧」，需交付前 CI/真机验证后方可翻 true"
-        );
-        return;
-    }
-
-    // 点亮后：软件 ICD 上必须逐字节一致（判据与 `qa_render_scene.rs:388-390` 同款）。
-    if !available {
-        println!("无可用设备：0 差异判据跳过（实机项 = 永不进门禁）");
-        return;
-    }
-    let gpu = be.render_scene(&req);
-    assert!(gpu.is_valid(), "点亮后 GPU 必须产出有效帧");
-    let mut cpu_be = CpuRefBackend;
-    let cpu = cpu_be.render_scene(&req);
-    let mut max_delta = 0u8;
-    let mut differing = 0usize;
-    for i in 0..(24 * 16) {
+/// 逐像素比对（只比 RGB；alpha 恒 255，本文件另做断言）。
+fn curve_parity(cpu: &Framebuffer, gpu: &Framebuffer) -> CurveParity {
+    assert_eq!((cpu.width, cpu.height), (gpu.width, gpu.height), "尺寸必须一致");
+    assert_eq!(cpu.pixels.len(), gpu.pixels.len(), "帧长必须一致");
+    let total_pixels = (cpu.width as usize) * (cpu.height as usize);
+    let mut max_channel_delta = 0u8;
+    let mut differing_pixels = 0usize;
+    let mut first = None;
+    for i in 0..total_pixels {
         let a = &cpu.pixels[i * 4..i * 4 + 4];
         let b = &gpu.pixels[i * 4..i * 4 + 4];
         let mut pix = 0u8;
         for c in 0..3 {
             pix = pix.max(a[c].abs_diff(b[c]));
         }
-        max_delta = max_delta.max(pix);
+        max_channel_delta = max_channel_delta.max(pix);
         if pix > 0 {
-            differing += 1;
+            differing_pixels += 1;
+            if first.is_none() {
+                first = Some((i, [a[0], a[1], a[2], a[3]], [b[0], b[1], b[2], b[3]]));
+            }
+        }
+        assert_eq!(b[3], 255, "GPU 像素 alpha 必须不透明");
+    }
+    CurveParity {
+        max_channel_delta,
+        differing_pixels,
+        total_pixels,
+        first,
+    }
+}
+
+/// 是否是**软件 ICD**（lavapipe / llvmpipe / SwiftShader）：此时判据是逐位一致。
+fn is_software_icd(device: &str) -> bool {
+    let d = device.to_ascii_lowercase();
+    d.contains("llvmpipe") || d.contains("lavapipe") || d.contains("swiftshader")
+}
+
+/// 打开后端；无可用设备时打印一句并返回 `None`（实机项永不进门禁）。
+fn gpu_backend() -> Option<prism_gpu::vulkan::VulkanBackend> {
+    let be = prism_gpu::vulkan::VulkanBackend::new();
+    if !VULKAN_CURVE_PATH {
+        panic!(
+            "VULKAN_CURVE_PATH 必须为 true（A-2-CURVE-VK 已点亮）；\
+             若走失败退路请同时恢复本文件的登记式断言，不得静默降级"
+        );
+    }
+    if !be.render_available() {
+        println!("无可用设备：0 差异判据跳过（实机项 = 永不进门禁）");
+        return None;
+    }
+    Some(be)
+}
+
+/// **PRD 验收 5（硬判据）**：四种曲线图元在软件 ICD 上必须与 CPU 参考逐字节一致。
+///
+/// 判据：`max_channel_delta == 0 && differing_pixels == 0`（**不放宽**）。
+/// 非软件 ICD（真机 GPU）上按 `qa_render_scene` 的同一档位（≤1/255、≤0.5%）——
+/// 逐位一致是软件 ICD 的实测结论，真机允许末位量化噪声。
+#[test]
+fn vulkan_curve_primitives_match_cpu_reference_bitwise() {
+    let Some(mut backend) = gpu_backend() else {
+        return;
+    };
+    let software = is_software_icd(backend.device_name().unwrap_or(""));
+    let mut cpu_be = CpuRefBackend;
+    for (tag, curve) in primitive_cases() {
+        let req = curve_only_scene(24, 16, curve);
+        let gpu = backend.render_scene(&req);
+        assert!(gpu.is_valid(), "[{tag}] 点亮后 GPU 必须产出有效帧");
+        let cpu = cpu_be.render_scene(&req);
+        assert!(cpu.is_valid(), "[{tag}] CPU 参考必须产出有效帧");
+        let p = curve_parity(&cpu, &gpu);
+        println!(
+            "[curve-parity:{tag}] pixels={} max_channel_delta={} differing_pixels={} \
+             software_icd={} first_diff={:?}",
+            p.total_pixels, p.max_channel_delta, p.differing_pixels, software, p.first
+        );
+        if software {
+            assert_eq!(
+                p.max_channel_delta, 0,
+                "[{tag}] 软件 ICD 上必须逐字节一致（最大通道差 {} ≠ 0，首个差异 {:?}）",
+                p.max_channel_delta, p.first
+            );
+            assert_eq!(
+                p.differing_pixels, 0,
+                "[{tag}] 软件 ICD 上必须逐字节一致（差异像素 {} ≠ 0，首个 {:?}）",
+                p.differing_pixels, p.first
+            );
+        } else {
+            assert!(
+                p.max_channel_delta <= 1 && p.differing_pixels * 200 <= p.total_pixels,
+                "[{tag}] 真机档位（≤1/255、≤0.5%）不达标：max={} diff={}（首个 {:?}）",
+                p.max_channel_delta,
+                p.differing_pixels,
+                p.first
+            );
         }
     }
-    assert_eq!(max_delta, 0, "软件 ICD 上必须逐字节一致（最大通道差 {max_delta}）");
-    assert_eq!(differing, 0, "软件 ICD 上必须逐字节一致（差异像素 {differing}）");
+}
+
+/// **验收 5（续）**：球与曲线**同场**时的最近命中与互相遮挡也必须逐位一致。
+///
+/// 这一项覆盖「`has_hit && has_curve` 的互斥裁决」——曲线命中作废球命中、
+/// 且曲线搜索的上界是球的最近 `t`（与 CPU 的 `hit = None` / `closest_t` 同式）。
+#[test]
+fn vulkan_curve_and_spheres_share_the_nearest_hit_path() {
+    let Some(mut backend) = gpu_backend() else {
+        return;
+    };
+    let software = is_software_icd(backend.device_name().unwrap_or(""));
+    let mut cpu_be = CpuRefBackend;
+    // 前挡圆柱 + 后方红球（同一条中心射线）+ 一枚偏置小球。
+    let mut req = base_request(32, 24);
+    req.spheres = vec![
+        SphereReq {
+            center: Vec3::new(0.0, 0.0, 0.0),
+            radius: 0.5,
+            albedo: Vec3::new(1.0, 0.0, 0.0),
+            roughness: 0.4,
+            metalness: 0.0,
+        },
+        SphereReq {
+            center: Vec3::new(-1.2, -1.0, -1.0),
+            radius: 0.35,
+            albedo: Vec3::new(0.2, 0.9, 0.3),
+            roughness: 0.5,
+            metalness: 0.2,
+        },
+    ];
+    req.curves = vec![CurveReq::Cylinder {
+        center: Vec3::new(0.0, 0.0, -1.5),
+        radius: 0.9,
+        height: 3.0,
+        axis: Vec3::new(0.0, 0.0, 1.0),
+    }];
+    let gpu = backend.render_scene(&req);
+    assert!(gpu.is_valid());
+    let cpu = cpu_be.render_scene(&req);
+    let p = curve_parity(&cpu, &gpu);
+    println!(
+        "[curve+sphere] max_channel_delta={} differing_pixels={} first_diff={:?}",
+        p.max_channel_delta, p.differing_pixels, p.first
+    );
+    if software {
+        assert_eq!(p.max_channel_delta, 0, "首个差异 {:?}", p.first);
+        assert_eq!(p.differing_pixels, 0, "首个差异 {:?}", p.first);
+    }
+}
+
+/// **G3：双跑逐位一致**（GPU 侧；软件 ICD 上连中间量也必须确定）。
+#[test]
+fn vulkan_curve_render_is_bitwise_deterministic_across_runs() {
+    let Some(mut backend) = gpu_backend() else {
+        return;
+    };
+    for (tag, curve) in primitive_cases() {
+        let req = curve_only_scene(20, 12, curve);
+        let a = backend.render_scene(&req);
+        let b = backend.render_scene(&req);
+        assert!(a.is_valid() && b.is_valid(), "[{tag}] 双跑都必须出有效帧");
+        assert_eq!(a.pixels, b.pixels, "[{tag}] 同请求双跑必须逐位一致（G3）");
+        assert_eq!(
+            (a.width, a.height),
+            (b.width, b.height),
+            "[{tag}] 帧尺寸必须一致"
+        );
+    }
+    println!("G3：四种图元双跑全部逐位一致");
+}
+
+/// **`curves` 为空 ⇒ 与 V1（4 绑定时代）输出逐位一致**（不回归的机械保证）。
+///
+/// V1 的输出基准就是 [`CpuRefBackend`]（V2.1 起两者在软件 ICD 上逐字节一致，
+/// 见 `qa_render_scene.rs`）。故本项断言：空曲线时 GPU ≡ CPU，
+/// 且带空 `curves` 字段的请求 ≡ 不带该字段的等价请求。
+#[test]
+fn vulkan_curve_path_with_empty_curves_is_bytewise_v1() {
+    let Some(mut backend) = gpu_backend() else {
+        return;
+    };
+    let software = is_software_icd(backend.device_name().unwrap_or(""));
+    let mut cpu_be = CpuRefBackend;
+
+    let req = base_request(40, 24); // curves 为空，带球 + 灯
+    let gpu = backend.render_scene(&req);
+    assert!(gpu.is_valid(), "空曲线场景 GPU 必须出有效帧");
+    let cpu = cpu_be.render_scene(&req);
+    let p = curve_parity(&cpu, &gpu);
+    println!(
+        "[empty-curves] max_channel_delta={} differing_pixels={} first_diff={:?}",
+        p.max_channel_delta, p.differing_pixels, p.first
+    );
+    if software {
+        assert_eq!(
+            p.max_channel_delta, 0,
+            "空曲线必须与 V1 逐字节一致（首个差异 {:?}）",
+            p.first
+        );
+        assert_eq!(p.differing_pixels, 0, "空曲线必须与 V1 逐字节一致");
+    }
+
+    // 「退化到空网格」的曲线集合同样必须与"无曲线"逐字节相同（GPU 侧）。
+    let mut degenerate = req.clone();
+    degenerate.curves = vec![
+        CurveReq::Cylinder {
+            center: Vec3::new(0.0, 0.0, 0.0),
+            radius: 0.0,
+            height: 1.0,
+            axis: Vec3::new(0.0, 1.0, 0.0),
+        },
+        CurveReq::Torus {
+            center: Vec3::new(0.0, 0.0, 0.0),
+            major: f32::NAN,
+            minor: 1.0,
+            axis: Vec3::new(0.0, 1.0, 0.0),
+        },
+    ];
+    let d = backend.render_scene(&degenerate);
+    assert!(d.is_valid(), "全退化曲线不得 panic / 不得空帧");
+    assert_eq!(
+        d.pixels, gpu.pixels,
+        "退化曲线 ⇒ 空网格 ⇒ 必须与空曲线逐字节相同（不得半实现）"
+    );
+}
+
+/// **验收 3（GPU 侧）**：退化形态不 panic、且退化为空网格时与"无曲线"逐位相同。
+#[test]
+fn vulkan_curve_degenerate_forms_do_not_panic() {
+    let Some(mut backend) = gpu_backend() else {
+        return;
+    };
+    let cases: Vec<(&str, CurveReq)> = vec![
+        (
+            "r=0",
+            CurveReq::Cylinder {
+                center: Vec3::new(0.0, 0.0, 0.0),
+                radius: 0.0,
+                height: 1.0,
+                axis: Vec3::new(0.0, 1.0, 0.0),
+            },
+        ),
+        (
+            "h=0",
+            CurveReq::Cone {
+                center: Vec3::new(0.0, 0.0, 0.0),
+                radius: 1.0,
+                height: 0.0,
+                axis: Vec3::new(0.0, 1.0, 0.0),
+            },
+        ),
+        (
+            "profile-single",
+            CurveReq::Revolution {
+                center: Vec3::new(0.0, 0.0, 0.0),
+                profile: vec![Vec3::new(1.0, 0.0, 0.0)],
+                segments: 8,
+                axis: Vec3::new(0.0, 1.0, 0.0),
+            },
+        ),
+        (
+            "non-finite",
+            CurveReq::Torus {
+                center: Vec3::new(0.0, 0.0, 0.0),
+                major: f32::INFINITY,
+                minor: 1.0,
+                axis: Vec3::new(0.0, 1.0, 0.0),
+            },
+        ),
+    ];
+    for (tag, curve) in &cases {
+        let mut req = base_request(16, 16);
+        req.curves = vec![curve.clone()];
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            backend.render_scene(&req).pixels.len()
+        }));
+        // 设备不可用是合法结局（返回空帧），这里只钉"不 panic"。
+        let len = r.unwrap_or_else(|_| panic!("退化形态 `{tag}` 在 GPU 路径里 panic 了"));
+        assert!(
+            len == 0 || len == 16 * 16 * 4,
+            "退化形态 `{tag}` 的输出长度必须是 0（诚实空帧）或 w*h*4，实际 {len}"
+        );
+    }
+    println!("GPU 退化形态：{} 组全部不 panic", cases.len());
 }

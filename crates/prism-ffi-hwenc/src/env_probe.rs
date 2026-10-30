@@ -8,7 +8,7 @@
 //! |---|---|---|
 //! | `videotoolbox` | 平台判定（`std::env::consts::OS`）：非 macOS 即平台不符 | 不 link VideoToolbox.framework，不建 `VTCompressionSession` |
 //! | `nvenc` | PCI/驱动证据：`/proc/driver/nvidia/version`、`/dev/nvidia*` 设备节点 | 不 dlopen `libnvidia-encode`，不调 `nvEncOpenEncodeSessionEx` |
-//! | `vaapi` | DRM 设备证据：`/dev/dri` 目录与 `renderD*` 渲染节点 | 不 link `libva`，不调 `vaInitialize` |
+//! | `vaapi` | DRM 设备证据：`/dev/dri` 目录与 `renderD*` 渲染节点 | 不调 `vaInitialize`；绑定层（`extern` 声明 + 符号解析）在 `crate::vaapi_bind`，属**第二档**，与本模块的探测档分述 |
 //!
 //! 所以可能的最好结论是两条：
 //! 1. **环境证据缺失** ⇒ `Unsupported`，理由里带上**真实探测到的缺口**（哪个文件 /
@@ -18,11 +18,16 @@
 //!
 //! 两条都不静默失败（C20）：调用方拿到的永远是结构化理由，可以逐条复核。
 //!
-//! # 为什么不上 FFI（当前口径）
-//! FFI 绑定需要目标平台的头文件/链接库与真实设备；在 Linux 上若缺
-//! `/dev/dri`、NVIDIA 设备或非 macOS（证据见 [`probe_environment`] 的返回值），
-//! 按当前平台不支持处理。**不伪装成已做**，也不拿环境受限当少做理由：探测链、
-//! gate 矩阵、降级路径、能力矩阵文档四件齐交付。
+//! # 本模块在四档里的位置（只站第一档）
+//!
+//! 探测链 = 第一档：只读平台证据，**不碰库里任何符号**。VA-API 的第二档（绑定就绪）
+//! 在 `crate::vaapi_bind`，第三档（会话建立）/第四档（真机出码）本 crate 都没做。
+//! 本模块不因第二档存在而改动结论：探测归探测，绑定归绑定，两档各说各话。
+//!
+//! # 为什么本模块不上 FFI
+//! 本模块的职责是"不引平台 FFI 就能拿到的证据"，故只读文件系统与编译期常量；
+//! FFI 只在明确需要的那一侧单独开模块（当前仅 VA-API 绑定层）。**不伪装成已做**，
+//! 也不拿环境受限当少做理由：探测链、gate 矩阵、降级路径、能力矩阵文档四件齐交付。
 
 use std::path::{Path, PathBuf};
 

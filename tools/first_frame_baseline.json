@@ -1,0 +1,152 @@
+{
+  "schemaVersion": 1,
+  "generated": "2026-10-30T10:41:30.577Z",
+  "label": "reference",
+  "nonGating": true,
+  "note": "首帧时间只作趋势报表，不作 Go/No-Go：环境相关（CPU/负载/容器配额），同机 A/B 才有意义",
+  "fingerprint": {
+    "platform": "linux",
+    "arch": "x64",
+    "cpuModel": "AMD EPYC 9K84 96-Core Processor",
+    "cpuCount": 32,
+    "totalMemGiB": 123.3,
+    "node": "v22.13.1"
+  },
+  "fixed": {
+    "scene": "examples/spin_red_ball.prism",
+    "width": 640,
+    "height": 360,
+    "frame": 0,
+    "runs": 15,
+    "wasmRounds": 5
+  },
+  "axes": [
+    {
+      "key": "native_first_frame",
+      "label": "native 首帧（进程冷启动 → DSL 编译 → 单帧渲染 → 落盘）",
+      "unit": "ms",
+      "subject": "target/release/prism-app + examples/spin_red_ball.prism @ 640x360, t=0s",
+      "status": "ok",
+      "samples": {
+        "wall_ms": {
+          "n": 15,
+          "median": 20.217,
+          "p90": 20.535,
+          "min": 19.508,
+          "max": 20.777,
+          "mad": 0.244,
+          "raw": [
+            19.508,
+            20.322,
+            20.777,
+            20.349,
+            19.958,
+            20.465,
+            20.58,
+            20.096,
+            20.467,
+            20.17,
+            19.973,
+            20.217,
+            20.135,
+            19.829,
+            20.255
+          ]
+        },
+        "internal_ms": {
+          "n": 15,
+          "median": 18.225,
+          "p90": 18.589,
+          "min": 17.185,
+          "max": 18.802,
+          "mad": 0.186,
+          "raw": [
+            17.185,
+            18.579,
+            18.595,
+            17.952,
+            18.225,
+            18.498,
+            18.802,
+            18.13,
+            18.186,
+            18.239,
+            17.809,
+            18.356,
+            18.189,
+            18.084,
+            18.411
+          ]
+        }
+      },
+      "note": "每轮都是全新进程（冷启动口径）；首轮含二进制页缓存冷读，故取中位数而非均值",
+      "environment": {}
+    },
+    {
+      "key": "wasm_cold_start",
+      "label": "wasm 冷启动代理（读字节 → 编译 → 实例化；**非**渲染首帧）",
+      "unit": "ms",
+      "subject": "crates/prism-gpu/web/prism_gpu.wasm（env 导入自动打桩，不进入渲染路径）",
+      "status": "ok",
+      "samples": {
+        "compile_ms": {
+          "n": 5,
+          "median": 0.235,
+          "p90": 0.333,
+          "min": 0.225,
+          "max": 0.365,
+          "mad": 0.01,
+          "raw": [
+            0.365,
+            0.285,
+            0.225,
+            0.235,
+            0.232
+          ]
+        },
+        "instantiate_ms": {
+          "n": 5,
+          "median": 0.126,
+          "p90": 0.147,
+          "min": 0.117,
+          "max": 0.156,
+          "mad": 0.007,
+          "raw": [
+            0.156,
+            0.126,
+            0.117,
+            0.12,
+            0.133
+          ]
+        },
+        "total_ms": {
+          "n": 5,
+          "median": 0.365,
+          "p90": 0.477,
+          "min": 0.342,
+          "max": 0.521,
+          "mad": 0.023,
+          "raw": [
+            0.521,
+            0.411,
+            0.342,
+            0.355,
+            0.365
+          ]
+        }
+      },
+      "note": "读文件走页缓存，不是真磁盘冷读；wasm 侧出首帧需真实 GPU，本轴不冒充首帧；丢弃 1 轮预热（V8 首次编译的代码缓存/堆增长会让首轮显著偏慢）",
+      "environment": {
+        "wasmBytes": 367080
+      }
+    }
+  ],
+  "readme": [
+    "首帧时间参考报表（入库的 A 侧样本，供后续同机 A/B 对比）。",
+    "生成：node tools/first_frame_report.mjs --label reference --json tools/first_frame_baseline.json",
+    "对比：node tools/first_frame_report.mjs --compare tools/first_frame_baseline.json <本次.json>",
+    "性质：**趋势参考，不是门禁**；脚本从不因变慢判红（该性质由 --self-test 钉住）。",
+    "可比性：fingerprint 不一致（CPU/内存/平台/node 版本任一不同）会被 --compare 标为「不可直接比较」而不给似是而非的比值——换机器后请重新生成本文件。",
+    "固定条件见 fixed 字段：改场景/尺寸/时刻/轮数等于改口径，历史报表随之不可直接比较。"
+  ]
+}

@@ -1,7 +1,7 @@
 // scene_frame.wgsl — 光追场景整帧 kernel（V2.2-A-1 / T03 + A-2 曲线扩绑定）。
 //
 // 第 4 份手写场景源（WGSL 文本态），与 `vulkan/spirv_rt`（SPIR-V 发射器）、
-// `metal`（经 MoltenVK 翻译层复用 Vulkan 剖面）共享同一套参数块与绑定剖面
+// `metal`（本仓不提供独立后端）共享同一套参数块与绑定剖面
 // （真源见 `crate::scene_abi`）。本文件只负责"语义逐句对应"
 // `lib.rs` 的 `CpuRefBackend::render_scene`（相机基 → 球循环最近命中 →
 // A-2 曲线 BVH 遍历最近命中 → 灯循环漫反射 → teal/contrast/filmic → 量化打包）。

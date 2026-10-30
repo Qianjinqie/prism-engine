@@ -225,7 +225,7 @@ Jeder Node-Typ der Engine ist eine **Partikulärlösung** eines Tripels aus „K
 | Backend | Status | Beleg |
 | --- | --- | --- |
 | **Vulkan** | Läuft wirklich | Compute- und Raytracing-Pipeline; ohne GPU auf Mesas lavapipe-Software-ICD verifizierbar; `render_scene` ist **byteidentisch (0 Differenz)** zur CPU-Referenz; `is_available()` ist ein Compute-∧-Render-Selbsttest |
-| **Metal** | Code bereit (Vulkan-Backend über MoltenVK-Übersetzungsschicht wiederverwendet), nicht auf Hardware verifiziert | Isomorphe Portierung fertig, `is_available()` immer false, Sondierungskette bereit |
+| **Metal** | Code bereit (kein eigenständiges Metal-Backend, nicht aktiviert), nicht auf Hardware verifiziert | Isomorphe Portierung fertig (historisches Asset), `is_available()` immer false |
 | **WebGPU** | Code bereit (T1/T2/T3 grün), nur Chrome/Edge möglich | Machbarkeit bewertet (4–6 Personentage Portierung), Renderpfad in T03, T3 ist SwiftShader, nicht Nutzergeräte |
 
 <a id="engineering"></a>
@@ -319,7 +319,7 @@ Vier Gate-Skripte ohne Abhängigkeiten (nur Node): Ghost-Write-Schutz (inklusive
 | DNG `Compression=1/7/8` (inkl. 32946 Deflate) | 1/7/8 unterstützt (inkl. 32946 Deflate); echte Kameramodelle nicht durch Muster verifiziert | Kein Konvertieren nötig; echte Kamera-Muster können golden ergänzen (nicht unterstützte Werte 6/34892/34712/52546 strukturell abgelehnt) | `raw.rs:3282,3287` (Lese-Pfad teilt 1/7/8/32946 zu) + `raw_dng_synth.rs:260` (Synth unterstützt 1/7/8/32946) + 设计 §7.3 / Q10 (Echtgeräte-Register) |
 | mp3 / AAC / FLAC | Dekodierung über externes ffmpeg, Encoding nicht selbst implementiert | ffmpeg installieren oder bei WAV bleiben | `README.md:213` (AAC/mp3-Encoding nicht im Haus, via ffmpeg) |
 | Gekrümmte Primitive auf GPU | Nur CPU-Pfad | Triangulieren und über die SAH-BVH gehen | Strukturierter Ablehnungspunkt: kein GPU-Kernel (`prism-vector/src/path.rs:8` CPU-Flachen; GPU-Kurven sind T06 TODO, 设计 §6 WP-A) |
-| Metal | Code bereit (Vulkan-Backend über MoltenVK-Übersetzungsschicht wiederverwendet); `is_available()` immer false, nicht auf Hardware verifiziert | Anbinden, sobald Apple-Hardware verfügbar ist | `prism-gpu/src/metal/mod.rs:9,189` (is_available immer false) + `metal/render.rs:1` (nicht leuchtend) + 设计 §7.2 Metal-Zeile |
+| Metal | Code bereit (kein eigenständiges Metal-Backend, nicht aktiviert); `is_available()` immer false, nicht auf Hardware verifiziert | Anbinden, sobald Apple-Hardware und eine eigenständige Backend-Aufgabe verfügbar sind | `prism-gpu/src/metal/mod.rs:9,189` (is_available immer false) + `metal/render.rs:1` (nicht leuchtend) + 设计 §7.2 Metal-Zeile |
 | WebGPU | Code bereit (T1/T2/T3 grün), nur Chrome/Edge möglich; Renderpfad in T03, T3 ist SwiftShader, nicht Nutzergeräte | 4–6 Personentage | `docs/v2.1-WebGPU可行性评估.md:13,152` (bedingt machbar, Chrome/Edge zuerst) + 设计 §7.2 WebGPU-Zeile |
 | Hardware-Encoding | Probe-Skelett für drei Plattformen, keine Implementierung (bindungsbereit wartet auf C-2) | Pro Zielplattform ausfüllen | `prism-ffi-hwenc/src/lib.rs:14` (linkt keine Plattform-Bibliothek) + 设计 §7.2 硬件编码-Zeile |
 | GPU-Beschleunigung | Als wartend auf Verifikation registriert: Korrektheit nur auf lavapipe geprüft; echte GPU-Beschleunigung nicht gemessen, keine Zahl geschrieben (lavapipe ist Pseudowert) | Auf Zielhardware messen | `README.md:228` (lavapipe-Software-ICD, keine GPU zu verifizieren) + 设计 §7.2 GPU 加速比-Zeile (keine Zahl erlaubt) |

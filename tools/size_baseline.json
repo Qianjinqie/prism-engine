@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "readme": [
+    "包体三指标的**基线值与阈值**（唯一权威数据源，代码里不写死任何阈值常数）。",
+    "baseline_bytes = 实测值，必须可追溯：每个都带 measured_on（产物名）与 history（历史实测）。",
+    "上限 = min(baseline_bytes * (1 + max_growth_ratio), max_bytes)；两个字段都写就取**更严者**，",
+    "报表会打印生效上限是哪一个算出来的。越界 ⇒ tools/measure_size.mjs --check 判红（exit 1）。",
+    "要放宽上限必须改这个文件并在 review 里说明原因——阈值是可 review 的数据，不是代码里的魔数。",
+    "更新基线：node tools/measure_size.mjs --update-baseline（只写实测值，不动已声明的上限）。"
+  ],
+  "metrics": {
+    "source_txt": {
+      "label": "单文件分发包",
+      "selector": "dist/prism-engine-v*-source.txt",
+      "measured_on": "dist/prism-engine-v2.2-source.txt",
+      "baseline_bytes": 19297430,
+      "max_growth_ratio": 0.02,
+      "max_bytes": 20971520,
+      "rationale": [
+        "基线 19,150,204 B = 用 tools/pack_source_txt.mjs 2.2 现打的 v2.2 分发包实测值（打包确定性：同输入逐字节同输出）。",
+        "相对带 2%：上一版到本版实测增长 +1.11%（v2.1 18,939,405 → v2.2 19,150,204），2% 留了约一倍余量。",
+        "绝对上限 20 MiB = 20,971,520 B：单文件分发是「一个文本文件拿走全仓」的形态，越过 20 MiB 说明打包范围失控，",
+        "需要人判断是不是误把构建产物/文档大树塞进了包。",
+        "注意：本指标对象是**现打的包**（dist/ 不入库），CI 里由 size job 先打包再量。"
+      ],
+      "history": [
+        {
+          "artifact": "v2.0-urgent_fix",
+          "bytes": 18691086
+        },
+        {
+          "artifact": "v2.1",
+          "bytes": 18939405,
+          "note": "PRD 记录的基线锚点"
+        },
+        {
+          "artifact": "v2.2",
+          "bytes": 19150204,
+          "note": "本版实测（打包器直出）"
+        }
+      ]
+    },
+    "wasm": {
+      "label": "WebGPU wasm 产物",
+      "path": "crates/prism-gpu/web/prism_gpu.wasm",
+      "baseline_bytes": 367080,
+      "max_bytes": 409600,
+      "max_growth_ratio": 0.16,
+      "rationale": [
+        "声明上限 400 KiB = 409,600 B（按 400 KB 的口径取 400*1024）。",
+        "A-1 接线前实测 344,674 B；接线后（scene_frame.wgsl 内嵌文本进入产物）实测 367,080 B，增长 +22,406 B = +6.50%。",
+        "接线后距 409,600 B 上限余量 42,520 B = +11.58%（若按十进制 400,000 B 计则余量 32,920 B = +8.97%）。",
+        "相对带 16% 是**次要**约束（367,080*1.16 = 425,812 B > 409,600 B），故生效上限是绝对上限 409,600 B。",
+        "注意：ci_wasm_verify.mjs 原注释写「当前产物 ~158KB」与实测差 2.1 倍，属漂移；本文件与该校验器已一并按实测值订正。"
+      ],
+      "history": [
+        {
+          "stage": "A-1 接线前",
+          "bytes": 344674,
+          "note": "历史产物实测（本机重新构建前磁盘上的那份）"
+        },
+        {
+          "stage": "A-1 接线后",
+          "bytes": 367080,
+          "note": "本版实测（build.sh --no-test 重建）"
+        }
+      ]
+    },
+    "native_release": {
+      "label": "native release 二进制",
+      "path": "target/release/prism-app",
+      "measured_on": "target/release/prism-app（cargo build --release -p prism-app --locked）",
+      "baseline_bytes": 4198360,
+      "max_growth_ratio": 0.1,
+      "rationale": [
+        "基线 4,198,360 B = 本机 rustc 1.93.0 / release profile / --locked 下实测值。",
+        "相对带 10%：release 二进制体积受工具链与优化设置影响，且本仓未开 LTO/strip 压缩，",
+        "同代码不同工具链本就会有百分级漂移；10% 只拦「一个数量级级别的功能膨胀」，不做精确尺寸预算。",
+        "没有绝对上限：二进制体积的合理规模随功能演进，绝对值由基线棘轮承担，不设人为天花板。",
+        "跨平台注意：Windows 产物名为 prism-app.exe，体积口径不同，跨平台不要直接比数值。"
+      ],
+      "history": [
+        {
+          "artifact": "prism-app",
+          "bytes": 4198360,
+          "note": "本版实测（linux x86_64, release）"
+        }
+      ]
+    }
+  }
+}

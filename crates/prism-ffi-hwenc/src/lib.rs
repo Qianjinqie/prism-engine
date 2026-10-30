@@ -1,22 +1,37 @@
-//! `prism-ffi-hwenc` — 硬件视频编码器的 **FFI 探测链**。
+//! `prism-ffi-hwenc` — 硬件视频编码器的 **探测链 + VA-API 绑定层骨架**（零第三方依赖）。
 //!
-//! # 本版本交付边界（诚实口径，四条腿缺一不可）
+//! # 交付成熟度**四档**（分述口径，禁止混用、禁止越级声称）
 //!
-//! | 腿 | 落地形态 |
-//! |---|---|
-//! | 探测链真探测 | [`crate::env_probe`]：VideoToolbox 平台判定 / NVENC 驱动文件+设备节点 / VAAPI `/dev/dri` 渲染节点，全部**真读当前平台** |
-//! | feature gate 编译矩阵 | `videotoolbox` / `nvenc` / `vaapi` 三 feature 各自 `cargo check -p prism-ffi-hwenc --features <name>` 通过（已验证） |
-//! | 降级路径 | 无硬件/无绑定时**明确报错**（[`HwEncoderProbe::probe`] 返回带真实证据的 `Unsupported`；[`require_available`] 直接给 Err），绝不静默失败 |
-//! | 文档 | 能力矩阵（哪平台什么状态）+ 环境受限项如实标注 |
+//! | 档 | 名称（[`Maturity`]） | 判定标准 | 当前状态 |
+//! |---|---|---|---|
+//! | 一 | `probe-chain` | 真读平台证据（OS 判定 / 驱动文件 / 设备节点），**不碰任何库里符号** | ✅ 三后端都到 |
+//! | 二 | `binding-ready` | `dlopen` 成功 + 核心符号全部 `dlsym` 进函数指针表，**一次都不调用** | ✅ **仅 VA-API**（`vaapi_bind` 模块，`--features vaapi`） |
+//! | 三 | `session-established` | 取得 `VADisplay` 并 `vaInitialize` / `vaCreateConfig` / `vaCreateContext` 成功 | ❌ 未做（三后端都未做） |
+//! | 四 | `device-encoded` | 真机跑通编码并校验码流 | ❌ 未做（环境受限，登记待验） |
 //!
-//! # 仍不做的（环境受限，如实声明）
+//! **第二档不是"能编码"**：函数指针解析得到 ≠ 设备在、驱动接受、能出码。
+//! 本 crate 的对外表述止于"VA-API 绑定就绪（第二档）"；`is_available()` 仍恒 `false`
+//! （[`any_available`] 恒 `false`，钉子见各 `tests` 模块）。
 //!
-//! - **不 link 任何平台库、不声明任何 extern 函数**：`VTCompressionSessionCreate` /
-//!   `cuNVENC*` / `vaInitialize` 一概没有——FFI 绑定需要目标平台头文件与真实设备；
-//!   当前平台若缺 macOS、缺 `/dev/dri`、缺 NVIDIA 设备（证据见
-//!   [`crate::env_probe::probe_environment`]），按不支持处理；
-//! - 因此**没有任何编码会话被真正建立**：探测结论最好只到"环境证据在/不在"，
-//!   "硬件可用且能编码"需要真实设备，环境受限不伪装成已做（见文档"环境受限项"）。
+//! # 逐后端 × 逐档现状
+//!
+//! | 后端 | 一 探测链 | 二 绑定就绪 | 三 会话建立 | 四 真机出码 |
+//! |---|---|---|---|---|
+//! | `videotoolbox` | ✅ 平台判定真读 OS | ❌ 无 `extern` 声明 | ❌ | ❌ |
+//! | `nvenc` | ✅ 驱动文件 + 设备节点真读 | ❌ 无 `extern` 声明 | ❌ | ❌ |
+//! | `vaapi` | ✅ `/dev/dri` 真读 | ✅ `vaapi_bind`：18 个核心符号（**只解析不调用**） | ❌ 不取 `VADisplay`、不 `vaInitialize` | ❌ |
+//!
+//! # 不做什么（每条都有理由，不是省事）
+//!
+//! - **VideoToolbox / NVENC 仍无任何 `extern` 声明**：`VTCompressionSessionCreate` /
+//!   `nvEncOpenEncodeSessionEx` 一概没有；两者只到第一档；
+//! - **VA-API 只做绑定就绪**：`vaapi_bind` 声明函数表并解析符号，但**不调用**
+//!   任何 VA-API 入口，也不 `dlopen` `libva-drm` / `libva-x11`（`VADisplay` 由它们
+//!   产出，属第三档）；
+//! - **不 `#[link]` 任何库**（含 `libdl`）：`dlopen`/`dlsym` 用裸 `extern "C"`，
+//!   符号由 glibc（≥ 2.34 已并入 `libc`）提供；
+//! - 因此**没有任何编码会话被真正建立**，"能编码"需要真实设备，环境受限不伪装成
+//!   已做（见文档"环境受限项"）。
 //!
 //! # feature 语义
 //!
@@ -25,16 +40,26 @@
 //! | （默认，全关） | 不引入任何后端 | [`enabled_backends`] 空，[`probe_all`] 空 |
 //! | `videotoolbox` | 编入 Apple VideoToolbox 探测 | 平台不符 ⇒ `Unsupported`（理由带真实平台串） |
 //! | `nvenc` | 编入 NVIDIA NVENC 探测 | 无驱动文件/设备节点 ⇒ `Unsupported`（理由带真实证据） |
-//! | `vaapi` | 编入 VA-API 探测 | 无 `/dev/dri` 渲染节点 ⇒ `Unsupported`（理由带真实证据） |
+//! | `vaapi` | 编入 VA-API 探测 + **绑定层**（`vaapi_bind` 模块，仅 `unix`） | 无 `/dev/dri` 渲染节点 ⇒ `Unsupported`（理由带真实证据 + 绑定档结论） |
 //!
 //! # 主干零依赖不破
 //!
 //! 本 crate **零依赖**（`[dependencies]` 为空，仅 `std`），且**不被**任何主干
-//! crate 依赖——平台差异完全隔离在本 crate 的 feature 之后。
+//! crate 依赖——平台差异完全隔离在本 crate 的 feature 之后。VA-API 绑定层用裸
+//! `extern "C"` + `dlopen`/`dlsym`，**无 `#[link]`**，故不引入任何原生链接指令。
 
 use std::fmt;
 
 mod env_probe;
+
+#[cfg(all(feature = "vaapi", unix))]
+pub mod vaapi_bind;
+
+#[cfg(all(feature = "vaapi", unix))]
+pub use vaapi_bind::{
+    bind as vaapi_bind_fn_table, bind_from as vaapi_bind_from, bind_report as vaapi_bind_report,
+    VaapiBindError, VaapiBindReport, VaapiFnTable, VaapiOpenCause, LIBVA_SONAME, REQUIRED_SYMBOLS,
+};
 
 pub use env_probe::{
     host_os, join_paths, probe_environment, probe_nvenc, probe_vaapi, videotoolbox_platform_ok,
@@ -42,9 +67,132 @@ pub use env_probe::{
     NVIDIA_DEV_PREFIX, NVIDIA_DRIVER_VERSION_FILE,
 };
 
-/// 真机 FFI 编码绑定尚未落地的说明标记（出现在"有设备证据但无绑定"的理由里）。
+/// 真机 FFI 编码绑定尚未落地的说明标记。
+///
+/// 仅用于 **VideoToolbox / NVENC**——这两家连 `extern` 声明都没有，仍停在第一档
+/// （探测链）。**VA-API 已不适用**：它有自己的 [`VAAPI_BINDING_TIER_NOTE`] 与
+/// 逐次实测的绑定结论（见 `vaapi_bind::bind_report`）。
 pub const PENDING_BINDING_NOTE: &str =
     "真机编码 FFI 绑定未落地（无平台库 link / 无 extern 声明；缺真机启用项）";
+
+/// VA-API 已推进到的档位名称（第二档；与 [`Maturity::BindingReady`] 同源）。
+pub const VAAPI_BINDING_TIER_NOTE: &str =
+    "binding-ready（第二档：函数表已解析为指针，但一次未调用）";
+
+/// 会话建立档缺失的说明（三后端共用；挡住"绑定就绪 ⇒ 能编码"的越级读法）。
+pub const SESSION_NOT_ESTABLISHED_NOTE: &str =
+    "会话建立未做（第三档）：未取 VADisplay、未调 vaInitialize / vaCreateConfig / vaCreateContext";
+
+/// 真机出码档缺失的说明（环境受限，如实登记）。
+pub const DEVICE_ENCODE_NOT_DONE_NOTE: &str =
+    "真机出码未做（第四档）：无硬件编码器环境，按环境受限登记";
+
+/// 硬件编码交付成熟度的**四档**（严格递增；分述口径的权威定义）。
+///
+/// 顺序即档位高低：`ProbeChain < BindingReady < SessionEstablished < DeviceEncoded`。
+/// 任何"当前能力"的表述必须能指到具体档位，**禁止混用**（把第二档说成能编码是
+/// 越级声称）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Maturity {
+    /// 第一档：真读平台证据（OS / 驱动文件 / 设备节点），不碰库里任何符号。
+    ProbeChain,
+    /// 第二档：`dlopen` + `dlsym` 把核心符号解析成函数指针表，**一次都不调用**。
+    BindingReady,
+    /// 第三档：真正建会话（`VADisplay` + `vaInitialize` + 配置 + 上下文）。
+    SessionEstablished,
+    /// 第四档：真机跑通编码并校验码流。
+    DeviceEncoded,
+}
+
+impl Maturity {
+    /// 全部四档（按档位升序；矩阵/测试的行序权威集合）。
+    pub const ALL: [Maturity; 4] = [
+        Maturity::ProbeChain,
+        Maturity::BindingReady,
+        Maturity::SessionEstablished,
+        Maturity::DeviceEncoded,
+    ];
+
+    /// 稳定的机器可判定 token（测试与日志用它，避免措辞漂移）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Maturity::ProbeChain => "probe-chain",
+            Maturity::BindingReady => "binding-ready",
+            Maturity::SessionEstablished => "session-established",
+            Maturity::DeviceEncoded => "device-encoded",
+        }
+    }
+
+    /// 档位序号（1 起）。
+    pub fn level(self) -> u8 {
+        match self {
+            Maturity::ProbeChain => 1,
+            Maturity::BindingReady => 2,
+            Maturity::SessionEstablished => 3,
+            Maturity::DeviceEncoded => 4,
+        }
+    }
+
+    /// 是否**不超过** `ceiling`（越级声称的机械判据）。
+    pub fn is_at_most(self, ceiling: Maturity) -> bool {
+        self <= ceiling
+    }
+}
+
+impl fmt::Display for Maturity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// VA-API 绑定档（feature `vaapi` + unix 才编译绑定层）
+// ---------------------------------------------------------------------------
+
+/// VA-API 当前达到的档位（**引擎实测所得，不是常量承诺**）。
+///
+/// - `--features vaapi`（unix）且 `libva.so.2` 可加载、18 个核心符号全部解析
+///   ⇒ [`Maturity::BindingReady`]；
+/// - 否则 ⇒ [`Maturity::ProbeChain`]（只剩探测链）。
+///
+/// **永远不返回第三/第四档**：本 crate 不建会话、不出码。
+pub fn vaapi_tier() -> Maturity {
+    #[cfg(all(feature = "vaapi", unix))]
+    {
+        if vaapi_bind::bind_report().is_ready() {
+            return Maturity::BindingReady;
+        }
+    }
+    Maturity::ProbeChain
+}
+
+/// VA-API 绑定档的一句话结论（拼进探测理由；**保证非空**）。
+///
+/// 措辞随实测状态变：就绪 ⇒ 列出库名与符号数；未就绪 ⇒ 直接给出结构化证据
+/// （路径 + errno + `dlerror`）。
+fn vaapi_binding_note() -> String {
+    #[cfg(all(feature = "vaapi", unix))]
+    {
+        let report: &VaapiBindReport = vaapi_bind::bind_report();
+        let tier: Maturity = vaapi_tier();
+        // 缺档说明并陈：第三/第四档一律以"未做"落笔，杜绝"绑定就绪 ⇒ 能编码"的读法。
+        let tail: String = format!(
+            "{}；{}",
+            SESSION_NOT_ESTABLISHED_NOTE, DEVICE_ENCODE_NOT_DONE_NOTE
+        );
+        if report.is_ready() {
+            return format!("绑定档 = {VAAPI_BINDING_TIER_NOTE}：{}；{}", report.summary(), tail);
+        }
+        return format!("绑定档 = {tier}（第一档：绑定层未就绪）：{}；{}", report.summary(), tail);
+    }
+    #[cfg(not(all(feature = "vaapi", unix)))]
+    {
+        format!(
+            "{}（未编入绑定层：需 --features vaapi 且 unix 目标）；{}",
+            Maturity::ProbeChain, SESSION_NOT_ESTABLISHED_NOTE
+        )
+    }
+}
 
 /// 目标编码格式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -234,7 +382,13 @@ impl HwEncoderProbe for UnsupportedProbe {
                 format!("nvenc: {}；{PENDING_BINDING_NOTE}", env_probe::probe_nvenc().summary())
             }
             HwBackend::Vaapi => {
-                format!("vaapi: {}；{PENDING_BINDING_NOTE}", env_probe::probe_vaapi().summary())
+                // VA-API 已自带绑定层，不能用"无 extern 声明"的通用话术；
+                // 结论由实测绑定状态驱动（见 vaapi_binding_note）。
+                format!(
+                    "vaapi: {}；{}",
+                    env_probe::probe_vaapi().summary(),
+                    vaapi_binding_note()
+                )
             }
         };
         HwCodec::ALL
@@ -319,7 +473,8 @@ impl HwEncoderProbe for NvencProbe {
 
 /// VA-API 后端（feature `vaapi`）。
 ///
-/// 真探测：`/dev/dri` 目录与 `renderD*` 渲染节点。
+/// 真探测：`/dev/dri` 目录与 `renderD*` 渲染节点（第一档）+ 绑定层实测档位
+/// （第二档，见 `vaapi_bind` 模块）。**不建会话、不出码**，故结论恒为 `Unsupported`。
 #[cfg(feature = "vaapi")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VaapiProbe;
@@ -332,16 +487,19 @@ impl HwEncoderProbe for VaapiProbe {
 
     fn probe(&self) -> Vec<HwProbe> {
         let ev: VaapiEvidence = env_probe::probe_vaapi();
+        // 两档事实并陈：环境证据（第一档）+ 绑定实测（第二档）。
+        // 无论绑定是否就绪，都不越过第二档——"能编码"需要设备与会话。
         let reason: String = if ev.is_absent() {
             format!(
-                "vaapi: 未发现可用渲染节点——{}；无 DRM 设备即无 VA-API",
-                ev.summary()
+                "vaapi: 未发现可用渲染节点——{}；无 DRM 设备即无 VA-API 硬件面；{}",
+                ev.summary(),
+                vaapi_binding_note()
             )
         } else {
             format!(
-                "vaapi: 发现渲染节点（{}），但{PENDING_BINDING_NOTE}——未 link libva / \
-                 未调 vaInitialize，无法确认真实编码会话",
-                ev.summary()
+                "vaapi: 发现渲染节点（{}）；{}",
+                ev.summary(),
+                vaapi_binding_note()
             )
         };
         HwCodec::ALL
@@ -654,5 +812,97 @@ mod tests {
                 assert!(text.contains("nvenc") && text.contains("vaapi"));
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // 四档分述的钉子（验收 ②③：不混用、不越级）
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn maturity_tiers_are_strictly_ordered_and_named() {
+        // 四档必须严格递增，且 token 固定（机器可判定，防措辞漂移）。
+        assert!(Maturity::ProbeChain < Maturity::BindingReady);
+        assert!(Maturity::BindingReady < Maturity::SessionEstablished);
+        assert!(Maturity::SessionEstablished < Maturity::DeviceEncoded);
+        assert_eq!(Maturity::ALL.len(), 4);
+        for (idx, tier) in Maturity::ALL.iter().enumerate() {
+            assert_eq!(tier.level() as usize, idx + 1, "{tier} 的序号必须是 {}", idx + 1);
+            assert!(!tier.as_str().is_empty());
+        }
+        assert!(Maturity::BindingReady.is_at_most(Maturity::BindingReady));
+        assert!(!Maturity::SessionEstablished.is_at_most(Maturity::BindingReady));
+    }
+
+    #[test]
+    fn tier_notes_are_disjoint_and_nonempty() {
+        // 三条"缺档说明"各说各的档，不许互相冒充。
+        assert!(PENDING_BINDING_NOTE.contains("未落地"));
+        assert!(VAAPI_BINDING_TIER_NOTE.contains(Maturity::BindingReady.as_str()));
+        assert!(
+            !VAAPI_BINDING_TIER_NOTE.contains(Maturity::SessionEstablished.as_str()),
+            "绑定档说明不得混入会话档 token"
+        );
+        assert!(SESSION_NOT_ESTABLISHED_NOTE.contains("第三档"));
+        assert!(DEVICE_ENCODE_NOT_DONE_NOTE.contains("第四档"));
+        assert!(!SESSION_NOT_ESTABLISHED_NOTE.contains("第二档"));
+    }
+
+    #[test]
+    fn no_probe_reason_ever_claims_beyond_binding_ready() {
+        // 三后端 × 两格式：任何理由都不许出现第三/第四档 token 的"已完成"式表述，
+        // 且必须非空、必须带真实证据（沿用上面的证证据钉子，这里只钉档位）。
+        for probe in probe_all() {
+            assert!(!probe.reason.is_empty(), "{} 理由不得为空", probe.backend);
+            assert_eq!(
+                probe.status,
+                ProbeStatus::Unsupported,
+                "{} 不得声称可用（第二档上限）",
+                probe.backend
+            );
+            // "session-established" / "device-encoded" 只能以"未做"的形式出现：
+            // 逐条检查若出现则必须同句带"未做"。
+            for forbidden in [Maturity::SessionEstablished.as_str(), Maturity::DeviceEncoded.as_str()]
+            {
+                if let Some(pos) = probe.reason.find(forbidden) {
+                    let tail: &str = &probe.reason[pos..];
+                    assert!(
+                        tail.contains("未做"),
+                        "{} 的理由在提及 {forbidden} 时必须写明未做：{}",
+                        probe.backend,
+                        probe.reason
+                    );
+                }
+            }
+        }
+        assert!(!any_available(), "当前构建不存在任何可用硬件编码器");
+    }
+
+    #[cfg(all(feature = "vaapi", unix))]
+    #[test]
+    fn vaapi_probe_reason_reports_binding_tier_from_real_measurement() {
+        // 绑定档结论必须来自实测：就绪 ⇒ 理由里带 binding-ready 且带库名；
+        // 未就绪 ⇒ 带路径/errno 证据。两条都不得越过第二档。
+        let report: &VaapiBindReport = vaapi_bind_report();
+        let tier: Maturity = vaapi_tier();
+        assert!(
+            tier.is_at_most(Maturity::BindingReady),
+            "VA-API 档位不得超过第二档，实得 {tier}"
+        );
+        let reason: String = VaapiProbe
+            .probe()
+            .first()
+            .map(|p| p.reason.clone())
+            .unwrap_or_default();
+        assert!(reason.contains(DRI_DEV_DIR), "理由必须带 /dev/dri 证据：{reason}");
+        if report.is_ready() {
+            assert_eq!(tier, Maturity::BindingReady);
+            assert!(reason.contains(Maturity::BindingReady.as_str()), "{reason}");
+            assert!(reason.contains(LIBVA_SONAME), "理由必须点名库：{reason}");
+            assert_eq!(report.resolved.len(), REQUIRED_SYMBOLS.len());
+        } else {
+            assert_eq!(tier, Maturity::ProbeChain);
+            assert!(reason.contains("errno="), "未就绪必须带 errno 证据：{reason}");
+        }
+        assert_eq!(VaapiProbe.probe()[0].status, ProbeStatus::Unsupported);
     }
 }

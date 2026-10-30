@@ -225,7 +225,7 @@ Cada tipo de nodo del motor es una **solución particular** de una terna «kerne
 | Backend | Estado | Evidencia |
 | --- | --- | --- |
 | **Vulkan** | Funciona de verdad | Tuberías compute + ray tracing; verificable sin GPU sobre el ICD software lavapipe de Mesa; la salida de `render_scene` es **idéntica byte a byte (0 diferencia)** a la referencia de CPU; `is_available()` es una autocomprobación compute ∧ render |
-| **Metal** | Código listo (reutiliza el backend Vulkan vía la capa de traducción MoltenVK), no verificado en hardware | Port isomorfo terminado, `is_available()` siempre false, cadena de sondaje lista |
+| **Metal** | Código listo (sin backend Metal independiente, no activado), no verificado en hardware | Port isomorfo terminado (activo histórico), `is_available()` siempre false |
 | **WebGPU** | Código listo (T1/T2/T3 verdes), solo Chrome/Edge | Evaluación de viabilidad hecha (4–6 días-persona de port), ruta de render en T03, T3 es SwiftShader, no dispositivos de usuario |
 
 <a id="engineering"></a>
@@ -319,7 +319,7 @@ Cuatro scripts de puerta sin dependencias (solo Node): defensa contra escrituras
 | DNG `Compression=1/7/8` (incl. 32946 Deflate) | 1/7/8 soportado (incl. 32946 Deflate) ; modelos de cámaras reales no validados por muestra | No hace falta convertir ; las muestras de cámaras reales pueden añadir un golden (valores no soportados 6/34892/34712/52546 rechazados estructuralmente) | `raw.rs:3282,3287` (el lector reparte 1/7/8/32946) + `raw_dng_synth.rs:260` (el synth soporta 1/7/8/32946) + 设计 §7.3 / Q10 (registro de dispositivos reales) |
 | mp3 / AAC / FLAC | Decodificación vía sonda de ffmpeg externo; codificación no implementada en casa | Instalar ffmpeg, o quedarse en WAV | `README.md:213` (codificación AAC/mp3 no en casa, via ffmpeg) |
 | Primitivas curvas en GPU | Solo ruta de CPU | Triangular y pasar por el SAH-BVH | Punto de rechazo estructurado: ningún kernel GPU (`prism-vector/src/path.rs:8` aplanado CPU ; curvas GPU son T06 TODO, 设计 §6 WP-A) |
-| Metal | Código listo (reutiliza el backend Vulkan vía la capa de traducción MoltenVK) ; `is_available()` siempre false, no verificado en hardware | Conectar cuando haya hardware Apple | `prism-gpu/src/metal/mod.rs:9,189` (is_available siempre false) + `metal/render.rs:1` (no encendido) + 设计 §7.2 línea Metal |
+| Metal | Código listo (sin backend Metal independiente, no activado) ; `is_available()` siempre false, no verificado en hardware | Conectar cuando haya hardware Apple y una tarea de backend independiente | `prism-gpu/src/metal/mod.rs:9,189` (is_available siempre false) + `metal/render.rs:1` (no encendido) + 设计 §7.2 línea Metal |
 | WebGPU | Código listo (T1/T2/T3 verdes), solo Chrome/Edge posible ; ruta de render en T03, T3 es SwiftShader, no dispositivos de usuario | 4–6 días-persona | `docs/v2.1-WebGPU可行性评估.md:13,152` (condicionalmente factible, Chrome/Edge primero) + 设计 §7.2 línea WebGPU |
 | Codificación hardware | Esqueleto de sondeo para tres plataformas, sin implementación (listo para enlazar pendiente de C-2) | Rellenar por plataforma objetivo | `prism-ffi-hwenc/src/lib.rs:14` (no enlaza biblioteca de plataforma) + 设计 §7.2 línea 硬件编码 |
 | Aceleración GPU | Registrada a la espera de verificación : corrección verificada solo en lavapipe ; aceleración GPU real no medida, ningún número escrito (lavapipe es un pseudo-valor) | Medir en el hardware objetivo | `README.md:228` (ICD de software lavapipe, ningún GPU que verificar) + 设计 §7.2 línea GPU 加速比 (ningún número permitido) |

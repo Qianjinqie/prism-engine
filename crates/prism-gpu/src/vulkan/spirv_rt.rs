@@ -7,10 +7,10 @@
 //!
 //! | | `spirv_bg`（背景帧） | 本模块（光追场景） |
 //! |---|---|---|
-//! | 语义 | 逐点渐变 + 噪声 + 暗角 | 逐像素主射线 → 球面求交 → 直接光 → aesthetic |
-//! | 控制流 | 一层 `OpSelectionMerge`（尾组守卫） | 两层 `OpLoopMerge`（球/灯动态循环）+ 两层选择 |
+//! | 语义 | 逐点渐变 + 噪声 + 暗角 | 逐像素主射线 → 球面求交 → **曲线 BVH 遍历** → 直接光 → aesthetic |
+//! | 控制流 | 一层 `OpSelectionMerge`（尾组守卫） | 四层 `OpLoopMerge`（球 / 灯 / 曲线栈式遍历 / 叶内三角形）+ 多层选择 |
 //! | 循环携带值 | 无 | 局部变量（`Function` 存储类 + `OpStore`/`OpLoad`，不用 `OpPhi`） |
-//! | 绑定 | 2（参数 / 输出） | 4（参数 / 球 / 灯 / 输出） |
+//! | 绑定 | 2（参数 / 输出） | 6（参数 / 球 / 灯 / 三角形 / 节点 / 输出） |
 //!
 //! # 判据（与 [`crate::CpuRefBackend`] 的 `render_scene` 逐式对应，严禁代数重排）
 //!
@@ -23,8 +23,12 @@
 //!     disc = b*b - c
 //!     if disc >= 0 && t > 0 && t < closest: closest = t; hit = i   // 用 OpSelect 落值
 //! color = (0.04, 0.05, 0.08)
+//! if num_tris > 0 && num_nodes > 0:                  // A-2 曲线段（空曲线整段跳过）
+//!     stack[0] = 0; tlo[0] = t_min; sp = 1           // 双栈（节点 / 距离）显式遍历
+//!     while sp > 0: ... 近子后入栈、t 并列先左 ...     // 语义逐句移植 `scene_frame.wgsl`
 //! if hit < num_spheres:                              // 命中 ⇒ 着色
 //!     loop j < num_lights: color += albedo*(ambient + lcolor*(diff*intensity))
+//! else if curve_slot != 0xFFFFFFFF: color += CURVE_ALBEDO*(...)
 //! if teal_orange: ...; if contrast_on: ...; if filmic: color = color/(color+1)
 //! out[gy*w + gx] = pack_rgba8(clamp01(color))
 //! ```
@@ -38,14 +42,28 @@
 //!    （`GLSL.std.450` 的精确/正确舍入项），`tan(fov/2)` 由 CPU 用
 //!    `prism_math::det_trig` 算好以 **f32 位型**传入。
 //!
-//! # 绑布局（4 binding，均为 std430 存储缓冲）
+//! # 绑布局（6 binding，均为 std430 存储缓冲）
 //!
 //! | b | 内容 | 槽位 |
 //! |---|---|---|
-//! | 0 | Params（`PARAMS_WORDS` 个 u32；浮点走位型，shader 用 `OpBitcast` 还原） | 22 |
+//! | 0 | Params（`PARAMS_WORDS_V2` 个 u32；浮点走位型，shader 用 `OpBitcast` 还原） | 24 |
 //! | 1 | spheres：每球 `{center.xyz, radius, albedo.xyz, pad}` | `8 × num_spheres` |
 //! | 2 | lights：每灯 `{dir.xyz（已归一化）, color.xyz, intensity, pad}` | `8 × num_lights` |
-//! | 3 | 输出：每像素一个 little-endian 打包 RGBA8（`r \| g<<8 \| b<<16 \| 255<<24`） | `w × h` |
+//! | 3 | triangles：每三角形 `{a.xyz, pad, b.xyz, pad, c.xyz, pad, pad, pad}` | `12 × num_tris` |
+//! | 4 | nodes：每 BVH 节点 `{bmin.xyz, pad, bmax.xyz, pad, start, count, right, pad}` | `12 × num_nodes` |
+//! | 5 | 输出：每像素一个 little-endian 打包 RGBA8（`r \| g<<8 \| b<<16 \| 255<<24`） | `w × h` |
+//!
+//! **输出恒为最后一个绑定**（`SceneAbiProfile::V2::out_binding() == 5`），
+//! 「每个 group 的绑定须从 0 起连续」的硬约束在 V2 上仍成立；V1 的 4 绑定剖面
+//! 仍由 [`crate::scene_abi::SceneAbiProfile::V1`] 描述、不回归。
+//!
+//! 3/4 号绑定用 `OpTypeRuntimeArray`（元素 `u32`，`ArrayStride = 4`）而不是定长
+//! `OpTypeArray`：本模块是 `OnceLock` **单实例**（所有场景共用一份 SPIR-V），而
+//! 三角形/节点个数**逐场景不同**。定长数组会把容量烧进模块，进而强制「每帧分配
+//! 固定容量 + 超限拒绝」，是一条本可避免的新失败路径；运行期数组的长度由
+//! Vulkan 从描述符缓冲的大小推出，遍历上界由 `P_NUM_TRIS` / `P_NUM_NODES` 给出
+//! （恒等于实际写入的元素数，见 [`crate::scene_abi::encode_curve_buffers`]），
+//! 故不存在越界读的可能。1/2/5 号绑定用的是同一机制。
 //!
 //! # 为什么用「Function 局部变量」而不是 `OpPhi`
 //!
@@ -67,13 +85,14 @@ use super::spirv::{
     OP_BRANCH_CONDITIONAL, OP_CAPABILITY, OP_COMPOSITE_EXTRACT, OP_CONSTANT, OP_CONVERT_F_TO_U,
     OP_CONVERT_U_TO_F, OP_DECORATE, OP_ENTRY_POINT, OP_EXECUTION_MODE, OP_EXT_INST,
     OP_EXT_INST_IMPORT, OP_F_ADD, OP_F_DIV, OP_F_MUL, OP_F_NEGATE, OP_F_ORD_GREATER_THAN,
-    OP_F_ORD_GREATER_THAN_EQUAL, OP_F_ORD_LESS_THAN, OP_F_SUB, OP_FUNCTION, OP_FUNCTION_END,
-    OP_I_ADD, OP_I_MUL, OP_I_NOT_EQUAL, OP_LABEL, OP_LOAD, OP_LOGICAL_AND, OP_LOGICAL_OR,
-    OP_LOOP_MERGE, OP_MEMBER_DECORATE, OP_MEMORY_MODEL, OP_RETURN, OP_SELECT,
-    OP_SELECTION_MERGE, OP_SHIFT_LEFT_LOGICAL, OP_STORE, OP_TYPE_BOOL, OP_TYPE_FLOAT,
-    OP_TYPE_FUNCTION, OP_TYPE_INT, OP_TYPE_POINTER, OP_TYPE_RUNTIME_ARRAY, OP_TYPE_STRUCT,
-    OP_TYPE_VECTOR, OP_TYPE_VOID, OP_U_GREATER_THAN_EQUAL, OP_U_LESS_THAN, OP_VARIABLE, SCHEMA,
-    STORAGE_CLASS_FUNCTION, STORAGE_CLASS_INPUT, STORAGE_CLASS_UNIFORM, VERSION_1_0,
+    OP_F_ORD_GREATER_THAN_EQUAL, OP_F_ORD_LESS_THAN, OP_F_ORD_LESS_THAN_EQUAL, OP_F_SUB,
+    OP_FUNCTION, OP_FUNCTION_END, OP_I_ADD, OP_I_MUL, OP_I_NOT_EQUAL, OP_I_SUB, OP_LABEL, OP_LOAD,
+    OP_LOGICAL_AND, OP_LOGICAL_NOT, OP_LOGICAL_OR, OP_LOOP_MERGE, OP_MEMBER_DECORATE,
+    OP_MEMORY_MODEL, OP_RETURN, OP_SELECT, OP_SELECTION_MERGE, OP_SHIFT_LEFT_LOGICAL, OP_STORE,
+    OP_TYPE_ARRAY, OP_TYPE_BOOL, OP_TYPE_FLOAT, OP_TYPE_FUNCTION, OP_TYPE_INT, OP_TYPE_POINTER,
+    OP_TYPE_RUNTIME_ARRAY, OP_TYPE_STRUCT, OP_TYPE_VECTOR, OP_TYPE_VOID, OP_U_GREATER_THAN_EQUAL,
+    OP_U_LESS_THAN, OP_VARIABLE, SCHEMA, STORAGE_CLASS_FUNCTION, STORAGE_CLASS_INPUT,
+    STORAGE_CLASS_UNIFORM, VERSION_1_0,
 };
 use crate::compute::{BindingAccess, BufferSpec, ElementType, KernelDesc, WorkgroupSize};
 use crate::{CameraReq, LightReq, SceneRenderRequest, SphereReq, MAX_FRAMEBUFFER_BYTES};
@@ -125,13 +144,31 @@ pub const P_FILMIC: u32 = 19;
 pub const P_NUM_SPHERES: u32 = 20;
 /// 光源个数。
 pub const P_NUM_LIGHTS: u32 = 21;
+/// （V2）三角形个数。
+pub const P_NUM_TRIS: u32 = 22;
+/// （V2）扁平 BVH 节点个数。
+pub const P_NUM_NODES: u32 = 23;
 
 /// 参数块的总字数（u32 个数）。
 pub const PARAMS_WORDS: usize = 22;
+/// **V2** 参数块字数：V1 的 22 字前缀**逐字节不变**，尾部追加
+/// `P_NUM_TRIS` / `P_NUM_NODES` 两字（与 [`crate::scene_abi::PARAMS_WORDS_V2`] 同值）。
+pub const PARAMS_WORDS_V2: usize = 24;
 /// 每球占用的 f32 槽数：`{center.xyz, radius, albedo.xyz, pad}`。
 pub const SPHERE_SLOTS: u32 = 8;
 /// 每灯占用的 f32 槽数：`{dir.xyz, color.xyz, intensity, pad}`。
 pub const LIGHT_SLOTS: u32 = 8;
+/// 每三角形占用的 f32 槽数：`{a.xyz, pad, b.xyz, pad, c.xyz, pad, pad, pad}`。
+pub const TRIANGLE_SLOTS: u32 = 12;
+/// 每 BVH 节点占用的 f32 槽数：`{bmin.xyz, pad, bmax.xyz, pad, start, count, right, pad}`。
+pub const NODE_SLOTS: u32 = 12;
+
+/// 曲线遍历显式栈的深度（节点栈与距离栈同深）。
+///
+/// 上界是**结构性**的：二叉 BVH 每次弹出最多压入 2 个子节点，树深
+/// `≤ ⌈log2(num_tris / LEAF_MIN)⌉ + 1`，故栈深 `≤ 2·(⌈log2 N⌉ + 1)`；
+/// 即使 `N = 2^31` 也只有 64 层（与 `scene_frame.wgsl` 的 `array<u32, 64>` 同值）。
+pub const CURVE_STACK_DEPTH: u32 = 64;
 
 /// 球体/光源数量的上限（防御性：避免调用方传入天文数字导致巨额缓冲分配）。
 ///
@@ -151,9 +188,24 @@ pub const SHADOW_TINT: [f32; 3] = [0.10, 0.35, 0.45];
 /// teal-orange 高光染色（与 CPU 参考同值）。
 pub const HIGH_TINT: [f32; 3] = [1.0, 0.7, 0.3];
 
+/// 曲线命中面的反照率（与 [`crate::CURVE_ALBEDO`] 同值；A-2 切片曲面材质参数化留 V2.3）。
+pub const CURVE_ALBEDO: [f32; 3] = crate::CURVE_ALBEDO;
+/// 曲线求交的 `t_min`（与 [`crate::CURVE_T_MIN`] 同值）。
+pub const CURVE_T_MIN: f32 = crate::CURVE_T_MIN;
+/// 曲线未命中的槽位哨兵（`0xFFFFFFFF`；与 `scene_frame.wgsl` 同值）。
+const CURVE_SLOT_MISS: u32 = u32::MAX;
+/// slab 盒交的 exit 侧外扩（与 [`prism_geometry::bvh`] 的 `Aabb::ray` 同值）。
+const AABB_EXIT_EPS: f32 = 1e-7;
+/// `t_max` 的有限上界哨兵（`1e30`；未命中球时的曲线搜索上界）。
+const CURVE_T_MAX_SENTINEL: f32 = 1e30;
+
 // GLSL.std.450 扩展指令号（与 `spirv_bg` 同一份公开编号）。
+/// `FAbs(x)`：IEEE 精确绝对值（清符号位，NaN 保持 NaN）。
+const GLSL_FABS: u32 = 4;
 /// `Sqrt(x)`：正确舍入平方根。
 const GLSL_SQRT: u32 = 31;
+/// `FMin(x, y)`。
+const GLSL_FMIN: u32 = 37;
 /// `FMax(x, y)`。
 const GLSL_FMAX: u32 = 40;
 /// `FClamp(x, min, max)`。
@@ -313,9 +365,20 @@ pub fn encode_lights(lights: &[LightReq]) -> Vec<u8> {
 ///
 /// 返回 `None` 表示尺寸/实体数非法或超限（零轴、维度超
 /// [`crate::MAX_FRAMEBUFFER_DIM`]、字节超 [`MAX_FRAMEBUFFER_BYTES`]、实体数超
-/// 上限）——**不上机、不 panic**。空球/空灯集合被规范化为 1 个槽位（内容全 0），
-/// 循环上界由参数块里的 0 决定，不会执行循环体。
-pub fn scene_kernel(w: u32, h: u32, num_spheres: usize, num_lights: usize) -> Option<KernelDesc> {
+/// 上限）——**不上机、不 panic**。空球/空灯/空曲线集合被规范化为 1 个槽位
+/// （内容全 0），循环上界由参数块里的 0 决定，不会执行循环体。
+///
+/// 绑定剖面恒为 [`crate::scene_abi::SceneAbiProfile::V2`]（6 绑定，输出在
+/// `binding 5`）；`num_tris` / `num_nodes` 是**槽位个数**（不是字节数），与
+/// [`crate::scene_abi::encode_curve_buffers`] 返回的两份缓冲逐一对应。
+pub fn scene_kernel(
+    w: u32,
+    h: u32,
+    num_spheres: usize,
+    num_lights: usize,
+    num_tris: usize,
+    num_nodes: usize,
+) -> Option<KernelDesc> {
     if w == 0 || h == 0 || w > crate::MAX_FRAMEBUFFER_DIM || h > crate::MAX_FRAMEBUFFER_DIM {
         return None;
     }
@@ -326,8 +389,12 @@ pub fn scene_kernel(w: u32, h: u32, num_spheres: usize, num_lights: usize) -> Op
     let out_bytes = pixels.checked_mul(crate::BYTES_PER_PIXEL as u64)?;
     let in_bytes = (num_spheres as u64)
         .checked_mul(SPHERE_SLOTS as u64 * 4)?
-        .checked_add((num_lights as u64).checked_mul(LIGHT_SLOTS as u64 * 4)?)?;
-    let total = out_bytes.checked_add(in_bytes)?.checked_add((PARAMS_WORDS * 4) as u64)?;
+        .checked_add((num_lights as u64).checked_mul(LIGHT_SLOTS as u64 * 4)?)?
+        .checked_add((num_tris as u64).checked_mul(TRIANGLE_SLOTS as u64 * 4)?)?
+        .checked_add((num_nodes as u64).checked_mul(NODE_SLOTS as u64 * 4)?)?;
+    let total = out_bytes
+        .checked_add(in_bytes)?
+        .checked_add((PARAMS_WORDS_V2 * 4) as u64)?;
     if total > MAX_FRAMEBUFFER_BYTES as u64 {
         return None;
     }
@@ -340,11 +407,11 @@ pub fn scene_kernel(w: u32, h: u32, num_spheres: usize, num_lights: usize) -> Op
             WORKGROUP_SCENE[2],
         ),
         vec![
-            // b0：参数块（PARAMS_WORDS × u32）
+            // b0：参数块（PARAMS_WORDS_V2 × u32；V1 的 22 字前缀逐字节不变）
             BufferSpec::new(
                 0,
                 ElementType::U32,
-                PARAMS_WORDS as u32,
+                PARAMS_WORDS_V2 as u32,
                 BindingAccess::ReadOnly,
             ),
             // b1：球体（每球 SPHERE_SLOTS 个 f32 槽；空集合退化为 1 个占位槽）
@@ -361,15 +428,27 @@ pub fn scene_kernel(w: u32, h: u32, num_spheres: usize, num_lights: usize) -> Op
                 (num_lights.max(1) as u32) * LIGHT_SLOTS,
                 BindingAccess::ReadOnly,
             ),
-            // b3：输出（每像素一个打包 RGBA8 u32）
-            BufferSpec::new(3, ElementType::U32, pixels as u32, BindingAccess::WriteOnly),
+            // b3：三角形（每三角形 TRIANGLE_SLOTS 个 u32 槽；空集合退化为 1 个占位槽）
+            BufferSpec::new(
+                3,
+                ElementType::U32,
+                (num_tris.max(1) as u32) * TRIANGLE_SLOTS,
+                BindingAccess::ReadOnly,
+            ),
+            // b4：扁平 BVH 节点（同上）
+            BufferSpec::new(
+                4,
+                ElementType::U32,
+                (num_nodes.max(1) as u32) * NODE_SLOTS,
+                BindingAccess::ReadOnly,
+            ),
+            // b5：输出（每像素一个打包 RGBA8 u32）——**恒为最后一个绑定**
+            BufferSpec::new(5, ElementType::U32, pixels as u32, BindingAccess::WriteOnly),
         ],
         MODULE_SCENE,
-        // WGSL 宿主**尚未建立**（V2.1 A3 评估为「条件可行、未实施」，见
-        // `docs/v2.1-WebGPU可行性评估.md`）。本 kernel 现有的宿主是
-        // SPIR-V（本模块发射器）与 MSL（`metal::msl::RT_SCENE_MSL`）两份；
-        // 此处留空串如实表达「没有 WGSL 源」，不指向一个不存在的文件。
-        "",
+        // WGSL 宿主的登记名（真源见 `crate::shaders` 的 `SHADERS` 表；本字段只是
+        // 「同一 kernel 的 WGSL 源叫什么」的可读标签，不构成「已点亮」声称）。
+        "scene_frame.wgsl",
     ))
 }
 
@@ -433,12 +512,20 @@ struct SceneEmitter {
     p_s_f32: u32,
     pf_u32: u32,
     pf_f32: u32,
+    /// 函数局部定长数组（曲线遍历的节点栈 / 距离栈）。
+    t_arr_u32: u32,
+    t_arr_f32: u32,
+    /// 指向函数局部数组的指针类型（`OpVariable` 的类型）。
+    pf_arr_u32: u32,
+    pf_arr_f32: u32,
     t_fn: u32,
     // --- 全局变量 id ---
     v_gid: u32,
     v_params: u32,
     v_spheres: u32,
     v_lights: u32,
+    v_tris: u32,
+    v_nodes: u32,
     v_out: u32,
     // --- 其它 ---
     glsl: u32,
@@ -451,6 +538,20 @@ struct SceneEmitter {
     v_cr: u32,
     v_cg: u32,
     v_cb: u32,
+    /// 曲线遍历的最优 `t`（初值 = 搜索上界；未命中时保持上界）。
+    v_ct: u32,
+    /// 曲线命中的三角形槽位（未命中 = [`CURVE_SLOT_MISS`]）。
+    v_cslot: u32,
+    /// 显式栈指针（u32 计数：栈内元素个数）。
+    v_sp: u32,
+    /// 节点栈（`array<u32, CURVE_STACK_DEPTH>`）。
+    v_stk: u32,
+    /// 距离栈（`array<f32, CURVE_STACK_DEPTH>`），与节点栈同深同步。
+    v_tlo: u32,
+    /// 当前节点下标（遍历体携带值）。
+    v_id: u32,
+    /// 当前节点的进入距离 `t_lo`（遍历体携带值）。
+    v_tloc: u32,
     // --- 常量去重（bits → id）---
     f32_consts: Vec<(u32, u32)>,
     u32_consts: Vec<(u32, u32)>,
@@ -489,11 +590,17 @@ impl SceneEmitter {
             p_s_f32: 0,
             pf_u32: 0,
             pf_f32: 0,
+            t_arr_u32: 0,
+            t_arr_f32: 0,
+            pf_arr_u32: 0,
+            pf_arr_f32: 0,
             t_fn: 0,
             v_gid: 0,
             v_params: 0,
             v_spheres: 0,
             v_lights: 0,
+            v_tris: 0,
+            v_nodes: 0,
             v_out: 0,
             glsl: 0,
             fn_main: 0,
@@ -504,6 +611,13 @@ impl SceneEmitter {
             v_cr: 0,
             v_cg: 0,
             v_cb: 0,
+            v_ct: 0,
+            v_cslot: 0,
+            v_sp: 0,
+            v_stk: 0,
+            v_tlo: 0,
+            v_id: 0,
+            v_tloc: 0,
             f32_consts: Vec::new(),
             u32_consts: Vec::new(),
         };
@@ -533,6 +647,8 @@ impl SceneEmitter {
         self.v_params = self.fresh();
         self.v_spheres = self.fresh();
         self.v_lights = self.fresh();
+        self.v_tris = self.fresh();
+        self.v_nodes = self.fresh();
         self.v_out = self.fresh();
 
         let mut ops = vec![EXECUTION_MODEL_GLCOMPUTE, self.fn_main];
@@ -552,7 +668,7 @@ impl SceneEmitter {
             ],
         );
 
-        // ④ 注解：Input 变量必须 BuiltIn；四个存储缓冲各自绑定到 set 0。
+        // ④ 注解：Input 变量必须 BuiltIn；六个存储缓冲各自绑定到 set 0。
         push(
             &mut self.annotations,
             OP_DECORATE,
@@ -562,7 +678,9 @@ impl SceneEmitter {
             (self.v_params, 0u32),
             (self.v_spheres, 1),
             (self.v_lights, 2),
-            (self.v_out, 3),
+            (self.v_tris, 3),
+            (self.v_nodes, 4),
+            (self.v_out, 5),
         ] {
             push(
                 &mut self.annotations,
@@ -657,6 +775,37 @@ impl SceneEmitter {
             &[self.pf_f32, STORAGE_CLASS_FUNCTION, self.t_f32],
         );
 
+        // 函数局部定长数组（曲线遍历的双栈）：`OpTypeArray` 的长度必须来自
+        // **已定义**的 `OpConstant`，故这条常量与类型交错发射（见
+        // [`SceneEmitter::u32_const_in_types`]）。
+        let depth = self.u32_const_in_types(CURVE_STACK_DEPTH);
+        self.t_arr_u32 = self.fresh();
+        push(
+            &mut self.types,
+            OP_TYPE_ARRAY,
+            &[self.t_arr_u32, self.t_u32, depth],
+        );
+        self.t_arr_f32 = self.fresh();
+        push(
+            &mut self.types,
+            OP_TYPE_ARRAY,
+            &[self.t_arr_f32, self.t_f32, depth],
+        );
+        let pf_arr_u32 = self.fresh();
+        push(
+            &mut self.types,
+            OP_TYPE_POINTER,
+            &[pf_arr_u32, STORAGE_CLASS_FUNCTION, self.t_arr_u32],
+        );
+        self.pf_arr_u32 = pf_arr_u32;
+        let pf_arr_f32 = self.fresh();
+        push(
+            &mut self.types,
+            OP_TYPE_POINTER,
+            &[pf_arr_f32, STORAGE_CLASS_FUNCTION, self.t_arr_f32],
+        );
+        self.pf_arr_f32 = pf_arr_f32;
+
         self.t_fn = self.fresh();
         push(
             &mut self.types,
@@ -709,6 +858,8 @@ impl SceneEmitter {
             (self.p_s_u32, self.v_params),
             (self.p_s_f32, self.v_spheres),
             (self.p_s_f32, self.v_lights),
+            (self.p_s_u32, self.v_tris),
+            (self.p_s_u32, self.v_nodes),
             (self.p_s_u32, self.v_out),
         ] {
             push(
@@ -740,6 +891,22 @@ impl SceneEmitter {
         }
         let id = self.fresh();
         push(&mut self.constants, OP_CONSTANT, &[self.t_u32, id, v]);
+        self.u32_consts.push((v, id));
+        id
+    }
+
+    /// 与 [`SceneEmitter::u32_const`] 等价，但把 `OpConstant` 就地发射到**类型段**。
+    ///
+    /// 只给 `OpTypeArray` 的长度用：SPIR-V 的「先用后定义」豁免不覆盖该操作数
+    /// （`spirv-val`：`Operand '26[%uint_64]' requires a previous definition`），
+    /// 而常量段的段序在类型段之后——故数组长度这一条常量必须与类型**交错**发射
+    /// （spirv-val / spirv-as 实测接受此排列）。
+    fn u32_const_in_types(&mut self, v: u32) -> u32 {
+        if let Some(&(_, id)) = self.u32_consts.iter().find(|(b, _)| *b == v) {
+            return id;
+        }
+        let id = self.fresh();
+        push(&mut self.types, OP_CONSTANT, &[self.t_u32, id, v]);
         self.u32_consts.push((v, id));
         id
     }
@@ -857,6 +1024,27 @@ impl SceneEmitter {
         id
     }
 
+    /// 有序浮点 ≤（NaN 为假；与 Rust 的 `a <= b` 同语义）。
+    fn fle(&mut self, a: u32, b: u32) -> u32 {
+        let id = self.fresh();
+        push(
+            &mut self.funcs,
+            OP_F_ORD_LESS_THAN_EQUAL,
+            &[self.t_bool, id, a, b],
+        );
+        id
+    }
+
+    /// `FMin(x, y)`（GLSL.std.450 的精确实现；D-29 允许项）。
+    fn fmin(&mut self, x: u32, y: u32) -> u32 {
+        self.ext2(GLSL_FMIN, x, y)
+    }
+
+    /// `FAbs(x)`（清符号位；不是超越函数，D-29 允许项）。
+    fn fabs(&mut self, x: u32) -> u32 {
+        self.ext1(GLSL_FABS, x)
+    }
+
     fn land(&mut self, a: u32, b: u32) -> u32 {
         let id = self.fresh();
         push(&mut self.funcs, OP_LOGICAL_AND, &[self.t_bool, id, a, b]);
@@ -866,6 +1054,12 @@ impl SceneEmitter {
     fn lor(&mut self, a: u32, b: u32) -> u32 {
         let id = self.fresh();
         push(&mut self.funcs, OP_LOGICAL_OR, &[self.t_bool, id, a, b]);
+        id
+    }
+
+    fn lnot(&mut self, a: u32) -> u32 {
+        let id = self.fresh();
+        push(&mut self.funcs, OP_LOGICAL_NOT, &[self.t_bool, id, a]);
         id
     }
 
@@ -942,6 +1136,17 @@ impl SceneEmitter {
             &[self.t_bool, id, a, b],
         );
         id
+    }
+
+    /// `u != 0`（标量 u32 与常量比较；栈指针 / 叶节点判据用）。
+    fn une(&mut self, a: u32, b: u32) -> u32 {
+        let id = self.fresh();
+        push(&mut self.funcs, OP_I_NOT_EQUAL, &[self.t_bool, id, a, b]);
+        id
+    }
+
+    fn isub(&mut self, a: u32, b: u32) -> u32 {
+        self.ubin(OP_I_SUB, a, b)
     }
 
     fn u2f(&mut self, x: u32) -> u32 {
@@ -1031,6 +1236,57 @@ impl SceneEmitter {
         self.load_f32(ptr)
     }
 
+    /// 读 `var[base + off]` 的 **u32 原值**（三角形/节点缓冲：槽位里混着
+    /// `u32` 计数与 `f32` 位型，取数必须按字而不是按解释）。
+    fn slot_u32(&mut self, var: u32, base: u32, off: u32) -> u32 {
+        let off_id = self.u32_const(off);
+        let idx = self.uadd(base, off_id);
+        let p_u32 = self.p_u32;
+        let ptr = self.access(p_u32, var, idx);
+        self.load_u32(ptr)
+    }
+
+    /// 读 `var[base + off]` 的 f32 位型并 `OpBitcast` 还原（三角形顶点 / 节点包围盒）。
+    fn slot_bits_f32(&mut self, var: u32, base: u32, off: u32) -> u32 {
+        let bits = self.slot_u32(var, base, off);
+        self.bitcast_f32(bits)
+    }
+
+    /// 函数局部数组的元素指针：`arr[index]`（`OpAccessChain` 在 `Function` 存储类上）。
+    fn access_fn(&mut self, elem_ptr_ty: u32, base: u32, index: u32) -> u32 {
+        let id = self.fresh();
+        push(
+            &mut self.funcs,
+            OP_ACCESS_CHAIN,
+            &[elem_ptr_ty, id, base, index],
+        );
+        id
+    }
+
+    /// `stack[idx]`（u32 节点栈的读）。
+    fn stack_get_u32(&mut self, base: u32, idx: u32) -> u32 {
+        let p = self.access_fn(self.pf_u32, base, idx);
+        self.load_u32(p)
+    }
+
+    /// `stack[idx] = v`（u32 节点栈的写）。
+    fn stack_set_u32(&mut self, base: u32, idx: u32, v: u32) {
+        let p = self.access_fn(self.pf_u32, base, idx);
+        self.store(p, v);
+    }
+
+    /// `tlo[idx]`（f32 距离栈的读）。
+    fn stack_get_f32(&mut self, base: u32, idx: u32) -> u32 {
+        let p = self.access_fn(self.pf_f32, base, idx);
+        self.load_f32(p)
+    }
+
+    /// `tlo[idx] = v`（f32 距离栈的写）。
+    fn stack_set_f32(&mut self, base: u32, idx: u32, v: u32) {
+        let p = self.access_fn(self.pf_f32, base, idx);
+        self.store(p, v);
+    }
+
     // ------------------------------------------------------------------
     // 语义件
     // ------------------------------------------------------------------
@@ -1096,6 +1352,533 @@ impl SceneEmitter {
         self.f2u(floored)
     }
 
+    // ------------------------------------------------------------------
+    // A-2 曲线段：Möller–Trumbore + slab 盒交 + 栈式 BVH 遍历
+    // ------------------------------------------------------------------
+    //
+    // 全部**内联发射**（本模块不产生 `OpFunctionCall`：单函数模块的既有结构
+    // 由 `spirv::validate` 的「恰一个函数」断言钉死）。语义逐句移植
+    // `shaders/scene_frame.wgsl` 的同名件，后者与 `prism_geometry::bvh` 的
+    // `Aabb::ray` / `tri_ray_hit` / `Bvh::ray_intersect` 逐式对应。
+
+    /// `a × b`（与 `prism_math::Vec3::cross` 同式：每分量「先乘后减」）。
+    fn cross3(&mut self, a: (u32, u32, u32), b: (u32, u32, u32)) -> (u32, u32, u32) {
+        let (ax, ay, az) = a;
+        let (bx, by, bz) = b;
+        let p0 = self.fmul(ay, bz);
+        let p1 = self.fmul(az, by);
+        let x = self.fsub(p0, p1);
+        let p2 = self.fmul(az, bx);
+        let p3 = self.fmul(ax, bz);
+        let y = self.fsub(p2, p3);
+        let p4 = self.fmul(ax, by);
+        let p5 = self.fmul(ay, bx);
+        let z = self.fsub(p4, p5);
+        (x, y, z)
+    }
+
+    /// 读三角形顶点：`triangles[slot * TRIANGLE_SLOTS + off .. +3]`。
+    fn tri_vertex(&mut self, base: u32, off: u32) -> (u32, u32, u32) {
+        let v_tris = self.v_tris;
+        let x = self.slot_bits_f32(v_tris, base, off);
+        let y = self.slot_bits_f32(v_tris, base, off + 1);
+        let z = self.slot_bits_f32(v_tris, base, off + 2);
+        (x, y, z)
+    }
+
+    /// 压栈：`stk[sp] = node; tlo[sp] = t; sp += 1`。
+    ///
+    /// 调用序即处理序（栈后进先出）：**近子后入栈 ⇒ 近子先被处理**。
+    fn push_stack(&mut self, node: u32, t_lo_val: u32) {
+        let sp = self.v_sp;
+        let sp_cur = self.load_u32(sp);
+        let v_stk = self.v_stk;
+        let v_tlo = self.v_tlo;
+        self.stack_set_u32(v_stk, sp_cur, node);
+        self.stack_set_f32(v_tlo, sp_cur, t_lo_val);
+        let one = self.u32_const(1);
+        let sp_next = self.uadd(sp_cur, one);
+        self.store(sp, sp_next);
+    }
+
+    /// 直接光累加循环（球分支与曲线分支**共用同一段指令**）。
+    ///
+    /// 进入前：`v_cr/v_cg/v_cb` 由调用方清零。出口：累加结果留在三变量里。
+    /// 逐式对应 CPU 的 `acc += albedo * (ambient + lcolor * (diff * intensity))`。
+    fn emit_light_loop(&mut self, n: (u32, u32, u32), alb: (u32, u32, u32)) {
+        let (n_x, n_y, n_z) = n;
+        let (alb_r, alb_g, alb_b) = alb;
+        let l_hdr = self.fresh();
+        let l_body = self.fresh();
+        let l_cont = self.fresh();
+        let l_merge = self.fresh();
+        let (v_cr, v_cg, v_cb) = (self.v_cr, self.v_cg, self.v_cb);
+        let zero_f = self.f32_const(0.0);
+        self.store(v_cr, zero_f);
+        self.store(v_cg, zero_f);
+        self.store(v_cb, zero_f);
+        let num_lights = self.param_u32(P_NUM_LIGHTS);
+        let v_j = self.v_j;
+        let zero_u = self.u32_const(0);
+        self.store(v_j, zero_u);
+        push(&mut self.funcs, OP_BRANCH, &[l_hdr]);
+
+        // --- 循环头 ---
+        push(&mut self.funcs, OP_LABEL, &[l_hdr]);
+        let j_cur = self.load_u32(v_j);
+        let j_in_range = self.uless(j_cur, num_lights);
+        push(
+            &mut self.funcs,
+            OP_LOOP_MERGE,
+            &[l_merge, l_cont, LOOP_CONTROL_NONE],
+        );
+        push(
+            &mut self.funcs,
+            OP_BRANCH_CONDITIONAL,
+            &[j_in_range, l_body, l_merge],
+        );
+
+        // --- 循环体 ---
+        push(&mut self.funcs, OP_LABEL, &[l_body]);
+        let v_lights = self.v_lights;
+        let lslots = self.u32_const(LIGHT_SLOTS);
+        let lbase = self.umul(j_cur, lslots);
+        let ldx = self.slot_f32(v_lights, lbase, 0);
+        let ldy = self.slot_f32(v_lights, lbase, 1);
+        let ldz = self.slot_f32(v_lights, lbase, 2);
+        let lc_r = self.slot_f32(v_lights, lbase, 3);
+        let lc_g = self.slot_f32(v_lights, lbase, 4);
+        let lc_b = self.slot_f32(v_lights, lbase, 5);
+        let lint = self.slot_f32(v_lights, lbase, 6);
+        let ndotl = self.dot3(n_x, n_y, n_z, ldx, ldy, ldz);
+        let zero_f2 = self.f32_const(0.0);
+        let diff = self.fmax(ndotl, zero_f2);
+        let scaled = self.fmul(diff, lint);
+        let amb = self.f32_const(AMBIENT);
+        // 每通道：acc += albedo * (ambient + lcolor * (diff * intensity))
+        for (acc_var, alb, lc) in [(v_cr, alb_r, lc_r), (v_cg, alb_g, lc_g), (v_cb, alb_b, lc_b)]
+        {
+            let tint = self.fmul(lc, scaled);
+            let term = self.fadd(amb, tint);
+            let prod = self.fmul(alb, term);
+            let acc_cur = self.load_f32(acc_var);
+            let acc_next = self.fadd(acc_cur, prod);
+            self.store(acc_var, acc_next);
+        }
+        push(&mut self.funcs, OP_BRANCH, &[l_cont]);
+
+        // --- continue / 出口 ---
+        push(&mut self.funcs, OP_LABEL, &[l_cont]);
+        let one_u = self.u32_const(1);
+        let j_next = self.uadd(j_cur, one_u);
+        self.store(v_j, j_next);
+        push(&mut self.funcs, OP_BRANCH, &[l_hdr]);
+        push(&mut self.funcs, OP_LABEL, &[l_merge]);
+    }
+
+    /// slab 盒交（与 `prism_geometry::bvh::Aabb::ray` 逐式对应）。
+    ///
+    /// 返回 `(enter, exit)`：调用方用 `enter <= exit + 1e-7` 判命中，命中时把
+    /// `min(enter, exit)` 作为该子树的进入距离入栈（下界剪枝用）。
+    fn emit_aabb_ray(
+        &mut self,
+        node: u32,
+        ro: (u32, u32, u32),
+        inv: (u32, u32, u32),
+        t_min: u32,
+        t_max: u32,
+    ) -> (u32, u32) {
+        let slots = self.u32_const(NODE_SLOTS);
+        let nb = self.umul(node, slots);
+        let v_nodes = self.v_nodes;
+        let bmin = [
+            self.slot_bits_f32(v_nodes, nb, 0),
+            self.slot_bits_f32(v_nodes, nb, 1),
+            self.slot_bits_f32(v_nodes, nb, 2),
+        ];
+        let bmax = [
+            self.slot_bits_f32(v_nodes, nb, 4),
+            self.slot_bits_f32(v_nodes, nb, 5),
+            self.slot_bits_f32(v_nodes, nb, 6),
+        ];
+        let mut lo = [0u32; 3];
+        let mut hi = [0u32; 3];
+        for axis in 0..3 {
+            let ro_c = match axis {
+                0 => ro.0,
+                1 => ro.1,
+                _ => ro.2,
+            };
+            let inv_c = match axis {
+                0 => inv.0,
+                1 => inv.1,
+                _ => inv.2,
+            };
+            let d0 = self.fsub(bmin[axis], ro_c);
+            let t1 = self.fmul(d0, inv_c);
+            let d1 = self.fsub(bmax[axis], ro_c);
+            let t2 = self.fmul(d1, inv_c);
+            lo[axis] = self.fmin(t1, t2);
+            hi[axis] = self.fmax(t1, t2);
+        }
+        // enter = ((lo.x max lo.y) max lo.z) max t_min（与 Rust 的
+        // `lo_x.max(lo_y).max(lo_z).max(t_min)` 同结合序）
+        let e0 = self.fmax(lo[0], lo[1]);
+        let e1 = self.fmax(e0, lo[2]);
+        let enter = self.fmax(e1, t_min);
+        let x0 = self.fmin(hi[0], hi[1]);
+        let x1 = self.fmin(x0, hi[2]);
+        let exit = self.fmin(x1, t_max);
+        (enter, exit)
+    }
+
+    /// Möller–Trumbore（与 `prism_geometry::bvh::tri_ray_hit` 逐式对应）。
+    ///
+    /// 命中返回 `t`，未命中返回 `-1.0`（哨兵）。原实现的四处提前返回改写为
+    /// **同一个合取判据 + `OpSelect`**：四条守卫各自是纯数据谓词，与提前返回
+    /// 等价（`NaN` 通路被 `|det| < 1e-12` 与 `t_min <= hit <= t_max` 两端夹住）。
+    fn emit_tri_ray_hit(
+        &mut self,
+        slot: u32,
+        ro: (u32, u32, u32),
+        rd: (u32, u32, u32),
+        t_min: u32,
+        t_max: u32,
+    ) -> u32 {
+        let slots = self.u32_const(TRIANGLE_SLOTS);
+        let base = self.umul(slot, slots);
+        let va = self.tri_vertex(base, 0);
+        let vb = self.tri_vertex(base, 4);
+        let vc = self.tri_vertex(base, 8);
+        let e1 = (
+            self.fsub(vb.0, va.0),
+            self.fsub(vb.1, va.1),
+            self.fsub(vb.2, va.2),
+        );
+        let e2 = (
+            self.fsub(vc.0, va.0),
+            self.fsub(vc.1, va.1),
+            self.fsub(vc.2, va.2),
+        );
+        let pvec = self.cross3(rd, e2);
+        let det = self.dot3(e1.0, e1.1, e1.2, pvec.0, pvec.1, pvec.2);
+        let abs_det = self.fabs(det);
+        let tiny = self.f32_const(1e-12);
+        let det_small = self.flt(abs_det, tiny);
+        let one_f = self.f32_const(1.0);
+        let inv_det = self.fdiv(one_f, det);
+        let tvec = (
+            self.fsub(ro.0, va.0),
+            self.fsub(ro.1, va.1),
+            self.fsub(ro.2, va.2),
+        );
+        let uv_dot = self.dot3(tvec.0, tvec.1, tvec.2, pvec.0, pvec.1, pvec.2);
+        let u = self.fmul(uv_dot, inv_det);
+        let zero_f = self.f32_const(0.0);
+        let u_lt0 = self.flt(u, zero_f);
+        let u_gt1 = self.fgt(u, one_f);
+        let u_bad = self.lor(u_lt0, u_gt1);
+        let qvec = self.cross3(tvec, e1);
+        let v_dot = self.dot3(rd.0, rd.1, rd.2, qvec.0, qvec.1, qvec.2);
+        let v = self.fmul(v_dot, inv_det);
+        let v_lt0 = self.flt(v, zero_f);
+        let uv = self.fadd(u, v);
+        let uv_gt1 = self.fgt(uv, one_f);
+        let v_bad = self.lor(v_lt0, uv_gt1);
+        let hit_dot = self.dot3(e2.0, e2.1, e2.2, qvec.0, qvec.1, qvec.2);
+        let hit = self.fmul(hit_dot, inv_det);
+        let ge_min = self.fge(hit, t_min);
+        let le_max = self.fle(hit, t_max);
+        let in_range = self.land(ge_min, le_max);
+        let ok01 = self.lnot(det_small);
+        let ok23 = self.lnot(u_bad);
+        let ok45 = self.lnot(v_bad);
+        let ok_a = self.land(ok01, ok23);
+        let ok_b = self.land(ok45, in_range);
+        let valid = self.land(ok_a, ok_b);
+        let miss = self.f32_const(-1.0);
+        self.select_f32(valid, hit, miss)
+    }
+
+    /// A-2 曲线段：栈式 BVH 遍历（最近命中）。
+    ///
+    /// 语义逐句移植 `scene_frame.wgsl::bvh_intersect`，后者与
+    /// `prism_geometry::bvh::Bvh::ray_intersect`（`bvh.rs:464`）同式：
+    /// 双栈（节点 / 进入距离）、近子后入栈（⇒ 近子先处理）、`t_lo > best` 剪枝、
+    /// **`t` 并列先左**（`hl.x <= hr.x` 时先压右子树 ⇒ 左子树先出栈）。
+    ///
+    /// 出口：`v_ct` = 最优 `t`（未命中时保持入参上界），`v_cslot` = 三角形槽位
+    /// （未命中 = [`CURVE_SLOT_MISS`]）。
+    fn emit_curve_traversal(&mut self, ro: (u32, u32, u32), rd: (u32, u32, u32), t_max_curve: u32) {
+        let v_ct = self.v_ct;
+        let v_cslot = self.v_cslot;
+        let v_sp = self.v_sp;
+        let v_id = self.v_id;
+        let v_tloc = self.v_tloc;
+        let v_stk = self.v_stk;
+        let v_tlo = self.v_tlo;
+        let v_i = self.v_i;
+        let v_nodes = self.v_nodes;
+
+        // --- 初始化：best_t = 上界，best_slot = 哨兵，栈 = [(root, t_min)] ---
+        self.store(v_ct, t_max_curve);
+        let miss = self.u32_const(CURVE_SLOT_MISS);
+        self.store(v_cslot, miss);
+        let zero_u = self.u32_const(0);
+        self.stack_set_u32(v_stk, zero_u, zero_u);
+        let t_min = self.f32_const(CURVE_T_MIN);
+        self.stack_set_f32(v_tlo, zero_u, t_min);
+        let one_u = self.u32_const(1);
+        self.store(v_sp, one_u);
+
+        // inv = (1/rd.x, 1/rd.y, 1/rd.z)（与 CPU 的 `Vec3::new(1.0/rd.x, ...)` 同式）
+        let one_f = self.f32_const(1.0);
+        let inv = (
+            self.fdiv(one_f, rd.0),
+            self.fdiv(one_f, rd.1),
+            self.fdiv(one_f, rd.2),
+        );
+
+        // --- 标签 ---
+        let l_hdr = self.fresh();
+        let l_cont = self.fresh();
+        let l_while_done = self.fresh();
+        let l_body = self.fresh();
+        let l_body_end = self.fresh();
+        let l_work = self.fresh();
+        let l_work_end = self.fresh();
+        let l_leaf = self.fresh();
+        let l_internal = self.fresh();
+        let l_leaf_hdr = self.fresh();
+        let l_leaf_cont = self.fresh();
+        let l_leaf_body = self.fresh();
+        let l_leaf_done = self.fresh();
+        let l_internal_end = self.fresh();
+        let l_both = self.fresh();
+        let l_both_end = self.fresh();
+        let l_left_first = self.fresh();
+        let l_right_first = self.fresh();
+        let l_not_both = self.fresh();
+        let l_push_left = self.fresh();
+        let l_check_right = self.fresh();
+        let l_push_right = self.fresh();
+        let l_check_right_end = self.fresh();
+        let l_not_both_end = self.fresh();
+
+        push(&mut self.funcs, OP_BRANCH, &[l_hdr]);
+
+        // --- while (sp > 0) ---
+        push(&mut self.funcs, OP_LABEL, &[l_hdr]);
+        let sp_cur = self.load_u32(v_sp);
+        let sp_nonzero = self.flag(sp_cur);
+        push(
+            &mut self.funcs,
+            OP_LOOP_MERGE,
+            &[l_while_done, l_cont, LOOP_CONTROL_NONE],
+        );
+        push(
+            &mut self.funcs,
+            OP_BRANCH_CONDITIONAL,
+            &[sp_nonzero, l_body, l_while_done],
+        );
+
+        // --- continue 块（回边）---
+        //
+        // 块序纪律：`spirv-val` 要求「一个块不得出现在其支配者之前」
+        // （`Block 'X' appears in the binary before its dominator 'Y'`）。continue
+        // 块的前驱只有循环体尾块 ⇒ 它必须**排在循环体之后**、merge 之前。
+        // 故此处不发射 continue，留到循环体全部发完再发。
+
+        // --- 循环体：弹栈 + 下界剪枝 ---
+        push(&mut self.funcs, OP_LABEL, &[l_body]);
+        let sp_next = self.isub(sp_cur, one_u);
+        self.store(v_sp, sp_next);
+        let id = self.stack_get_u32(v_stk, sp_next);
+        self.store(v_id, id);
+        let t_lo = self.stack_get_f32(v_tlo, sp_next);
+        self.store(v_tloc, t_lo);
+        let best_t = self.load_f32(v_ct);
+        let pruned = self.fgt(t_lo, best_t);
+        push(
+            &mut self.funcs,
+            OP_SELECTION_MERGE,
+            &[l_body_end, SELECTION_CONTROL_NONE],
+        );
+        push(
+            &mut self.funcs,
+            OP_BRANCH_CONDITIONAL,
+            &[pruned, l_body_end, l_work],
+        );
+
+        // --- 取节点：叶 / 内部 ---
+        push(&mut self.funcs, OP_LABEL, &[l_work]);
+        let node_slots = self.u32_const(NODE_SLOTS);
+        let nb = self.umul(id, node_slots);
+        let count = self.slot_u32(v_nodes, nb, 9);
+        let is_leaf = self.flag(count);
+        push(
+            &mut self.funcs,
+            OP_SELECTION_MERGE,
+            &[l_work_end, SELECTION_CONTROL_NONE],
+        );
+        push(
+            &mut self.funcs,
+            OP_BRANCH_CONDITIONAL,
+            &[is_leaf, l_leaf, l_internal],
+        );
+
+        // --- 叶节点：逐三角形测试（上界随 best_t 收紧） ---
+        push(&mut self.funcs, OP_LABEL, &[l_leaf]);
+        let start = self.slot_u32(v_nodes, nb, 8);
+        self.store(v_i, zero_u);
+        push(&mut self.funcs, OP_BRANCH, &[l_leaf_hdr]);
+
+        push(&mut self.funcs, OP_LABEL, &[l_leaf_hdr]);
+        let i_cur = self.load_u32(v_i);
+        let i_lt = self.uless(i_cur, count);
+        push(
+            &mut self.funcs,
+            OP_LOOP_MERGE,
+            &[l_leaf_done, l_leaf_cont, LOOP_CONTROL_NONE],
+        );
+        push(
+            &mut self.funcs,
+            OP_BRANCH_CONDITIONAL,
+            &[i_lt, l_leaf_body, l_leaf_done],
+        );
+
+        push(&mut self.funcs, OP_LABEL, &[l_leaf_body]);
+        let slot = self.uadd(start, i_cur);
+        let best_before = self.load_f32(v_ct);
+        let ht = self.emit_tri_ray_hit(slot, ro, rd, t_min, best_before);
+        let zero_f = self.f32_const(0.0);
+        let ht_nonneg = self.fge(ht, zero_f);
+        let ht_nearer = self.flt(ht, best_before);
+        let take = self.land(ht_nonneg, ht_nearer);
+        let new_best = self.select_f32(take, ht, best_before);
+        self.store(v_ct, new_best);
+        let slot_cur = self.load_u32(v_cslot);
+        let new_slot = self.select_u32(take, slot, slot_cur);
+        self.store(v_cslot, new_slot);
+        push(&mut self.funcs, OP_BRANCH, &[l_leaf_cont]);
+
+        push(&mut self.funcs, OP_LABEL, &[l_leaf_cont]);
+        let i_next = self.uadd(i_cur, one_u);
+        self.store(v_i, i_next);
+        push(&mut self.funcs, OP_BRANCH, &[l_leaf_hdr]);
+
+        push(&mut self.funcs, OP_LABEL, &[l_leaf_done]);
+        push(&mut self.funcs, OP_BRANCH, &[l_work_end]);
+
+        // --- 内部节点：两个子盒 + 近子后入栈 ---
+        push(&mut self.funcs, OP_LABEL, &[l_internal]);
+        let left = self.uadd(id, one_u);
+        let right = self.slot_u32(v_nodes, nb, 10);
+        let (elx, exl) = self.emit_aabb_ray(left, ro, inv, t_min, t_max_curve);
+        let (erx, exr) = self.emit_aabb_ray(right, ro, inv, t_min, t_max_curve);
+        let eps = self.f32_const(AABB_EXIT_EPS);
+        let exl_eps = self.fadd(exl, eps);
+        let exr_eps = self.fadd(exr, eps);
+        let ok_l = self.fle(elx, exl_eps);
+        let ok_r = self.fle(erx, exr_eps);
+        let both = self.land(ok_l, ok_r);
+        push(
+            &mut self.funcs,
+            OP_SELECTION_MERGE,
+            &[l_internal_end, SELECTION_CONTROL_NONE],
+        );
+        push(
+            &mut self.funcs,
+            OP_BRANCH_CONDITIONAL,
+            &[both, l_both, l_not_both],
+        );
+
+        push(&mut self.funcs, OP_LABEL, &[l_both]);
+        let left_first = self.fle(elx, erx);
+        push(
+            &mut self.funcs,
+            OP_SELECTION_MERGE,
+            &[l_both_end, SELECTION_CONTROL_NONE],
+        );
+        push(
+            &mut self.funcs,
+            OP_BRANCH_CONDITIONAL,
+            &[left_first, l_left_first, l_right_first],
+        );
+
+        push(&mut self.funcs, OP_LABEL, &[l_left_first]);
+        let tlo_r = self.fmin(erx, exr);
+        self.push_stack(right, tlo_r);
+        let tlo_l = self.fmin(elx, exl);
+        self.push_stack(left, tlo_l);
+        push(&mut self.funcs, OP_BRANCH, &[l_both_end]);
+
+        push(&mut self.funcs, OP_LABEL, &[l_right_first]);
+        let tlo_l2 = self.fmin(elx, exl);
+        self.push_stack(left, tlo_l2);
+        let tlo_r2 = self.fmin(erx, exr);
+        self.push_stack(right, tlo_r2);
+        push(&mut self.funcs, OP_BRANCH, &[l_both_end]);
+
+        push(&mut self.funcs, OP_LABEL, &[l_both_end]);
+        push(&mut self.funcs, OP_BRANCH, &[l_internal_end]);
+
+        push(&mut self.funcs, OP_LABEL, &[l_not_both]);
+        push(
+            &mut self.funcs,
+            OP_SELECTION_MERGE,
+            &[l_not_both_end, SELECTION_CONTROL_NONE],
+        );
+        push(
+            &mut self.funcs,
+            OP_BRANCH_CONDITIONAL,
+            &[ok_l, l_push_left, l_check_right],
+        );
+
+        push(&mut self.funcs, OP_LABEL, &[l_push_left]);
+        let tlo_l3 = self.fmin(elx, exl);
+        self.push_stack(left, tlo_l3);
+        push(&mut self.funcs, OP_BRANCH, &[l_not_both_end]);
+
+        push(&mut self.funcs, OP_LABEL, &[l_check_right]);
+        push(
+            &mut self.funcs,
+            OP_SELECTION_MERGE,
+            &[l_check_right_end, SELECTION_CONTROL_NONE],
+        );
+        push(
+            &mut self.funcs,
+            OP_BRANCH_CONDITIONAL,
+            &[ok_r, l_push_right, l_check_right_end],
+        );
+
+        push(&mut self.funcs, OP_LABEL, &[l_push_right]);
+        let tlo_r3 = self.fmin(erx, exr);
+        self.push_stack(right, tlo_r3);
+        push(&mut self.funcs, OP_BRANCH, &[l_check_right_end]);
+
+        push(&mut self.funcs, OP_LABEL, &[l_check_right_end]);
+        push(&mut self.funcs, OP_BRANCH, &[l_not_both_end]);
+
+        push(&mut self.funcs, OP_LABEL, &[l_not_both_end]);
+        push(&mut self.funcs, OP_BRANCH, &[l_internal_end]);
+
+        push(&mut self.funcs, OP_LABEL, &[l_internal_end]);
+        push(&mut self.funcs, OP_BRANCH, &[l_work_end]);
+
+        push(&mut self.funcs, OP_LABEL, &[l_work_end]);
+        push(&mut self.funcs, OP_BRANCH, &[l_body_end]);
+
+        push(&mut self.funcs, OP_LABEL, &[l_body_end]);
+        push(&mut self.funcs, OP_BRANCH, &[l_cont]);
+
+        // --- continue（回边）与出口 ---
+        push(&mut self.funcs, OP_LABEL, &[l_cont]);
+        push(&mut self.funcs, OP_BRANCH, &[l_hdr]);
+
+        push(&mut self.funcs, OP_LABEL, &[l_while_done]);
+    }
+
     /// ⑥ 函数体：一像素一 invocation。
     fn build_body(&mut self) {
         // --- 标签（先分配，保证引用处不借用 self）---
@@ -1106,12 +1889,13 @@ impl SceneEmitter {
         let l_sph_body = self.fresh();
         let l_sph_cont = self.fresh();
         let l_sph_merge = self.fresh();
+        let l_curve = self.fresh();
+        let l_curve_merge = self.fresh();
         let l_hit = self.fresh();
+        let l_no_sphere_hit = self.fresh();
+        let l_curve_hit = self.fresh();
+        let l_curve_hit_merge = self.fresh();
         let l_hit_merge = self.fresh();
-        let l_lt_hdr = self.fresh();
-        let l_lt_body = self.fresh();
-        let l_lt_cont = self.fresh();
-        let l_lt_merge = self.fresh();
 
         // --- 局部变量 id（首块内声明）---
         self.v_i = self.fresh();
@@ -1121,6 +1905,13 @@ impl SceneEmitter {
         self.v_cr = self.fresh();
         self.v_cg = self.fresh();
         self.v_cb = self.fresh();
+        self.v_ct = self.fresh();
+        self.v_cslot = self.fresh();
+        self.v_sp = self.fresh();
+        self.v_stk = self.fresh();
+        self.v_tlo = self.fresh();
+        self.v_id = self.fresh();
+        self.v_tloc = self.fresh();
 
         let t_void = self.t_void;
         let t_fn = self.t_fn;
@@ -1141,6 +1932,13 @@ impl SceneEmitter {
             (self.pf_f32, self.v_cr),
             (self.pf_f32, self.v_cg),
             (self.pf_f32, self.v_cb),
+            (self.pf_f32, self.v_ct),
+            (self.pf_u32, self.v_cslot),
+            (self.pf_u32, self.v_sp),
+            (self.pf_arr_u32, self.v_stk),
+            (self.pf_arr_f32, self.v_tlo),
+            (self.pf_u32, self.v_id),
+            (self.pf_f32, self.v_tloc),
         ] {
             self.local_var(ptr_ty, id);
         }
@@ -1314,6 +2112,54 @@ impl SceneEmitter {
         push(&mut self.funcs, OP_LABEL, &[l_sph_merge]);
         let hit_idx = self.load_u32(v_hit);
         let has_hit = self.uless(hit_idx, num_spheres);
+
+        // --- A-2 曲线段：栈式 BVH 遍历 ---------------------------------
+        //
+        // `num_tris == 0 || num_nodes == 0` ⇒ 整段跳过（空曲线场景的输出与
+        // V2.1 逐位相同：v_cslot 保持哨兵、v_ct 不被读取）。
+        let num_tris = self.param_u32(P_NUM_TRIS);
+        let num_nodes = self.param_u32(P_NUM_NODES);
+        let tris_on = self.flag(num_tris);
+        let nodes_on = self.flag(num_nodes);
+        let curve_on = self.land(tris_on, nodes_on);
+        // 曲线命中槽位必须先落到**确定**的哨兵（与 WGSL 的
+        // `var curve_slot: i32 = -1;` 同语义）：局部变量不清零，若只在
+        // 「曲线段执行」的分支里初始化，`curve_on == false` 时下游读到的就是
+        // 未定义值——那会让空曲线场景误入曲线着色分支（实测：整帧被清零）。
+        let v_cslot = self.v_cslot;
+        let miss = self.u32_const(CURVE_SLOT_MISS);
+        self.store(v_cslot, miss);
+        let v_ct = self.v_ct;
+        let t_ceil_init = self.f32_const(CURVE_T_MAX_SENTINEL);
+        self.store(v_ct, t_ceil_init);
+        push(
+            &mut self.funcs,
+            OP_SELECTION_MERGE,
+            &[l_curve_merge, SELECTION_CONTROL_NONE],
+        );
+        push(
+            &mut self.funcs,
+            OP_BRANCH_CONDITIONAL,
+            &[curve_on, l_curve, l_curve_merge],
+        );
+
+        push(&mut self.funcs, OP_LABEL, &[l_curve]);
+        // t_max_curve = select(1e30, closest_t, has_hit)：未命中球时用有限哨兵
+        // 作搜索上界（与 `scene_frame.wgsl` 同式；`1e30` 与 `+inf` 在「只有
+        // 有限命中才会被接受」的判据下等价）。
+        let sphere_t = self.load_f32(v_closest);
+        let t_ceil = self.f32_const(CURVE_T_MAX_SENTINEL);
+        let t_max_curve = self.select_f32(has_hit, sphere_t, t_ceil);
+        self.emit_curve_traversal((ex, ey, ez), (dx, dy, dz), t_max_curve);
+        push(&mut self.funcs, OP_BRANCH, &[l_curve_merge]);
+
+        push(&mut self.funcs, OP_LABEL, &[l_curve_merge]);
+        let slot_found = self.load_u32(v_cslot);
+        let has_curve = self.une(slot_found, miss);
+        // 曲线命中会作废球命中（CPU 参考的 `hit = None`）：两分支互斥。
+        let not_curve = self.lnot(has_curve);
+        let sphere_live = self.land(has_hit, not_curve);
+
         // 背景色先落到颜色累加器（未命中时原样输出）。
         let bg_r = self.f32_const(BG_COLOR[0]);
         let bg_g = self.f32_const(BG_COLOR[1]);
@@ -1330,10 +2176,10 @@ impl SceneEmitter {
         push(
             &mut self.funcs,
             OP_BRANCH_CONDITIONAL,
-            &[has_hit, l_hit, l_hit_merge],
+            &[sphere_live, l_hit, l_no_sphere_hit],
         );
 
-        // --- 命中块：法线 + 直接光累加 ---
+        // --- 球命中块：法线 + 直接光累加 ---
         push(&mut self.funcs, OP_LABEL, &[l_hit]);
         let closest_t = self.load_f32(v_closest);
         let ptx = self.fmul(dx, closest_t);
@@ -1353,67 +2199,59 @@ impl SceneEmitter {
         let ny_v = self.fsub(py, hcy);
         let nz_v = self.fsub(pz, hcz);
         let (n_x, n_y, n_z) = self.normalize3(nx_v, ny_v, nz_v);
+        self.emit_light_loop((n_x, n_y, n_z), (alb_r, alb_g, alb_b));
+        push(&mut self.funcs, OP_BRANCH, &[l_hit_merge]);
 
-        let zero_f2 = self.f32_const(0.0);
-        self.store(v_cr, zero_f2);
-        self.store(v_cg, zero_f2);
-        self.store(v_cb, zero_f2);
-        let num_lights = self.param_u32(P_NUM_LIGHTS);
-        let v_j = self.v_j;
-        let zero_u2 = self.u32_const(0);
-        self.store(v_j, zero_u2);
-        push(&mut self.funcs, OP_BRANCH, &[l_lt_hdr]);
-
-        // --- 光源循环头 ---
-        push(&mut self.funcs, OP_LABEL, &[l_lt_hdr]);
-        let j_cur = self.load_u32(v_j);
-        let j_in_range = self.uless(j_cur, num_lights);
+        // --- 无球命中：曲线命中则着曲面色（几何法线 + 固定中性反照率）---
+        push(&mut self.funcs, OP_LABEL, &[l_no_sphere_hit]);
         push(
             &mut self.funcs,
-            OP_LOOP_MERGE,
-            &[l_lt_merge, l_lt_cont, LOOP_CONTROL_NONE],
+            OP_SELECTION_MERGE,
+            &[l_curve_hit_merge, SELECTION_CONTROL_NONE],
         );
         push(
             &mut self.funcs,
             OP_BRANCH_CONDITIONAL,
-            &[j_in_range, l_lt_body, l_lt_merge],
+            &[has_curve, l_curve_hit, l_curve_hit_merge],
         );
 
-        // --- 光源循环体 ---
-        push(&mut self.funcs, OP_LABEL, &[l_lt_body]);
-        let v_lights = self.v_lights;
-        let lslots = self.u32_const(LIGHT_SLOTS);
-        let lbase = self.umul(j_cur, lslots);
-        let ldx = self.slot_f32(v_lights, lbase, 0);
-        let ldy = self.slot_f32(v_lights, lbase, 1);
-        let ldz = self.slot_f32(v_lights, lbase, 2);
-        let lc_r = self.slot_f32(v_lights, lbase, 3);
-        let lc_g = self.slot_f32(v_lights, lbase, 4);
-        let lc_b = self.slot_f32(v_lights, lbase, 5);
-        let lint = self.slot_f32(v_lights, lbase, 6);
-        let ndotl = self.dot3(n_x, n_y, n_z, ldx, ldy, ldz);
-        let zero_f3 = self.f32_const(0.0);
-        let diff = self.fmax(ndotl, zero_f3);
-        let scaled = self.fmul(diff, lint);
-        let amb = self.f32_const(AMBIENT);
-        // 每通道：acc += albedo * (ambient + lcolor * (diff * intensity))
-        for (acc_var, alb, lc) in [(v_cr, alb_r, lc_r), (v_cg, alb_g, lc_g), (v_cb, alb_b, lc_b)] {
-            let tint = self.fmul(lc, scaled);
-            let term = self.fadd(amb, tint);
-            let prod = self.fmul(alb, term);
-            let acc_cur = self.load_f32(acc_var);
-            let acc_next = self.fadd(acc_cur, prod);
-            self.store(acc_var, acc_next);
-        }
-        push(&mut self.funcs, OP_BRANCH, &[l_lt_cont]);
+        push(&mut self.funcs, OP_LABEL, &[l_curve_hit]);
+        let cslot = self.load_u32(v_cslot);
+        let tri_slots = self.u32_const(TRIANGLE_SLOTS);
+        let cbase = self.umul(cslot, tri_slots);
+        let cva = self.tri_vertex(cbase, 0);
+        let cvb = self.tri_vertex(cbase, 4);
+        let cvc = self.tri_vertex(cbase, 8);
+        let ce1 = (
+            self.fsub(cvb.0, cva.0),
+            self.fsub(cvb.1, cva.1),
+            self.fsub(cvb.2, cva.2),
+        );
+        let ce2 = (
+            self.fsub(cvc.0, cva.0),
+            self.fsub(cvc.1, cva.1),
+            self.fsub(cvc.2, cva.2),
+        );
+        let nrm = self.cross3(ce1, ce2);
+        let (cn_x, cn_y, cn_z) = self.normalize3(nrm.0, nrm.1, nrm.2);
+        // 法线朝向来光侧：`if dot(n, dir) > 0 { n = n * -1.0 }`（与 CPU 同式）
+        let facing = self.dot3(cn_x, cn_y, cn_z, dx, dy, dz);
+        let zero_face = self.f32_const(0.0);
+        let back_face = self.fgt(facing, zero_face);
+        let neg_one = self.f32_const(-1.0);
+        let flip_x = self.fmul(cn_x, neg_one);
+        let flip_y = self.fmul(cn_y, neg_one);
+        let flip_z = self.fmul(cn_z, neg_one);
+        let n_x = self.select_f32(back_face, flip_x, cn_x);
+        let n_y = self.select_f32(back_face, flip_y, cn_y);
+        let n_z = self.select_f32(back_face, flip_z, cn_z);
+        let calb_r = self.f32_const(CURVE_ALBEDO[0]);
+        let calb_g = self.f32_const(CURVE_ALBEDO[1]);
+        let calb_b = self.f32_const(CURVE_ALBEDO[2]);
+        self.emit_light_loop((n_x, n_y, n_z), (calb_r, calb_g, calb_b));
+        push(&mut self.funcs, OP_BRANCH, &[l_curve_hit_merge]);
 
-        // --- 光源循环 continue / 出口 ---
-        push(&mut self.funcs, OP_LABEL, &[l_lt_cont]);
-        let j_next = self.uadd(j_cur, one_u);
-        self.store(v_j, j_next);
-        push(&mut self.funcs, OP_BRANCH, &[l_lt_hdr]);
-
-        push(&mut self.funcs, OP_LABEL, &[l_lt_merge]);
+        push(&mut self.funcs, OP_LABEL, &[l_curve_hit_merge]);
         push(&mut self.funcs, OP_BRANCH, &[l_hit_merge]);
 
         // --- 命中/未命中汇合：aesthetic → 量化 → 打包 → 写回 ---
@@ -1548,7 +2386,8 @@ mod tests {
         SpvExpect {
             entry: ENTRY_SCENE,
             local_size: WORKGROUP_SCENE,
-            bindings: &[0, 1, 2, 3],
+            // V2 剖面：6 绑定连续前缀（输出恒为最后一个）。
+            bindings: &[0, 1, 2, 3, 4, 5],
         }
     }
 
@@ -1591,7 +2430,7 @@ mod tests {
         let summary = validate(words, &scene_expect()).expect("发射器产出的模块须通过结构验证");
         assert_eq!(summary.entry, "scene_main");
         assert_eq!(summary.local_size, [8, 8, 1]);
-        assert_eq!(summary.bindings, vec![0, 1, 2, 3]);
+        assert_eq!(summary.bindings, vec![0, 1, 2, 3, 4, 5]);
         assert_eq!(summary.functions, 1, "模块应恰有一个函数");
 
         // 指令字长之和必须铺满整个字流。
@@ -1605,20 +2444,24 @@ mod tests {
         }
         assert_eq!(5 + total, words.len(), "指令字长之和须铺满字流");
 
-        // 关键件必须在场：两层动态循环 + 两层选择 + 求交/归一化/量化件。
+        // 关键件必须在场：动态循环 + 选择 + 求交/归一化/量化/曲线遍历件。
         for op in [
             OP_LOOP_MERGE,
             OP_SELECTION_MERGE,
             OP_BRANCH_CONDITIONAL,
             OP_U_LESS_THAN,
             OP_F_ORD_GREATER_THAN_EQUAL,
+            OP_F_ORD_LESS_THAN_EQUAL,
             OP_LOGICAL_AND,
+            OP_LOGICAL_NOT,
             OP_I_NOT_EQUAL,
+            OP_I_SUB,
             OP_F_NEGATE,
             OP_EXT_INST,
             OP_CONVERT_F_TO_U,
             OP_BITCAST,
             OP_VARIABLE,
+            OP_TYPE_ARRAY,
             OP_FUNCTION_END,
         ] {
             assert!(
@@ -1627,7 +2470,8 @@ mod tests {
                 crate::vulkan::spirv::opcode_name(op)
             );
         }
-        // 循环数：球 + 灯 = 2 个 OpLoopMerge（按指令首字精确计数）。
+        // 循环数：球 + 灯 ×2（球分支与曲线分支各一段）+ 曲线栈遍历 + 叶内三角形
+        // = 5 个 OpLoopMerge（按指令首字精确计数）。
         let mut loop_count = 0usize;
         let mut i = 5usize;
         while i < words.len() {
@@ -1637,7 +2481,7 @@ mod tests {
             }
             i += wc;
         }
-        assert_eq!(loop_count, 2, "应有球体与光源两层动态循环");
+        assert_eq!(loop_count, 5, "球 / 灯 ×2 / 曲线栈遍历 / 叶内三角形 = 5 层动态循环");
 
         // 反汇编不得出现未知 OpCode（白名单与发射器同步）。
         let text = disassemble(words);
@@ -1856,37 +2700,65 @@ mod tests {
     /// kernel 描述：绑定/布局/工作组/SPIR-V 状态自洽；尺寸与实体数守卫。
     #[test]
     fn scene_kernel_desc_and_guards() {
-        let k = scene_kernel(64, 48, 3, 2).expect("合法尺寸");
+        let k = scene_kernel(64, 48, 3, 2, 7, 5).expect("合法尺寸");
         assert_eq!(k.entry, ENTRY_SCENE);
         assert_eq!(k.spv_module, MODULE_SCENE);
         assert_eq!((k.workgroup.x, k.workgroup.y, k.workgroup.z), (8, 8, 1));
         k.validate().expect("kernel 描述须通过布局校验");
         let layout = k.layout();
-        assert_eq!(layout.len(), 4);
-        assert_eq!(layout[0].bytes, PARAMS_WORDS as u32 * 4);
+        // V2 剖面：6 绑定，输出恒为最后一个（binding 5）。
+        assert_eq!(layout.len(), 6);
+        assert_eq!(
+            layout.iter().map(|l| l.binding).collect::<Vec<u32>>(),
+            vec![0, 1, 2, 3, 4, 5],
+            "绑定必须是 0 起连续前缀"
+        );
+        assert_eq!(layout[0].bytes, PARAMS_WORDS_V2 as u32 * 4);
         assert_eq!(layout[1].bytes, 3 * SPHERE_SLOTS * 4);
         assert_eq!(layout[2].bytes, 2 * LIGHT_SLOTS * 4);
-        assert_eq!(layout[3].bytes, 64 * 48 * 4);
+        assert_eq!(layout[3].bytes, 7 * TRIANGLE_SLOTS * 4);
+        assert_eq!(layout[4].bytes, 5 * NODE_SLOTS * 4);
+        assert_eq!(layout[5].bytes, 64 * 48 * 4);
+        assert_eq!(layout[5].access, BindingAccess::WriteOnly);
+        for l in &layout[..5] {
+            assert_eq!(l.access, BindingAccess::ReadOnly, "binding {} 必须只读", l.binding);
+        }
+        // 绑定剖面 ≡ `scene_abi` 的单一真源（改真源忘了改这里立即红）。
+        assert_eq!(
+            layout.len(),
+            crate::scene_abi::SceneAbiProfile::V2.binding_count(),
+            "kernel 绑定数必须与 SceneAbiProfile::V2 一致"
+        );
+        assert_eq!(
+            layout[5].binding,
+            crate::scene_abi::SceneAbiProfile::V2.out_binding(),
+            "输出必须落在 scene_abi 给出的 out 绑定号上"
+        );
         assert_eq!(
             crate::compute::kernel_spv_status(&k),
             crate::compute::SpvStatus::Embedded,
             "场景 kernel 的 SPIR-V 必须是发射器产物（已嵌入）"
         );
         // 空实体集合：占位槽为 1，避免零元素绑定（validate 会拒）。
-        let empty = scene_kernel(4, 4, 0, 0).expect("空场景仍应可派发（背景色）");
+        let empty = scene_kernel(4, 4, 0, 0, 0, 0).expect("空场景仍应可派发（背景色）");
         assert!(empty.validate().is_ok());
         assert_eq!(empty.layout()[1].bytes, SPHERE_SLOTS * 4);
         assert_eq!(empty.layout()[2].bytes, LIGHT_SLOTS * 4);
+        assert_eq!(empty.layout()[3].bytes, TRIANGLE_SLOTS * 4);
+        assert_eq!(empty.layout()[4].bytes, NODE_SLOTS * 4);
 
         // 守卫：零轴 / 维度超限 / 字节超限 / 实体数超限 ⇒ None（不 panic）。
-        assert!(scene_kernel(0, 8, 1, 1).is_none());
-        assert!(scene_kernel(8, 0, 1, 1).is_none());
-        assert!(scene_kernel(crate::MAX_FRAMEBUFFER_DIM + 1, 8, 1, 1).is_none());
-        assert!(scene_kernel(65_536, 65_536, 1, 1).is_none());
-        assert!(scene_kernel(u32::MAX, u32::MAX, 1, 1).is_none());
-        assert!(scene_kernel(8, 8, MAX_SCENE_SPHERES + 1, 1).is_none());
-        assert!(scene_kernel(8, 8, 1, MAX_SCENE_LIGHTS + 1).is_none());
-        assert!(scene_kernel(1920, 1080, 4, 2).is_some());
+        assert!(scene_kernel(0, 8, 1, 1, 0, 0).is_none());
+        assert!(scene_kernel(8, 0, 1, 1, 0, 0).is_none());
+        assert!(scene_kernel(crate::MAX_FRAMEBUFFER_DIM + 1, 8, 1, 1, 0, 0).is_none());
+        assert!(scene_kernel(65_536, 65_536, 1, 1, 0, 0).is_none());
+        assert!(scene_kernel(u32::MAX, u32::MAX, 1, 1, 0, 0).is_none());
+        assert!(scene_kernel(8, 8, MAX_SCENE_SPHERES + 1, 1, 0, 0).is_none());
+        assert!(scene_kernel(8, 8, 1, MAX_SCENE_LIGHTS + 1, 0, 0).is_none());
+        // 曲线计数溢出必须被 `checked_mul` 挡住（不 panic、不静默截断）。
+        assert!(scene_kernel(8, 8, 0, 0, usize::MAX, 0).is_none());
+        assert!(scene_kernel(8, 8, 0, 0, 0, usize::MAX).is_none());
+        assert!(scene_kernel(1920, 1080, 4, 2, 0, 0).is_some());
     }
 
     /// 相机基与 CPU 参考同式（用 `CpuRefBackend` 渲染一帧做端到端锚定在集成

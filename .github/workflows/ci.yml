@@ -13,7 +13,7 @@
 #      `src/` 下（见 tools/pack_source_txt.mjs）。所以凡涉及源码路径的地方
 #      一律用 `$SRC_ROOT`，由下方 detect 步骤按实际存在的目录探测。
 #
-# 六个 job：
+# 七个 job：
 #   ghost-guard  —— 幽灵写入防御（反向自证 + 基线判据）。
 #                   秒级、无 cargo，**排在 native 之前**（native needs 它）——
 #                   根因先于症状：源码被换掉时先报"只增行零删除"，
@@ -24,6 +24,8 @@
 #   wasm        —— wasm32 独立 target-dir 构建 + 产物静态结构校验
 #   wasm-verify —— 10 份 .wgsl 基础解析（从 wasm job拆出，失败原因更聚焦）
 #   interop     —— DWA 与官方 OpenEXR 的跨实现对拍门禁（三态退出码）
+#   size        —— 包体三指标门禁（单文件分发包 / wasm / native release）
+#                  + 首帧趋势报表（**报表，非门禁**）。
 #   lint        —— node 宿主验证 host_test.mjs（CPU 参考 × JS 独立实现交叉判对）
 #
 # ghost-guard 与 native 的顺序不是随意的：源码文件被换掉时，若只有 native
@@ -611,3 +613,164 @@ jobs:
           name: host-test-log
           path: ${{ env.SRC_ROOT }}/prism-gpu/web/prism_gpu.wasm
           retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # size —— 包体三指标（门禁）+ 首帧趋势报表（**非门禁**）。
+  #
+  # 【为什么独立成 job】
+  #   * 它要 `cargo build --release`（release profile 与 native job 的 dev 编译
+  #     不同、缓存键也不同），塞进 native 会互相拖慢并搅乱缓存；
+  #   * 它的失败语义分两层：包体越界**判红**，首帧时间只出报表**永不判红**。
+  #     两种语义放在同一个 job 里是清楚的（同 job 内两步，判据的松紧写在脚本里），
+  #     但放进 native 就会让"首帧变慢"看起来像"测试挂了"。
+  #
+  # 【三个指标都不是仓库里的文件，必须在本 job 内现产】
+  #   * dist/*-source.txt —— dist/ 不入库（见 .git/info/exclude），先打包再量；
+  #   * crates/prism-gpu/web/prism_gpu.wasm —— wasm 产物同样不入库，先构建再量；
+  #   * target/release/prism-app —— release 二进制，先构建再量。
+  #   故本 job 用 `--require-all`：三个指标少任何一个都判红。**"没测到"不是"没问题"**，
+  #   这是报表类门禁最容易骗自己的地方（产物没构建出来 → 指标跳过 → 全绿）。
+  #
+  # 【阈值与基线在哪】
+  #   tools/size_baseline.json（数据），不是脚本里的常数。基线是带溯源的实测值，
+  #   上限 = min(基线 ×(1+相对带), 绝对上限) 取更严者。要放宽必须改数据文件并说明理由。
+  #
+  # 【两个脚本都先跑 --self-test】
+  #   反向自证：造出越界/缺失的假产物，断言判据确实判红；并断言"首帧慢也不判红"。
+  #   若有人把判据改成恒过（或把报表接成门禁），self-test 立刻失败。
+  #
+  # 【G2（Cargo.lock 不得变化）在本 job 内也被机器判据覆盖】
+  #   构建全程 `--locked`，构建完再 `git diff --exit-code -- Cargo.lock`：依赖解析
+  #   结果一旦被动过，这里直接红，而不是等 review 时才看出来。
+  # ---------------------------------------------------------------------------
+  size:
+    name: package size gate + first-frame trend
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # 源码完整性判红要先于"量体积"出现：源码被换掉时体积数字没有意义。
+    needs: ghost-guard
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect source root (crates/ or src/)
+        run: |
+          if [ -d crates ]; then
+            echo "SRC_ROOT=crates" >> "$GITHUB_ENV"
+          elif [ -d src ]; then
+            echo "SRC_ROOT=src" >> "$GITHUB_ENV"
+          else
+            echo "::error::找不到源码目录（crates/ 或 src/）"; exit 1
+          fi
+          echo "源码根目录: $SRC_ROOT"
+
+      - name: Show toolchain
+        run: |
+          rustc --version
+          cargo --version
+          node --version
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: registry-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            registry-${{ runner.os }}-
+
+      # release 产物与 native job 的 dev 产物键不同：混用一个键会把 dev 的
+      # target/ 恢复到 release 目录里，随后 cargo 会全量重编（白等十几分钟）。
+      - name: Cache release target dir
+        uses: actions/cache@v4
+        with:
+          path: target/release
+          key: release-target-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            release-target-${{ runner.os }}-
+
+      # 先自证判据还有判红能力，再跑真判据。顺序不可颠倒：
+      # 判据坏了的话，后面"全绿"没有任何信息量。
+      - name: Size gate self-test (must flag oversize/missing)
+        run: node tools/measure_size.mjs --self-test
+
+      - name: First-frame report self-test (must keep "slow != red")
+        run: node tools/first_frame_report.mjs --self-test
+
+      # --locked：依赖必须与 Cargo.lock 逐位一致（零第三方 crate 前提下纯收益）。
+      - name: Build native release (measured subject ③)
+        run: cargo build --release -p prism-app --locked
+
+      # 单文件分发包是"一个 txt 拿走全仓"的形态，必须现场打出来才是本次的度量对象。
+      # 版本号是这一步唯一需要随版本改动的地方（产物名与基线文件里的 measured_on 对应）。
+      - name: Pack single-file distribution (measured subject ①)
+        run: node tools/pack_source_txt.mjs 2.2
+
+      # wasm 产物（度量对象 ②）：走 build.sh 的独立 target-dir，避免污染 native target。
+      - name: Build wasm artifact (measured subject ②)
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cd "$SRC_ROOT/prism-gpu/web" && ./build.sh --no-test
+
+      # 唯一的包体判据：越界或产物缺失 ⇒ exit 1（job 红）。
+      - name: Package size gate (three metrics, thresholds in tools/size_baseline.json)
+        run: |
+          set -o pipefail
+          node tools/measure_size.mjs --check --require-all --json size-report.json 2>&1 | tee size-report.log
+
+      # G2：构建全程 --locked，且构建后 Cargo.lock 必须逐字节未变。
+      - name: Assert Cargo.lock unchanged (G2)
+        run: |
+          set -euo pipefail
+          if ! git diff --exit-code -- Cargo.lock; then
+            echo "::error::Cargo.lock 发生变化（G2：依赖解析结果必须逐位一致）"
+            exit 1
+          fi
+          echo "Cargo.lock 未变化（--locked + 无新增依赖）"
+
+      # ---- 首帧趋势报表：**只出报表，永不判红** ----------------------------
+      # 退出码 3 = 一个轴都没测到（环境不具备），按 notice 中性处理；
+      # 0 = 已采样（无论快慢）。**脚本不存在"太慢"这个退出码**，这是它的设计约束，
+      # 由 --self-test 的"10 倍变慢仍 exit 0"断言钉住。
+      - name: First-frame trend report (report only, never gates)
+        run: |
+          set -uo pipefail
+          node tools/first_frame_report.mjs --label "ci-${{ github.run_id }}" \
+            --json first-frame-report.json 2>&1 | tee first-frame.log
+          RC=${PIPESTATUS[0]}
+          echo "首帧报表退出码 = $RC（0=已采样 / 3=未测到 / 2=用法错误）"
+          if [ "$RC" -eq 3 ]; then
+            echo "::notice title=首帧报表 SKIP::未测到样本（产物或环境不具备），不判红"
+            exit 0
+          fi
+          exit "$RC"
+
+      - name: Job summary (size + first frame)
+        if: always()
+        run: |
+          set -uo pipefail
+          {
+            echo "### 包体三指标（门禁）"
+            echo '```'
+            sed -n '/=== 包体三指标/,$p' size-report.log 2>/dev/null || echo "（无 size-report.log）"
+            echo '```'
+            echo "### 首帧时间（趋势报表，**不作 Go/No-Go**）"
+            echo '```'
+            sed -n '/=== 首帧时间报表/,$p' first-frame.log 2>/dev/null || echo "（无 first-frame.log）"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload size + first-frame reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: size-and-first-frame-reports
+          path: |
+            size-report.json
+            size-report.log
+            first-frame-report.json
+            first-frame.log
+          retention-days: 30
+          if-no-files-found: warn

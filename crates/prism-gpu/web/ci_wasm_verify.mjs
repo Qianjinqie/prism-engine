@@ -22,10 +22,28 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_WASM = resolve(HERE, "prism_gpu.wasm");
 const WASM_PATH = process.argv[2] ? resolve(process.argv[2]) : DEFAULT_WASM;
 
-/** 体积下限：低于此值几乎必然是空壳/链接失败（当前产物 ~158KB）。 */
+/**
+ * 体积下限：低于此值几乎必然是空壳/链接失败（实测产物 367,080 字节）。
+ * 下限只拦"空壳"，不承担体积预算职责——预算由下面的 MAX_BYTES 负责。
+ */
 const MIN_BYTES = 8 * 1024;
-/** 体积上限：留足余量给 profile 变动，同时挡住"把 native 产物当 wasm"这类误判。 */
-const MAX_BYTES = 12 * 1024 * 1024;
+/**
+ * 体积基线（**实测值**）：367,080 字节。
+ *
+ * 订正记录：本行上方注释原写「当前产物 ~158KB」，与实测差 2.3 倍，是漂移。
+ * 注释与阈值如果建在假数字上，比没有阈值更坏——"看着有约束，实际永远不报警"。
+ * 故此处与 tools/size_baseline.json 的 wasm 段一并按实测值订正：
+ *   A-1 接线前 344,674 B → 接线后（scene_frame.wgsl 内嵌文本进产物）367,080 B。
+ */
+const BASELINE_BYTES = 367080;
+/**
+ * 体积上限：400 KiB = 409,600 字节（声明口径）。
+ *
+ * 旧值 12 MiB 只能挡住"把 native 产物当 wasm"这类误判，对体积预算毫无约束力
+ * （永远不报警）。收紧到 400 KiB 后越过即判红；要放宽必须先改
+ * tools/size_baseline.json 并在 review 里说明原因——阈值是数据，不是这里的常数。
+ */
+const MAX_BYTES = 400 * 1024;
 
 /**
  * 必须存在的导出符号。分两类：
@@ -109,9 +127,12 @@ try {
 if (bytes.length < MIN_BYTES) {
   fail(`体积过小：${bytes.length} < ${MIN_BYTES} 字节，疑似空壳或链接失败`);
 } else if (bytes.length > MAX_BYTES) {
-  fail(`体积过大：${bytes.length} > ${MAX_BYTES} 字节，疑似把非 wasm 产物塞进来了`);
+  fail(`体积过大：${bytes.length} > ${MAX_BYTES} 字节（上限 400 KiB）——越上限须先更新 tools/size_baseline.json 并说明原因`);
 } else {
-  console.log(`  ok    体积合理  ${bytes.length} 字节（阈值 ${MIN_BYTES}..${MAX_BYTES}）`);
+  const delta = bytes.length - BASELINE_BYTES;
+  const headroom = MAX_BYTES - bytes.length;
+  console.log(`  ok    体积合理  ${bytes.length} 字节（下限 ${MIN_BYTES} / 上限 ${MAX_BYTES} = 400 KiB）`);
+  console.log(`  ok    体积基线  ${BASELINE_BYTES} 字节（本次 ${delta >= 0 ? '+' : ''}${delta}），距上限余量 ${headroom} 字节`);
 }
 
 // --- 3. 魔数：必须是真正的 wasm（\0asm） -----------------------------------

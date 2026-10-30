@@ -28,12 +28,20 @@
 use super::compute::{self as compute_mod, ByteRunReport, DispatchStatus};
 use super::spirv_rt::scene_kernel;
 #[cfg(not(target_arch = "wasm32"))]
-use super::spirv_rt::{camera_basis, encode_lights, encode_params, encode_spheres};
-#[cfg(not(target_arch = "wasm32"))]
 use super::VulkanContext;
 #[cfg(any(test, not(target_arch = "wasm32")))]
 use crate::{AestheticReq, CameraReq, LightReq, SphereReq};
 use crate::SceneRenderRequest;
+
+/// 槽位个数（= 字节数 / 步长）；供 [`scene_kernel`] 推导缓冲容量。
+fn tri_slot_count(bytes: &[u8]) -> usize {
+    bytes.len() / (crate::scene_abi::TRIANGLE_SLOTS as usize * 4)
+}
+
+/// 节点槽位个数（同上）。
+fn node_slot_count(bytes: &[u8]) -> usize {
+    bytes.len() / (crate::scene_abi::NODE_SLOTS as usize * 4)
+}
 
 /// 场景 kernel 的**引擎侧**名字（与 SPIR-V 模块名 `spv_scene` 区分：
 /// 后者是二进制标识，本名是这个 dispatch 的描述标识）。
@@ -114,10 +122,21 @@ fn frame_from_bytes(w: u32, h: u32, run: ByteRunReport) -> SceneFrameReport {
 /// **真机路径**：在已建立的上下文上出场景帧。
 ///
 /// 无上下文时如实返回 `DeviceUnavailable`（不 panic、不返回假帧）。
+///
+/// 输入缓冲走 V2 剖面（6 绑定 → 5 块输入 + 输出）：
+/// `params(96B) / spheres / lights / triangles / nodes`，编码权威在
+/// [`crate::scene_abi::SceneAbi::encode_v2`]——与 CPU 参考同一份字节。
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn dispatch(ctx: Option<&VulkanContext>, req: &SceneRenderRequest) -> SceneFrameReport {
-    let Some(kernel) = scene_kernel(req.width, req.height, req.spheres.len(), req.lights.len())
-    else {
+    let (params, spheres, lights, tris, nodes) = crate::scene_abi::SceneAbi::encode_v2(req);
+    let Some(kernel) = scene_kernel(
+        req.width,
+        req.height,
+        req.spheres.len(),
+        req.lights.len(),
+        tri_slot_count(&tris),
+        node_slot_count(&nodes),
+    ) else {
         return SceneFrameReport::failed(
             DispatchStatus::BufferFailed,
             req.width,
@@ -125,16 +144,11 @@ pub(crate) fn dispatch(ctx: Option<&VulkanContext>, req: &SceneRenderRequest) ->
             "尺寸/实体数非法或超限（零轴 / 维度 > MAX_FRAMEBUFFER_DIM / 字节 > 1 GiB / 实体数超上限）",
         );
     };
-    // 相机基与 tan(fov/2) 在 CPU 侧一次算好（D-29：GPU 内不做三角）。
-    let basis = camera_basis(&req.camera);
-    let params = encode_params(req, &basis);
-    let spheres = encode_spheres(&req.spheres);
-    let lights = encode_lights(&req.lights);
     let run = compute_mod::dispatch_scene(
         ctx,
         &kernel,
         [req.width, req.height, 1],
-        &[&params, &spheres, &lights],
+        &[&params, &spheres, &lights, &tris, &nodes],
     );
     frame_from_bytes(req.width, req.height, run)
 }
@@ -146,8 +160,15 @@ pub(crate) fn dispatch(ctx: Option<&VulkanContext>, req: &SceneRenderRequest) ->
 /// 「为什么没有上机」的答案与报告字段不随平台漂移。
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn dispatch(_ctx: (), req: &SceneRenderRequest) -> SceneFrameReport {
-    let Some(kernel) = scene_kernel(req.width, req.height, req.spheres.len(), req.lights.len())
-    else {
+    let (tris, nodes) = crate::scene_abi::encode_curve_buffers(&req.curves);
+    let Some(kernel) = scene_kernel(
+        req.width,
+        req.height,
+        req.spheres.len(),
+        req.lights.len(),
+        tri_slot_count(&tris),
+        node_slot_count(&nodes),
+    ) else {
         return SceneFrameReport::failed(
             DispatchStatus::BufferFailed,
             req.width,
@@ -232,7 +253,8 @@ mod tests {
     #[test]
     fn self_test_request_is_valid() {
         let req = self_test_request();
-        assert!(scene_kernel(req.width, req.height, req.spheres.len(), req.lights.len()).is_some());
+        assert!(scene_kernel(req.width, req.height, req.spheres.len(), req.lights.len(), 0, 0)
+            .is_some());
         assert_eq!(req.spheres.len(), 1);
         assert_eq!(req.lights.len(), 1);
         assert_eq!(req.width * req.height * 4, 64);

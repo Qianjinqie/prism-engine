@@ -2,9 +2,9 @@
 //!
 //! # 目的
 //!
-//! V2.2-A-1 之前，场景 ABI 的权威散落在三处手写源 + 一份翻译层之间：
+//! V2.2-A-1 之前，场景 ABI 的权威散落在多处手写源之间：
 //! Vulkan 发射器（`vulkan/spirv_rt.rs`）、WebGPU WGSL（`shaders/scene_frame.wgsl`）、
-//! Metal（经 MoltenVK 翻译层复用 Vulkan 剖面）。本模块把**入口名、工作组尺寸、
+//! 以及 `metal/render.rs`（历史资产，本仓不提供独立 Metal 后端）。本模块把**入口名、工作组尺寸、
 //! 绑定剖面、槽位数、参数块布局**与**编码器**收拢为唯一权威，所有宿主（SPIR-V
 //! 发射器、WGSL、WebGPU 胶水、测试断言）都从这里取数，禁止在任何源里写字面量。
 //!
@@ -48,15 +48,15 @@ use prism_math::Vec3;
 
 /// 光追场景 kernel 的入口名（`OpEntryPoint` / WGSL `@compute fn`）。
 ///
-/// WGSL（`scene_frame.wgsl`）、SPIR-V（`spirv_rt::MODULE_SCENE`）与 Metal（经
-/// MoltenVK 翻译层复用 Vulkan 剖面）**三端同名**——这是 [`qa_scene_frame_abi`]
-/// 的锚定基准。改这里必须同步三份源。
+/// WGSL（`scene_frame.wgsl`）与 SPIR-V（`spirv_rt::MODULE_SCENE`）**同名**——
+/// 本仓不提供独立 Metal 后端（不登记为宿主目标）。这是 [`qa_scene_frame_abi`]
+/// 的锚定基准。改这里必须同步两份真实宿主源（历史 `metal/render.rs` 沿用同名入口）。
 pub const ENTRY: &str = "scene_main";
 
 /// 工作组尺寸 `(x, y, z)`，与背景 kernel 同为 8×8 的二维 tile。
 ///
-/// 三端同值：`scene_frame.wgsl` 的 `@workgroup_size(8, 8, 1)`、SPIR-V 的
-/// `LocalSize`、Metal 经翻译层复用。
+/// 两端同值：`scene_frame.wgsl` 的 `@workgroup_size(8, 8, 1)`、SPIR-V 的
+/// `LocalSize`；Metal 无独立目标（本仓不提供）。
 pub const WORKGROUP: [u32; 3] = [8, 8, 1];
 
 /// 参数块的总字数（u32 个数）。

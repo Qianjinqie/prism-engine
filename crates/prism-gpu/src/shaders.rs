@@ -531,13 +531,25 @@ fn contains_word(src: &str, word: &str) -> bool {
 // | 目标 | 形态 | 供给方式 | 消费方 |
 // |---|---|---|---|
 // | `Wgsl` | 文本 | `include_str!`（[`SHADERS`]） | WebGPU / 真机结构自检 |
-// | `Msl` | 文本 | 手写双份源（[`MSL_KERNELS`]） | Metal 真机路径 |
+// | `Msl` | 文本 | 手写双份源（[`MSL_KERNELS`]） | **仅余历史 kernel**（Metal 不点亮，见下） |
 // | `Spirv` | 二进制 | 手写/预生成字流（[`spv_kernels`]） | Vulkan compute pipeline |
 //
 // 三者的**口径唯一性**由 [`check_targets`] 交叉锚定：同一 kernel 的入口名、
 // 工作组尺寸、绑定号必须三处一致；SPIR-V 二进制另由
 // `crate::vulkan::spirv::validate` 做字级结构校验。这样「改了 WGSL 忘了改
 // 二进制」这类漂移在 `cargo test` 阶段就会暴露，而不是等真机。
+//
+// # T07（V2.2-A-3）口径变更：`scene_main` 收为**两目标**
+//
+// 本仓**不提供独立 Metal 后端**（不点亮），**不引入任何第三方翻译层依赖**。
+// 因此 `scene_main` 的宿主集合由 `[Wgsl, Msl, Spirv]` 收为 `[Wgsl, Spirv]`
+// （[`scene_target_anchor`] 锚定）：Metal 不属于任何宿主目标，**不再单列 MSL
+// 断言**——这也意味着「MSL 文本与 SPIR-V 双写一致性」这一整类漂移风险随之
+// 消解（不再有第二份须同步的源）。
+//
+// `rt_scene.scene_main.msl` 文件与其 `include_str!` 常量**保留**（历史资产，
+// 仍是 `metal::render` 语义同构实现的对拍依据），但**不再登记为宿主目标**：
+// 未登记即不参与三目标校验，也不构成任何「Metal 可用」的能力声称。
 
 /// 着色器宿主目标（封闭三值）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -568,19 +580,24 @@ impl ShaderTarget {
 
 /// MSL 双份源注册表：入口名 → 源码。
 ///
-/// 入口名与 WGSL `fn`、SPIR-V `OpEntryPoint` 同名（三目标唯一口径）。
-/// 目前三份：`cloth_predict`（既有）、`primary_ray_gen`（compute-first 主射线）
-/// 与 `scene_main`（V2.1 T-A2 光追场景整帧 kernel）。
+/// 入口名与 WGSL `fn`、SPIR-V `OpEntryPoint` 同名（宿主口径唯一）。
+/// 目前**两份**：`cloth_predict`（既有）与 `primary_ray_gen`（compute-first 主射线）。
 ///
-/// 注：`scene_main` 的 SPIR-V 宿主是**发射器产物** `spv_scene`
-/// （[`crate::vulkan::spirv_rt`]，经 `OnceLock` 生成，不在静态
-/// [`crate::vulkan::spirv::MODULES`] 表里），故 [`spv_kernels`] 不含它；
-/// 两端一致性由 `metal::render::tests` 的入口名断言与
-/// `vulkan::spirv_rt` 的结构校验分别把守。
+/// # 为什么 `scene_main` 不在此表（T07 / V2.2-A-3）
+///
+/// 本仓**不提供独立 Metal 后端**（不点亮），**不引入任何第三方翻译层依赖**；
+/// `scene_main` 因此收为两目标 `[Wgsl, Spirv]`，由 [`scene_target_anchor`]
+/// 锚定。摘除本行是**减法**：
+///
+/// * 不再有需要与 SPIR-V 双写同步的 MSL 源（整类漂移风险消解）；
+/// * 不产生任何「Metal 可用 / 已点亮」的能力声称——「有 MSL 源」≠「有后端」，
+///   `metal::MetalBackend::is_available` 在 Metal 语义下恒 `false`。
+///
+/// `crate::metal::msl::RT_SCENE_MSL` 常量与 `.msl` 文件保留，作为
+/// `metal::render` 语义同构实现的对照资产——**有源 ≠ 有宿主目标**。
 pub static MSL_KERNELS: &[(&str, &str)] = &[
     ("cloth_predict", crate::metal::msl::CLOTH_PREDICT_MSL),
     ("primary_ray_gen", crate::metal::msl::PRIMARY_RAY_GEN_MSL),
-    ("scene_main", crate::metal::msl::RT_SCENE_MSL),
 ];
 
 /// 按入口名取 MSL 源。
@@ -619,7 +636,65 @@ pub fn target_inventory() -> Vec<(&'static str, ShaderTarget, usize)> {
     out
 }
 
+/// 按**入口名**在 WGSL 表里反查宿主文件名（判据：源内含 `fn <entry>(`）。
+///
+/// 命名空间事实：WGSL 以**文件名**登记（`scene_frame.wgsl`）、SPIR-V 以**模块名**
+/// 登记（`spv_scene`）、只有 MSL 曾以**入口名**登记。要按入口名回答「有几端」，
+/// 必须显式做这一步解析——但**只在 [`hosts_of`] 的场景分支里用**（见其注释）。
+///
+/// 只查 [`SHADERS`]（kernel 文件），不查 [`LIBRARIES`]：库文件没有入口。
+fn wgsl_host_of_entry(entry: &str) -> Option<&'static str> {
+    let needle = format!("fn {entry}(");
+    SHADERS
+        .iter()
+        .find(|(_, src)| src.contains(needle.as_str()))
+        .map(|(name, _)| *name)
+}
+
+/// 按**入口名**反查 SPIR-V 宿主模块名。
+///
+/// 两条来源，按「静态表优先」：
+/// * 静态表里模块名与入口名同名者（`spv_mul2_probe` 这类探针）；
+/// * **发射器产物**：场景 kernel 的 `KernelDesc` 不在 `compute::kernel_registry()`
+///   里（它由 `vulkan::spirv_rt` 按尺寸现算），故这里向发射器要一份最小 desc
+///   读其 `entry` / `spv_module`——而不是在此硬编码 `"spv_scene"` 字面量。
+fn spv_host_of_entry(entry: &str) -> Option<&'static str> {
+    // 先在整个注册表（静态表 + 生成表）里按名取回 `'static` 名字，
+    // 避免把入参的短生命周期当成宿主名返回。
+    let registered = crate::vulkan::spirv::MODULES
+        .iter()
+        .chain(crate::vulkan::spirv::generated_modules().iter())
+        .map(|(name, _)| *name)
+        .find(|name| *name == entry);
+    if let Some(name) = registered {
+        return Some(name);
+    }
+    let desc = crate::vulkan::spirv_rt::scene_kernel(8, 8, 0, 0, 0, 0)?;
+    if desc.entry == entry && spv_words(desc.spv_module).is_some() {
+        Some(desc.spv_module)
+    } else {
+        None
+    }
+}
+
 /// 某名字可用的宿主目标集合（名字在多个目标同名时返回多个）。
+///
+/// # 两套命名空间
+///
+/// 直接查询按**宿主名**匹配（WGSL 文件名 / MSL 入口名 / SPIR-V 模块名），
+/// 故 `hosts_of("rt_primary_ray_gen.wgsl") == [Wgsl]`、
+/// `hosts_of("spv_mul2_probe") == [Spirv]`。
+///
+/// # 入口名解析（只对场景 kernel 开）
+///
+/// 场景 kernel 的 WGSL/SPIR-V 宿主分别以文件名与模块名登记，按入口名直接查
+/// **一个都查不到**。T07 的两目标锚定（[`scene_target_anchor`]）要求
+/// `hosts_of("scene_main") == [Wgsl, Spirv]`，故对这一条入口名额外走一次
+/// 「入口 → 宿主名」解析。
+///
+/// **刻意不推广到所有入口名**：那会把「注册口径」悄悄扩大成「语义发现」，
+/// 并静默改变既有契约（`primary_ray_gen` 今天只报 `[Msl]`）。T07 是登记型
+/// 减法任务，不做语义扩张。
 pub fn hosts_of(name: &str) -> Vec<ShaderTarget> {
     let mut out: Vec<ShaderTarget> = Vec::new();
     if source(name).is_some() {
@@ -631,7 +706,76 @@ pub fn hosts_of(name: &str) -> Vec<ShaderTarget> {
     if spv_words(name).is_some() {
         out.push(ShaderTarget::Spirv);
     }
+
+    if name == crate::scene_abi::ENTRY {
+        if let Some(file) = wgsl_host_of_entry(name) {
+            debug_assert!(source(file).is_some(), "WGSL 宿主文件名必须可查");
+            if !out.contains(&ShaderTarget::Wgsl) {
+                out.push(ShaderTarget::Wgsl);
+            }
+        }
+        if let Some(module) = spv_host_of_entry(name) {
+            debug_assert!(spv_words(module).is_some(), "SPIR-V 宿主模块必须可查");
+            if !out.contains(&ShaderTarget::Spirv) {
+                out.push(ShaderTarget::Spirv);
+            }
+        }
+    }
     out
+}
+
+/// 场景 kernel 的**两目标锚定**结果（T07 / V2.2-A-3）。
+///
+/// 期望值**从真源派生**：入口名取 [`crate::scene_abi::ENTRY`]，宿主集合取
+/// [`hosts_of`]（其内部由 `SHADERS` 与 `compute` 注册表解析）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SceneTargetAnchor {
+    /// 场景 kernel 入口名。
+    pub entry: &'static str,
+    /// 实际登记到的目标集（顺序固定 `[Wgsl, Spirv]`）。
+    pub got: Vec<ShaderTarget>,
+    /// 期望目标集（两目标）。
+    pub want: Vec<ShaderTarget>,
+}
+
+impl SceneTargetAnchor {
+    /// 是否通过（实际集 == 期望集，**逐项相等且顺序一致**）。
+    pub fn is_pass(&self) -> bool {
+        self.got == self.want
+    }
+
+    /// 一行的诊断串。
+    pub fn note(&self) -> String {
+        let fmt = |v: &[ShaderTarget]| {
+            v.iter()
+                .map(|t| t.as_str())
+                .collect::<Vec<_>>()
+                .join("+")
+        };
+        format!(
+            "targets=[{}] want=[{}] entry={}",
+            fmt(&self.got),
+            fmt(&self.want),
+            self.entry
+        )
+    }
+}
+
+/// 场景 kernel 的两目标锚定（T07 本体）。
+///
+/// **为什么是两目标**：本仓不提供独立 Metal 后端，MSL 源退为历史资产、不登记
+/// 为宿主目标；场景 kernel 只剩 WGSL（WebGPU）与 SPIR-V（Vulkan）两个真实宿主。
+/// 三目标口径会要求维护一份与 SPIR-V 双写的 MSL 源，而那份源**无人消费**——
+/// 留着它等于用「有源码」冒充「有后端」。
+///
+/// 该锚**必须能判红**：任何一侧缺失（漏 Wgsl 或漏 Spirv）都返回 `is_pass() ==
+/// false`。见测试 `scene_entry_is_anchored_to_exactly_two_targets` 的负自证。
+pub fn scene_target_anchor() -> SceneTargetAnchor {
+    SceneTargetAnchor {
+        entry: crate::scene_abi::ENTRY,
+        got: hosts_of(crate::scene_abi::ENTRY),
+        want: vec![ShaderTarget::Wgsl, ShaderTarget::Spirv],
+    }
 }
 
 /// 单个宿主的校验结果。
@@ -1166,5 +1310,76 @@ mod tests {
         assert!(msl_source("cloth_predict").is_some());
         assert!(msl_source("no_such_entry").is_none());
         assert!(spv_words("no_such_module").is_none());
+    }
+
+    /// **T07 本体**：`scene_main` 的两目标锚定（`[Wgsl, Spirv]`）。
+    ///
+    /// # 负自证（为什么这条不是恒真空断言）
+    ///
+    /// 「两边都在 ⇒ 断言绿」本身是弱判据：如果锚定实现退化成「表空也算绿」，
+    /// 它会一直绿。故这里对**同一条判定**喂两套错误期望，两者都必须判红：
+    ///
+    /// * 漏掉 `Wgsl`（= 只剩 Vulkan 剖面，WebGPU 侧无人维护）；
+    /// * 把 `Msl` 加回来（= 回到三目标，即 T07 要消除的那种「MSL 无人消费」状态）。
+    ///
+    /// 任一情形下 `is_pass()` 仍为真，就说明锚定没有鉴别力。
+    #[test]
+    fn scene_entry_is_anchored_to_exactly_two_targets() {
+        let a = scene_target_anchor();
+        println!("scene_main 锚定：{}", a.note());
+        assert_eq!(a.entry, crate::scene_abi::ENTRY);
+        assert_eq!(
+            a.got,
+            vec![ShaderTarget::Wgsl, ShaderTarget::Spirv],
+            "T07：本仓不提供独立 Metal 后端，MSL 不再单列"
+        );
+        assert!(a.is_pass());
+
+        // ① MSL 注册确实摘掉了（不是"登记了但没进 hosts_of"）。
+        assert!(
+            msl_source(crate::scene_abi::ENTRY).is_none(),
+            "scene_main 不得再登记为 MSL 宿主"
+        );
+
+        // ② 负自证 A：漏 Wgsl 必须红。
+        let missing_wgsl = SceneTargetAnchor {
+            entry: a.entry,
+            got: a.got.clone(),
+            want: vec![ShaderTarget::Spirv],
+        };
+        assert!(
+            !missing_wgsl.is_pass(),
+            "漏掉 Wgsl 的期望若仍判绿，本锚无效"
+        );
+        assert!(
+            missing_wgsl.note().contains("wgsl+spirv"),
+            "诊断串须列出实际集合，便于定位"
+        );
+
+        // ③ 负自证 B：把 Msl 加回期望必须红。
+        let with_msl = SceneTargetAnchor {
+            entry: a.entry,
+            got: a.got.clone(),
+            want: vec![ShaderTarget::Wgsl, ShaderTarget::Msl, ShaderTarget::Spirv],
+        };
+        assert!(!with_msl.is_pass(), "三目标期望必须判红（T07 已收为两目标）");
+
+        // ④ 两侧宿主确实各自可寻址（锚定不是靠空解析碰巧相等）。
+        assert!(
+            source("scene_frame.wgsl").is_some(),
+            "WGSL 宿主文件名须在 SHADERS 里存在"
+        );
+        assert!(
+            spv_words(crate::vulkan::spirv_rt::MODULE_SCENE).is_some(),
+            "SPIR-V 宿主模块须在注册表里存在"
+        );
+        assert_eq!(
+            wgsl_host_of_entry(crate::scene_abi::ENTRY),
+            Some("scene_frame.wgsl")
+        );
+        assert_eq!(
+            spv_host_of_entry(crate::scene_abi::ENTRY),
+            Some(crate::vulkan::spirv_rt::MODULE_SCENE)
+        );
     }
 }

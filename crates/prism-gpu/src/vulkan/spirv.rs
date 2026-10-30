@@ -102,6 +102,12 @@ pub const OP_I_ADD: u32 = 128;
 pub const OP_F_ADD: u32 = 129;
 /// 指令 `OpFSub`（浮点减）。
 pub const OP_F_SUB: u32 = 131;
+/// `OpISub`（整数减，模 2^32 回绕）。
+///
+/// A-2 曲线遍历段用它维护显式栈指针（`sp = sp - 1`）与子节点下标（`id + 1`）；
+/// 编号与 `OpIAdd`(128) / `OpFAdd`(129) / `OpFSub`(131) 同处「整/浮交替」区间，
+/// 经 `spirv-as`/`spirv-dis` 实测复核为 `130`。
+pub const OP_I_SUB: u32 = 130;
 /// 指令 `OpIMul`（整数乘，模 2^32 回绕）。
 pub const OP_I_MUL: u32 = 132;
 /// 指令 `OpFMul`（浮点乘）。
@@ -136,6 +142,12 @@ pub const OP_I_NOT_EQUAL: u32 = 171;
 pub const OP_F_ORD_LESS_THAN: u32 = 184;
 /// `OpFOrdGreaterThan`（有序浮点 >；NaN 为假）。
 pub const OP_F_ORD_GREATER_THAN: u32 = 186;
+/// `OpFOrdLessThanEqual`（有序浮点 ≤；NaN 为假）。
+///
+/// 与 Rust 的 `a <= b` 逐位同语义。**不得**用 `!(b < a)` 代替：两者在 NaN
+/// 参与时结论相反（`NaN <= x` 为假，而 `!(x < NaN)` 为真）——曲线 slab 盒交的
+/// `enter <= exit + 1e-7` 与 Möller–Trumbore 的 `hit <= t_max` 都靠这条判据。
+pub const OP_F_ORD_LESS_THAN_EQUAL: u32 = 188;
 /// `OpFOrdGreaterThanEqual`（有序浮点 ≥；NaN 为假）。
 ///
 /// 与 Rust 的 `a >= b` 语义逐位一致（NaN 参与时两边都为 `false`）——这是
@@ -205,6 +217,7 @@ const ALLOWED_OPCODES: &[u32] = &[
     OP_F_NEGATE,
     OP_I_ADD,
     OP_F_ADD,
+    OP_I_SUB,
     OP_F_SUB,
     OP_I_MUL,
     OP_F_MUL,
@@ -218,6 +231,7 @@ const ALLOWED_OPCODES: &[u32] = &[
     OP_I_NOT_EQUAL,
     OP_F_ORD_LESS_THAN,
     OP_F_ORD_GREATER_THAN,
+    OP_F_ORD_LESS_THAN_EQUAL,
     OP_F_ORD_GREATER_THAN_EQUAL,
     OP_SHIFT_RIGHT_LOGICAL,
     OP_SHIFT_LEFT_LOGICAL,
@@ -266,6 +280,7 @@ pub fn opcode_name(op: u32) -> &'static str {
         OP_F_NEGATE => "OpFNegate",
         OP_I_ADD => "OpIAdd",
         OP_F_ADD => "OpFAdd",
+        OP_I_SUB => "OpISub",
         OP_F_SUB => "OpFSub",
         OP_I_MUL => "OpIMul",
         OP_F_MUL => "OpFMul",
@@ -279,6 +294,7 @@ pub fn opcode_name(op: u32) -> &'static str {
         OP_I_NOT_EQUAL => "OpINotEqual",
         OP_F_ORD_LESS_THAN => "OpFOrdLessThan",
         OP_F_ORD_GREATER_THAN => "OpFOrdGreaterThan",
+        OP_F_ORD_LESS_THAN_EQUAL => "OpFOrdLessThanEqual",
         OP_F_ORD_GREATER_THAN_EQUAL => "OpFOrdGreaterThanEqual",
         OP_SHIFT_RIGHT_LOGICAL => "OpShiftRightLogical",
         OP_SHIFT_LEFT_LOGICAL => "OpShiftLeftLogical",
@@ -773,6 +789,32 @@ pub enum SpvError {
         /// 指令起始字下标。
         at: usize,
     },
+    /// `OpTypeArray` 的长度操作数**尚未定义**（用到了后面的 id）。
+    ///
+    /// 真实缺陷来源（V2.2 A-2-CURVE-VK）：把数组长度常量发射进常量段（段序在
+    /// 类型段之后），类型段里的 `OpTypeArray` 因此前向引用该常量。`spirv-val`
+    /// 报 "Operand '26[%uint_64]' requires a previous definition"，
+    /// `vkCreateComputePipelines` 只回一个 `VK_ERROR_UNKNOWN`——**零信息量**。
+    /// 修法：数组长度常量与类型**交错**发射（`u32_const_in_types`）。
+    ArrayLengthNotDefined {
+        /// 指令起始字下标（`OpTypeArray`）。
+        at: usize,
+        /// 未被定义的长度 id。
+        length: u32,
+    },
+    /// 块在字流里出现在其**支配者之前**。
+    ///
+    /// 真实缺陷来源（同上）：曲线遍历的 continue 块被发在循环体之前，
+    /// `spirv-val` 报 "Block '245[%245]' appears in the binary before its
+    /// dominator '248[%248]'"。修法：continue 块排到循环体之后、merge 之前。
+    BlockBeforeDominator {
+        /// 指令起始字下标（违规块的 `OpLabel`）。
+        at: usize,
+        /// 违规块 id。
+        block: u32,
+        /// 出现在它之后、却支配它的块 id。
+        dominator: u32,
+    },
 }
 
 impl SpvError {
@@ -796,6 +838,8 @@ impl SpvError {
             SpvError::AccessChainNotComposite { .. } => "access-chain-not-composite",
             SpvError::AccessChainMemberOutOfRange { .. } => "access-chain-member-out-of-range",
             SpvError::MalformedControlFlow { .. } => "malformed-control-flow",
+            SpvError::ArrayLengthNotDefined { .. } => "array-length-not-defined",
+            SpvError::BlockBeforeDominator { .. } => "block-before-dominator",
         }
     }
 }
@@ -1034,7 +1078,146 @@ fn check_control_flow(words: &[u32]) -> Result<(), SpvError> {
     Ok(())
 }
 
-/// 结构验证：`words` 是完整模块（含 5 字头部）。
+/// **前向引用校验（只查一条）**：`OpTypeArray` 的 Length 必须是**已定义**的
+/// `OpConstant`。
+///
+/// SPIR-V 的「先用后定义」豁免不覆盖该操作数。发射器把类型段排在常量段之前，
+/// 因此数组长度这一条常量必须与类型**交错**发射；否则 `spirv-val` 直接拒
+/// （驱动侧只回 `VK_ERROR_UNKNOWN`，无任何可诊断信息）。
+fn check_array_length_defined(words: &[u32]) -> Result<(), SpvError> {
+    let mut const_ids: Vec<u32> = Vec::new();
+    let mut i = 5usize;
+    while i < words.len() {
+        let wc = (words[i] >> 16) as usize;
+        if wc == 0 || i + wc > words.len() {
+            break;
+        }
+        match words[i] & 0xFFFF {
+            OP_TYPE_ARRAY if wc >= 4 => {
+                let length = words[i + 3];
+                if !const_ids.contains(&length) {
+                    return Err(SpvError::ArrayLengthNotDefined { at: i, length });
+                }
+            }
+            OP_CONSTANT if wc >= 4 => const_ids.push(words[i + 2]),
+            _ => {}
+        }
+        i += wc;
+    }
+    Ok(())
+}
+
+/// **块序校验**：任何可达块都不得出现在其**支配者**之前。
+///
+/// 与 `check_control_flow`（块终结性 / merge 位置 / 分支目标存在性）互补：
+/// 循环的 continue 块若被发在循环体之前，上面三条都能过，只有本检查会红。
+///
+/// 只查可达块（不可达块的支配集无定义，查了会误报）。
+fn check_block_order(words: &[u32]) -> Result<(), SpvError> {
+    // ① 收集块序与边（分支目标先记 id，落块下标留到第二遍）。
+    let mut labels: Vec<u32> = Vec::new();
+    let mut label_at: Vec<usize> = Vec::new();
+    let mut cur: Option<usize> = None;
+    let mut edges: Vec<(usize, u32)> = Vec::new();
+    let mut i = 5usize;
+    while i < words.len() {
+        let wc = (words[i] >> 16) as usize;
+        if wc == 0 || i + wc > words.len() {
+            break;
+        }
+        match words[i] & 0xFFFF {
+            OP_LABEL if wc >= 2 => {
+                labels.push(words[i + 1]);
+                label_at.push(i);
+                cur = Some(labels.len() - 1);
+            }
+            OP_FUNCTION | OP_FUNCTION_END => cur = None,
+            OP_BRANCH if wc >= 2 => {
+                if let Some(from) = cur {
+                    edges.push((from, words[i + 1]));
+                }
+            }
+            OP_BRANCH_CONDITIONAL if wc >= 4 => {
+                if let Some(from) = cur {
+                    edges.push((from, words[i + 2]));
+                    edges.push((from, words[i + 3]));
+                }
+            }
+            _ => {}
+        }
+        i += wc;
+    }
+    let n = labels.len();
+    if n <= 1 {
+        return Ok(());
+    }
+    let mut succ: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut preds: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (from, to) in edges {
+        if let Some(t) = labels.iter().position(|&l| l == to) {
+            succ[from].push(t);
+            preds[t].push(from);
+        }
+    }
+
+    // ② 可达性（入口 = 第一个块）。
+    let mut reachable = vec![false; n];
+    reachable[0] = true;
+    let mut stack = vec![0usize];
+    while let Some(b) = stack.pop() {
+        for &s in &succ[b] {
+            if !reachable[s] {
+                reachable[s] = true;
+                stack.push(s);
+            }
+        }
+    }
+
+    // ③ 支配集不动点迭代：dom(entry) = {entry}；dom(b) = {b} ∪ ⋂ dom(pred)。
+    let mut dom: Vec<Vec<bool>> = vec![vec![true; n]; n];
+    for (j, slot) in dom[0].iter_mut().enumerate() {
+        *slot = j == 0;
+    }
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for b in 1..n {
+            if !reachable[b] {
+                continue;
+            }
+            let mut new = vec![true; n];
+            for &p in &preds[b] {
+                for j in 0..n {
+                    new[j] &= dom[p][j];
+                }
+            }
+            new[b] = true;
+            if new != dom[b] {
+                dom[b] = new;
+                changed = true;
+            }
+        }
+    }
+
+    // ④ 支配者必须排在前面。
+    for b in 1..n {
+        if !reachable[b] {
+            continue;
+        }
+        for d in (b + 1)..n {
+            if dom[b][d] {
+                return Err(SpvError::BlockBeforeDominator {
+                    at: label_at[b],
+                    block: labels[b],
+                    dominator: labels[d],
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// **结构验证**：`words` 是完整模块（含 5 字头部）。
 ///
 /// 只做**结构**校验（不做类型/语义验算——那需 `spirv-val`）；额外检查
 /// `OpAccessChain` 的索引链形状（见私有函数 `check_access_chains`）与
@@ -1147,6 +1330,11 @@ pub fn validate(words: &[u32], expect: &SpvExpect) -> Result<SpvSummary, SpvErro
     // 结构化控制流（循环/选择）：本仓首个含动态循环的模块即光追 megakernel，
     // 结构错在驱动上表现为崩溃，故同样在无设备阶段拦下。
     check_control_flow(words)?;
+    // 前向引用（数组长度）与块序（支配者必须先出现）：这两条曾各自让
+    // `vkCreateComputePipelines` 只回一个 `VK_ERROR_UNKNOWN`（零诊断），
+    // 现由 `spirv-val` 实测的规则在无设备阶段拦下。
+    check_array_length_defined(words)?;
+    check_block_order(words)?;
     opcodes.sort_unstable();
     opcodes.dedup();
 
@@ -1482,6 +1670,163 @@ mod tests {
         ] {
             assert!(!e.as_str().is_empty());
         }
+    }
+
+    /// **前向引用缺陷的静态复现**：`OpTypeArray` 的 Length 指向尚未定义的常量。
+    ///
+    /// 真实缺陷来源：发射器把类型段排在常量段之前，于是数组长度常量「先用后
+    /// 定义」。`spirv-val` 报
+    /// `Operand '26[%uint_64]' requires a previous definition`，
+    /// 而驱动侧只回 `VK_ERROR_UNKNOWN`（零诊断），整条曲线链因此沉默失败。
+    /// 修法是把长度常量与类型**交错**发射（`u32_const_in_types`）；本钉子把该
+    /// 缺陷原样注回，断言无设备阶段就能拦下它。
+    #[test]
+    fn array_length_must_be_defined_before_use() {
+        // ① 长度常量排在数组类型**之后** ⇒ 前向引用，必须红。
+        let forward = [
+            0u32, 0, 0, 0, 0, // 5 字头部（本检查不读，占位即可）
+            inst(4, OP_TYPE_INT),
+            1,
+            32,
+            0, // %1 = OpTypeInt 32 0
+            inst(3, OP_TYPE_RUNTIME_ARRAY),
+            2,
+            1, // %2 = OpTypeRuntimeArray %1
+            inst(4, OP_TYPE_ARRAY),
+            3,
+            1,
+            8, // %3 = OpTypeArray %1 %8 —— %8 此刻尚未定义
+            inst(4, OP_CONSTANT),
+            1,
+            8,
+            64, // %8 = OpConstant %1 64 —— 太晚
+        ];
+        let array_at = 5 + 4 + 3; // 头部 5 字 + OpTypeInt(4) + OpTypeRuntimeArray(3)
+        assert_eq!(
+            check_array_length_defined(&forward),
+            Err(SpvError::ArrayLengthNotDefined {
+                at: array_at,
+                length: 8,
+            }),
+            "长度常量必须先于数组类型定义"
+        );
+
+        // ② 把常量挪到数组类型**之前** ⇒ 合法（这正是修好后的排布）。
+        let ordered = [
+            0u32, 0, 0, 0, 0,
+            inst(4, OP_TYPE_INT),
+            1,
+            32,
+            0,
+            inst(3, OP_TYPE_RUNTIME_ARRAY),
+            2,
+            1,
+            inst(4, OP_CONSTANT),
+            1,
+            8,
+            64, // %8 先定义
+            inst(4, OP_TYPE_ARRAY),
+            3,
+            1,
+            8, // 再用，合法
+        ];
+        check_array_length_defined(&ordered).expect("交错发射后应通过");
+
+        // ③ 三条真实模块都必须通过（防「门开着但把正品也拦了」）。
+        for name in module_names() {
+            let words = module(name).expect("模块存在");
+            check_array_length_defined(words).unwrap_or_else(|e| {
+                panic!("模块 {name} 的数组长度应当已定义，却被判为 {}", e.as_str())
+            });
+        }
+
+        // 失败原因短名非空。
+        assert!(!SpvError::ArrayLengthNotDefined { at: 0, length: 0 }
+            .as_str()
+            .is_empty());
+    }
+
+    /// **块序缺陷的静态复现**：某块出现在它的**支配者**之前。
+    ///
+    /// 真实缺陷来源：曲线 BVH 遍历的 continue 块被发在循环体之前。
+    /// `spirv-val` 报
+    /// `Block '245[%245]' appears in the binary before its dominator '248[%248]'`。
+    /// 块终结性 / merge 位置 / 分支目标存在性这三条检查**全都过得去**，
+    /// 只有本检查会红——所以它必须单独存在。
+    #[test]
+    fn blocks_must_not_precede_their_dominator() {
+        // 图：b0(→b2) 、b2(→b1) 、b1(→b0)，但二进制里 b1 排在 b2 之前。
+        // 于是 b1 唯一的前驱是 b2，dom(b1) ⊇ {b2}，而 b2 在它后面 ⇒ 违规。
+        let broken = [
+            0u32, 0, 0, 0, 0,
+            inst(5, OP_FUNCTION),
+            1,
+            2,
+            0,
+            3, // %2 = OpFunction
+            inst(2, OP_LABEL),
+            10, // b0
+            inst(2, OP_BRANCH),
+            40, // → b2（下标 2）
+            inst(2, OP_LABEL),
+            30, // b1 —— 被发在 b2 之前
+            inst(2, OP_BRANCH),
+            10, // → b0（回边）
+            inst(2, OP_LABEL),
+            40, // b2 —— 支配 b1，却排在其后
+            inst(2, OP_BRANCH),
+            30, // → b1
+            inst(1, OP_FUNCTION_END),
+        ];
+        assert_eq!(
+            check_block_order(&broken),
+            Err(SpvError::BlockBeforeDominator {
+                at: 14, // b1 的 OpLabel 起始下标：头部 5 + OpFunction 5 + b0 两指令 4
+                block: 30,
+                dominator: 40,
+            }),
+            "支配者排在后面必须被拦下"
+        );
+
+        // ② 把 b1 与 b2 换回正常顺序 ⇒ 合法。
+        let ordered = [
+            0u32, 0, 0, 0, 0,
+            inst(5, OP_FUNCTION),
+            1,
+            2,
+            0,
+            3,
+            inst(2, OP_LABEL),
+            10,
+            inst(2, OP_BRANCH),
+            40,
+            inst(2, OP_LABEL),
+            40, // b2 先
+            inst(2, OP_BRANCH),
+            30,
+            inst(2, OP_LABEL),
+            30, // b1 后
+            inst(2, OP_BRANCH),
+            10,
+            inst(1, OP_FUNCTION_END),
+        ];
+        check_block_order(&ordered).expect("拓扑序应通过");
+
+        // ③ 三条真实模块都必须通过。
+        for name in module_names() {
+            let words = module(name).expect("模块存在");
+            check_block_order(words)
+                .unwrap_or_else(|e| panic!("模块 {name} 块序应合法，却被判为 {}", e.as_str()));
+        }
+
+        // 失败原因短名非空。
+        assert!(!SpvError::BlockBeforeDominator {
+            at: 0,
+            block: 0,
+            dominator: 0,
+        }
+        .as_str()
+        .is_empty());
     }
 
     /// 反汇编摘要可读且稳定（诊断用）。
