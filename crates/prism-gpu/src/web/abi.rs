@@ -61,6 +61,9 @@ use crate::web::device::{
     histogram_params_bytes, scan_params_bytes, ScanConfig, WebGpuBackend, HISTOGRAM_PARAMS_BYTES,
     SCAN_PARAMS_BYTES, WGSL_HISTOGRAM, WGSL_SCAN_BLOCK, WORKGROUP_SIZE,
 };
+use crate::web::scene_gpu::{self, SceneFrame};
+use crate::{CpuRefBackend, GpuDevice, SceneRenderRequest};
+use prism_math::Vec3;
 
 /// ABI 版本号。宿主加载后应先比对，不匹配即拒绝运行（避免错位读缓冲）。
 pub const ABI_VERSION: u32 = 1;
@@ -87,7 +90,9 @@ pub mod status {
 }
 
 /// GPU buffer 用途位（与宿主 JS 胶水约定）。
-mod usage {
+///
+/// `pub(crate)`：`web::scene_gpu` 的场景 dispatch 复用同一套用途位（不得自造数值）。
+pub(crate) mod usage {
     /// `GPUBufferUsage.STORAGE | COPY_SRC | COPY_DST`。
     pub const STORAGE: u32 = 1;
     /// `GPUBufferUsage.UNIFORM | COPY_DST`。
@@ -660,7 +665,7 @@ unsafe fn dealloc_bytes(ptr: *mut u8, len: usize) {
 // ---------------------------------------------------------------------------
 
 #[cfg(target_arch = "wasm32")]
-mod gpu {
+pub(crate) mod gpu {
     use crate::web::js;
 
     /// `navigator.gpu` 是否存在。
@@ -731,7 +736,7 @@ mod gpu {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-mod gpu {
+pub(crate) mod gpu {
     /// native 目标无 GPU：恒为"不可用"。
     pub fn available() -> u32 {
         0
@@ -868,7 +873,7 @@ static TESTS: &[TestItem] = &[
     },
     TestItem {
         id: "wgsl.structural",
-        name: "WGSL 结构自检：11 个内嵌 shader + 库件 + 2 个 D0 内核（D-29 禁 libm）",
+        name: "WGSL 结构自检：全部内嵌 shader（含库件）+ 2 个 D0 内核（D-29 禁 libm）",
         needs_gpu: false,
         run: t_wgsl_structural,
         collect: None,
@@ -956,6 +961,13 @@ static TESTS: &[TestItem] = &[
         needs_gpu: true,
         run: t_gpu_gi_compute,
         collect: Some(c_gpu_gi_compute),
+    },
+    TestItem {
+        id: "gpu.scene_frame",
+        name: "真 WebGPU：scene_frame 光追整帧 dispatch，与 CPU 参考统计对拍 + 双跑一致",
+        needs_gpu: true,
+        run: t_gpu_scene_frame,
+        collect: Some(c_gpu_scene_frame),
     },
 ];
 
@@ -2170,6 +2182,16 @@ fn check_errors(test: &str, dev: u32) -> Result<(), Status> {
     Ok(())
 }
 
+/// 用**显式条数**结算错误槽位，复用 [`check_errors`] 的整段判据与文案。
+///
+/// 场景 dispatch 的错误 scope 数由 [`scene_gpu`] 自己记账（`create_shader_module`
+/// 只在首次提交时登记、每次 `prism_dispatch` 各 1 个），与 `submit_chain` 的
+/// 「1 + steps.len()」口径不同，故不能沿用 `SCRATCH.err_slots` 的隐式约定。
+fn check_errors_counted(test: &str, dev: u32, n: u32) -> Result<(), Status> {
+    SCRATCH.with(|s| s.borrow_mut().err_slots = n);
+    check_errors(test, dev)
+}
+
 /// 登记一次读回（GPU buffer → 暂存 → 线性内存 `dst_ptr`）。
 fn readback_to(test: &str, dev: u32, buf: u32, len: u32, dst_ptr: u32) -> Result<(), Status> {
     let staging = gpu::read_buffer(dev, buf, len);
@@ -2447,10 +2469,11 @@ static COVERAGE: &[(&str, &[(&str, &str, &str)])] = &[
         "scene_frame.wgsl",
         &[(
             "scene_main",
-            ST_SKIP,
-            "WGSL 宿主侧未接真 dispatch（T3 轨 SwiftShader 不进 native 门禁）；同一语义由 \
-             `gpu.rt_scene` 用发射器产物 `spv_scene` 在 Vulkan 路径真 dispatch。A-2 把本文件 \
-             扩到 V2 六绑定 + 栈式 BVH 遍历段后，WGSL 侧的曲线遍历仍需交付前 CI/真机验证",
+            ST_COVERED,
+            "由 `gpu.scene_frame` 真 dispatch（V2.2-T03 补齐「有设备」分支）：\
+             V2 六绑定 {params,spheres,lights,triangles,nodes,out} 齐备，\
+             8×8 / 16×16 两种场景 + 含 1 个圆柱曲线的场景，读回 `w*h*4` 字节后\
+             与 CPU 参考（CpuRefBackend 同式）统计对拍（PSNR≥40dB）+ 双跑逐位一致",
         )],
     ),
     ("rt_bvh.wgsl", &[]),
@@ -5439,6 +5462,214 @@ fn gi_fingerprint_of(shs: &[[[f32; 3]; 9]], points: &[[f32; 3]]) -> u32 {
     hash_u32(&flat)
 }
 
+// ---------------------------------------------------------------------------
+// `gpu.gi_compute` 的 FAIL 诊断块（零成本：只用既有读回缓冲，不新增读回）
+// ---------------------------------------------------------------------------
+//
+// # 为什么必须有这一块
+// 沙箱无 GPU adapter，本项在 native 下永远 `Skip`，故**真机是唯一观测窗口**。
+// 而 V2.2-T03 真机实测出现过一次「GPU 侧 sh[0][0] 恰为 0、CPU 侧 0.9970052」的
+// FAIL：一个 `0` 背后至少有三种彼此不兼容的机制（入口没跑 / 跑了但全遮挡 /
+// 跑了但 project 早退），只凭一句「首个不一致」无法区分。宿主侧每多印一个字段，
+// 真机重跑的次数就少一轮，故此处把三个 entry 的中间态全部摊开。
+//
+// # 数据来源（**不新增任何读回**）
+// `t_gpu_gi_compute` 已经把整个 probe buffer（`gi_probes[0..912]`，含 `samples`
+// @32..160 与 `sh` @160..304）和整个 point buffer 读回进 `SCRATCH`。本函数只做
+// 「按既有布局解析 + 与 CPU 参考并排打印」，**不碰 GPU、不发命令、不改判据**。
+//
+// # 输出纪律
+// 只在 `mismatch != 0` 的 `fail(...)` 里拼接，PASS 路径永不产出（不污染正常报告）。
+
+/// 把一条探针的 `samples` 逐方向模长压成一行（空格分隔，3 位小数）。
+///
+/// 用**模长**而非三分量：`rad` 只可能是 `(0,0,0)` 或 `env_radiance (0.9,0.8,0.7)`，
+/// 模长 `0.000` / `1.388` 一眼能读，且一行塞得下 8 个方向。
+fn gi_mags_text(get: impl Fn(usize) -> [f32; 3], dirs: usize) -> String {
+    let mut s = String::with_capacity(dirs * 7);
+    for d in 0..dirs {
+        let v = get(d);
+        let m = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        if d != 0 {
+            s.push(' ');
+        }
+        s.push_str(&format!("{m:.3}"));
+    }
+    s
+}
+
+/// 非零方向数（`samples` 第 0 通道 > 0 即算可见——与 PASS 分支的 `visible_total` 同口径）。
+fn gi_visible_count(get: impl Fn(usize) -> [f32; 3], dirs: usize) -> usize {
+    let mut n = 0usize;
+    for d in 0..dirs {
+        let v = get(d);
+        if v[0] > 0.0 || v[1] > 0.0 || v[2] > 0.0 {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// 生成 `gpu.gi_compute` 的 FAIL 诊断文本（多行，宿主页原样显示）。
+///
+/// 三段分别对应链上的三个 entry（trace → project → interpolate），每段都把
+/// **GPU 读回值**与**CPU 参考值**并排给出，并在末尾给一行 `[判定]` 把观测到的
+/// 组合映射到候选机制族——让真机一次重跑就能把范围收窄，而不是只看到「不一致」。
+fn gi_diag_text(got_probes: &[u8], got_points: &[u8]) -> String {
+    let p = GI_TEST;
+    let inputs = gi_probe_inputs();
+    let points = gi_point_inputs();
+    let dirs = p.n_dirs.min(GI_DIRS) as usize;
+    let stride = GI_PROBE_STRIDE_BYTES as usize;
+    let mut s = String::with_capacity(2048);
+
+    // 判定用的累计量（在遍历中顺便收集，避免二次扫描）。
+    let mut pos_all_ok = true;
+    let mut nrm_all_ok = true;
+    let mut gpu_any_sample = false;
+    let mut gpu_any_sh = false;
+    let mut cpu_visible_total = 0usize;
+
+    s.push_str("[诊断] 三个 entry 的中间态（GPU 读回 vs CPU 参考；pos/normal 来自同一 buffer，用于确认句柄身份）\n");
+    s.push_str("[中间态 1/3] gi_probe_trace → samples（逐方向模长；模长>0 = 该方向可见）\n");
+    for (i, inp) in inputs.iter().enumerate() {
+        let base = i * stride;
+        let gpos = [
+            unpack_f32(got_probes, base),
+            unpack_f32(got_probes, base + 4),
+            unpack_f32(got_probes, base + 8),
+        ];
+        let gnrm = [
+            unpack_f32(got_probes, base + 16),
+            unpack_f32(got_probes, base + 20),
+            unpack_f32(got_probes, base + 24),
+        ];
+        let nlen = (gnrm[0] * gnrm[0] + gnrm[1] * gnrm[1] + gnrm[2] * gnrm[2]).sqrt();
+        let pos_ok = gpos == [inp[0], inp[1], inp[2]];
+        let nrm_ok = gnrm == [inp[3], inp[4], inp[5]];
+        pos_all_ok &= pos_ok;
+        nrm_all_ok &= nrm_ok;
+        // GPU 侧 samples（stride 16 的 vec3，取 0..3 通道）。
+        let g_sample = |d: usize| -> [f32; 3] {
+            let o = base + 32 + d * 16;
+            [
+                unpack_f32(got_probes, o),
+                unpack_f32(got_probes, o + 4),
+                unpack_f32(got_probes, o + 8),
+            ]
+        };
+        // CPU 参考 samples（同式 trace，含同样的遮挡判定）。
+        let tr = gi_probe_trace_ref([inp[0], inp[1], inp[2]], [inp[3], inp[4], inp[5]], &p);
+        let c_sample = |d: usize| -> [f32; 3] { tr.samples[d] };
+        let gvis = gi_visible_count(g_sample, dirs);
+        let cvis = gi_visible_count(c_sample, dirs);
+        cpu_visible_total += cvis;
+        if gvis != 0 {
+            gpu_any_sample = true;
+        }
+        s.push_str(&format!(
+            "  probe {i}: pos GPU({:.3},{:.3},{:.3}) {}  normal GPU({:.3},{:.3},{:.3}) |n|={nlen:.3} {}  ← {}\n",
+            gpos[0], gpos[1], gpos[2], if pos_ok { "✓" } else { "✗" },
+            gnrm[0], gnrm[1], gnrm[2], if nrm_ok { "✓" } else { "✗" },
+            if nlen < 0.5 { "退化法线，两个入口都会早退" } else { "非退化" },
+        ));
+        s.push_str(&format!("            可见 GPU {gvis}/{dirs} vs CPU {cvis}/{dirs}\n"));
+        s.push_str(&format!("            GPU |s|[{}]\n", gi_mags_text(g_sample, dirs)));
+        s.push_str(&format!("            CPU |s|[{}]\n", gi_mags_text(c_sample, dirs)));
+    }
+
+    s.push_str("[中间态 2/3] gi_sh_project → sh[0]（9 系数 × RGB 的首项；全零 = 没有任何辐亮度进账）\n");
+    for (i, inp) in inputs.iter().enumerate() {
+        let gsh = gi_unpack_sh(got_probes, i);
+        let csh = gi_sh_project_ref([inp[0], inp[1], inp[2]], [inp[3], inp[4], inp[5]], &p).sh;
+        if gsh.iter().any(|k| k[0] != 0.0 || k[1] != 0.0 || k[2] != 0.0) {
+            gpu_any_sh = true;
+        }
+        s.push_str(&format!(
+            "  probe {i}: sh[0] GPU({:.6},{:.6},{:.6}) vs CPU({:.6},{:.6},{:.6})  GPU全零={}\n",
+            gsh[0][0], gsh[0][1], gsh[0][2], csh[0][0], csh[0][1], csh[0][2],
+            if gsh.iter().all(|k| k[0] == 0.0 && k[1] == 0.0 && k[2] == 0.0) { "是" } else { "否" },
+        ));
+    }
+
+    s.push_str("[中间态 3/3] gi_probe_interpolate → irradiance（@16，最近探针重建 + Lambert）\n");
+    let refs: Vec<([f32; 3], GiProbeRef)> = inputs
+        .iter()
+        .map(|inp| {
+            let pos = [inp[0], inp[1], inp[2]];
+            (pos, gi_sh_project_ref(pos, [inp[3], inp[4], inp[5]], &p))
+        })
+        .collect();
+    for (i, q) in points.iter().enumerate() {
+        let o = i * GI_POINT_STRIDE_BYTES as usize + 16;
+        let g = [unpack_f32(got_points, o), unpack_f32(got_points, o + 4), unpack_f32(got_points, o + 8)];
+        let want = gi_interpolate_ref(*q, &refs, &p);
+        // 最近探针下标（与 WGSL 同 tie-break：严格小于才换，故并列取小下标）。
+        let mut best = 0usize;
+        let mut best_d2 = f32::INFINITY;
+        for (j, (pos, _)) in refs.iter().enumerate() {
+            let dx = pos[0] - q[0];
+            let dy = pos[1] - q[1];
+            let dz = pos[2] - q[2];
+            let d2 = dx * dx + dy * dy + dz * dz;
+            if d2 < best_d2 {
+                best_d2 = d2;
+                best = j;
+            }
+        }
+        s.push_str(&format!(
+            "  point {i} ({:.3},{:.3},{:.3})→probe {best}: GPU({:.6},{:.6},{:.6}) vs CPU({:.6},{:.6},{:.6})\n",
+            q[0], q[1], q[2], g[0], g[1], g[2], want[0], want[1], want[2],
+        ));
+    }
+
+    // ---- 判定：把观测组合映射到候选机制族（不猜、不掩盖，逐条给判据）----
+    s.push_str("[判定] ");
+    if !pos_all_ok || !nrm_all_ok {
+        s.push_str(
+            "读回的 pos/normal 与 CPU 输入不一致 ⇒ 上传/读回不是同一块 buffer，\
+             或 GiProbe 布局在这台设备上漂移（优先查 make_buffer→submit_chain→readback_to 的句柄链）",
+        );
+    } else if !gpu_any_sample && !gpu_any_sh {
+        s.push_str(&format!(
+            "pos/normal 完好但 samples 与 sh **全为零** ⇒ 宿主读回无法区分以下两族（读回字节完全相同）：\n\
+             \x20  (A) 三个入口都没有真正写入——uniform 未生效（probe_count==0 → 三个 entry 全部早退），\
+             或 bind group 绑到了别的/全零 buffer（nlen<0.5 → 两个入口早退）；\n\
+             \x20  (B) 写入生效但判定为「全方向遮挡」——hit_eps/prim_count/prims 之一读成异常值，\
+             使 24/24 条射线在 t≈0 即命中（同一场景 CPU 侧实测 {cpu_visible_total} 条可见）\n"
+        ));
+        // (B) 族在本场景下可**静态推导**出极窄的必要条件，直接写进文本，
+        // 免得下一轮又从头猜：
+        //   · probe 0 的 8 个方向里有 4 个 world.x < 0（离 x∈[1,3] 的球面图元越来越远），
+        //     在 CPU 的图元集下它们**永远**不会命中 ⇒ 只有「t=0 即命中」能判遮挡；
+        //   · t=0 处三个起点的场景距离分别是 1.0 / −1e−3 / 0.999 ⇒ 需 hit_eps ≥ 1.0。
+        //   · GiParams 里唯一 ≥1.0 的标量是 t_max@48 = 20.0 ⇒ 疑 hit_eps 读到了 t_max；
+        //   · 另一条通路是 prim_count 读到 4（= point_count@4），使容量内第 3/4 号图元
+        //     （kind=0/radius=1/center=原点 → 本实现取 q.x，即 |x|−1 的板）参与 min：
+        //     probe 0 的 |0|−1 = −1、probe 2 的 |0.001|−1 ≈ −0.999 直接命中，
+        //     probe 1 的 |1.001|−1 = 9.9999e−4 ≤ hit_eps 也命中 → 24/24 全遮挡。
+        s.push_str(concat!(
+            "[研判] (B) 在本场景的必要条件（可静态推导，非猜测）：",
+            "要么 hit_eps ≥ 1.0（GiParams 里唯一 ≥1.0 的标量是 t_max@48=20.0 → 疑读到 t_max）；",
+            "要么 prim_count == 4（疑读到 point_count@4，容量内第 3/4 号图元 |x|−1 恰好含住三个起点）。\n",
+        ));
+    } else if gpu_any_sample && !gpu_any_sh {
+        s.push_str(
+            "samples 已写入但 sh 全零 ⇒ 断在 gi_sh_project 内部（nlen<0.5 早退 / n_dirs==0 / d_omega 退化）",
+        );
+    } else {
+        s.push_str(
+            "samples 与 sh 均已写入 ⇒ 断在数值（SDF 命中判定漂移）或 gi_probe_interpolate 的最近探针选择",
+        );
+    }
+    s.push_str(
+        "\n[下一步] 若落在 (A)/(B) 不可分辨区：需在 `gi_probe_trace` 入口写一行 witness（\
+         `probe._pad0 = 1.0;`，零成本、不改 304B 布局、不动判据）才能把「没跑」与「全遮挡」分开；\
+         本轮不擅自加（shader 变更须先由数据确认根因）。\n",
+    );
+    s
+}
+
 fn t_gpu_gi_compute() -> Status {
     let dev = match ready_device("gpu.gi_compute") {
         Ok(d) => d,
@@ -5576,8 +5807,12 @@ fn c_gpu_gi_compute() -> Status {
         }
     }
     if mismatch != 0 {
+        // 【真机实测不过，待定位】——不降级、不改判据、不 Skip：状态仍是 FAIL，
+        // 但把三个 entry 的中间态一并摊开，让下一次真机重跑就能收窄机制。
         return fail(format!(
-            "gpu.gi_compute：GI GPU 结果与 CPU 参考不一致——{mismatch} 个字段超容差 {F32_TOL:e}；{first_msg}"
+            "gpu.gi_compute：GI GPU 结果与 CPU 参考不一致——{mismatch} 个字段超容差 {F32_TOL:e}；{first_msg}\n\
+             [真机实测不过，待定位] 以下诊断块全部取自既有读回缓冲（无额外读回、不改判据）：\n{}",
+            gi_diag_text(&got.0[..], &got.1[..])
         ));
     }
     // 指纹：把全部 SH 系数与辐照度压成 u32（供 host_test 侧 JS 独立实现交叉核对）。
@@ -5612,6 +5847,560 @@ fn c_gpu_gi_compute() -> Status {
          fingerprint=0x{fingerprint:08x}（供 host_test 的 JS 独立实现交叉核对）",
         total = GI_N_PROBES * GI_DIRS
     ));
+    Status::Pass
+}
+
+// ---------------------------------------------------------------------------
+// 测试项 16：真 WebGPU 场景整帧 dispatch（`scene_frame.wgsl` 的 `scene_main`）
+// ---------------------------------------------------------------------------
+//
+// # 这一项补的是什么（V2.2-T03 的缺口）
+// PRD 验收第 3 条要求「**双分支可判**」：有设备返 `w*h*4`、无设备 CPU 兜底逐字节
+// 一致。「无设备」那一支早已被既有单测钉住（`native_backend_is_not_gpu_ready_and_
+// falls_back_to_cpu`）；「**有设备**」那一支此前完全没有实现——`WebGpuBackend::
+// render_scene` 只算规划就回退 CPU，`scene_frame.wgsl` 的 `scene_main` 在覆盖台账里
+// 也一直标着 SKIP。本项补齐：真编译 WGSL、真建 6 个缓冲、真 dispatch、真读回，
+// 并在宿主 `settle()` 之后与 CPU 参考逐项判对。
+//
+// # 判据（全部硬断言，任一不过即 FAIL）
+// 1. **字节数**：读回字节数 == `w*h*4`（**这就是「有设备返 `w*h*4`」的本体**）。
+//    同时核对「提交时向胶水请求的字节数」也等于 `w*h*4`——只核对返回值长度会漏掉
+//    「请求错了但恰好读回等长」的接线错误。
+// 2. **非全零 + 非整帧同色**：排除「读回成功但全黑」和「读回成功但整帧纯色」两种假绿。
+// 3. **vs CPU 参考**：同一 `SceneRenderRequest` 走 `CpuRefBackend::render_scene`
+//    （与生产路径同一实现），报 `max_channel_delta` / `differing_pixels` / `psnr_db`，
+//    门禁 **PSNR ≥ 40 dB**（G3 双门禁口径：`psnr = 10·log10(255²/mse)`）。
+//    判决走**精确整数**形式 `sum_sq·10⁴ ≤ 255²·channels`（与 `mse ≤ 6.5025` 严格
+//    等价，但全程 `u64` 乘加、无对数、无浮点），故真机上不存在「阈值附近两平台判反」。
+//    **若真机达不到 40 dB 不许改阈值**：把实测值写进结果文本并判 FAIL。
+// 4. **双跑逐位一致**：同设备连跑两次，两次读回字节完全相同（G3 确定性）。
+// 5. **曲线路径真被消费**：场景 B（球 + 1 个圆柱）与「B 去掉曲线」的对照帧必须不同。
+//    这条是 V2 六绑定里 triangles/nodes 两个缓冲**真的参与了着色**的证据——若宿主
+//    漏绑/漏写这两块，两支的像素会退化成完全一致。
+//
+// # 场景规模（手机友好）
+// A 场景 8×8、B 场景 16×16，各含**至少 1 个球 + 1 盏灯**；B 额外含 1 个圆柱曲线图元。
+// 球与圆柱在 x 方向分开布置，互不遮挡（否则曲线会被球整个盖住，判据 5 恒真）。
+//
+// # native 行为
+// 无 device ⇒ [`ready_device`] 直接返回 [`Status::Skip`]（不是 `#[ignore]`，
+// `qa_ignore_guard` 会命中 `#[ignore]`）。native 上本项的 run 阶段必然走这条路径。
+
+/// 场景 A 的帧宽（8×8：手机毫秒级即可跑完）。
+pub const SCENE_A_W: u32 = 8;
+/// 场景 A 的帧高。
+pub const SCENE_A_H: u32 = 8;
+/// 场景 B 的帧宽（16×16：给曲线图元留出可观测的像素面积）。
+pub const SCENE_B_W: u32 = 16;
+/// 场景 B 的帧高。
+pub const SCENE_B_H: u32 = 16;
+/// 每个场景的连续提交次数（G3 确定性：同设备连跑两次逐位一致）。
+pub const SCENE_RUNS: usize = 2;
+/// 场景 A 的下标。
+pub const SCN_A: usize = 0;
+/// 场景 B（含曲线）的下标。
+pub const SCN_B: usize = 1;
+/// 场景 B 的**无曲线对照**下标（判据 5 用）。
+pub const SCN_BC: usize = 2;
+/// 全部场景数。
+pub const SCN_COUNT: usize = 3;
+/// 一次 run 的提交总数：A 双跑 + B 双跑 + 无曲线对照单跑。
+pub const SCENE_SUBMISSIONS: usize = SCENE_RUNS * 2 + 1;
+/// run 阶段的提交顺序：`[A, A, B, B, BC]`。
+///
+/// collect 阶段按 `场景下标 × SCENE_RUNS` 反查同一格，两处共用本数组，避免下标漂移。
+const SCENE_ORDER: [usize; SCENE_SUBMISSIONS] = [SCN_A, SCN_A, SCN_B, SCN_B, SCN_BC];
+/// PSNR 门限的**十倍整数**表示：`400` ⇔ `40.0 dB`（G3 双门禁口径，**不得放宽**）。
+///
+/// 用整数而非 `f64` 存门限：报告文本直接按「整数部分 / 十分位」两段打印，既不依赖
+/// `f64` 的 `Display`（wasm 里那套 Dragon/Grisu 定点格式化代价不小），也让
+/// 「恰好 40.0 dB」这种边界不会被浮点舍入判成红/绿翻转。
+pub const SCENE_PSNR_MIN_DB10: i32 = 400;
+/// PSNR 报告值的上限（十倍整数）。逐位相同的帧 PSNR 为 `+∞`，报告时夹到 `99.9 dB`
+/// 以免把 `inf` 塞进定点格式；**判据本身不走这个值**（见 [`SCENE_SSE_SCALE`]）。
+const PSNR_DB10_CAP: i32 = 999;
+/// `psnr = 10·log10(peak²/mse)` 里的 `peak²`（峰值 255）。
+const SCENE_PEAK_SQ: u64 = 255 * 255;
+/// 判据 3 的**精确整数**上界：`mse ≤ peak²/10⁴` ⇔ `sum_sq·10⁴ ≤ peak²·channels`。
+///
+/// 与「PSNR ≥ 40 dB」严格等价（`sum_sq` 是 RGB 三通道平方误差和，`channels = 3·pixels`），
+/// 但全程 `u64` 乘加、无对数、无浮点，故真机上不存在「阈值附近两平台判反」的可能。
+const SCENE_SSE_SCALE: u64 = 10_000;
+/// `log10(2) = 0.301029995663981195…`，把 `log2` 换算成 `log10`。
+///
+/// **为什么不用 `f64::log10`**：本 crate 生产代码受 D-29 约束（禁 libm 超越函数，
+/// 见 `tests/qa_probe_b_gpu_fixes.rs::probe1_*`），故走自研
+/// [`prism_math::det_pow::det_log2`]（位分解 + atanh 级数，纯 `±×÷`）再乘本常数：
+/// `log10(x) = log2(x) · log10(2)`。结果跨平台逐位确定，且只用于**报告**，不参与判决。
+const LOG10_2: f64 = 0.301_029_995_663_981_2;
+
+thread_local! {
+    /// `gpu.scene_frame` 在 run 阶段登记的帧句柄（collect 阶段读取；每次 run 覆写）。
+    static SCENE_FRAMES: RefCell<[Option<SceneFrame>; SCENE_SUBMISSIONS]> =
+        const { RefCell::new([None; SCENE_SUBMISSIONS]) };
+    /// run 阶段登记的 GPU 错误 scope 数（collect 阶段成对 pop）。
+    static SCENE_ERR_SCOPES: Cell<u32> = const { Cell::new(0) };
+}
+
+/// CPU 参考渲染的**唯一调用点**。
+///
+/// 判据 3 与判据 5 一共要跑 4 次 CPU 参考，收成一个具名函数既让「参考实现从哪来」
+/// 一眼可见（`CpuRefBackend`，与生产路径同一实现），也避免这段调用散落在多处。
+fn scene_cpu_ref(req: &SceneRenderRequest) -> crate::Framebuffer {
+    CpuRefBackend.render_scene(req)
+}
+
+/// 把一帧的像素复制出来（未落盘 ⇒ `None`）。
+fn scene_frame_pixels(frame: SceneFrame) -> Option<Vec<u8>> {
+    scene_gpu::with_settled_pixels(frame, |px| px.to_vec())
+}
+
+/// 帧内不同 RGBA 值的个数，**至多统计 8 种**（判据 2 只需要「≥ 2」）。
+///
+/// 定长表 + 线性查找：不分配、不排序、不调 `contains`——wasm 里只值几十字节代码，
+/// 而 `Vec` + `contains` 版本会连带拉进 `RawVec::grow_one` 等一整串分配机制。
+fn scene_distinct_colors(px: &[u8]) -> usize {
+    let mut seen = [0u32; 8];
+    let mut n = 0usize;
+    for chunk in px.chunks_exact(4) {
+        let v = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        let mut i = 0usize;
+        while i < n && seen[i] != v {
+            i += 1;
+        }
+        if i == n {
+            if n == seen.len() {
+                return n; // 表满 ⇒ 早已满足「≥ 2」，不必继续统计
+            }
+            seen[n] = v;
+            n += 1;
+        }
+    }
+    n
+}
+
+/// 「GPU 帧 vs CPU 参考帧」的统计对拍结果（**全整数**，判决不碰浮点）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SceneParity {
+    /// 逐通道最大绝对差（仅 RGB 三通道，0..=255）。
+    max_channel_delta: u32,
+    /// 至少一个 RGB 通道不同的像素数。
+    differing_pixels: u32,
+    /// 参与比较的像素数。
+    pixels: u32,
+    /// RGB 三通道平方误差和（精确整数，判据 3 的判决输入）。
+    sum_sq: u64,
+    /// PSNR ×10（四舍五入、上限 [`PSNR_DB10_CAP`]），**仅供报告**。
+    psnr_db10: i32,
+    /// 判据 3 的结论：`sum_sq·10⁴ ≤ 255²·channels`（⇔ PSNR ≥ 40 dB）。
+    passes_40db: bool,
+}
+
+/// 逐像素统计两帧差异（RGB 三通道；alpha 两侧恒为 255，不参与 MSE）。
+///
+/// 长度不足（任一帧短于 `pixels*4`）⇒ `None`（调用方判 FAIL，不猜）。
+fn scene_parity(gpu: &[u8], cpu: &[u8], pixels: u32) -> Option<SceneParity> {
+    let need = (pixels as usize) * 4;
+    if gpu.len() < need || cpu.len() < need {
+        return None;
+    }
+    let mut max_channel_delta = 0u32;
+    let mut differing_pixels = 0u32;
+    let mut sum_sq = 0u64;
+    for i in 0..pixels as usize {
+        let o = i * 4;
+        let mut differs = false;
+        for c in 0..3 {
+            let d = (gpu[o + c] as i32 - cpu[o + c] as i32).unsigned_abs();
+            if d > max_channel_delta {
+                max_channel_delta = d;
+            }
+            if d != 0 {
+                differs = true;
+            }
+            sum_sq += (d as u64) * (d as u64);
+        }
+        if differs {
+            differing_pixels += 1;
+        }
+    }
+    let channels = (pixels as u64) * 3;
+    // 判据 3：精确整数比较（⇔ `mse ≤ 255²/10⁴` ⇔ `psnr ≥ 40 dB`）。
+    let passes_40db =
+        sum_sq.saturating_mul(SCENE_SSE_SCALE) <= SCENE_PEAK_SQ.saturating_mul(channels);
+    // 报告值：`psnr = 10·log10(peak²/mse)`；D-29 禁 libm，故 det_log2 × log10(2)。
+    let psnr_db10 = if sum_sq == 0 || channels == 0 {
+        PSNR_DB10_CAP
+    } else {
+        let mse = (sum_sq as f64) / (channels as f64);
+        let db10 =
+            100.0 * prism_math::det_pow::det_log2((SCENE_PEAK_SQ as f64) / mse) * LOG10_2;
+        let db10 = db10.round() as i32;
+        if db10 > PSNR_DB10_CAP {
+            PSNR_DB10_CAP
+        } else {
+            db10
+        }
+    };
+    Some(SceneParity {
+        max_channel_delta,
+        differing_pixels,
+        pixels,
+        sum_sq,
+        psnr_db10,
+        passes_40db,
+    })
+}
+
+/// 构造场景 `scene`（[`SCN_A`] / [`SCN_B`] / [`SCN_BC`]）的渲染请求。
+///
+/// **单一真源**：run 与 collect 各自重建同一份，不跨阶段缓存 `Vec`。三个场景共用
+/// 同一组相机/灯光字面量，只在「尺寸 / 球半径 / 曲线有无」三处分支，把重复的字段
+/// 初始化压成一份——这既省 wasm 体积，也保证 run 与 collect 拿到的请求**逐字段相同**
+/// （否则对拍比的就不是同一件事了）。
+///
+/// 相机/灯/球的取值全部写死（确定性铁律：不取时间、不取随机源）。
+fn scene_request(scene: usize) -> SceneRenderRequest {
+    let (w, h) = if scene == SCN_A {
+        (SCENE_A_W, SCENE_A_H)
+    } else {
+        (SCENE_B_W, SCENE_B_H)
+    };
+    // 场景 A：半径 1 的球铺满 8×8 视野。场景 B/BC：偏左小球 + 右侧圆柱，
+    // |Δx| = 0.62 > 0.35 + 0.18 = 0.53 ⇒ 互不遮挡，曲线在画面上独立可见
+    // （否则判据 5 会被球挡成恒真）。
+    let sphere = if scene == SCN_A {
+        crate::SphereReq {
+            center: Vec3::new(0.0, 0.0, 0.0),
+            radius: 1.0,
+            albedo: Vec3::new(0.8, 0.2, 0.2),
+            roughness: 0.4,
+            metalness: 0.1,
+        }
+    } else {
+        crate::SphereReq {
+            center: Vec3::new(-0.3, -0.1, 0.0),
+            radius: 0.35,
+            albedo: Vec3::new(0.25, 0.55, 0.85),
+            roughness: 0.3,
+            metalness: 0.2,
+        }
+    };
+    let curves = if scene == SCN_B {
+        vec![crate::CurveReq::Cylinder {
+            center: Vec3::new(0.32, 0.0, 0.0),
+            radius: 0.18,
+            height: 1.4,
+            axis: Vec3::new(0.0, 1.0, 0.0),
+        }]
+    } else {
+        Vec::new()
+    };
+    SceneRenderRequest {
+        width: w,
+        height: h,
+        camera: crate::CameraReq {
+            eye: Vec3::new(0.0, 0.0, -4.0),
+            target: Vec3::new(0.0, 0.0, 0.0),
+            fov: 60.0_f32.to_radians(),
+            aspect: w as f32 / h as f32,
+        },
+        lights: vec![crate::LightReq {
+            direction: Vec3::new(-0.3, -0.4, -1.0),
+            color: Vec3::new(1.0, 0.96, 0.9),
+            intensity: 1.0,
+        }],
+        spheres: vec![sphere],
+        aesthetic: crate::AestheticReq {
+            teal_orange: false,
+            contrast: 1.0,
+            filmic: false,
+        },
+        curves,
+    }
+}
+
+/// 场景的人类可读标签（报告用）。
+fn scene_label(idx: usize) -> &'static str {
+    match idx {
+        SCN_A => "A(球+灯,8×8)",
+        SCN_B => "B(球+圆柱+灯,16×16)",
+        SCN_BC => "BC(B 去曲线)",
+        _ => "?",
+    }
+}
+
+fn t_gpu_scene_frame() -> Status {
+    let dev = match ready_device("gpu.scene_frame") {
+        Ok(d) => d,
+        Err(s) => return s,
+    };
+    // 提交顺序：A 双跑 → B 双跑 → BC 单跑（下标与 collect 的 `scene*SCENE_RUNS` 对齐）。
+    let mut frames: [Option<SceneFrame>; SCENE_SUBMISSIONS] = [None; SCENE_SUBMISSIONS];
+    let mut read_bytes = 0u32;
+    for (i, &scene) in SCENE_ORDER.iter().enumerate() {
+        let req = scene_request(scene);
+        match scene_gpu::submit_scene_frame(dev, &req) {
+            Ok(f) => frames[i] = Some(f),
+            Err(e) => {
+                return fail(format!(
+                    "gpu.scene_frame：第 {i} 次提交失败（场景 {}，{}×{}）——{e}\n\
+                     提示：本项要求 device 已就绪（先跑 device.init 并等其 PASS）；\
+                     若为 `TooLarge`，说明场景规模超出宿主竞技场容量",
+                    scene_label(scene),
+                    req.width,
+                    req.height
+                ));
+            }
+        }
+        read_bytes = read_bytes.saturating_add(req.width * req.height * 4);
+    }
+    // 错误 scope 数在 run 阶段定稿（覆盖写，避免并发 run 时重复累加）。
+    SCENE_ERR_SCOPES.with(|c| c.set(scene_gpu::take_err_scopes()));
+    SCENE_FRAMES.with(|f| *f.borrow_mut() = frames);
+    set_result(&format!(
+        "已提交 {SCENE_SUBMISSIONS} 次真 WebGPU 场景整帧 dispatch（scene_frame.wgsl 的 scene_main）：\n\
+         A {SCENE_A_W}×{SCENE_A_H}（球+灯）连跑 {SCENE_RUNS} 次、\
+         B {SCENE_B_W}×{SCENE_B_H}（球+圆柱+灯）连跑 {SCENE_RUNS} 次、\
+         对照（B 去掉曲线）跑 1 次\n\
+         绑定剖面：V2 六绑定 {{params,spheres,lights,triangles,nodes,out}}，\
+         dispatch 工作组数由 scene_dispatch_plan 从 scene_abi 派生\n\
+         已登记读回 {read_bytes} 字节，待宿主 settle 后与 CPU 参考（CpuRefBackend，同式）\
+         统计对拍（门限 PSNR ≥ 40 dB）"
+    ));
+    Status::Pending
+}
+
+/// 单帧的判据 0～3（尺寸 / 字节数 / 非全零非纯色 / vs CPU 参考）。
+///
+/// 返回 `Ok((像素, 对拍统计))`；任一硬判据不过即 `Err(Status::Fail)`。
+fn scene_check_frame(
+    label: &str,
+    req: &SceneRenderRequest,
+    frame: SceneFrame,
+) -> Result<(Vec<u8>, SceneParity), Status> {
+    let want = req.width * req.height * 4;
+    // ---- 判据 0：帧句柄自带的尺寸必须与请求一致 ----
+    // 槽位是复用的（多帧共用定长竞技场），张冠李戴会让「字节数对了但内容是别帧的」
+    // 这种错误静默通过，故先钉尺寸。
+    if frame.width() != req.width || frame.height() != req.height {
+        return Err(fail(format!(
+            "{label}：帧句柄尺寸 {}×{} ≠ 请求 {}×{}（帧槽复用错位）",
+            frame.width(),
+            frame.height(),
+            req.width,
+            req.height
+        )));
+    }
+    // ---- 判据 1a：提交时请求的字节数 == w*h*4 ----
+    if frame.read_len() != want {
+        return Err(fail(format!(
+            "{label}：提交时请求的读回字节数 {} ≠ w*h*4 = {want}——\
+             有设备分支的「返 w*h*4」不成立",
+            frame.read_len()
+        )));
+    }
+    // ---- 判据 1b：真的读回了 w*h*4 字节 ----
+    let Some(px) = scene_frame_pixels(frame) else {
+        return Err(fail(format!(
+            "{label}：第 {} 帧读回未落盘（宿主 settle 未完成，或 copy_out 失败）",
+            frame.slot()
+        )));
+    };
+    if px.len() != want as usize {
+        return Err(fail(format!(
+            "{label}：读回 {} 字节 ≠ w*h*4 = {want}（`{}×{}×4`）",
+            px.len(),
+            req.width,
+            req.height
+        )));
+    }
+    // ---- 判据 2：非全零 + 非整帧同色 ----
+    if !px.iter().any(|&b| b != 0) {
+        return Err(fail(format!(
+            "{label}：读回 {want} 字节全为 0——字节数对了但没有任何渲染内容（假绿），\
+             shader 可能整体早退或 dispatch 工作组数为 0"
+        )));
+    }
+    let colors = scene_distinct_colors(&px);
+    if colors < 2 {
+        return Err(fail(format!(
+            "{label}：整帧只有 1 种颜色——scene_main 未按像素着色\
+             （常见根因：params 的 P_WIDTH/P_HEIGHT 未写入、或工作组数算成 1×1）"
+        )));
+    }
+    // ---- 判据 3：vs CPU 参考（同一请求走 CpuRefBackend）----
+    let cpu = scene_cpu_ref(req);
+    if cpu.pixels.len() != want as usize {
+        return Err(fail(format!(
+            "{label}：CPU 参考帧 {} 字节 ≠ w*h*4 = {want}（CPU 侧被拒帧，请求尺寸非法？）",
+            cpu.pixels.len()
+        )));
+    }
+    let Some(parity) = scene_parity(&px, &cpu.pixels, req.width * req.height) else {
+        return Err(fail(format!("{label}：GPU/CPU 帧长度不足以对比")));
+    };
+    if !parity.passes_40db {
+        return Err(fail(format!(
+            "{label}：PSNR {}.{} dB < 门限 40.0 dB（sum_sq={} 超出精确整数上界\
+             sum_sq·10⁴ ≤ 255²·channels，max_channel_delta={}，differing_pixels={}/{}）——\
+             这是真机浮点/求交差异的实测值，**不得靠改阈值消红**，须由交付总监裁决口径",
+            parity.psnr_db10 / 10,
+            parity.psnr_db10 % 10,
+            parity.sum_sq,
+            parity.max_channel_delta,
+            parity.differing_pixels,
+            parity.pixels
+        )));
+    }
+    Ok((px, parity))
+}
+
+fn c_gpu_scene_frame() -> Status {
+    // `String` 的 `write!` 走 `core::fmt::Write`（不是 `io::Write`），故在此引入。
+    use core::fmt::Write as _;
+    let dev = match ready_device("gpu.scene_frame") {
+        Ok(d) => d,
+        Err(s) => return s,
+    };
+    // 错误结算必须在 collect 阶段（宿主 settle() 之后错误队列才有内容）。
+    let scopes = SCENE_ERR_SCOPES.with(|c| c.get());
+    if let Err(s) = check_errors_counted("gpu.scene_frame", dev, scopes) {
+        return s;
+    }
+    if gpu::device_lost(dev) != 0 {
+        return fail("gpu.scene_frame：device 在 dispatch 期间 lost");
+    }
+    let frames = SCENE_FRAMES.with(|f| *f.borrow());
+    // 报告逐行拼进一个 `String`（`write!` 到 `String` 不会失败，`let _ =` 明示忽略）。
+    let mut report = String::from(
+        "真 WebGPU 场景整帧 dispatch（scene_frame.wgsl 的 scene_main，V2 六绑定）\
+         与 CPU 参考统计对拍 ✓\n",
+    );
+    let mut min_db10 = PSNR_DB10_CAP;
+    let mut px_b: Option<Vec<u8>> = None;
+    let mut px_bc: Option<Vec<u8>> = None;
+    for scene in 0..SCN_COUNT {
+        let req = scene_request(scene);
+        let label = scene_label(scene);
+        let Some(first) = frames[scene * SCENE_RUNS] else {
+            return fail(format!(
+                "gpu.scene_frame：第 {} 帧句柄缺失（本项 run 未成功提交过；请先运行本项）",
+                scene * SCENE_RUNS
+            ));
+        };
+        let (px, parity) = try_status!(scene_check_frame(label, &req, first));
+        // ---- 判据 4：双跑逐位一致（对照场景只跑一次，跳过）----
+        if scene != SCN_BC {
+            let Some(second) = frames[scene * SCENE_RUNS + 1] else {
+                return fail(format!("{label}：第 2 跑的帧句柄缺失"));
+            };
+            let Some(px2) = scene_frame_pixels(second) else {
+                return fail(format!("{label}：第 2 跑读回未落盘，无法核对确定性"));
+            };
+            if px2.len() != px.len() {
+                return fail(format!(
+                    "{label}：两跑读回长度不同（{} vs {}）——buffer 尺寸算错？",
+                    px.len(),
+                    px2.len()
+                ));
+            }
+            if px2 != px {
+                let at = px
+                    .iter()
+                    .zip(px2.iter())
+                    .position(|(a, b)| a != b)
+                    .unwrap_or(0);
+                return fail(format!(
+                    "{label}：同设备连跑两次读回**不一致**（首个不同偏移 {at}，\
+                     GPU-run1={} vs GPU-run2={}）——违反全链路确定性铁律",
+                    px[at], px2[at]
+                ));
+            }
+        }
+        if parity.psnr_db10 < min_db10 {
+            min_db10 = parity.psnr_db10;
+        }
+        let _ = write!(
+            report,
+            "  {label}: 读回 {} B == w*h*4 ✓  非全零 ✓  色数(≤8) {}  PSNR {}.{} dB\
+             （max_channel_delta {}，differing_pixels {}/{}）{}\n",
+            px.len(),
+            scene_distinct_colors(&px),
+            parity.psnr_db10 / 10,
+            parity.psnr_db10 % 10,
+            parity.max_channel_delta,
+            parity.differing_pixels,
+            parity.pixels,
+            if scene == SCN_BC { "  对照单跑" } else { "  双跑逐位一致 ✓" }
+        );
+        if scene == SCN_B {
+            px_b = Some(px);
+        } else if scene == SCN_BC {
+            px_bc = Some(px);
+        }
+    }
+    // ---- 判据 5：曲线路径真被消费（B 与「B 去掉曲线」必须不同）----
+    let (Some(b), Some(bc)) = (px_b, px_bc) else {
+        return fail("gpu.scene_frame：场景 B / 对照帧的像素缺失，无法核对曲线路径");
+    };
+    let n = b.len().min(bc.len()) / 4;
+    let mut curve_diff_px = 0usize;
+    let mut curve_max_delta = 0u32;
+    for i in 0..n {
+        let o = i * 4;
+        let mut d = 0u32;
+        for c in 0..3 {
+            let dd = (b[o + c] as i32 - bc[o + c] as i32).unsigned_abs();
+            if dd > d {
+                d = dd;
+            }
+        }
+        if d > 0 {
+            curve_diff_px += 1;
+        }
+        if d > curve_max_delta {
+            curve_max_delta = d;
+        }
+    }
+    if curve_diff_px == 0 {
+        return fail(
+            "gpu.scene_frame：含曲线的场景 B 与「B 去掉曲线」的对照帧**逐像素完全相同**——\
+             说明 triangles/nodes 两个绑定没有被 scene_main 真正消费（宿主漏绑/漏写，\
+             或 WGSL 的 num_tris 分支未生效）。V2 六绑定的曲线路径**未被判对**",
+        );
+    }
+    // CPU 参考侧的同名对照：证明「曲线本来就该在画面上看得见」，免得 GPU 侧的差异
+    // 被误读成绑定接错。
+    let cpu_b = scene_cpu_ref(&scene_request(SCN_B));
+    let cpu_bc = scene_cpu_ref(&scene_request(SCN_BC));
+    let n_cpu = cpu_b.pixels.len().min(cpu_bc.pixels.len()) / 4;
+    let mut cpu_curve_diff = 0usize;
+    for i in 0..n_cpu {
+        let o = i * 4;
+        if cpu_b.pixels[o..o + 3] != cpu_bc.pixels[o..o + 3] {
+            cpu_curve_diff += 1;
+        }
+    }
+    let _ = write!(
+        report,
+        "判据 1（核心）：三帧读回字节数均 == w*h*4（{SCENE_A_W}×{SCENE_A_H}×4={}、\
+         {SCENE_B_W}×{SCENE_B_H}×4={}）——「有设备返 w*h*4」成立 ✓\n\
+         判据 2：非全零 + 每帧色数 ≥ 2（排除「读回成功但全黑/纯色」的假绿）✓\n\
+         判据 3：PSNR ≥ 40.0 dB（等价精确整数判据 sum_sq·10⁴ ≤ 255²·channels），\
+         最低实测 {}.{} dB ✓\n\
+         判据 4：同设备连跑两次读回**逐位一致**（A、B 各 2 跑）✓\n\
+         判据 5：曲线路径真被消费——B 与「B 去掉曲线」有 {curve_diff_px}/{n} 个像素不同\
+         （max_channel_delta={curve_max_delta}）；CPU 参考侧同对照差 {cpu_curve_diff}/{n_cpu}\
+         个像素，两侧同向 ⇒ triangles/nodes 绑定确实参与了着色 ✓\n\
+         注：CPU 量化用 `(v*255).round()`，WGSL 用 `u32(v*255)` 截断，故多数像素有 ±1 级\
+         系统性差；这是 PSNR 天花板的主要来源（约 48～53 dB），远高于 40 dB 门限",
+        SCENE_A_W * SCENE_A_H * 4,
+        SCENE_B_W * SCENE_B_H * 4,
+        min_db10 / 10,
+        min_db10 % 10,
+    );
+    set_result(&report);
     Status::Pass
 }
 
@@ -6576,8 +7365,9 @@ mod tests {
             .filter(|(_, st, _)| *st == ST_COVERED)
             .count();
         assert_eq!(
-            covered, 17,
-            "COVERED 入口应为 17 个（particles 3 + sph 3 + cloth 3 + wavefront 5 + GI 3）"
+            covered, 18,
+            "COVERED 入口应为 18 个（particles 3 + sph 3 + cloth 3 + wavefront 5 + GI 3 \
+             + scene_frame 1）"
         );
     }
 
@@ -6597,11 +7387,21 @@ mod tests {
                 }
             }
         }
+        // 场景整帧路径（V2.2-T03）：`scene_main` 的入口名**不在本文件写字面量**，
+        // 而是从 `scene_abi::SceneAbi::ENTRY` 单一真源取（见 `scene_gpu::ensure_pipeline`），
+        // 故 steps 表形态的门禁认不出它。这里额外认一条**同样可机械核对**的锚点：
+        // 入口名必须等于 scene_abi 的真源值，且本文件必须真的走场景提交函数。
+        let scene_submit_present = abi.contains("scene_gpu::submit_scene_frame(dev,");
+        assert!(
+            scene_submit_present,
+            "gpu.scene_frame 必须真调 scene_gpu::submit_scene_frame(dev, …)——否则台账              COVERED 的 scene_main 就是虚登记"
+        );
         for e in dispatched {
             let in_tuple_chain = abi.contains(&format!("(\"{e}\", 1, &["));
             let in_multi_chain = abi.contains(&format!("entry: \"{e}\","));
+            let in_scene_path = e == crate::scene_abi::SceneAbi::ENTRY && scene_submit_present;
             assert!(
-                in_tuple_chain || in_multi_chain,
+                in_tuple_chain || in_multi_chain || in_scene_path,
                 "台账标 COVERED 的入口 {e} 未出现在任何 steps 表里 → 未真被 dispatch"
             );
         }
@@ -6878,6 +7678,81 @@ mod tests {
         }
     }
 
+    /// FAIL 诊断块必须「说真话」：三种已知形态的读回缓冲各落到正确的判定分支。
+    ///
+    /// # 为什么这条单测值得存在
+    /// 诊断块只在真机 FAIL 时输出，而沙箱永远看不到真机——若它本身有 bug
+    /// （例如把模长算成 0、或判定分支写反），真机重跑拿到的就是一段**误导性**
+    /// 文本，比没有诊断更贵。本测用三个已知形态钉死它：
+    /// 1. **pos/normal 完好、samples/sh 全零**（= 真机观测到的形态）→ 必须落 (A)/(B) 族；
+    /// 2. **整块全零**（连 pos/normal 也零）→ 必须指认「上传/读回不是同一块 buffer」；
+    /// 3. **按 CPU 参考打包**（= 正确结果）→ 不得再报未写入，且 probe 0 显示 5/8 可见
+    ///    （这是 `sh[0][0]=0.9970052` 的来源：8 个方向里 5 个可见）。
+    #[test]
+    fn gi_diag_block_distinguishes_zero_from_reference() {
+        let p = GI_TEST;
+        let inputs = gi_probe_inputs();
+        let zero_points = [0u8; GI_POINTS_BYTES as usize];
+
+        // ---- 形态 2：整块全零（含 pos/normal）----
+        let zero_probes = [0u8; GI_PROBES_BYTES as usize];
+        let d0 = gi_diag_text(&zero_probes, &zero_points);
+        assert!(d0.contains("[中间态 1/3]"), "诊断块缺少 trace 段");
+        assert!(d0.contains("[中间态 2/3]"), "诊断块缺少 project 段");
+        assert!(d0.contains("[中间态 3/3]"), "诊断块缺少 interpolate 段");
+        assert!(d0.contains("可见 GPU 0/8 vs CPU 5/8"), "probe 0 的可见方向数判错：{d0}");
+        assert!(d0.contains("读回的 pos/normal 与 CPU 输入不一致"), "全零缓冲未指认 buffer 身份：{d0}");
+
+        // ---- 形态 1：pos/normal 完好，samples/sh 保持零（真机观测形态）----
+        let mut bare_probes = [0u8; GI_PROBES_BYTES as usize];
+        for (i, inp) in inputs.iter().enumerate() {
+            let base = i * GI_PROBE_STRIDE_BYTES as usize;
+            for (k, v) in inp.iter().enumerate() {
+                let off = base + if k < 3 { k * 4 } else { 16 + (k - 3) * 4 };
+                pack_f32(&mut bare_probes, off, *v);
+            }
+        }
+        let d1 = gi_diag_text(&bare_probes, &zero_points);
+        assert!(d1.contains("(A) 三个入口都没有真正写入"), "未写入形态未落到 (A)/(B) 族：{d1}");
+        assert_eq!(d1.matches("GPU全零=是").count(), 3, "未写入形态三个探针的 sh 都应标全零");
+        assert!(!d1.contains("退化法线"), "pos/normal 完好时不应提示法线退化");
+
+        // ---- 形态 3：按 CPU 参考打包（pos/normal + samples + sh 全填）----
+        let mut ok_probes = [0u8; GI_PROBES_BYTES as usize];
+        for (i, inp) in inputs.iter().enumerate() {
+            let base = i * GI_PROBE_STRIDE_BYTES as usize;
+            for (k, v) in inp.iter().enumerate() {
+                let off = base + if k < 3 { k * 4 } else { 16 + (k - 3) * 4 };
+                pack_f32(&mut ok_probes, off, *v);
+            }
+            let r = gi_sh_project_ref([inp[0], inp[1], inp[2]], [inp[3], inp[4], inp[5]], &p);
+            for d in 0..GI_DIRS as usize {
+                let o = base + 32 + d * 16;
+                for c in 0..3 {
+                    pack_f32(&mut ok_probes, o + c * 4, r.samples[d][c]);
+                }
+            }
+            for k in 0..9 {
+                let o = base + 160 + k * 16;
+                for c in 0..3 {
+                    pack_f32(&mut ok_probes, o + c * 4, r.sh[k][c]);
+                }
+            }
+        }
+        let d2 = gi_diag_text(&ok_probes, &zero_points);
+        assert!(!d2.contains("(A) 三个入口都没有真正写入"), "参考态被误判为未写入");
+        // probe 0/2 的参考 SH 非零、probe 1 恰好全零 → 只有 probe 1 该被标全零。
+        assert_eq!(d2.matches("GPU全零=是").count(), 1, "参考态只有 probe 1 的 sh 全零：{d2}");
+        assert!(
+            d2.contains("sh[0] GPU(0.997005,0.886227,0.775449)"),
+            "参考态 probe 0 的 sh[0] 应按 f32 参考值打印：{d2}"
+        );
+        assert!(d2.contains("可见 GPU 5/8 vs CPU 5/8"), "参考态的可见方向数应与 CPU 一致：{d2}");
+        // probe 1 的 CPU 参考恰为全遮挡（起点落在 |x−2|<1 的图元内），
+        // 这正是「60 个字段」里 probe 1 不贡献差异的原因，钉住它防回归误判。
+        assert!(d2.contains("可见 GPU 0/8 vs CPU 0/8"), "probe 1 应为 0/8 可见：{d2}");
+    }
+
     /// 遮挡确实起作用（非恒全可见）：朝 +X（正对球）的探针可见方向数应 < 朝上者。
     #[test]
     fn gi_occlusion_reduces_visibility() {
@@ -6901,6 +7776,132 @@ mod tests {
         DEVICE.with(|d| d.set(0));
         let idx = TESTS.iter().position(|t| t.id == "gpu.gi_compute").expect("清单含 gpu.gi_compute");
         assert_eq!(dispatch_panics(TESTS[idx].run, "gpu.gi_compute"), status::SKIP);
+    }
+
+    // -----------------------------------------------------------------------
+    // gpu.scene_frame（V2.2-T03「有设备」分支）
+    // -----------------------------------------------------------------------
+
+    /// **native 下本项必须返回 `Skip`（不是 `Pass`）**：无 device ⇒ 无法判对。
+    ///
+    /// 同时钉住「清单登记齐全」（id / needs_gpu / collect 三者缺一不可），
+    /// 因为宿主按这三项决定是否把本项纳入真机 GPU 跑批。
+    #[test]
+    fn scene_frame_test_body_skips_without_device() {
+        DEVICE.with(|d| d.set(0));
+        let idx = TESTS
+            .iter()
+            .position(|t| t.id == "gpu.scene_frame")
+            .expect("清单含 gpu.scene_frame");
+        assert!(TESTS[idx].needs_gpu, "gpu.scene_frame 必须标注 needs_gpu");
+        assert!(
+            TESTS[idx].collect.is_some(),
+            "gpu.scene_frame 必须有 collect 阶段（异步读回判对）"
+        );
+        assert_eq!(
+            dispatch_panics(TESTS[idx].run, "gpu.scene_frame"),
+            status::SKIP,
+            "无 device 时 gpu.scene_frame 必须是 SKIP（禁止 #[ignore]、禁止假 PASS）"
+        );
+    }
+
+    /// 判据非恒真：逐位相同的两帧 SSE=0（报告值夹到 99.9 dB）；单像素扰动必须打红。
+    #[test]
+    fn scene_parity_accepts_identical_and_rejects_spike() {
+        let px = 8u32 * 8u32;
+        let a = vec![128u8; px as usize * 4];
+        let same = scene_parity(&a, &a, px).expect("同长");
+        assert_eq!(same.max_channel_delta, 0);
+        assert_eq!(same.differing_pixels, 0);
+        assert_eq!(same.sum_sq, 0, "逐位相同 ⇒ 平方误差和必须精确为 0");
+        assert!(same.passes_40db, "逐位相同必须过门限");
+        assert_eq!(same.psnr_db10, PSNR_DB10_CAP, "报告值应夹到上限而非 inf");
+
+        // 单个像素偏 127（三通道）⇒ 8×8 上 MSE≈252 ⇒ ≈24 dB，必须低于门限。
+        let mut spike = a.clone();
+        for c in 0..3 {
+            spike[c] = 255;
+        }
+        let s = scene_parity(&spike, &a, px).expect("同长");
+        assert_eq!(s.differing_pixels, 1);
+        assert_eq!(s.max_channel_delta, 127);
+        assert!(
+            !s.passes_40db,
+            "单像素扰动必须低于门限（实测 {}.{} dB）——判据不得恒真",
+            s.psnr_db10 / 10,
+            s.psnr_db10 % 10
+        );
+    }
+
+    /// 量化口径差（CPU `round` vs WGSL 截断）带来的 ±1 级系统性差必须仍在门限内。
+    ///
+    /// 这条把「PSNR 门限是否过严」的判断变成可执行的算术：全帧 ±1 时
+    /// MSE = 1 ⇒ PSNR ≈ 48.13 dB，相对 40 dB 有约 8 dB 余量；因此真机上若判红，
+    /// 归因**不是**量化约定，而是更大的数值/求交分歧（须由交付总监裁决）。
+    #[test]
+    fn scene_parity_one_level_bias_still_passes() {
+        let px = 16u32 * 16u32;
+        let cpu = vec![128u8; px as usize * 4];
+        let mut gpu = cpu.clone();
+        for i in 0..px as usize {
+            // 每像素 RGB 各差 1（alpha 恒 255 不参与）
+            for c in 0..3 {
+                gpu[i * 4 + c] = 129;
+            }
+        }
+        let p = scene_parity(&gpu, &cpu, px).expect("同长");
+        assert_eq!(p.max_channel_delta, 1);
+        assert_eq!(p.differing_pixels, px);
+        // 每像素 3 通道各差 1 ⇒ sum_sq == channels ⇒ mse == 1.0（精确整数路径）。
+        assert_eq!(p.sum_sq, (px as u64) * 3);
+        assert!(p.passes_40db, "全帧 ±1 必须过门限");
+        assert!(
+            p.psnr_db10 >= SCENE_PSNR_MIN_DB10,
+            "全帧 ±1 必须过门限（实测 {}.{} dB，门限 40.0）",
+            p.psnr_db10 / 10,
+            p.psnr_db10 % 10
+        );
+        // 与解析式 `10·log10(255²)` 对比，确认 det_log2 换算没有算错量级。
+        // （测试里用 libm 的 log10 是允许的：D-29 只约束生产代码。）
+        let expect = 10.0 * 65025.0_f64.log10() * 10.0;
+        assert!(
+            (p.psnr_db10 as f64 - expect).abs() < 0.5,
+            "PSNR 换算偏差过大：{} vs {expect}",
+            p.psnr_db10
+        );
+    }
+
+    /// 三个测试场景必须自洽：A 只有球、B 含 1 个曲线、BC 与 B 仅 curves 不同。
+    #[test]
+    fn scene_requests_are_well_formed() {
+        let s: [SceneRenderRequest; SCN_COUNT] = [SCN_A, SCN_B, SCN_BC].map(scene_request);
+        assert_eq!(s[SCN_A].spheres.len(), 1, "场景 A 必须含至少一个球");
+        assert_eq!(s[SCN_A].lights.len(), 1, "场景 A 必须含至少一盏灯");
+        assert!(s[SCN_A].curves.is_empty());
+        assert_eq!(s[SCN_B].curves.len(), 1, "场景 B 必须含 1 个曲线图元");
+        assert_eq!(s[SCN_B].spheres.len(), 1);
+        assert_eq!(s[SCN_B].lights.len(), 1);
+        assert!(s[SCN_BC].curves.is_empty(), "BC 是对照组（不含曲线）");
+        // BC 与 B 只差 curves：除 curves 外的字段必须逐项相同（否则判据 5 不成立）。
+        assert_eq!(s[SCN_B].width, s[SCN_BC].width);
+        assert_eq!(s[SCN_B].height, s[SCN_BC].height);
+        assert_eq!(s[SCN_B].spheres.len(), s[SCN_BC].spheres.len());
+        assert_eq!(s[SCN_B].lights.len(), s[SCN_BC].lights.len());
+        // 尺寸必须落在宿主竞技场容量内（否则真机提交会 TooLarge）。
+        for (i, r) in s.iter().enumerate() {
+            assert!(
+                r.width <= crate::web::scene_gpu::MAX_FRAME_W
+                    && r.height <= crate::web::scene_gpu::MAX_FRAME_H,
+                "场景 {i} 的 {}×{} 超竞技场容量",
+                r.width,
+                r.height
+            );
+            assert_eq!(
+                r.width * r.height * 4 % 4,
+                0,
+                "读回字节数必须是 w*h*4（u32 对齐）"
+            );
+        }
     }
 }
 

@@ -164,14 +164,21 @@ pub struct KernelDispatch {
 }
 
 impl GpuDevice for WebGpuBackend {
-    /// 渲染一帧。若 WebGPU 未就绪则降级到 CPU 参考后端。
+    /// 渲染一帧。wasm 目标且 device 就绪时走**真 WebGPU dispatch**；其余一律降级到
+    /// CPU 参考后端（永不 panic、永有输出）。
     ///
-    /// 骨架阶段 GPU 路径尚未提交真实 compute（待 WGSL 运行时），因此仅做
-    /// 能力判定；判定失败时走 `CpuRefBackend`，保证永不 panic、永有输出。
+    /// # 「有设备」分支（V2.2-T03 补齐）
+    /// 此前本函数一律回退 CPU——「有设备」那一支是空的（PRD 验收 3 的
+    /// 「有设备返 `w*h*4`」无从判起）。现在 wasm 分支真的提交一帧场景 compute：
+    /// 见 [`crate::web::scene_gpu::dispatch_scene_frame`]（同一份实现也被 ABI 测试项
+    /// `gpu.scene_frame` 复用，那里在宿主 `settle()` 之后与 CPU 参考逐项判对）。
+    ///
+    /// # 为什么「GPU 成功」仍可能返回 CPU 像素（诚实说明）
+    /// WebGPU 没有阻塞读回，`prism_copy_out` 是**登记**、由宿主 `settle()` 兑现，
+    /// 而 `render_scene` 是同步签名。故 `dispatch_scene_frame` 返回的是**上一帧**
+    /// 已落盘且同尺寸的 GPU 像素；首次调用只有 CPU 兜底可用。这条一帧延迟由浏览器
+    /// 读回语义决定，不是实现偷懒；「有设备」分支的权威证据在 `gpu.scene_frame`。
     fn render_scene(&mut self, req: &SceneRenderRequest) -> Framebuffer {
-        // 真实 GPU 提交路径（需 WGSL 运行时 + 真机）尚未打通：
-        // 这里保持 CPU 兜底，符合 D1 骨架"先出 shader 源 + 绑定骨架"的约定。
-        //
         // A-2 收口（T06）：dispatch 维度与绑定集**不再就地写死**，而是从
         // [`crate::scene_abi`] 单一真源派生（[`scene_dispatch_plan`]）——这样
         // ABI 升 V2（6 绑定）时本宿主自动跟随，且 WGSL 源缺失会在此处立刻暴露。
@@ -181,6 +188,25 @@ impl GpuDevice for WebGpuBackend {
             "绑定个数必须与 scope ABI 剖面一致"
         );
         debug_assert!(plan.wgsl_present, "scene_frame.wgsl 未注册进 SHADERS 表");
+
+        // 这里**故意不加 `#[cfg(target_arch = "wasm32")]`**：native 上
+        // `is_gpu_ready()` 恒为 false（`detect_support()` 必返回 `NotWasmTarget`），
+        // 故运行时行为与改动前**逐字节相同**（既有单测
+        // `native_backend_is_not_gpu_ready_and_falls_back_to_cpu` 保证这一点）；
+        // 保留代码在 native 下参与类型检查，是为了让 wasm 侧的接线错误在
+        // `cargo test --workspace` 阶段就能暴露，而不是等构建 wasm 时才发现。
+        if self.is_gpu_ready() {
+            if let Ok(px) = crate::web::scene_gpu::dispatch_scene_frame(self.device_handle(), req) {
+                // 尺寸/字节数双重复核后才采用 GPU 像素：`Framebuffer::new` 可能
+                // 拒绝超大请求（返回 `pixels` 为空的无效帧），此时必须继续降级，
+                // 而不是返回一个「标着 GPU 来源却尺寸不符」的帧。
+                let mut fb = Framebuffer::new(req.width, req.height);
+                if fb.is_valid() && fb.pixels.len() == px.len() {
+                    fb.pixels.copy_from_slice(&px);
+                    return fb;
+                }
+            }
+        }
         self.cpu_fallback.render_scene(req)
     }
 }

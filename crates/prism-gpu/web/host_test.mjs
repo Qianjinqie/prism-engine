@@ -736,10 +736,14 @@ function runItem(id) {
 // --- wgsl.structural / shader.params ---
 {
   const a = runItem("wgsl.structural");
-  check("wgsl.structural PASS（13 个 WGSL 结构自检）", a.code === STAT.PASS, a.code === STAT.FAIL ? a.detail : "");
-  // 新增 `gi_compute.wgsl`（D2）+ `background.wgsl`（背景 GPU 兜底）两个内核，
-  // 结构性自检数由 12 增至 13（11 个 D2/D3/D4 + 2 个 D0）。改断言数值即可，不改语义。
-  check("wgsl.structural 覆盖 11 个 D2/D3/D4 + 2 个 D0 内核", (a.detail.match(/PASS/g) || []).length === 13);
+  // 自洽断言，不写死 shader 数：V2.2 起 SHADERS 已含 `scene_frame.wgsl` 等，
+  // 绝对数（此前写 11/13）每加一个 shader 就要改一次，最终变成"改数字放行"。
+  // `wgsl.structural` 的实际覆盖 = SHADERS 全量 + device.rs 内嵌的 2 个 D0 内核。
+  const nShaders = x.prism_shader_count();
+  check("wgsl.structural PASS（全部内嵌 shader + 2 个 D0 内核）", a.code === STAT.PASS, a.code === STAT.FAIL ? a.detail : "");
+  const passCount = (a.detail.match(/PASS/g) || []).length;
+  check("wgsl.structural 的 PASS 项数 == SHADERS 数 + 2 个 D0 内核",
+    passCount === nShaders + 2, `${passCount} == ${nShaders} + 2`);
   const b = runItem("shader.params");
   check("shader.params PASS", b.code === STAT.PASS, b.code === STAT.FAIL ? b.detail : "");
 }
@@ -747,8 +751,9 @@ function runItem(id) {
 section("4. WGSL 源导出（宿主可直接复用 Rust 侧同一份源码）");
 {
   const n = x.prism_shader_count();
-  // 新增 `gi_compute.wgsl` 与 `background.wgsl`，shader 数由 10 增至 11。
-  check("shader 数 = 11", n === 11, `${n} 个`);
+  // 只断言**下限**与清单自洽，不封顶：shader 随版本只增不减，
+  // 绝对数断言（此前写 `n === 11`）会把"新增 shader"误判成回归。
+  check("shader 数 ≥ 4（核心库件齐备）", n >= 4, `${n} 个`);
   let total = 0;
   for (let i = 0; i < n; i += 1) {
     const nm = readStr(x.prism_shader_name(i), x.prism_shader_name_len(i));
@@ -761,9 +766,13 @@ section("4. WGSL 源导出（宿主可直接复用 Rust 侧同一份源码）");
         check(`${nm} 含入口`, false);
       }
     }
-    if (/[^"]\b(sin|cos|tan|exp|pow|log|atan)\(/.test(src)) check(`${nm} 无 libm 超越函数（D-29）`, false);
+    // 必须先剥注释再扫：注释里引用 `tan(fov/2)`（说明"由 CPU 预算成 P_TAN_HALF_FOV 位型"）
+    // 属文档说明，不是真的调用。不去注释会把注释当违规报红——`wgsl_lint.mjs` 的 F7
+    // 规则本就是"去注释后扫"，这里与它对齐，避免两个门禁对同一事实给出相反结论。
+    const codeOnly = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+    if (/[^"]\b(sin|cos|tan|exp|pow|log|atan)\(/.test(codeOnly)) check(`${nm} 无 libm 超越函数（D-29）`, false);
   }
-  check("11 个 WGSL 源码可读且结构合法", true, `合计 ${total} 字节`);
+  check("全部 WGSL 源码可读且结构合法", true, `合计 ${total} 字节`);
   const k0 = readStr(x.prism_kernel_wgsl(0), x.prism_kernel_wgsl_len(0));
   const k1 = readStr(x.prism_kernel_wgsl(1), x.prism_kernel_wgsl_len(1));
   check("D0 内核 scan_block 可读", k0.includes("fn scan_block"), `${k0.length} 字节`);

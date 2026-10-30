@@ -7,7 +7,7 @@ members = ["crates/*"]
 # 注意：此 profile 只影响 `--target wasm32-unknown-unknown`（native 仍走 dev）。
 [profile.wasm]
 inherits = "release"
-opt-level = "s"
+opt-level = "z"
 lto = true
 panic = "abort"
 strip = true
