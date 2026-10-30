@@ -3,23 +3,25 @@
 //! # ⚠️ 诚实边界（必读，G4/Q5）
 //!
 //! Metal 是 Apple 平台的私有图形 API，**只在 macOS/iOS 上存在**；其他平台
-//! （Linux / wasm）上本模块编译为零或仅保留结构面。本模块的
-//! 收尾标准因此是：*在非 macOS 上编译为零，在 macOS 上编译为结构正确、
-//! 逻辑完备的探测链*。**渲染路径已按 A1 的 kernel 结构同构移植代码，但未点亮**：
-//! [`MetalBackend::is_available`] 在**所有平台**都刻意返回 `false`。
+//! （Linux / wasm）上本模块编译为零或仅保留结构面。**V2.2 统一定性：本仓不提供
+//! 独立 Metal 后端（不点亮），不引入任何第三方翻译层依赖**——本模块整体退为
+//! **历史资产**（可择期清理），其存在**不构成任何对外能力声称**。
+//! [`MetalBackend::is_available`] 在**所有平台**都刻意返回 `false`；
+//! **macOS 实机验证未做**。
 //!
-//! ## 「探测链就绪」与「真实 dispatch」是两件事（不得混用）
+//! ## 「代码存在」与「能出图」是两件事（不得混用）
 //!
 //! | 层 | 状态 | 位置 |
 //! |---|---|---|
-//! | 设备探测链（`dlopen` Metal 框架 + `MTLCreateSystemDefaultDevice`） | ✅ 代码就绪（**仅 macOS 编译**，Linux 上被 `#[cfg]` 剔除） | [`loader`] |
+//! | 设备发现代码（`dlopen` Metal 框架 + `MTLCreateSystemDefaultDevice`） | 📄 历史资产（**仅 macOS 编译**，Linux 上被 `#[cfg]` 剔除；**不构成能力**） | [`loader`] |
 //! | MSL 双份源（场景整帧 kernel） | ✅ 代码就绪（文本，全平台可见） | [`msl::RT_SCENE_MSL`] |
 //! | kernel 描述 + 参数 ABI 编码 | ✅ 代码就绪，偏移有单测钉死 | [`render`] |
 //! | 算法的 CPU 同构实现（与 `CpuRefBackend` 逐字节对拍的证据） | ✅ 已证明 | [`render::render_scene_msl_semantics`] |
 //! | **`MTLDevice` → queue → pipeline state → dispatch → 读回** | ❌ **未做**（需 `objc_msgSend` 层） | — |
 //!
-//! 结论：**macOS 实机验证未做**。V2.1 对 Metal 的交付口径是「代码 + 编译门控，
-//! 不点亮」（PRD A2 / Q5）。因此：
+//! 结论：**macOS 实机验证未做**。V2.2 对 Metal 的交付口径是「**本仓不提供独立
+//! Metal 后端**（不点亮）」（PRD V2.2-A-3 / G4；V2.1 A2 的「代码 + 编译门控」口径
+//! 已被此口径取代）。因此：
 //!
 //! * [`MetalBackend::is_available`] **恒 `false`**（所有平台）；
 //! * [`MetalBackend::render_scene`] **恒返回无效空缓冲**（绝不产假帧）；
@@ -33,8 +35,9 @@
 //!
 //! # 平台门禁
 //!
-//! * **macOS**：`loader` 子模块编译，探测链可用（`MTLCreateSystemDefaultDevice`
-//!   → `MTLCopyAllDevices`）。
+//! * **macOS**：`loader` 子模块编译，设备发现代码可用（`MTLCreateSystemDefaultDevice`
+//!   → `MTLCopyAllDevices`）；但这**不构成独立后端**——本仓不点亮，
+//!   `is_available()` 在 macOS 上同样恒 `false`。
 //! * **Linux / wasm**：`loader` 被 `#[cfg]` 整体剔除；[`MetalBackend`] 仍可见
 //!   （供 `lib.rs` 引用与测试），但恒报不可用、`render_scene` 返回
 //!   [`Framebuffer::empty`]，不 panic（宪章 C18）。
@@ -59,10 +62,10 @@
 use crate::{Framebuffer, GpuDevice, SceneRenderRequest};
 
 // ---------------------------------------------------------------------------
-// 平台门禁：仅 macOS 编译真实探测链
+// 平台门禁：仅 macOS 编译真实设备发现代码
 // ---------------------------------------------------------------------------
 //
-// 注意：即使 macOS 上探测链真的拿到了 `MTLDevice`，本模块也**没有** command
+// 注意：即使 macOS 上设备发现代码真的拿到了 `MTLDevice`，本模块也**没有** command
 // queue / pipeline state / 读回路径——`is_available()` 仍恒 `false`。
 
 #[cfg(target_os = "macos")]

@@ -1,4 +1,7 @@
-//! Metal 设备探测链（**仅 `target_os = "macos"` 编译**）。
+//! Metal 设备发现（**历史资产；仅 `target_os = "macos"` 编译**）。
+//!
+//! V2.2 定性：**本仓不提供独立 Metal 后端（不点亮）**。本模块只做设备发现，
+//! 不构成后端、不构成能力声称；`MetalBackend::is_available()` 在所有平台恒 `false`。
 //!
 //! # 为何走 `dlopen` + `dlsym` 而非 `objc_msgSend`
 //!

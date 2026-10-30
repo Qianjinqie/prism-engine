@@ -319,7 +319,7 @@ node tools/pack_source_txt.mjs --verify      # パッケージと展開の往復
 | DNG `Compression=1/7/8`（32946 Deflate 含む） | 1/7/8 対応（32946 Deflate 含む）；実機カメラモデルは未検証（サンプルなし） | 変換不要；実カメラサンプルで golden 追加可（非対応値 6/34892/34712/52546 は構造的に拒否） | `raw.rs:3282,3287`（読み側が 1/7/8/32946 を分派）+ `raw_dng_synth.rs:260`（合成は 1/7/8/32946 対応）+ 设计 §7.3 / Q10（実機登録表） |
 | mp3 / AAC / FLAC | デコードは外部 ffmpeg の探査経由、エンコードは自前実装せず | ffmpeg を入れる、または WAV のみ使う | `README.md:213`（AAC/mp3 エンコードは自前実装せず、ffmpeg 経由） |
 | 曲線プリミティブの GPU | CPU 経路のみ | 三角形化して SAH-BVH へ | 構造的却下点：GPU kernel なし（`prism-vector/src/path.rs:8` CPU 平たん化；GPU 曲線は T06 TODO、设计 §6 WP-A） |
-| Metal | コード準備済み（独立した Metal バックエンドなし、未点灯）；`is_available()` は常に false、実機未検証 | Apple 機器と独立バックエンドの項目が用意でき次第接続 | `prism-gpu/src/metal/mod.rs:9,189`（is_available は常に false）+ `metal/render.rs:1`（未点灯）+ 设计 §7.2 Metal 行 |
+| Metal | コード準備済み（独立した Metal バックエンドなし、未点灯）；`is_available()` は常に false、実機未検証 | Apple 機器と独立バックエンドの項目が用意でき次第接続 | `prism-gpu/src/metal/mod.rs:9,192`（is_available は常に false）+ `metal/render.rs:1`（未点灯）+ 设计 §7.2 Metal 行 |
 | WebGPU | コード準備済み（T1/T2/T3 緑）、Chrome/Edge のみ可能；描画経路は T03 で着陸、T3 は SwiftShader（ユーザー機器ではない） | 4〜6 人日 | `docs/v2.1-WebGPU可行性評価.md:13,152`（条件付き実現可能、Chrome/Edge 優先）+ 设计 §7.2 WebGPU 行 |
 | ハードウェアエンコード | 三プラットフォームの探査スケルトンのみ、実装なし（C-2 待ちでバインド準備済み） | 対象プラットフォームごとに実装 | `prism-ffi-hwenc/src/lib.rs:14`（プラットフォームライブラリを link しない）+ 设计 §7.2 硬件编码 行 |
 | GPU 高速化率 | 検証待ち登録：正しさは lavapipe のみ検証；実 GPU 高速化率は未測定・数値非記載（lavapipe は擬似値） | 対象ハードウェアで測定が必要 | `README.md:228`（lavapipe ソフトウェア ICD、検証すべき GPU なし）+ 设计 §7.2 GPU 加速比 行（数値記載不可） |

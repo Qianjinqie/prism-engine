@@ -8,6 +8,38 @@
 
 ## 渲染行为变化清单
 
+### R-2026-xx-06：修复折射界面法线朝向与 Fresnel 余弦口径（玻璃/折射体曾是「不透明遮挡」，ior 零效应）
+
+- **受影响特性**：`prism-rt` 电介质（`transmission > 0`）的折射瓣——`crates/prism-rt/src/bsdf.rs`
+  的 `Bsdf::sample` 中 transmission 分支（`n_in` / `cos_i_s` 两处口径），以及
+  `crates/prism-rt/src/wavefront.rs` 的镜像同步实现。影响一切含玻璃/折射体的路径：
+  CPU 参考后端、wavefront 及经它们出图的作品帧。
+- **变化原因**：`sample` 收到的 `n` 是**几何外向**法线，但介质内出射时入射侧的法线
+  应指向介质内部。旧实现两处都直接用了 `n`：
+  ① `refract_dir(w_in, n, eta)` 在 `from_inside` 下 `cos_i = −w_in·n < 0`，返回一条
+  **折回介质内部**的伪方向（`t·n = −cos_t < 0`），出射面永远走不通；
+  ② Fresnel 余弦 `cos_v = wo·n` 在介质内为负、被 `.max(0.0)` 钳成 0，于是
+  `schlick(F0, 0) = 1.0` ⇒ `p_reflect ≈ 0.999`（出射面几乎**恒走全反射**），路径在玻璃内
+  反复弹射直到 `max_bounces` 耗尽。两条叠加的表现即「玻璃球是一个不透明遮挡体」，
+  且 **ior 对图像零效应**。修复：`from_inside` 时把界面法线翻转为 `−n`（`n_in`），
+  折射调用与所有 Fresnel 余弦统一用该法线口径。反射对翻转不敏感
+  （`reflect_dir(w, −n) ≡ reflect_dir(w, n)`），故只改折射侧。
+- **视觉影响描述**：bug 修复导致**输出字节变化**，仅限含折射体的场景——玻璃从
+  「不透明遮挡」变为可透视、可聚焦，色散随之可见。**旧值 → 新值**（测试
+  `qa_spectral_degeneracy::dispersion_glass_centroid_separation`）：
+  旧版 `ior 1.0 / 1.5 / 2.5` 三帧**逐位相同**（色散完全不可见，等效分离度 = 0）→
+  新版色心分离 **2.504 px**（阈值 1.0；红簇权 994.41 / 蓝簇权 353.53 / 主导像素 360，
+  40×40 spp256 确定性锚定）；`cauchy_b = 0` 对照组 0.917 px 证明判据本身有效。
+  非折射材质（金属 / 纯漫反射 / 不透射电介质）输出不变：白炉能量、电介质上界、
+  T12 多散射四钉子（`multiscatter_compensation_monotonic_in_f0` /
+  `white_metal_compensation_equals_white_furnace_form` /
+  `old_colored_multiscatter_form_is_dead` / `eval_is_deterministic`）零回归，
+  `prism-rt` 275 passed / 0 failed。**既有 golden 零位移的真相**：现有 golden 未覆盖
+  玻璃出射路径（与 R-2026-xx-05 同属测试盲区），故本次位移由新增的
+  `qa_spectral_degeneracy`（3/3）承接，而非既有基线漂移。
+- **是否有开关**：无。旧行为不保留——旧形式是缺陷（折射方向折回介质内部），
+  不是可选口径。
+
 ### R-2026-xx-05：修复 Disney BSDF 多散射补偿形式错误（高饱和金属低粗糙度掠射角偏补色）
 
 - **受影响特性**：`prism-rt` 的 Disney BSDF 多散射能量补偿——`crates/prism-rt/src/bsdf.rs`
@@ -161,6 +193,44 @@
 `crates/prism-core/src/compose.rs` 单测（新语义钉子 4 枚）。
 
 ## 能力扩容清单（非 C15：特性扩容——此前被拒场景现在可渲染）
+
+### F-2026-xx-03：V2.2 能力扩容（曲线图元 GPU 覆盖 / 材质库十种 + 各向异性 / SVGF 第二阶段 / 光谱色散切片）
+
+- **扩容内容**：
+  1. **曲线图元可渲染**（#A-2）：圆柱 / 圆锥 / 圆环 / 旋转曲面四类解析图元此前**不可渲染**
+     （场景只有球 + 灯各 8 槽）。新增 `prism-geometry/curve_tess.rs` 弦高受控三角化
+     （`hausdorff_bound = r_max·(1−cos(π/seg))`）+ 扁平 BVH，并**同时接通两条渲染路径**：
+     CPU 参考（`CpuRefBackend` 三角化 → `Bvh` → `ray_intersect`，含 tie-break）与
+     Vulkan megakernel（`spirv_rt` 参数块 22→24 字、绑定 4→6、`OpTypeArray` 存储数组、
+     双栈 BVH 遍历、Möller–Trumbore）。**lavapipe 实机硬判据**：四图元全部
+     `max_channel_delta=0 && differing_pixels=0`（`software_icd=true`），双跑逐位一致；
+     WebGPU 侧 `scene_frame.wgsl` 同语义（栈式遍历），两目标锚定 + 槽位 ABI 钉偏移。
+     场景 ABI 由 V1（4 绑定）升 **V2（6 绑定 `params/spheres/lights/triangles/nodes/out`，
+     输出恒为末位）**，`scene_abi` 为唯一真源、`web/device.rs` 全量从它派生。
+  2. **材质库扩至十余种 + 各向异性**（#B-3）：`MaterialKind` 由 4 变体扩至 ≥10 预设
+     （可渲染口径，测试钉住计数）；principled 新增 **GGX 各向异性**（能量补偿闭式近似，
+     无迭代）——`α_t==α_b` 时与既有各向同性 GGX **逐位一致**（退化判据）；DSL `material`
+     块新增各向异性字段（含行列号诊断），**老 3 字段场景输出逐位不变**；能量守恒
+     furnace 测试常驻（白炉半球积分反射率 ∈ `[1−ε,1+ε]`，含反向自证）。
+  3. **SVGF 空域降噪第二阶段**（#B-2）：新增 G-buffer 引导**时域重投影**（motion vector
+     闭式给出，不用光流、不引第三方）+ **方差引导 à-trous**（保持有理核、零超越函数）；
+     静态相机 + 静态场景下重投影累积与「帧 0 起重放」**逐字节一致**。动态场景实测
+     **PSNR = 43.4 dB**（判据 ≥40）、同等画质 **sample 数下降 91.7%**（判据 ≥50%）。
+  4. **光谱渲染切片**（#B-1）：采样维度新增 λ 轴，自研 **CMF 分段有理式**拟合
+     （零 crate、零超越函数），RGB↔光谱升采样；退化一致性——单波长 + 恒定谱反射率下
+     与 RGB 路径**逐字节相等**；色散棱镜 golden 帧红/蓝质心分离 **2.504 px**
+     （阈值 1.0，`cauchy_b=0` 对照组 0.917 证明判据对色散真响应）。
+  5. **计数与帧池**（#D-2，非渲染能力，随版交付）：自研 `CountingAllocator`（零 crate）
+     + `Framebuffer` 帧池 + `as_ptr()` 零拷贝身份判据；同场景两跑计数逐项相等、池中性逐字节。
+- **未点亮 / 待验分述（G4/G7）**：
+  - **WebGPU 渲染路径**（#A-1）：`scene_frame.wgsl` + `web/device.rs` 真实路径 + 4 绑定
+    + `abi.rs` 场景项均已交付（**代码就绪**）；**真机 Chrome/Edge 未验**（沙箱仅 SwiftShader
+    软件实现，语义已判对，剩余风险是驱动浮点差异）。README 边界行**不因本项改写**。
+  - **Metal**：本仓**不提供独立 Metal 后端（不点亮）**，不引入任何第三方翻译层依赖；
+    `metal/`（含 1,484 行 MSL）退为**历史资产**，`is_available()` 恒 false。
+  - **硬件编码**（#C-2）：VAAPI 侧推进到「**绑定就绪**」（`extern "C"` 函数表 + `dlopen`
+    符号解析 + 结构化 `Unsupported`），**不声称可编码**；真机出码待验。
+- **开关**：无。以上均为行为扩容；唯一的行为变化项（折射法线口径）见 `R-2026-xx-06`。
 
 ### F-2026-xx-02：V2.1 能力扩容（Vulkan 光追实帧 / USD R1·R3 判据 / 签名闭包 S3 / 异质体积 / Metal 门控）
 

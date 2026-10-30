@@ -3,10 +3,10 @@
 // ⚠️ **未实机验证**：本文件在 Linux 沙箱内无法编译（无 macOS 工具链 / 无 Metal
 // 运行时），因此它是**结构正确、待 macOS 实机验证**的源码，不是「已验证可用」
 // 的实现。Metal 后端 `MetalBackend::is_available()` 在**所有平台**恒返回 false
-// （探测到设备 ≠ 能出图）。「探测链就绪」与「真实 dispatch」是两件事：
-// 前者由 `metal::loader`（仅 macOS 编译）负责；后者**本文件尚未接入任何
+// （探测到设备 ≠ 能出图）。「设备发现代码存在」与「真实 dispatch」是两件事：
+// 前者由 `metal::loader`（仅 macOS 编译，**历史资产**）负责；后者**本文件尚未接入任何
 // command buffer / pipeline state**（缺 `objc_msgSend` 层，见 `metal/loader.rs`
-// 末尾的「下一步」清单）。V2.1 交付口径：**代码 + 编译门控，不点亮**。
+// 末尾的「下一步」清单）。V2.2 交付口径：**本仓不提供独立 Metal 后端（不点亮）**。
 //
 // 对应关系（与 Vulkan 侧逐式同构）：
 //   对应 SPIR-V：crates/prism-gpu/src/vulkan/spirv_rt.rs（MODULE_SCENE = "spv_scene"）

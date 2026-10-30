@@ -93,7 +93,7 @@ pub mod vulkan;
 // 都已落地（并与 CPU 参考逐字节对拍通过），但 `MTLDevice` → pipeline →
 // dispatch → 读回的闭环**未接**（缺 `objc_msgSend` 层），**macOS 实机验证未做**。
 // 故「有源码」≠「能出图」：`render_scene` 恒返回无效空缓冲，调用方回退 CPU。
-// macOS 上的设备探测链走 `dlopen` + `dlsym`（零第三方 crate）；Linux/wasm 上
+// macOS 上的设备发现走 `dlopen` + `dlsym`（零第三方 crate）；Linux/wasm 上
 // 该子模块被 `#[cfg]` 整体剔除，仅保留可编译的降级 stub，绝不影响 Linux 与
 // wasm 构建。
 

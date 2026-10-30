@@ -319,7 +319,7 @@ node tools/pack_source_txt.mjs --verify      # 패키징과 언팩 왕복을 바
 | DNG `Compression=1/7/8`（32946 Deflate 포함） | 1/7/8 지원（32946 Deflate 포함）；실제 카메라 모델은 샘플 검증 안 됨 | 변환 불필요；실제 카메라 샘플로 golden 추가 가능（미지원 값 6/34892/34712/52546 은 구조적 거부） | `raw.rs:3282,3287`（읽기 측이 1/7/8/32946 분배）+ `raw_dng_synth.rs:260`（합성은 1/7/8/32946 지원）+ 设计 §7.3 / Q10（실기 등록표） |
 | mp3 / AAC / FLAC | 디코딩은 외부 ffmpeg 탐색 경로, 인코딩은 직접 구현하지 않음 | ffmpeg 설치, 또는 WAV만 사용 | `README.md:213`（AAC/mp3 인코딩 직접 구현 안 함, ffmpeg 경로） |
 | 곡선 프리미티브 GPU | CPU 경로만 | 삼각화 후 SAH-BVH로 | 구조적 거부점：GPU kernel 없음（`prism-vector/src/path.rs:8` CPU 평탄화；GPU 곡선은 T06 TODO, 设计 §6 WP-A） |
-| Metal | 코드 준비 완료（독립 Metal 백엔드 없음, 미점등）；`is_available()` 항상 false, 실기 미검증 | Apple 기기와 독립 백엔드 항목이 생기면 연결 | `prism-gpu/src/metal/mod.rs:9,189`（is_available 항상 false）+ `metal/render.rs:1`（미점등）+ 设计 §7.2 Metal 행 |
+| Metal | 코드 준비 완료（독립 Metal 백엔드 없음, 미점등）；`is_available()` 항상 false, 실기 미검증 | Apple 기기와 독립 백엔드 항목이 생기면 연결 | `prism-gpu/src/metal/mod.rs:9,192`（is_available 항상 false）+ `metal/render.rs:1`（미점등）+ 设计 §7.2 Metal 행 |
 | WebGPU | 코드 준비 완료（T1/T2/T3 녹색）, Chrome/Edge 만 가능；렌더 경로는 T03 에서 착륙, T3 는 SwiftShader （사용자 기기 아님） | 4–6 인일 | `docs/v2.1-WebGPU可行性평가.md:13,152`（조건부 실현 가능, Chrome/Edge 우선）+ 设计 §7.2 WebGPU 행 |
 | 하드웨어 인코딩 | 세 플랫폼 탐색 골격만, 구현 없음（C-2 대기 중 바인드 준비） | 대상 플랫폼별로 구현 | `prism-ffi-hwenc/src/lib.rs:14`（플랫폼 라이브러리 link 안 함）+ 设计 §7.2 硬件编码 행 |
 | GPU 가속비 | 검증 대기 등록: 정확성은 lavapipe 에서만 검증；실제 GPU 가속비는 미측정·수치 미기재（lavapipe 는 의사값） | 대상 하드웨어에서 측정 필요 | `README.md:228`（lavapipe 소프트웨어 ICD, 검증할 GPU 없음）+ 设计 §7.2 GPU 加速比 행（수치 기재 불가） |

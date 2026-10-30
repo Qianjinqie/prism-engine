@@ -1,18 +1,25 @@
-//! Metal render 路径的**同构实现**（V2.1 T-A2；**未点亮**）。
+//! Metal render 路径的**历史资产**（V2.1 T-A2 遗留；**未点亮**）。
+//!
+//! # 定性（V2.2 统一口径，G4）
+//!
+//! **本仓不提供独立 Metal 后端（不点亮）**，也不引入任何第三方翻译层依赖。
+//! 与 `README.md` 边界表 Metal 行同口径：`is_available()` **恒 `false`**、
+//! `render_scene()` **恒返回无效空缓冲**、**未实机验证**。本模块保留的代码
+//! **不构成任何对外能力声称**，仅作历史锚定，可择期清理。
 //!
 //! # ⚠️ 诚实边界（必读，G4/Q5）
 //!
-//! 本模块交付三样**可验证**的东西，以及一样**明确未做**的东西：
+//! 本模块留下三样**可验证**的代码资产，以及一样**明确未做**的东西：
 //!
 //! | 项 | 状态 |
 //! |---|---|
-//! | ① MSL 双份源（[`crate::metal::msl::RT_SCENE_MSL`]） | ✅ 已写（手写，与 `vulkan::spirv_rt` 同构） |
-//! | ② 参数/球/灯缓冲的 **ABI 编码**（本模块） | ✅ 已写，偏移由单测钉死 |
-//! | ③ 算法语义的 **CPU 同构实现**（[`render_scene_msl_semantics`]） | ✅ 已写，与 [`crate::CpuRefBackend`] **逐字节对拍**通过 |
+//! | ① MSL 双份源（[`crate::metal::msl::RT_SCENE_MSL`]） | 📄 历史资产（手写文本，与 `vulkan::spirv_rt` 同构；本仓不登记为宿主目标） |
+//! | ② 参数/球/灯缓冲的 **ABI 编码**（本模块） | 📄 历史资产，偏移由单测钉死（不作对外 ABI 承诺） |
+//! | ③ 算法语义的 **CPU 同构实现**（[`render_scene_msl_semantics`]） | 📄 历史资产，与 [`crate::CpuRefBackend`] **逐字节对拍**通过 |
 //! | ④ `MTLDevice` → command queue → pipeline state → dispatch → 读回 | ❌ **未做**（需 `objc_msgSend` 层，沙箱无 macOS 工具链/运行时） |
 //!
 //! 因此 [`crate::metal::MetalBackend::is_available`] **恒 `false`**：
-//! 「探测链就绪」（`metal::loader`，仅 macOS 编译）与「真实 dispatch」（④，
+//! 「设备发现代码存在」（`metal::loader`，仅 macOS 编译）与「真实 dispatch」（④，
 //! 未实现）是**两件事**，本模块不把前者当后者用。**macOS 实机验证未做**。
 //!
 //! # 为什么这里会有「CPU 同构实现」
