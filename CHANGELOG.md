@@ -55,13 +55,17 @@
 - **是否有开关**：无。旧行为不保留——`vec3<f32>` 做存储布局在真机上是**不可用**的
   （驱动与规范分歧），保留开关等于保留崩溃路径。若某设备真的严格按规范实现，
   vec4 写法与旧写法逐字节等价，行为完全相同，故不需要开关。
-- **真机验证（2026-10-30，已闭环，2 台设备）**：`?v=54d66a8e` 在
-  **三星 Galaxy S10（SM-G9730 / 骁龙 855 / Adreno 640 / Android 12 / Quark）** 与
-  **荣耀 X40（骁龙 695 / Adreno 619）** 上分别跑 **19/19 全 PASS**，且两轮是
-  **同一份 wasm 字节**——换机型换驱动代际仍全绿，排除「针对某台设备调参」。
-  （两台的 GPU 同为 Qualcomm Adreno，**不构成"跨厂商"证据**；Mali / PowerVR 未覆盖。）上述"新值"全部命中：`gpu.gi_layout` 的 `samples[1]` 读出
+- **真机验证（2026-10-30，已闭环，4 个浏览器环境 / 2 台设备 / 2 个产物版本，各 19/19）**：
+  旧产物 `?v=54d66a8e` 在 **三星 Galaxy S10（SM-G9730 / 骁龙 855 / Adreno 640 / Android 12 / Quark）**、
+  **荣耀 X40（骁龙 695 / Adreno 619）**、**Edge for Android 153（`EdgA/153`，Chrome/153 内核）**
+  上各 19/19；新产物 `?v=8772008b` 在 **SamsungBrowser 30.1（Chromium 143）** 上 19/19。
+  设备间是**同一份 wasm 字节**——换机型换驱动代际仍全绿，排除「针对某台设备调参」。
+  （两台的 GPU 同为 Qualcomm Adreno，**不构成"跨厂商"证据**；Mali / PowerVR 未覆盖。）
+  **新产物那轮首次拿到 `adapter` 字段**：`vendor=qualcomm` / `architecture=adreno-6xx` /
+  `isFallbackAdapter=false` / `subgroup 64·128`（SwiftShader 为 `4·4`）——**硬件适配器直接确认**，
+  不再依赖推断。上述"新值"全部命中：`gpu.gi_layout` 的 `samples[1]` 读出
   `(0,1,0)`（不再是 `-1`）、`gpu.gi_compute` 的 `visible_total` 为 `8/8 · 4/8 · 4/8`、
-  `gpu.scene_frame` PSNR 52 dB 档。
+  `gpu.scene_frame` PSNR 52 dB 档。**桌面档仍零实测**（四环境均移动端）。
   **结论：责任在驱动侧**（偏离 WGSL 对 `vec3<f32>` 的 `size=12/align=16` 规定），
   本仓按规范打包的字节自始正确；改为 `vec4` 后同一设备同一链路立刻全绿。
   证据：`docs/QA/real-device-webgpu-2026-10-30.md` §9。**未改判据、未降 `F32_TOL`、
