@@ -283,7 +283,7 @@ Layout after unpacking:
 | Path | Contents |
 | --- | --- |
 | `src/` | Source of the 29 crates (named `crates/` in the repository, reorganized for distribution) |
-| `Compliance/` | Zero-dependency verification, third-party notices, asset registry |
+| in-package `Compliance/` | Zero-dependency verification, third-party notices, asset registry |
 | `开发者指南.md` | Developer guide: getting started / architecture / math kernel / gates / extension |
 | `tools/` | Gate and packaging scripts |
 | `examples/` | `.prism` samples and node packages (read via `include_str!`, so a missing file breaks the build) |

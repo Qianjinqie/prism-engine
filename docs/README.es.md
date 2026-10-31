@@ -283,7 +283,7 @@ Estructura tras desempaquetar:
 | Ruta | Contenido |
 | --- | --- |
 | `src/` | Código de los 29 crates (en el repositorio `crates/`, reorganizado para la distribución) |
-| `Compliance/` | Verificación de cero dependencias, avisos de terceros, registro de activos |
+| en el paquete `Compliance/` | Verificación de cero dependencias, avisos de terceros, registro de activos |
 | `开发者指南.md` | Guía del desarrollador autónoma: inicio / arquitectura / núcleo matemático / puertas / extensión |
 | `tools/` | Scripts de puertas y empaquetado |
 | `examples/` | Ejemplos `.prism` y paquetes de nodos (leídos con `include_str!`; si falta uno, no compila) |

@@ -283,7 +283,7 @@ Structure après dépaquetage :
 | Chemin | Contenu |
 | --- | --- |
 | `src/` | Sources des 29 crates (nommées `crates/` dans le dépôt, réorganisées pour la distribution) |
-| `Compliance/` | Vérification zéro dépendance, avis tiers, registre des actifs |
+| dans le paquet `Compliance/` | Vérification zéro dépendance, avis tiers, registre des actifs |
 | `开发者指南.md` | Guide du développeur : démarrage / architecture / noyau mathématique / portes / extension |
 | `tools/` | Scripts de portes et de paquetage |
 | `examples/` | Exemples `.prism` et paquets de nœuds (lus par `include_str!` ; un fichier manquant casse la compilation) |

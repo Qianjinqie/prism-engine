@@ -283,7 +283,7 @@ Verzeichnisstruktur nach dem Entpacken:
 | Pfad | Inhalt |
 | --- | --- |
 | `src/` | Quellcode der 29 Crates (im Repo `crates/`, für die Verteilung umbenannt) |
-| `Compliance/` | Null-Abhängigkeits-Prüfung, Drittanbieter-Hinweise, Asset-Register |
+| im Paket `Compliance/` | Null-Abhängigkeits-Prüfung, Drittanbieter-Hinweise, Asset-Register |
 | `开发者指南.md` | Eigenständiger Entwicklerleitfaden: Einstieg / Architektur / mathematischer Kern / Gates / Erweiterung |
 | `tools/` | Gate- und Pack-Skripte |
 | `examples/` | `.prism`-Beispiele und Node-Pakete (per `include_str!` gelesen, fehlt eine Datei, bricht der Build) |
