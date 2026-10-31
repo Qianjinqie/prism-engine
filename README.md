@@ -230,7 +230,7 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 | --- | --- | --- |
 | **Vulkan** | 真实运行 | compute + 光追双管线；Mesa lavapipe 软件 ICD 上无 GPU 可验证；`render_scene` 出帧与 CPU 参考**逐字节 0 差异**；`is_available()` 是 compute ∧ render 双自检 |
 | **Metal** | 代码就绪（不提供独立 Metal 后端，不点亮），未实机验证 | 同构移植完成（历史资产），`is_available()` 恒 false |
-| **WebGPU** | 代码就绪（T1/T2/T3 绿），对外支持面仍限 Chrome/Edge；T3 已在三星 Galaxy S10 + 荣耀 X40 2 台真机各 19/19 全项通过（同一份 wasm）（非 Chrome/Edge 品牌，品牌项待验） | 可行性评估完成（迁移量 4–6 人日），渲染路径 T03 落地；真机证据见 `docs/QA/real-device-webgpu-2026-10-30.md` §9 |
+| **WebGPU** | 代码就绪（T1/T2/T3 绿），对外支持面仍限 Chrome/Edge；T3 已在三星 Galaxy S10 + 荣耀 X40 2 台真机各 19/19 全项通过（同一份 wasm）（非 Chrome/Edge 品牌，品牌项待验） | 可行性评估完成（迁移量 4–6 人日），渲染路径 T03 落地；真机 19/19（4 个浏览器环境 / 2 台设备） |
 
 <a id="engineering"></a>
 ## 工程事实
@@ -243,7 +243,7 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 | 逐字节确定性 | 定点 IDCT、固定采样序列、四维配置哈希；同输入跨平台逐位一致 | 放弃浮点快路径，不能依赖无序容器的遍历顺序 |
 | 单文件分发 | 664 个文件、29 个 crate 合并成一个 19.5 MB 的 UTF-8 文本，`node unpack.cjs` 还原 | 放弃「在 GitHub 上直接点开看源码」的便利 |
 
-> ⚠️ **v2.2 分发更正**：v2.1 单文件分发（`dist/prism-engine-v2.1-source.txt`，打包于 2026-10-27）含 BSDF 多散射补偿缺陷（高饱和金属掠射角偏色），**v2.2 已修**。使用 v2.1 单文件分发渲染高饱和金属者请升级至 v2.2。
+> ⚠️ **v2.2 分发更正**：v2.1 单文件分发（`prism-engine-v2.1-source.txt`，打包于 2026-10-27）含 BSDF 多散射补偿缺陷（高饱和金属掠射角偏色），**v2.2 已修**。使用 v2.1 单文件分发渲染高饱和金属者请升级至 v2.2。
 
 ### 确定性如何被验证
 
@@ -324,7 +324,7 @@ node tools/pack_source_txt.mjs --verify      # 打包并解包回环校验（逐
 | mp3 / AAC / FLAC | 解码走外部 ffmpeg 探测；编码不自研 | 装 ffmpeg，或只用 WAV | `README.md:213`（AAC/mp3 编码不自研，走 ffmpeg 协作） |
 | 曲线图元 GPU | 仅 CPU 路径 | 三角化后走 SAH-BVH | 结构化拒绝点：无 GPU kernel（`prism-vector/src/path.rs:8` CPU 平铺；GPU 曲线为 T06 待办，设计 §6 WP-A） |
 | Metal | 代码就绪（不提供独立 Metal 后端，不点亮）；`is_available()` 恒 false，未实机验证 | 有 Apple 设备且立独立后端项后再接 | `prism-gpu/src/metal/mod.rs:9,192`（is_available 恒 false）+ `metal/render.rs:1`（未点亮）+ 设计 §7.2 Metal 行 |
-| WebGPU | 代码就绪（T1/T2/T3 绿），对外支持面仍限 Chrome/Edge；**4 个浏览器环境 / 2 台设备 / 2 个产物版本各 19/19**（含 Edge for Android 153），硬件适配器已确认（`isFallbackAdapter=false`）；**桌面档未实测** | 桌面 Chrome/Edge 实跑一次即可结项（约 5 分钟） | `docs/v2.1-WebGPU可行性评估.md:13,152`（条件可行，Chrome/Edge 优先）+ 设计 §7.2 WebGPU 行 + `docs/QA/real-device-webgpu-2026-10-30.md` §9（真机 19/19） |
+| WebGPU | 代码就绪（T1/T2/T3 绿），对外支持面仍限 Chrome/Edge；**4 个浏览器环境 / 2 台设备 / 2 个产物版本各 19/19**（含 Edge for Android 153），硬件适配器已确认（`isFallbackAdapter=false`）；**桌面档未实测** | 桌面 Chrome/Edge 实跑一次即可结项（约 5 分钟） | `docs/v2.1-WebGPU可行性评估.md:13,152`（条件可行，Chrome/Edge 优先）+ 设计 §7.2 WebGPU 行（真机 19/19） |
 | 硬件编码 | 三平台探测骨架，未接实现（绑定就绪待 C-2） | 按目标平台填 | `prism-ffi-hwenc/src/lib.rs:14`（不 link 任何平台库）+ 设计 §7.2 硬件编码行 |
 | GPU 加速比 | 登记待验：仅在 lavapipe 验证正确性，真实 GPU 加速比不测、不写数字（lavapipe 为伪值） | 需目标硬件实测 | `README.md:228`（lavapipe 软件 ICD 无 GPU 可验证）+ 设计 §7.2 GPU 加速比行（不得写任何数字） |
 | 卫生扫描 | 源码注释有存量命中（C-3 移出本期，门禁保留） | 逐条清理，脚本可追踪 | `README.md:299,307`（hygiene_scan 门禁，文档层已清零）+ C-3 移出（设计 §6.2） |

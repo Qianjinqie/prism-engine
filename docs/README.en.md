@@ -229,7 +229,7 @@ Every node type in the engine is a **particular solution** of a "kernel + lattic
 | --- | --- | --- |
 | **Vulkan** | Really runs | Compute + ray-tracing pipelines; verifiable without a GPU on Mesa's lavapipe software ICD; `render_scene` output is **bit-identical (0 difference)** to the CPU reference; `is_available()` is a compute ∧ render self-check |
 | **Metal** | Code-ready (no standalone Metal backend, not lit), not verified on hardware | Isomorphic port complete (historical asset), `is_available()` always false |
-| **WebGPU** | Code-ready (T1/T2/T3 green), supported surface still Chrome/Edge only; T3 is 19/19 green on 2 devices (Galaxy S10 + HONOR X40, same wasm bytes) (neither is a Chrome/Edge brand, so the brand item stays pending) | Feasibility assessment done (4–6 person-days of porting), render path lands in T03; device evidence in `docs/QA/real-device-webgpu-2026-10-30.md` §9 |
+| **WebGPU** | Code-ready (T1/T2/T3 green), supported surface still Chrome/Edge only; T3 is 19/19 green on 2 devices (Galaxy S10 + HONOR X40, same wasm bytes) (neither is a Chrome/Edge brand, so the brand item stays pending) | Feasibility assessment done (4–6 person-days of porting), render path lands in T03; 19/19 on real devices (4 browser environments / 2 devices) |
 
 <a id="engineering"></a>
 ## Engineering facts
@@ -242,7 +242,7 @@ Three constraints, and what each costs:
 | Bit-for-bit determinism | Fixed-point IDCT, fixed sampling sequences, a four-dimensional configuration hash; identical across platforms for identical input | No fast floating-point shortcuts, no reliance on hash-map iteration order |
 | Single-file distribution | 664 files across 29 crates merged into one 19.5 MB UTF-8 text, restored by `node unpack.cjs` | You give up browsing the source directly on GitHub |
 
-> ⚠️ **v2.2 distribution correction**: the v2.1 single-file distribution (`dist/prism-engine-v2.1-source.txt`, packaged 2026-10-27) contained a BSDF multi-scatter compensation defect (oversaturated-metal grazing-angle color shift); **fixed in v2.2**. Users rendering oversaturated metals with the v2.1 single-file distribution should upgrade to v2.2.
+> ⚠️ **v2.2 distribution correction**: the v2.1 single-file distribution (`prism-engine-v2.1-source.txt`, packaged 2026-10-27) contained a BSDF multi-scatter compensation defect (oversaturated-metal grazing-angle color shift); **fixed in v2.2**. Users rendering oversaturated metals with the v2.1 single-file distribution should upgrade to v2.2.
 
 ### How determinism is verified
 
@@ -323,7 +323,7 @@ Four zero-dependency gate scripts (Node only): ghost-write defense (including a 
 | mp3 / AAC / FLAC | Decoding via external ffmpeg probe; encoding not in-house | Install ffmpeg, or stay on WAV | `README.md:213` (AAC/mp3 encoding not in-house, via ffmpeg) |
 | Curved primitives on GPU | CPU path only | Triangulate and go through the SAH-BVH | Structured rejection point: no GPU kernel (`prism-vector/src/path.rs:8` CPU flatten; GPU curves are T06 TODO, 设计 §6 WP-A) |
 | Metal | Code-ready (no standalone Metal backend, not lit); `is_available()` always false, not verified on hardware | Wire it up once Apple hardware and a standalone backend task are available | `prism-gpu/src/metal/mod.rs:9,192` (is_available always false) + `metal/render.rs:1` (not lit) + 设计 §7.2 Metal row |
-| WebGPU | Code-ready (T1/T2/T3 green), supported surface still Chrome/Edge only; **19/19 across 4 browser environments / 2 devices / 2 artifact builds** (incl. Edge for Android 153), hardware adapter confirmed (`isFallbackAdapter=false`); **desktop untested** | one real desktop Chrome/Edge run closes it (about 5 minutes) | `docs/v2.1-WebGPU可行性评估.md:13,152` (conditionally feasible, Chrome/Edge first) + 设计 §7.2 WebGPU row + `docs/QA/real-device-webgpu-2026-10-30.md` §9 (19/19 on device) |
+| WebGPU | Code-ready (T1/T2/T3 green), supported surface still Chrome/Edge only; **19/19 across 4 browser environments / 2 devices / 2 artifact builds** (incl. Edge for Android 153), hardware adapter confirmed (`isFallbackAdapter=false`); **desktop untested** | one real desktop Chrome/Edge run closes it (about 5 minutes) | `docs/v2.1-WebGPU可行性评估.md:13,152` (conditionally feasible, Chrome/Edge first) + 设计 §7.2 WebGPU row (19/19 on device) |
 | Hardware encoding | Probe skeleton for three platforms, no implementation (binding-ready pending C-2) | Fill in per target platform | `prism-ffi-hwenc/src/lib.rs:14` (links no platform library) + 设计 §7.2 硬件编码 row |
 | GPU speedup | Registered-pending-verification: correctness verified only on lavapipe; real-GPU speedup not measured, no number written (lavapipe is a pseudo-value) | Measure on target hardware | `README.md:228` (lavapipe software ICD, no GPU to verify) + 设计 §7.2 GPU 加速比 row (no number allowed) |
 | Hygiene scan | Existing hits in source comments (C-3 moved out of this release; gate retained) | Clean them one by one; the script tracks them | `README.md:299,307` (hygiene_scan gate, doc layer cleared) + C-3 moved out (设计 §6.2) |

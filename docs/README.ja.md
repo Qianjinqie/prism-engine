@@ -229,7 +229,7 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 | --- | --- | --- |
 | **Vulkan** | 実際に動作 | compute + レイトレーシングの二系統。Mesa lavapipe のソフトウェア ICD で GPU なしでも検証可能。`render_scene` の出力は CPU 参照と**バイト単位で 0 差**。`is_available()` は compute ∧ render の二重セルフチェック |
 | **Metal** | コード準備済み（独立した Metal バックエンドなし、未点灯）、実機未検証 | 同型移植は完了（歴史資産）、`is_available()` は常に false |
-| **WebGPU** | コード準備済み（T1/T2/T3 緑）、対応範囲は引き続き Chrome/Edge のみ；T3 はモバイル端末 2 台（Galaxy S10 + HONOR X40、同一 wasm バイト）で 19/19 全件パス（いずれも Chrome/Edge ブランドではなく、ブランド項目は未験） | 実現可能性の評価は完了（移植量 4〜6 人日）、描画経路は T03 で着陸；実機証拠は `docs/QA/real-device-webgpu-2026-10-30.md` §9 |
+| **WebGPU** | コード準備済み（T1/T2/T3 緑）、対応範囲は引き続き Chrome/Edge のみ；T3 はモバイル端末 2 台（Galaxy S10 + HONOR X40、同一 wasm バイト）で 19/19 全件パス（いずれも Chrome/Edge ブランドではなく、ブランド項目は未験） | 実現可能性の評価は完了（移植量 4〜6 人日）、描画経路は T03 で着陸；実機 19/19（ブラウザ環境 4 つ / 端末 2 台） |
 
 <a id="engineering"></a>
 ## エンジニアリング上の事実
@@ -242,7 +242,7 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 | バイト単位の決定性 | 固定小数点 IDCT、固定サンプリング列、四次元設定ハッシュ；同一入力ならプラットフォーム間で同一 | 浮動小数点の高速経路を捨て、ハッシュマップの反復順序に依存できない |
 | 単一ファイル配布 | 29 crate・664 ファイルを 19.5 MB の UTF-8 テキスト一つにまとめ、`node unpack.cjs` で復元 | GitHub 上でソースを直接眺める便利を捨てる |
 
-> ⚠️ **v2.2 配布訂正**: v2.1 単一ファイル配布（`dist/prism-engine-v2.1-source.txt`、2026-10-27 パッケージ）には BSDF 多散乱補償の欠陥（過飽和金属の掠射角での色ずれ）が含まれていました；**v2.2 で修正済み**。v2.1 単一ファイル配布で過飽和金属をレンダリングする方は v2.2 へアップグレードしてください。
+> ⚠️ **v2.2 配布訂正**: v2.1 単一ファイル配布（`prism-engine-v2.1-source.txt`、2026-10-27 パッケージ）には BSDF 多散乱補償の欠陥（過飽和金属の掠射角での色ずれ）が含まれていました；**v2.2 で修正済み**。v2.1 単一ファイル配布で過飽和金属をレンダリングする方は v2.2 へアップグレードしてください。
 
 ### 決定性はどう検証されるか
 
@@ -289,7 +289,7 @@ flowchart LR
 | `examples/` | `.prism` の例とノードパッケージ（`include_str!` で読むため、欠けるとビルドが通らない） |
 | `.github/workflows/` | CI 設定 |
 
-> 設計の正典（`docs/設計/`）は配布元の完全なリポジトリにのみ存在し、配布には含まれません。デモ crate `prism-anim-demo` も同様です。
+> 設計の正典（`docs/设计/`）は配布元の完全なリポジトリにのみ存在し、配布には含まれません。デモ crate `prism-anim-demo` も同様です。
 
 <a id="build-test"></a>
 ## ビルド・テスト・ゲート
@@ -323,7 +323,7 @@ node tools/pack_source_txt.mjs --verify      # パッケージと展開の往復
 | mp3 / AAC / FLAC | デコードは外部 ffmpeg の探査経由、エンコードは自前実装せず | ffmpeg を入れる、または WAV のみ使う | `README.md:213`（AAC/mp3 エンコードは自前実装せず、ffmpeg 経由） |
 | 曲線プリミティブの GPU | CPU 経路のみ | 三角形化して SAH-BVH へ | 構造的却下点：GPU kernel なし（`prism-vector/src/path.rs:8` CPU 平たん化；GPU 曲線は T06 TODO、设计 §6 WP-A） |
 | Metal | コード準備済み（独立した Metal バックエンドなし、未点灯）；`is_available()` は常に false、実機未検証 | Apple 機器と独立バックエンドの項目が用意でき次第接続 | `prism-gpu/src/metal/mod.rs:9,192`（is_available は常に false）+ `metal/render.rs:1`（未点灯）+ 设计 §7.2 Metal 行 |
-| WebGPU | コード準備済み（T1/T2/T3 緑）、対応範囲は引き続き Chrome/Edge のみ；**ブラウザ環境 4 つ / 端末 2 台 / ビルド 2 種で 19/19**（Edge for Android 153 を含む）、ハードウェアアダプタ確認済み（`isFallbackAdapter=false`）；**デスクトップは未検証** | デスクトップの Chrome/Edge で 1 回実行すれば完了（約 5 分）| `docs/v2.1-WebGPU可行性評価.md:13,152`（条件付き実現可能、Chrome/Edge 優先）+ 设计 §7.2 WebGPU 行 + `docs/QA/real-device-webgpu-2026-10-30.md` §9（実機 19/19）|
+| WebGPU | コード準備済み（T1/T2/T3 緑）、対応範囲は引き続き Chrome/Edge のみ；**ブラウザ環境 4 つ / 端末 2 台 / ビルド 2 種で 19/19**（Edge for Android 153 を含む）、ハードウェアアダプタ確認済み（`isFallbackAdapter=false`）；**デスクトップは未検証** | デスクトップの Chrome/Edge で 1 回実行すれば完了（約 5 分）| `docs/v2.1-WebGPU可行性评估.md:13,152`（条件付き実現可能、Chrome/Edge 優先）+ 设计 §7.2 WebGPU 行（実機 19/19）|
 | ハードウェアエンコード | 三プラットフォームの探査スケルトンのみ、実装なし（C-2 待ちでバインド準備済み） | 対象プラットフォームごとに実装 | `prism-ffi-hwenc/src/lib.rs:14`（プラットフォームライブラリを link しない）+ 设计 §7.2 硬件编码 行 |
 | GPU 高速化率 | 検証待ち登録：正しさは lavapipe のみ検証；実 GPU 高速化率は未測定・数値非記載（lavapipe は擬似値） | 対象ハードウェアで測定が必要 | `README.md:228`（lavapipe ソフトウェア ICD、検証すべき GPU なし）+ 设计 §7.2 GPU 加速比 行（数値記載不可） |
 | 衛生スキャン | ソースコメントに既存のヒット（C-3 は本期から除外、gate は維持） | 一件ずつ整理、スクリプトで追跡 | `README.md:299,307`（hygiene_scan gate、文書層はゼロ化）+ C-3 除外（设计 §6.2） |

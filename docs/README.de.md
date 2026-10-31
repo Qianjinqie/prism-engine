@@ -229,7 +229,7 @@ Jeder Node-Typ der Engine ist eine **Partikulärlösung** eines Tripels aus „K
 | --- | --- | --- |
 | **Vulkan** | Läuft wirklich | Compute- und Raytracing-Pipeline; ohne GPU auf Mesas lavapipe-Software-ICD verifizierbar; `render_scene` ist **byteidentisch (0 Differenz)** zur CPU-Referenz; `is_available()` ist ein Compute-∧-Render-Selbsttest |
 | **Metal** | Code bereit (kein eigenständiges Metal-Backend, nicht aktiviert), nicht auf Hardware verifiziert | Isomorphe Portierung fertig (historisches Asset), `is_available()` immer false |
-| **WebGPU** | Code bereit (T1/T2/T3 grün), unterstützte Oberfläche weiterhin nur Chrome/Edge; T3 ist 19/19 grün auf 2 Geräten (Galaxy S10 + HONOR X40, dieselben wasm-Bytes) (keines ist eine Chrome/Edge-Marke, daher bleibt der Markenpunkt offen) | Machbarkeit bewertet (4–6 Personentage Portierung), Renderpfad in T03; Gerätenachweis in `docs/QA/real-device-webgpu-2026-10-30.md` §9 |
+| **WebGPU** | Code bereit (T1/T2/T3 grün), unterstützte Oberfläche weiterhin nur Chrome/Edge; T3 ist 19/19 grün auf 2 Geräten (Galaxy S10 + HONOR X40, dieselben wasm-Bytes) (keines ist eine Chrome/Edge-Marke, daher bleibt der Markenpunkt offen) | Machbarkeit bewertet (4–6 Personentage Portierung), Renderpfad in T03; 19/19 auf echten Geräten (4 Browser-Umgebungen / 2 Geräte) |
 
 <a id="engineering"></a>
 ## Technische Fakten
@@ -242,7 +242,7 @@ Drei Einschränkungen und was jede kostet:
 | Bitgenauer Determinismus | Festkomma-IDCT, feste Sampling-Sequenzen, ein vierdimensionaler Konfigurationshash; identisch über Plattformen bei identischer Eingabe | Keine schnellen Gleitkomma-Abkürzungen, keine Abhängigkeit von Hashmap-Iterationsreihenfolge |
 | Einzeldatei-Verteilung | 664 Dateien aus 29 Crates zu einem 19,5 MB großen UTF-8-Text zusammengeführt, von `node unpack.cjs` wiederhergestellt | Man verliert das direkte Durchstöbern des Quellcodes auf GitHub |
 
-> ⚠️ **v2.2-Verteilungskorrektur**: die v2.1-Einzdatei-Verteilung (`dist/prism-engine-v2.1-source.txt`, gepackt am 2026-10-27) enthielt einen BSDF-Multistreu-Kompensationsfehler (Farbversatz bei übersättigten Metallen im Streifwinkel); **in v2.2 behoben**. Nutzer, die übersättigte Metalle mit der v2.1-Einzdatei-Verteilung rendern, sollten auf v2.2 upgraden.
+> ⚠️ **v2.2-Verteilungskorrektur**: die v2.1-Einzdatei-Verteilung (`prism-engine-v2.1-source.txt`, gepackt am 2026-10-27) enthielt einen BSDF-Multistreu-Kompensationsfehler (Farbversatz bei übersättigten Metallen im Streifwinkel); **in v2.2 behoben**. Nutzer, die übersättigte Metalle mit der v2.1-Einzdatei-Verteilung rendern, sollten auf v2.2 upgraden.
 
 ### Wie Determinismus verifiziert wird
 
@@ -323,7 +323,7 @@ Vier Gate-Skripte ohne Abhängigkeiten (nur Node): Ghost-Write-Schutz (inklusive
 | mp3 / AAC / FLAC | Dekodierung über externes ffmpeg, Encoding nicht selbst implementiert | ffmpeg installieren oder bei WAV bleiben | `README.md:213` (AAC/mp3-Encoding nicht im Haus, via ffmpeg) |
 | Gekrümmte Primitive auf GPU | Nur CPU-Pfad | Triangulieren und über die SAH-BVH gehen | Strukturierter Ablehnungspunkt: kein GPU-Kernel (`prism-vector/src/path.rs:8` CPU-Flachen; GPU-Kurven sind T06 TODO, 设计 §6 WP-A) |
 | Metal | Code bereit (kein eigenständiges Metal-Backend, nicht aktiviert); `is_available()` immer false, nicht auf Hardware verifiziert | Anbinden, sobald Apple-Hardware und eine eigenständige Backend-Aufgabe verfügbar sind | `prism-gpu/src/metal/mod.rs:9,192` (is_available immer false) + `metal/render.rs:1` (nicht leuchtend) + 设计 §7.2 Metal-Zeile |
-| WebGPU | Code bereit (T1/T2/T3 grün), unterstützte Oberfläche weiterhin nur Chrome/Edge; **19/19 in 4 Browser-Umgebungen / 2 Geräten / 2 Artefakt-Builds** (inkl. Edge for Android 153), Hardware-Adapter bestätigt (`isFallbackAdapter=false`); **Desktop ungetestet** | ein echter Desktop-Lauf mit Chrome/Edge schließt es ab (ca. 5 Minuten) | `docs/v2.1-WebGPU可行性评估.md:13,152` (bedingt machbar, Chrome/Edge zuerst) + 设计 §7.2 WebGPU-Zeile + `docs/QA/real-device-webgpu-2026-10-30.md` §9 (19/19 auf Gerät) |
+| WebGPU | Code bereit (T1/T2/T3 grün), unterstützte Oberfläche weiterhin nur Chrome/Edge; **19/19 in 4 Browser-Umgebungen / 2 Geräten / 2 Artefakt-Builds** (inkl. Edge for Android 153), Hardware-Adapter bestätigt (`isFallbackAdapter=false`); **Desktop ungetestet** | ein echter Desktop-Lauf mit Chrome/Edge schließt es ab (ca. 5 Minuten) | `docs/v2.1-WebGPU可行性评估.md:13,152` (bedingt machbar, Chrome/Edge zuerst) + 设计 §7.2 WebGPU-Zeile (19/19 auf Gerät) |
 | Hardware-Encoding | Probe-Skelett für drei Plattformen, keine Implementierung (bindungsbereit wartet auf C-2) | Pro Zielplattform ausfüllen | `prism-ffi-hwenc/src/lib.rs:14` (linkt keine Plattform-Bibliothek) + 设计 §7.2 硬件编码-Zeile |
 | GPU-Beschleunigung | Als wartend auf Verifikation registriert: Korrektheit nur auf lavapipe geprüft; echte GPU-Beschleunigung nicht gemessen, keine Zahl geschrieben (lavapipe ist Pseudowert) | Auf Zielhardware messen | `README.md:228` (lavapipe-Software-ICD, keine GPU zu verifizieren) + 设计 §7.2 GPU 加速比-Zeile (keine Zahl erlaubt) |
 | Hygiene-Scan | Bestehende Treffer in Quellkommentaren (C-3 aus dieser Version genommen; Gate bleibt) | Einzeln abarbeiten, das Skript verfolgt sie | `README.md:299,307` (hygiene_scan-Gate, Dokumentationsebene geleert) + C-3 entfernt (设计 §6.2) |
