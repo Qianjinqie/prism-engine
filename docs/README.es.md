@@ -24,11 +24,11 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License">
-  <img src="https://img.shields.io/badge/tests-3929%20passed-brightgreen.svg" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-4029%20passed-brightgreen.svg" alt="Tests">
   <img src="https://img.shields.io/badge/dependencies-zero-brightgreen.svg" alt="Dependencies">
   <img src="https://img.shields.io/badge/crates-28-blue.svg" alt="Crates">
   <img src="https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg" alt="Distribution">
-  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v2.1-blue.svg" alt="Release"></a>
+  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v2.2-blue.svg" alt="Release"></a>
 </p>
 
 <p align="center">
@@ -40,7 +40,7 @@
 </p>
 
 <p align="center">
-  <sub><b>642</b> archivos · <b>28</b> crates · <b>261 mil</b> líneas de Rust · <b>3929</b> pruebas · <b>0</b> dependencias de terceros · <b>18,9 MB</b> en un solo archivo</sub>
+  <sub><b>664</b> archivos · <b>29</b> crates · <b>273 mil</b> líneas de Rust · <b>4029</b> pruebas · <b>0</b> dependencias de terceros · <b>19,5 MB</b> en un solo archivo</sub>
 </p>
 
 <!-- TOC-START -->
@@ -86,23 +86,23 @@ La tabla solo enumera capacidades. Lo que cada una no puede hacer está en [Lím
 
 ```bash
 # 1. Descargar el paquete de código y verificar su SHA-256
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.1/prism-engine-v2.1-source.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.2/prism-engine-v2.2-source.txt
 curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.1/SHA256SUMS.txt
 sha256sum -c SHA256SUMS.txt
 
 # 2. Extraer el script de desempaquetado incrustado (solo Node 18+, sin npm install)
 awk '/^UNPACK SCRIPT BEGIN$/{f=1;next} /^UNPACK SCRIPT END$/{f=0} f' \
-  prism-engine-v2.1-source.txt > unpack.cjs
-node unpack.cjs                    # restaura 642 archivos
+  prism-engine-v2.2-source.txt > unpack.cjs
+node unpack.cjs                    # restaura 664 archivos
 
 # 3. Compilar y ejecutar la suite completa
-cargo test --workspace --release     # 3929 passed / 0 failed
+cargo test --workspace --release     # 4029 passed / 0 failed
 
 # 4. Sin escribir nada, verlo renderizar
 cargo run -p prism-app --release     # escena de demostración integrada
 ```
 
-El resultado es un workspace de Cargo normal (28 crates bajo `src/`); el resto de comandos `cargo` funcionan como en cualquier proyecto Rust. La primera compilación tarda unos minutos.
+El resultado es un workspace de Cargo normal (29 crates bajo `src/`); el resto de comandos `cargo` funcionan como en cualquier proyecto Rust. La primera compilación tarda unos minutos.
 
 <a id="one-scene"></a>
 ## Un plano, un texto
@@ -228,8 +228,8 @@ Cada tipo de nodo del motor es una **solución particular** de una terna «kerne
 | Backend | Estado | Evidencia |
 | --- | --- | --- |
 | **Vulkan** | Funciona de verdad | Tuberías compute + ray tracing; verificable sin GPU sobre el ICD software lavapipe de Mesa; la salida de `render_scene` es **idéntica byte a byte (0 diferencia)** a la referencia de CPU; `is_available()` es una autocomprobación compute ∧ render |
-| **Metal** | Compilado tras una puerta, sin activar | Port isomorfo terminado, no verificado en hardware, `is_available()` siempre false |
-| **WebGPU** | Solo conclusión | Evaluación de viabilidad hecha (4–6 días-persona de port), ruta de renderizado no implementada |
+| **Metal** | Código listo (sin backend Metal independiente, no activado), no verificado en hardware | Port isomorfo terminado (activo histórico), `is_available()` siempre false |
+| **WebGPU** | Código listo (T1/T2/T3 verdes), la superficie soportada sigue siendo solo Chrome/Edge; T3 pasa 19/19 en 2 dispositivos (Galaxy S10 + HONOR X40, mismos bytes de wasm) (ninguno es de marca Chrome/Edge, por lo que el punto de marca queda pendiente) | Evaluación de viabilidad hecha (4–6 días-persona de port), ruta de render en T03; evidencia en dispositivo en `docs/QA/real-device-webgpu-2026-10-30.md` §9 |
 
 <a id="engineering"></a>
 ## Hechos de ingeniería
@@ -240,7 +240,9 @@ Tres restricciones y lo que cuesta cada una:
 | --- | --- | --- |
 | Cero código de terceros | Las 110 dependencias de ejecución + 20 de test son dependencias `path` dentro del repositorio; sin `build.rs`, sin enlazado nativo, sin red al compilar | Cada formato, algoritmo, fuente y códec hay que escribirlo aquí |
 | Determinismo bit a bit | IDCT de coma fija, secuencias de muestreo fijas, un hash de configuración de cuatro dimensiones; idéntico entre plataformas para la misma entrada | Se renuncia a atajos rápidos en coma flotante y a depender del orden de iteración de hashmaps |
-| Distribución en un solo archivo | 642 archivos de 28 crates fusionados en un texto UTF-8 de 18,9 MB, restaurado con `node unpack.cjs` | Se renuncia a hojear el código directamente en GitHub |
+| Distribución en un solo archivo | 664 archivos de 29 crates fusionados en un texto UTF-8 de 19,5 MB, restaurado con `node unpack.cjs` | Se renuncia a hojear el código directamente en GitHub |
+
+> ⚠️ **Corrección de distribución v2.2**: la distribución de un solo archivo v2.1 (`dist/prism-engine-v2.1-source.txt`, empaquetada el 2026-10-27) contenía un defecto de compensación multidifusión BSDF (desplazamiento de color en metales sobresaturados en ángulo rasante); **corregido en v2.2**. Los usuarios que renderizan metales sobresaturados con la distribución v2.1 de un solo archivo deben actualizar a v2.2.
 
 ### Cómo se verifica el determinismo
 
@@ -249,7 +251,7 @@ Cuatro capas, desde los parámetros hasta los bytes:
 1. **Cierre de firmas**: grafos de nodos, claves de caché, claves de snapshot y firmas de fotograma comparten un hash de configuración de cuatro dimensiones. Cambiar un parámetro ⇒ la clave cambia ⇒ no hay reutilización obsoleta. Los nodos de iteración llevan `(ε, n)` en la clave; los de flujo, el número de fotograma; `None` degrada bit a bit al comportamiento anterior.
 2. **Puntos fijos de bytes**: USD exportar→importar→exportar es idéntico byte a byte; los round-trips WAV de 16/24/32 bits coinciden; EXR se compara bitstream contra bitstream con el OpenEXR oficial.
 3. **Determinismo de empaquetado**: empaquetar dos veces la misma fuente da el mismo SHA-256; el round-trip de desempaquetado compara cada archivo byte a byte.
-4. **Los tests como criterio**: muchos de los 3929 tests fijan valores de oro (tolerancia ajustada de 1e-2 a 1e-6, residuo medido 4,53e-7); la fidelidad de forma se acota con distancia de Hausdorff en lugar de «se ve bastante parecido».
+4. **Los tests como criterio**: muchos de los 4029 tests fijan valores de oro (tolerancia ajustada de 1e-2 a 1e-6, residuo medido 4,53e-7); la fidelidad de forma se acota con distancia de Hausdorff en lugar de «se ve bastante parecido».
 
 <a id="architecture"></a>
 ## Arquitectura
@@ -264,7 +266,7 @@ flowchart LR
     AU --> OUT
 ```
 
-28 crates agrupados por responsabilidad:
+29 crates agrupados por responsabilidad:
 
 | Grupo | Crates |
 | --- | --- |
@@ -280,7 +282,7 @@ Estructura tras desempaquetar:
 
 | Ruta | Contenido |
 | --- | --- |
-| `src/` | Código de los 28 crates (en el repositorio `crates/`, reorganizado para la distribución) |
+| `src/` | Código de los 29 crates (en el repositorio `crates/`, reorganizado para la distribución) |
 | `Compliance/` | Verificación de cero dependencias, avisos de terceros, registro de activos |
 | `开发者指南.md` | Guía del desarrollador autónoma: inicio / arquitectura / núcleo matemático / puertas / extensión |
 | `tools/` | Scripts de puertas y empaquetado |
@@ -293,7 +295,7 @@ Estructura tras desempaquetar:
 ## Compilar, probar y puertas
 
 ```bash
-cargo test --workspace --release      # 3929 passed / 0 failed / 0 ignored
+cargo test --workspace --release      # 4029 passed / 0 failed / 0 ignored
 cargo xtest                           # alias equivalente
 cargo test -p prism-core --release    # prueba rápida de un crate
 
@@ -304,7 +306,7 @@ node tools/compliance_check.mjs --self-test  # prueba inversa: debe fallar, demo
 node tools/pack_source_txt.mjs --verify      # ida y vuelta de empaquetado, byte a byte
 ```
 
-- Suite completa: **3929 passed / 0 failed / 0 ignored**, 179 secciones de prueba, 171,5 s con todos los núcleos (release).
+- Suite completa: **4029 passed / 0 failed / 0 ignored**, 188 secciones de prueba, 110 s con todos los núcleos (release).
 - La CI tiene seis jobs: defensa de escritura fantasma, compilación + pruebas completas, compilación wasm32, comprobación estática WGSL, interoperabilidad de bitstream con el OpenEXR oficial, verificación cruzada en host Node.
 - El escaneo de higiene aún tiene coincidencias: la capa de documentación distribuida está limpia, el resto está en comentarios de código y archivos solo del repositorio. El script existe para que lo restante siga **visible y corregible pieza a pieza**, no para fingir que todo está limpio.
 
@@ -315,16 +317,16 @@ Cuatro scripts de puerta sin dependencias (solo Node): defensa contra escrituras
 <a id="boundaries"></a>
 ## Límites honestos
 
-| Límite | Estado | Salida |
-| --- | --- | --- |
-| DNG `Compression=7` (lossless JPEG) | No implementado; los DNG de cámaras reales no se pueden leer | Convertir antes a TIFF/PNG de 16 bit |
-| mp3 / AAC / FLAC | Decodificación vía sonda de ffmpeg externo; codificación no implementada | Instalar ffmpeg, o quedarse en WAV |
-| Primitivas curvas en GPU | Solo ruta de CPU | Triangular y pasar por el SAH-BVH |
-| Metal | Puerta compilada, no verificada en hardware, sin activar | Conectar cuando haya hardware Apple |
-| WebGPU | Viabilidad concluida, ruta de renderizado no implementada | 4–6 días-persona |
-| Codificación hardware | Esqueleto de sondeo para tres plataformas, sin implementación | Rellenar por plataforma objetivo |
-| Aceleración GPU | Corrección verificada solo en lavapipe, nunca medida en GPU real | Medir en el hardware objetivo |
-| Escaneo de higiene | Coincidencias existentes en comentarios | Limpiar una a una; el script las rastrea |
+| Límite | Estado | Salida | Prueba / punto de rechazo |
+| --- | --- | --- | --- |
+| DNG `Compression=1/7/8` (incl. 32946 Deflate) | 1/7/8 soportado (incl. 32946 Deflate) ; modelos de cámaras reales no validados por muestra | No hace falta convertir ; las muestras de cámaras reales pueden añadir un golden (valores no soportados 6/34892/34712/52546 rechazados estructuralmente) | `raw.rs:3282,3287` (el lector reparte 1/7/8/32946) + `raw_dng_synth.rs:260` (el synth soporta 1/7/8/32946) + 设计 §7.3 / Q10 (registro de dispositivos reales) |
+| mp3 / AAC / FLAC | Decodificación vía sonda de ffmpeg externo; codificación no implementada en casa | Instalar ffmpeg, o quedarse en WAV | `README.md:213` (codificación AAC/mp3 no en casa, via ffmpeg) |
+| Primitivas curvas en GPU | Solo ruta de CPU | Triangular y pasar por el SAH-BVH | Punto de rechazo estructurado: ningún kernel GPU (`prism-vector/src/path.rs:8` aplanado CPU ; curvas GPU son T06 TODO, 设计 §6 WP-A) |
+| Metal | Código listo (sin backend Metal independiente, no activado) ; `is_available()` siempre false, no verificado en hardware | Conectar cuando haya hardware Apple y una tarea de backend independiente | `prism-gpu/src/metal/mod.rs:9,192` (is_available siempre false) + `metal/render.rs:1` (no encendido) + 设计 §7.2 línea Metal |
+| WebGPU | Código listo (T1/T2/T3 verdes), la superficie soportada sigue siendo solo Chrome/Edge; **19/19 en 4 entornos de navegador / 2 dispositivos / 2 compilaciones** (incl. Edge for Android 153), adaptador de hardware confirmado (`isFallbackAdapter=false`); **escritorio sin probar** | una ejecución real en Chrome/Edge de escritorio lo cierra (unos 5 minutos) | `docs/v2.1-WebGPU可行性评估.md:13,152` (condicionalmente factible, Chrome/Edge primero) + 设计 §7.2 línea WebGPU + `docs/QA/real-device-webgpu-2026-10-30.md` §9 (19/19 en dispositivo) |
+| Codificación hardware | Esqueleto de sondeo para tres plataformas, sin implementación (listo para enlazar pendiente de C-2) | Rellenar por plataforma objetivo | `prism-ffi-hwenc/src/lib.rs:14` (no enlaza biblioteca de plataforma) + 设计 §7.2 línea 硬件编码 |
+| Aceleración GPU | Registrada a la espera de verificación : corrección verificada solo en lavapipe ; aceleración GPU real no medida, ningún número escrito (lavapipe es un pseudo-valor) | Medir en el hardware objetivo | `README.md:228` (ICD de software lavapipe, ningún GPU que verificar) + 设计 §7.2 línea GPU 加速比 (ningún número permitido) |
+| Escaneo de higiene | Coincidencias existentes en comentarios (C-3 fuera de esta versión ; gate conservado) | Limpiar una a una ; el script las rastrea | `README.md:299,307` (gate hygiene_scan, capa de documentación vaciada) + C-3 fuera (设计 §6.2) |
 
 No son puntos de «ya veremos». Hoy no están soportados, explícitamente. Mejor aquí que escondidos en un issue.
 

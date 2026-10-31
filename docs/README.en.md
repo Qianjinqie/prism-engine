@@ -24,11 +24,11 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License">
-  <img src="https://img.shields.io/badge/tests-3929%20passed-brightgreen.svg" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-4029%20passed-brightgreen.svg" alt="Tests">
   <img src="https://img.shields.io/badge/dependencies-zero-brightgreen.svg" alt="Dependencies">
   <img src="https://img.shields.io/badge/crates-28-blue.svg" alt="Crates">
   <img src="https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg" alt="Distribution">
-  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v2.1-blue.svg" alt="Release"></a>
+  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v2.2-blue.svg" alt="Release"></a>
 </p>
 
 <p align="center">
@@ -40,7 +40,7 @@
 </p>
 
 <p align="center">
-  <sub><b>642</b> files · <b>28</b> crates · <b>261k</b> lines of Rust · <b>3929</b> tests · <b>0</b> third-party dependencies · <b>18.9 MB</b> single-file package</sub>
+  <sub><b>664</b> files · <b>29</b> crates · <b>273k</b> lines of Rust · <b>4029</b> tests · <b>0</b> third-party dependencies · <b>19.5 MB</b> single-file package</sub>
 </p>
 
 <!-- TOC-START -->
@@ -86,23 +86,23 @@ The table lists capabilities only. What each one cannot do is in [Honest boundar
 
 ```bash
 # 1. Fetch the single-file source package and verify it
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.1/prism-engine-v2.1-source.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.2/prism-engine-v2.2-source.txt
 curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.1/SHA256SUMS.txt
 sha256sum -c SHA256SUMS.txt
 
 # 2. Extract the unpack script embedded in the package (Node 18+ only, no npm install)
 awk '/^UNPACK SCRIPT BEGIN$/{f=1;next} /^UNPACK SCRIPT END$/{f=0} f' \
-  prism-engine-v2.1-source.txt > unpack.cjs
-node unpack.cjs                    # restores 642 files
+  prism-engine-v2.2-source.txt > unpack.cjs
+node unpack.cjs                    # restores 664 files
 
 # 3. Build and run the full test suite
-cargo test --workspace --release     # 3929 passed / 0 failed
+cargo test --workspace --release     # 4029 passed / 0 failed
 
 # 4. Write nothing, just watch it render
 cargo run -p prism-app --release     # built-in demo scene
 ```
 
-What you get is an ordinary Cargo workspace (28 crates under `src/`); every `cargo` command behaves as usual. The first build takes a few minutes.
+What you get is an ordinary Cargo workspace (29 crates under `src/`); every `cargo` command behaves as usual. The first build takes a few minutes.
 
 <a id="one-scene"></a>
 ## One shot, one text file
@@ -228,8 +228,8 @@ Every node type in the engine is a **particular solution** of a "kernel + lattic
 | Backend | Status | Evidence |
 | --- | --- | --- |
 | **Vulkan** | Really runs | Compute + ray-tracing pipelines; verifiable without a GPU on Mesa's lavapipe software ICD; `render_scene` output is **bit-identical (0 difference)** to the CPU reference; `is_available()` is a compute ∧ render self-check |
-| **Metal** | Compiled behind a gate, not enabled | Isomorphic port complete, not verified on hardware, `is_available()` is always false |
-| **WebGPU** | Conclusion only | Feasibility assessment done (4–6 person-days of porting), render path not implemented |
+| **Metal** | Code-ready (no standalone Metal backend, not lit), not verified on hardware | Isomorphic port complete (historical asset), `is_available()` always false |
+| **WebGPU** | Code-ready (T1/T2/T3 green), supported surface still Chrome/Edge only; T3 is 19/19 green on 2 devices (Galaxy S10 + HONOR X40, same wasm bytes) (neither is a Chrome/Edge brand, so the brand item stays pending) | Feasibility assessment done (4–6 person-days of porting), render path lands in T03; device evidence in `docs/QA/real-device-webgpu-2026-10-30.md` §9 |
 
 <a id="engineering"></a>
 ## Engineering facts
@@ -240,7 +240,9 @@ Three constraints, and what each costs:
 | --- | --- | --- |
 | Zero third-party code | All 110 runtime + 20 test dependencies are in-repo `path` dependencies; no `build.rs`, no native linking, no network at build time | Every format, algorithm, font, and codec has to be written here |
 | Bit-for-bit determinism | Fixed-point IDCT, fixed sampling sequences, a four-dimensional configuration hash; identical across platforms for identical input | No fast floating-point shortcuts, no reliance on hash-map iteration order |
-| Single-file distribution | 642 files across 28 crates merged into one 18.9 MB UTF-8 text, restored by `node unpack.cjs` | You give up browsing the source directly on GitHub |
+| Single-file distribution | 664 files across 29 crates merged into one 19.5 MB UTF-8 text, restored by `node unpack.cjs` | You give up browsing the source directly on GitHub |
+
+> ⚠️ **v2.2 distribution correction**: the v2.1 single-file distribution (`dist/prism-engine-v2.1-source.txt`, packaged 2026-10-27) contained a BSDF multi-scatter compensation defect (oversaturated-metal grazing-angle color shift); **fixed in v2.2**. Users rendering oversaturated metals with the v2.1 single-file distribution should upgrade to v2.2.
 
 ### How determinism is verified
 
@@ -249,7 +251,7 @@ Four layers, from parameters all the way down to bytes:
 1. **Signature closure**: node graphs, cache keys, snapshot keys, and frame signatures share one four-dimensional configuration hash. Change one parameter ⇒ the key must change ⇒ no stale reuse. Iteration nodes include `(ε, n)` in their key; stream nodes include the frame number; `None` degrades bit-for-bit to the old behavior.
 2. **Byte fixed points**: USD export→import→export is byte-identical; WAV 16/24/32-bit round-trips match; EXR is compared bitstream-to-bitstream against the official OpenEXR.
 3. **Packaging determinism**: packing the same source twice yields an identical SHA-256; the unpack round-trip compares every file byte by byte.
-4. **Tests as the criterion**: many of the 3929 tests lock golden values (tolerance tightened from 1e-2 to 1e-6, measured residual 4.53e-7); shape fidelity is bounded by Hausdorff distance rather than "looks close enough".
+4. **Tests as the criterion**: many of the 4029 tests lock golden values (tolerance tightened from 1e-2 to 1e-6, measured residual 4.53e-7); shape fidelity is bounded by Hausdorff distance rather than "looks close enough".
 
 <a id="architecture"></a>
 ## Architecture
@@ -264,7 +266,7 @@ flowchart LR
     AU --> OUT
 ```
 
-28 crates, grouped by responsibility:
+29 crates, grouped by responsibility:
 
 | Group | Crates |
 | --- | --- |
@@ -280,7 +282,7 @@ Layout after unpacking:
 
 | Path | Contents |
 | --- | --- |
-| `src/` | Source of the 28 crates (named `crates/` in the repository, reorganized for distribution) |
+| `src/` | Source of the 29 crates (named `crates/` in the repository, reorganized for distribution) |
 | `Compliance/` | Zero-dependency verification, third-party notices, asset registry |
 | `开发者指南.md` | Developer guide: getting started / architecture / math kernel / gates / extension |
 | `tools/` | Gate and packaging scripts |
@@ -293,7 +295,7 @@ Layout after unpacking:
 ## Build, test, and gates
 
 ```bash
-cargo test --workspace --release      # 3929 passed / 0 failed / 0 ignored
+cargo test --workspace --release      # 4029 passed / 0 failed / 0 ignored
 cargo xtest                           # equivalent alias
 cargo test -p prism-core --release    # single-crate smoke test
 
@@ -304,7 +306,7 @@ node tools/compliance_check.mjs --self-test  # reverse proof: must fail, proving
 node tools/pack_source_txt.mjs --verify      # pack and unpack round-trip, byte by byte
 ```
 
-- Full suite: **3929 passed / 0 failed / 0 ignored**, 179 test binaries, 171.5 s using all cores (release).
+- Full suite: **4029 passed / 0 failed / 0 ignored**, 188 test binaries, 110 s using all cores (release).
 - CI has six jobs: ghost-write defense, build + full tests, wasm32 build, WGSL static check, bitstream interop against official OpenEXR, Node-host cross-check.
 - The hygiene scan still has hits: the distributed documentation layer is clean, the rest sit in source comments and repository-only files. The script exists so leftovers stay **visible and fixable one by one** — not to pretend the tree is spotless.
 
@@ -315,16 +317,16 @@ Four zero-dependency gate scripts (Node only): ghost-write defense (including a 
 <a id="boundaries"></a>
 ## Honest boundaries
 
-| Boundary | Status | Way out |
-| --- | --- | --- |
-| DNG `Compression=7` (lossless JPEG) | Not implemented; DNGs from real cameras cannot be read | Convert to 16-bit TIFF / PNG first |
-| mp3 / AAC / FLAC | Decoding via external ffmpeg probe; encoding not implemented | Install ffmpeg, or stay on WAV |
-| Curved primitives on GPU | CPU path only | Triangulate and go through the SAH-BVH |
-| Metal | Gate compiled, not verified on hardware, not enabled | Wire it up once Apple hardware is available |
-| WebGPU | Feasibility concluded, render path not implemented | 4–6 person-days |
-| Hardware encoding | Probe skeleton for three platforms, no implementation | Fill in per target platform |
-| GPU speedup | Correctness verified only on lavapipe, never measured on a real GPU | Measure on target hardware |
-| Hygiene scan | Existing hits in source comments | Clean them one by one; the script tracks them |
+| Boundary | Status | Way out | Evidence / rejection point |
+| --- | --- | --- | --- |
+| DNG `Compression=1/7/8` (incl. 32946 Deflate) | Supported 1/7/8 (incl. 32946 Deflate); real camera models not validated by samples | No conversion needed; real-camera samples can add a golden (unsupported values 6/34892/34712/52546 are rejected structurally) | `raw.rs:3282,3287` (read path dispatches 1/7/8/32946) + `raw_dng_synth.rs:260` (synth supports 1/7/8/32946) + 设计 §7.3 / Q10 (real-device registry) |
+| mp3 / AAC / FLAC | Decoding via external ffmpeg probe; encoding not in-house | Install ffmpeg, or stay on WAV | `README.md:213` (AAC/mp3 encoding not in-house, via ffmpeg) |
+| Curved primitives on GPU | CPU path only | Triangulate and go through the SAH-BVH | Structured rejection point: no GPU kernel (`prism-vector/src/path.rs:8` CPU flatten; GPU curves are T06 TODO, 设计 §6 WP-A) |
+| Metal | Code-ready (no standalone Metal backend, not lit); `is_available()` always false, not verified on hardware | Wire it up once Apple hardware and a standalone backend task are available | `prism-gpu/src/metal/mod.rs:9,192` (is_available always false) + `metal/render.rs:1` (not lit) + 设计 §7.2 Metal row |
+| WebGPU | Code-ready (T1/T2/T3 green), supported surface still Chrome/Edge only; **19/19 across 4 browser environments / 2 devices / 2 artifact builds** (incl. Edge for Android 153), hardware adapter confirmed (`isFallbackAdapter=false`); **desktop untested** | one real desktop Chrome/Edge run closes it (about 5 minutes) | `docs/v2.1-WebGPU可行性评估.md:13,152` (conditionally feasible, Chrome/Edge first) + 设计 §7.2 WebGPU row + `docs/QA/real-device-webgpu-2026-10-30.md` §9 (19/19 on device) |
+| Hardware encoding | Probe skeleton for three platforms, no implementation (binding-ready pending C-2) | Fill in per target platform | `prism-ffi-hwenc/src/lib.rs:14` (links no platform library) + 设计 §7.2 硬件编码 row |
+| GPU speedup | Registered-pending-verification: correctness verified only on lavapipe; real-GPU speedup not measured, no number written (lavapipe is a pseudo-value) | Measure on target hardware | `README.md:228` (lavapipe software ICD, no GPU to verify) + 设计 §7.2 GPU 加速比 row (no number allowed) |
+| Hygiene scan | Existing hits in source comments (C-3 moved out of this release; gate retained) | Clean them one by one; the script tracks them | `README.md:299,307` (hygiene_scan gate, doc layer cleared) + C-3 moved out (设计 §6.2) |
 
 These are not "later" items. They are explicitly unsupported today. Better here than buried in an issue.
 

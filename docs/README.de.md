@@ -24,11 +24,11 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License">
-  <img src="https://img.shields.io/badge/tests-3929%20passed-brightgreen.svg" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-4029%20passed-brightgreen.svg" alt="Tests">
   <img src="https://img.shields.io/badge/dependencies-zero-brightgreen.svg" alt="Dependencies">
   <img src="https://img.shields.io/badge/crates-28-blue.svg" alt="Crates">
   <img src="https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg" alt="Distribution">
-  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v2.1-blue.svg" alt="Release"></a>
+  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v2.2-blue.svg" alt="Release"></a>
 </p>
 
 <p align="center">
@@ -40,7 +40,7 @@
 </p>
 
 <p align="center">
-  <sub><b>642</b> Dateien · <b>28</b> Crates · <b>261.000</b> Zeilen Rust · <b>3929</b> Tests · <b>0</b> Fremdabhängigkeiten · <b>18,9 MB</b> Einzeldatei</sub>
+  <sub><b>664</b> Dateien · <b>29</b> Crates · <b>273.000</b> Zeilen Rust · <b>4029</b> Tests · <b>0</b> Fremdabhängigkeiten · <b>19,5 MB</b> Einzeldatei</sub>
 </p>
 
 <!-- TOC-START -->
@@ -86,23 +86,23 @@ Die Tabelle listet nur Fähigkeiten. Was jede davon nicht kann, steht unter [Ehr
 
 ```bash
 # 1. Einzeldatei-Paket holen und per SHA-256 prüfen
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.1/prism-engine-v2.1-source.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.2/prism-engine-v2.2-source.txt
 curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.1/SHA256SUMS.txt
 sha256sum -c SHA256SUMS.txt
 
 # 2. Das eingebettete Entpack-Skript herausziehen (nur Node 18+, kein npm install)
 awk '/^UNPACK SCRIPT BEGIN$/{f=1;next} /^UNPACK SCRIPT END$/{f=0} f' \
-  prism-engine-v2.1-source.txt > unpack.cjs
-node unpack.cjs                    # stellt 642 Dateien wieder her
+  prism-engine-v2.2-source.txt > unpack.cjs
+node unpack.cjs                    # stellt 664 Dateien wieder her
 
 # 3. Bauen und die vollständige Testsuite ausführen
-cargo test --workspace --release     # 3929 passed / 0 failed
+cargo test --workspace --release     # 4029 passed / 0 failed
 
 # 4. Nichts schreiben, einfach rendern lassen
 cargo run -p prism-app --release     # eingebaute Demo-Szene
 ```
 
-Das Ergebnis ist ein gewöhnlicher Cargo-Workspace (28 Crates unter `src/`); alle weiteren `cargo`-Befehle funktionieren wie in jedem Rust-Projekt. Der erste Build dauert einige Minuten.
+Das Ergebnis ist ein gewöhnlicher Cargo-Workspace (29 Crates unter `src/`); alle weiteren `cargo`-Befehle funktionieren wie in jedem Rust-Projekt. Der erste Build dauert einige Minuten.
 
 <a id="one-scene"></a>
 ## Eine Einstellung, ein Text
@@ -228,8 +228,8 @@ Jeder Node-Typ der Engine ist eine **Partikulärlösung** eines Tripels aus „K
 | Backend | Status | Beleg |
 | --- | --- | --- |
 | **Vulkan** | Läuft wirklich | Compute- und Raytracing-Pipeline; ohne GPU auf Mesas lavapipe-Software-ICD verifizierbar; `render_scene` ist **byteidentisch (0 Differenz)** zur CPU-Referenz; `is_available()` ist ein Compute-∧-Render-Selbsttest |
-| **Metal** | Compile-Gate vorhanden, nicht aktiviert | Isomorphe Portierung fertig, nicht auf Hardware verifiziert, `is_available()` immer false |
-| **WebGPU** | Nur Fazit | Machbarkeit bewertet (4–6 Personentage Portierung), Renderpfad nicht implementiert |
+| **Metal** | Code bereit (kein eigenständiges Metal-Backend, nicht aktiviert), nicht auf Hardware verifiziert | Isomorphe Portierung fertig (historisches Asset), `is_available()` immer false |
+| **WebGPU** | Code bereit (T1/T2/T3 grün), unterstützte Oberfläche weiterhin nur Chrome/Edge; T3 ist 19/19 grün auf 2 Geräten (Galaxy S10 + HONOR X40, dieselben wasm-Bytes) (keines ist eine Chrome/Edge-Marke, daher bleibt der Markenpunkt offen) | Machbarkeit bewertet (4–6 Personentage Portierung), Renderpfad in T03; Gerätenachweis in `docs/QA/real-device-webgpu-2026-10-30.md` §9 |
 
 <a id="engineering"></a>
 ## Technische Fakten
@@ -240,7 +240,9 @@ Drei Einschränkungen und was jede kostet:
 | --- | --- | --- |
 | Keine Fremdcode-Abhängigkeiten | Alle 110 Laufzeit- + 20 Test-Abhängigkeiten sind `path`-Abhängigkeiten im Repo; kein `build.rs`, kein natives Linken, kein Netzwerk beim Build | Jedes Format, jeder Algorithmus, jede Schrift, jeder Codec muss hier geschrieben werden |
 | Bitgenauer Determinismus | Festkomma-IDCT, feste Sampling-Sequenzen, ein vierdimensionaler Konfigurationshash; identisch über Plattformen bei identischer Eingabe | Keine schnellen Gleitkomma-Abkürzungen, keine Abhängigkeit von Hashmap-Iterationsreihenfolge |
-| Einzeldatei-Verteilung | 642 Dateien aus 28 Crates zu einem 18,9 MB großen UTF-8-Text zusammengeführt, von `node unpack.cjs` wiederhergestellt | Man verliert das direkte Durchstöbern des Quellcodes auf GitHub |
+| Einzeldatei-Verteilung | 664 Dateien aus 29 Crates zu einem 19,5 MB großen UTF-8-Text zusammengeführt, von `node unpack.cjs` wiederhergestellt | Man verliert das direkte Durchstöbern des Quellcodes auf GitHub |
+
+> ⚠️ **v2.2-Verteilungskorrektur**: die v2.1-Einzdatei-Verteilung (`dist/prism-engine-v2.1-source.txt`, gepackt am 2026-10-27) enthielt einen BSDF-Multistreu-Kompensationsfehler (Farbversatz bei übersättigten Metallen im Streifwinkel); **in v2.2 behoben**. Nutzer, die übersättigte Metalle mit der v2.1-Einzdatei-Verteilung rendern, sollten auf v2.2 upgraden.
 
 ### Wie Determinismus verifiziert wird
 
@@ -249,7 +251,7 @@ Vier Schichten, von den Parametern bis zu den Bytes:
 1. **Signatur-Abschluss**: Node-Graphen, Cache-Schlüssel, Snapshot-Schlüssel und Frame-Signaturen teilen einen vierdimensionalen Konfigurationshash. Ein Parameter ändert sich ⇒ der Schlüssel muss sich ändern ⇒ keine veraltete Wiederverwendung. Iterationsknoten führen `(ε, n)` im Schlüssel, Stream-Knoten die Framenummer; `None` degradiert bitgenau zum alten Verhalten.
 2. **Byte-Fixpunkte**: USD Export→Import→Export ist byteidentisch; WAV 16/24/32 Bit Round-Trips stimmen; EXR wird Bitstrom gegen Bitstrom mit dem offiziellen OpenEXR verglichen.
 3. **Packaging-Determinismus**: zweimaliges Packen derselben Quelle ergibt identische SHA-256; der Unpack-Round-Trip vergleicht jede Datei Byte für Byte.
-4. **Tests als Kriterium**: viele der 3929 Tests fixieren Goldwerte (Toleranz von 1e-2 auf 1e-6 verschärft, gemessene Residuen 4,53e-7); Formtreue wird über Hausdorff-Abstände begrenzt statt über „sieht nah genug aus“.
+4. **Tests als Kriterium**: viele der 4029 Tests fixieren Goldwerte (Toleranz von 1e-2 auf 1e-6 verschärft, gemessene Residuen 4,53e-7); Formtreue wird über Hausdorff-Abstände begrenzt statt über „sieht nah genug aus“.
 
 <a id="architecture"></a>
 ## Architektur
@@ -264,7 +266,7 @@ flowchart LR
     AU --> OUT
 ```
 
-28 Crates, nach Verantwortung gruppiert:
+29 Crates, nach Verantwortung gruppiert:
 
 | Gruppe | Crates |
 | --- | --- |
@@ -280,7 +282,7 @@ Verzeichnisstruktur nach dem Entpacken:
 
 | Pfad | Inhalt |
 | --- | --- |
-| `src/` | Quellcode der 28 Crates (im Repo `crates/`, für die Verteilung umbenannt) |
+| `src/` | Quellcode der 29 Crates (im Repo `crates/`, für die Verteilung umbenannt) |
 | `Compliance/` | Null-Abhängigkeits-Prüfung, Drittanbieter-Hinweise, Asset-Register |
 | `开发者指南.md` | Eigenständiger Entwicklerleitfaden: Einstieg / Architektur / mathematischer Kern / Gates / Erweiterung |
 | `tools/` | Gate- und Pack-Skripte |
@@ -293,7 +295,7 @@ Verzeichnisstruktur nach dem Entpacken:
 ## Bauen, testen, Gates
 
 ```bash
-cargo test --workspace --release      # 3929 passed / 0 failed / 0 ignored
+cargo test --workspace --release      # 4029 passed / 0 failed / 0 ignored
 cargo xtest                           # gleichwertiger Alias
 cargo test -p prism-core --release    # Smoke-Test einer einzelnen Crate
 
@@ -304,7 +306,7 @@ node tools/compliance_check.mjs --self-test  # Gegenprobe: muss rot werden und z
 node tools/pack_source_txt.mjs --verify      # Pack- und Entpack-Roundtrip, Byte für Byte
 ```
 
-- Vollsuite: **3929 passed / 0 failed / 0 ignored**, 179 Testabschnitte, 171,5 s mit allen Kernen (Release).
+- Vollsuite: **4029 passed / 0 failed / 0 ignored**, 188 Testabschnitte, 110 s mit allen Kernen (Release).
 - CI mit sechs Jobs: Ghost-Write-Schutz, Build + Volltests, wasm32-Build, WGSL-Statikprüfung, Bitstrom-Interop gegen offizielles OpenEXR, Node-Host-Gegenprobe.
 - Der Hygiene-Scan hat weiterhin Treffer: Die verteilte Dokumentationsebene ist sauber, der Rest steckt in Quellkommentaren und nicht verteilten Repo-Dateien. Das Skript existiert, damit Reste **sichtbar und einzeln abarbeitbar** bleiben — nicht um Sauberkeit vorzutäuschen.
 
@@ -315,16 +317,16 @@ Vier Gate-Skripte ohne Abhängigkeiten (nur Node): Ghost-Write-Schutz (inklusive
 <a id="boundaries"></a>
 ## Ehrliche Grenzen
 
-| Grenze | Stand | Ausweg |
-| --- | --- | --- |
-| DNG `Compression=7` (Lossless JPEG) | Nicht implementiert; DNGs echter Kameras sind nicht lesbar | Vorher nach 16-Bit-TIFF/PNG wandeln |
-| mp3 / AAC / FLAC | Dekodierung über externes ffmpeg, Encoding nicht selbst implementiert | ffmpeg installieren oder bei WAV bleiben |
-| Gekrümmte Primitive auf GPU | Nur CPU-Pfad | Triangulieren und über die SAH-BVH gehen |
-| Metal | Gate kompiliert, nicht auf Hardware geprüft, nicht aktiviert | Anbinden, sobald Apple-Hardware verfügbar ist |
-| WebGPU | Machbarkeit geklärt, Renderpfad nicht implementiert | 4–6 Personentage |
-| Hardware-Encoding | Probe-Skelett für drei Plattformen, keine Implementierung | Pro Zielplattform ausfüllen |
-| GPU-Beschleunigung | Korrektheit nur auf lavapipe geprüft, nie auf echter GPU gemessen | Auf Zielhardware messen |
-| Hygiene-Scan | Bestehende Treffer in Quellkommentaren | Einzeln abarbeiten, das Skript verfolgt sie |
+| Grenze | Stand | Ausweg | Beleg / Ablehnungspunkt |
+| --- | --- | --- | --- |
+| DNG `Compression=1/7/8` (inkl. 32946 Deflate) | 1/7/8 unterstützt (inkl. 32946 Deflate); echte Kameramodelle nicht durch Muster verifiziert | Kein Konvertieren nötig; echte Kamera-Muster können golden ergänzen (nicht unterstützte Werte 6/34892/34712/52546 strukturell abgelehnt) | `raw.rs:3282,3287` (Lese-Pfad teilt 1/7/8/32946 zu) + `raw_dng_synth.rs:260` (Synth unterstützt 1/7/8/32946) + 设计 §7.3 / Q10 (Echtgeräte-Register) |
+| mp3 / AAC / FLAC | Dekodierung über externes ffmpeg, Encoding nicht selbst implementiert | ffmpeg installieren oder bei WAV bleiben | `README.md:213` (AAC/mp3-Encoding nicht im Haus, via ffmpeg) |
+| Gekrümmte Primitive auf GPU | Nur CPU-Pfad | Triangulieren und über die SAH-BVH gehen | Strukturierter Ablehnungspunkt: kein GPU-Kernel (`prism-vector/src/path.rs:8` CPU-Flachen; GPU-Kurven sind T06 TODO, 设计 §6 WP-A) |
+| Metal | Code bereit (kein eigenständiges Metal-Backend, nicht aktiviert); `is_available()` immer false, nicht auf Hardware verifiziert | Anbinden, sobald Apple-Hardware und eine eigenständige Backend-Aufgabe verfügbar sind | `prism-gpu/src/metal/mod.rs:9,192` (is_available immer false) + `metal/render.rs:1` (nicht leuchtend) + 设计 §7.2 Metal-Zeile |
+| WebGPU | Code bereit (T1/T2/T3 grün), unterstützte Oberfläche weiterhin nur Chrome/Edge; **19/19 in 4 Browser-Umgebungen / 2 Geräten / 2 Artefakt-Builds** (inkl. Edge for Android 153), Hardware-Adapter bestätigt (`isFallbackAdapter=false`); **Desktop ungetestet** | ein echter Desktop-Lauf mit Chrome/Edge schließt es ab (ca. 5 Minuten) | `docs/v2.1-WebGPU可行性评估.md:13,152` (bedingt machbar, Chrome/Edge zuerst) + 设计 §7.2 WebGPU-Zeile + `docs/QA/real-device-webgpu-2026-10-30.md` §9 (19/19 auf Gerät) |
+| Hardware-Encoding | Probe-Skelett für drei Plattformen, keine Implementierung (bindungsbereit wartet auf C-2) | Pro Zielplattform ausfüllen | `prism-ffi-hwenc/src/lib.rs:14` (linkt keine Plattform-Bibliothek) + 设计 §7.2 硬件编码-Zeile |
+| GPU-Beschleunigung | Als wartend auf Verifikation registriert: Korrektheit nur auf lavapipe geprüft; echte GPU-Beschleunigung nicht gemessen, keine Zahl geschrieben (lavapipe ist Pseudowert) | Auf Zielhardware messen | `README.md:228` (lavapipe-Software-ICD, keine GPU zu verifizieren) + 设计 §7.2 GPU 加速比-Zeile (keine Zahl erlaubt) |
+| Hygiene-Scan | Bestehende Treffer in Quellkommentaren (C-3 aus dieser Version genommen; Gate bleibt) | Einzeln abarbeiten, das Skript verfolgt sie | `README.md:299,307` (hygiene_scan-Gate, Dokumentationsebene geleert) + C-3 entfernt (设计 §6.2) |
 
 Das sind keine „später“-Punkte. Sie werden heute ausdrücklich nicht unterstützt. Hier besser als in einem Issue versteckt.
 

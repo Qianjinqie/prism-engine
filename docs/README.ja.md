@@ -24,11 +24,11 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License">
-  <img src="https://img.shields.io/badge/tests-3929%20passed-brightgreen.svg" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-4029%20passed-brightgreen.svg" alt="Tests">
   <img src="https://img.shields.io/badge/dependencies-zero-brightgreen.svg" alt="Dependencies">
   <img src="https://img.shields.io/badge/crates-28-blue.svg" alt="Crates">
   <img src="https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg" alt="Distribution">
-  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v2.1-blue.svg" alt="Release"></a>
+  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v2.2-blue.svg" alt="Release"></a>
 </p>
 
 <p align="center">
@@ -40,7 +40,7 @@
 </p>
 
 <p align="center">
-  <sub><b>642</b> ファイル · <b>28</b> crate · <b>26.1 万</b> 行の Rust · <b>3929</b> テスト · サードパーティ依存 <b>0</b> · <b>18.9 MB</b> の単一ファイル</sub>
+  <sub><b>664</b> ファイル · <b>29</b> crate · <b>27.3 万</b> 行の Rust · <b>4029</b> テスト · サードパーティ依存 <b>0</b> · <b>19.5 MB</b> の単一ファイル</sub>
 </p>
 
 <!-- TOC-START -->
@@ -86,23 +86,23 @@ Rust で書かれたプロシージャル・メディアエンジン。入力は
 
 ```bash
 # 1. 単一ファイルのソースパッケージを取得し、SHA-256 を検証
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.1/prism-engine-v2.1-source.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.2/prism-engine-v2.2-source.txt
 curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.1/SHA256SUMS.txt
 sha256sum -c SHA256SUMS.txt
 
 # 2. パッケージに埋め込まれた展開スクリプトを取り出す（Node 18+ のみ、npm install 不要）
 awk '/^UNPACK SCRIPT BEGIN$/{f=1;next} /^UNPACK SCRIPT END$/{f=0} f' \
-  prism-engine-v2.1-source.txt > unpack.cjs
-node unpack.cjs                    # 642 ファイルを復元
+  prism-engine-v2.2-source.txt > unpack.cjs
+node unpack.cjs                    # 664 ファイルを復元
 
 # 3. ビルドして全テストを実行
-cargo test --workspace --release     # 3929 passed / 0 failed
+cargo test --workspace --release     # 4029 passed / 0 failed
 
 # 4. 何も書かずに、まず映像を出す
 cargo run -p prism-app --release     # 内蔵デモシーン
 ```
 
-展開後は通常の Cargo workspace（`src/` 以下に 28 crate）で、以降の `cargo` コマンドは普通の Rust プロジェクトと同じです。初回ビルドには数分かかります。
+展開後は通常の Cargo workspace（`src/` 以下に 29 crate）で、以降の `cargo` コマンドは普通の Rust プロジェクトと同じです。初回ビルドには数分かかります。
 
 <a id="one-scene"></a>
 ## 一つのショットを、一つのテキストで
@@ -228,8 +228,8 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 | バックエンド | 状態 | 根拠 |
 | --- | --- | --- |
 | **Vulkan** | 実際に動作 | compute + レイトレーシングの二系統。Mesa lavapipe のソフトウェア ICD で GPU なしでも検証可能。`render_scene` の出力は CPU 参照と**バイト単位で 0 差**。`is_available()` は compute ∧ render の二重セルフチェック |
-| **Metal** | コンパイルゲート済み、未点灯 | 同型移植は完了、実機検証なし、`is_available()` は常に false |
-| **WebGPU** | 結論のみ | 実現可能性の評価は完了（移植量 4〜6 人日）、描画経路は未実装 |
+| **Metal** | コード準備済み（独立した Metal バックエンドなし、未点灯）、実機未検証 | 同型移植は完了（歴史資産）、`is_available()` は常に false |
+| **WebGPU** | コード準備済み（T1/T2/T3 緑）、対応範囲は引き続き Chrome/Edge のみ；T3 はモバイル端末 2 台（Galaxy S10 + HONOR X40、同一 wasm バイト）で 19/19 全件パス（いずれも Chrome/Edge ブランドではなく、ブランド項目は未験） | 実現可能性の評価は完了（移植量 4〜6 人日）、描画経路は T03 で着陸；実機証拠は `docs/QA/real-device-webgpu-2026-10-30.md` §9 |
 
 <a id="engineering"></a>
 ## エンジニアリング上の事実
@@ -240,7 +240,9 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 | --- | --- | --- |
 | サードパーティコードへの依存ゼロ | 実行時 110 + テスト 20 の依存はすべてリポジトリ内の `path` 依存；`build.rs` なし、ネイティブリンクなし、ビルド時にネットワークなし | あらゆるフォーマット、アルゴリズム、フォント、コーデックをここで書く必要がある |
 | バイト単位の決定性 | 固定小数点 IDCT、固定サンプリング列、四次元設定ハッシュ；同一入力ならプラットフォーム間で同一 | 浮動小数点の高速経路を捨て、ハッシュマップの反復順序に依存できない |
-| 単一ファイル配布 | 28 crate・642 ファイルを 18.9 MB の UTF-8 テキスト一つにまとめ、`node unpack.cjs` で復元 | GitHub 上でソースを直接眺める便利を捨てる |
+| 単一ファイル配布 | 29 crate・664 ファイルを 19.5 MB の UTF-8 テキスト一つにまとめ、`node unpack.cjs` で復元 | GitHub 上でソースを直接眺める便利を捨てる |
+
+> ⚠️ **v2.2 配布訂正**: v2.1 単一ファイル配布（`dist/prism-engine-v2.1-source.txt`、2026-10-27 パッケージ）には BSDF 多散乱補償の欠陥（過飽和金属の掠射角での色ずれ）が含まれていました；**v2.2 で修正済み**。v2.1 単一ファイル配布で過飽和金属をレンダリングする方は v2.2 へアップグレードしてください。
 
 ### 決定性はどう検証されるか
 
@@ -249,7 +251,7 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 1. **署名閉包**：ノードグラフ、キャッシュキー、スナップショットキー、フレーム署名を四次元設定ハッシュに統一。パラメータが変わればキーも必ず変わり、誤再利用が起きない。反復ノードのキーは `(ε, n)`、ストリームノードはフレーム番号を含み、`None` では旧挙動へバイト単位で退化する。
 2. **バイト不動点**：USD はエクスポート→インポート→エクスポートがバイト一致；WAV 16/24/32 bit の往復が一致；EXR は公式 OpenEXR とビットストリーム同士で突き合わせる。
 3. **パッケージングの決定性**：同じソースを二度パッケージすると SHA-256 が一致；展開の往復で全ファイルをバイト単位で比較する。
-4. **テストを判定基準にする**：3929 件のテストの多くが黄金値を固定（許容差は 1e-2 から 1e-6 へ、実測残差 4.53e-7）；形状の忠実さは「だいたい合っている」ではなく Hausdorff 距離で上限を決める。
+4. **テストを判定基準にする**：4029 件のテストの多くが黄金値を固定（許容差は 1e-2 から 1e-6 へ、実測残差 4.53e-7）；形状の忠実さは「だいたい合っている」ではなく Hausdorff 距離で上限を決める。
 
 <a id="architecture"></a>
 ## アーキテクチャ
@@ -264,7 +266,7 @@ flowchart LR
     AU --> OUT
 ```
 
-28 crate を責務ごとに：
+29 crate を責務ごとに：
 
 | 分類 | crate |
 | --- | --- |
@@ -280,7 +282,7 @@ flowchart LR
 
 | パス | 内容 |
 | --- | --- |
-| `src/` | 28 crate のソース（リポジトリ内では `crates/`、配布時に再構成） |
+| `src/` | 29 crate のソース（リポジトリ内では `crates/`、配布時に再構成） |
 | `Compliance/` | 依存ゼロ検証、第三者声明、アセット登録 |
 | `开发者指南.md` | 自己完結の開発者ガイド：導入 / アーキテクチャ / 数学カーネル / ゲート / 拡張 |
 | `tools/` | ゲートとパッケージのスクリプト |
@@ -293,7 +295,7 @@ flowchart LR
 ## ビルド・テスト・ゲート
 
 ```bash
-cargo test --workspace --release      # 3929 passed / 0 failed / 0 ignored
+cargo test --workspace --release      # 4029 passed / 0 failed / 0 ignored
 cargo xtest                           # 同等のエイリアス
 cargo test -p prism-core --release    # 単一 crate のスモークテスト
 
@@ -304,7 +306,7 @@ node tools/compliance_check.mjs --self-test  # 反証：落ちることを確認
 node tools/pack_source_txt.mjs --verify      # パッケージと展開の往復をバイト単位で検証
 ```
 
-- 全量：**3929 passed / 0 failed / 0 ignored**、179 のテスト区間、全コア並列で 171.5 秒（release）。
+- 全量：**4029 passed / 0 failed / 0 ignored**、188 のテスト区間、全コア並列で 110 秒（release）。
 - CI は六つのジョブ：幽霊書き込み防御、ビルド + 全テスト、wasm32 ビルド、WGSL 静的検査、公式 OpenEXR とのビットストリーム相互検証、Node ホストのクロスチェック。
 - 衛生スキャンには依然ヒットが残ります。配布物のドキュメント層はクリア済みで、残りはソースコメントと配布対象外のリポジトリ内ファイルです。スクリプトの存在は、残存を**見える形で一件ずつ片付ける**ためであり、きれいなふりをするためではありません。
 
@@ -315,16 +317,16 @@ node tools/pack_source_txt.mjs --verify      # パッケージと展開の往復
 <a id="boundaries"></a>
 ## 正直な境界
 
-| 境界 | 現状 | 道筋 |
-| --- | --- | --- |
-| DNG `Compression=7`（lossless JPEG） | 未実装。実機カメラの DNG は読めない | 16 bit TIFF / PNG に変換してから |
-| mp3 / AAC / FLAC | デコードは外部 ffmpeg の探査経由、エンコードは自前実装せず | ffmpeg を入れる、または WAV のみ使う |
-| 曲線プリミティブの GPU | CPU 経路のみ | 三角形化して SAH-BVH へ |
-| Metal | ゲートは用意済み、実機未検証、未点灯 | Apple 機器が用意でき次第接続 |
-| WebGPU | 実現可能性の結論のみ、描画は未実装 | 4〜6 人日 |
-| ハードウェアエンコード | 三プラットフォームの探査スケルトンのみ | 対象プラットフォームごとに実装 |
-| GPU 高速化率 | lavapipe で正しさのみ検証、実 GPU では未測定 | 対象ハードウェアで測定が必要 |
-| 衛生スキャン | ソースコメントに既存のヒット | 一件ずつ整理、スクリプトで追跡 |
+| 境界 | 現状 | 道筋 | 証拠 / 却下点 |
+| --- | --- | --- | --- |
+| DNG `Compression=1/7/8`（32946 Deflate 含む） | 1/7/8 対応（32946 Deflate 含む）；実機カメラモデルは未検証（サンプルなし） | 変換不要；実カメラサンプルで golden 追加可（非対応値 6/34892/34712/52546 は構造的に拒否） | `raw.rs:3282,3287`（読み側が 1/7/8/32946 を分派）+ `raw_dng_synth.rs:260`（合成は 1/7/8/32946 対応）+ 设计 §7.3 / Q10（実機登録表） |
+| mp3 / AAC / FLAC | デコードは外部 ffmpeg の探査経由、エンコードは自前実装せず | ffmpeg を入れる、または WAV のみ使う | `README.md:213`（AAC/mp3 エンコードは自前実装せず、ffmpeg 経由） |
+| 曲線プリミティブの GPU | CPU 経路のみ | 三角形化して SAH-BVH へ | 構造的却下点：GPU kernel なし（`prism-vector/src/path.rs:8` CPU 平たん化；GPU 曲線は T06 TODO、设计 §6 WP-A） |
+| Metal | コード準備済み（独立した Metal バックエンドなし、未点灯）；`is_available()` は常に false、実機未検証 | Apple 機器と独立バックエンドの項目が用意でき次第接続 | `prism-gpu/src/metal/mod.rs:9,192`（is_available は常に false）+ `metal/render.rs:1`（未点灯）+ 设计 §7.2 Metal 行 |
+| WebGPU | コード準備済み（T1/T2/T3 緑）、対応範囲は引き続き Chrome/Edge のみ；**ブラウザ環境 4 つ / 端末 2 台 / ビルド 2 種で 19/19**（Edge for Android 153 を含む）、ハードウェアアダプタ確認済み（`isFallbackAdapter=false`）；**デスクトップは未検証** | デスクトップの Chrome/Edge で 1 回実行すれば完了（約 5 分）| `docs/v2.1-WebGPU可行性評価.md:13,152`（条件付き実現可能、Chrome/Edge 優先）+ 设计 §7.2 WebGPU 行 + `docs/QA/real-device-webgpu-2026-10-30.md` §9（実機 19/19）|
+| ハードウェアエンコード | 三プラットフォームの探査スケルトンのみ、実装なし（C-2 待ちでバインド準備済み） | 対象プラットフォームごとに実装 | `prism-ffi-hwenc/src/lib.rs:14`（プラットフォームライブラリを link しない）+ 设计 §7.2 硬件编码 行 |
+| GPU 高速化率 | 検証待ち登録：正しさは lavapipe のみ検証；実 GPU 高速化率は未測定・数値非記載（lavapipe は擬似値） | 対象ハードウェアで測定が必要 | `README.md:228`（lavapipe ソフトウェア ICD、検証すべき GPU なし）+ 设计 §7.2 GPU 加速比 行（数値記載不可） |
+| 衛生スキャン | ソースコメントに既存のヒット（C-3 は本期から除外、gate は維持） | 一件ずつ整理、スクリプトで追跡 | `README.md:299,307`（hygiene_scan gate、文書層はゼロ化）+ C-3 除外（设计 §6.2） |
 
 これらは「後回し」ではなく、現時点で明確に対応していない事項です。issue に隠すより、ここに書くほうがよいと判断しました。
 

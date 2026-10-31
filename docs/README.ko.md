@@ -24,11 +24,11 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License">
-  <img src="https://img.shields.io/badge/tests-3929%20passed-brightgreen.svg" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-4029%20passed-brightgreen.svg" alt="Tests">
   <img src="https://img.shields.io/badge/dependencies-zero-brightgreen.svg" alt="Dependencies">
   <img src="https://img.shields.io/badge/crates-28-blue.svg" alt="Crates">
   <img src="https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg" alt="Distribution">
-  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v2.1-blue.svg" alt="Release"></a>
+  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v2.2-blue.svg" alt="Release"></a>
 </p>
 
 <p align="center">
@@ -40,7 +40,7 @@
 </p>
 
 <p align="center">
-  <sub><b>642</b> 파일 · <b>28</b> crate · <b>26.1만</b> 줄의 Rust · <b>3929</b> 테스트 · 서드파티 의존성 <b>0</b> · <b>18.9 MB</b> 단일 파일</sub>
+  <sub><b>664</b> 파일 · <b>29</b> crate · <b>27.3만</b> 줄의 Rust · <b>4029</b> 테스트 · 서드파티 의존성 <b>0</b> · <b>19.5 MB</b> 단일 파일</sub>
 </p>
 
 <!-- TOC-START -->
@@ -86,17 +86,17 @@ Rust로 작성된 프로시저럴 미디어 엔진. 입력은 `.prism` 장면 �
 
 ```bash
 # 1. 단일 파일 소스 패키지를 받고 SHA-256 검증
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.1/prism-engine-v2.1-source.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.2/prism-engine-v2.2-source.txt
 curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.1/SHA256SUMS.txt
 sha256sum -c SHA256SUMS.txt
 
 # 2. 패키지에 들어 있는 언팩 스크립트 추출 (Node 18+ 만 필요, npm install 불필요)
 awk '/^UNPACK SCRIPT BEGIN$/{f=1;next} /^UNPACK SCRIPT END$/{f=0} f' \
-  prism-engine-v2.1-source.txt > unpack.cjs
-node unpack.cjs                    # 642개 파일 복원
+  prism-engine-v2.2-source.txt > unpack.cjs
+node unpack.cjs                    # 664개 파일 복원
 
 # 3. 빌드하고 전체 테스트 실행
-cargo test --workspace --release     # 3929 passed / 0 failed
+cargo test --workspace --release     # 4029 passed / 0 failed
 
 # 4. 아무것도 쓰지 말고, 먼저 영상을 봅니다
 cargo run -p prism-app --release     # 내장 데모 장면
@@ -228,8 +228,8 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 | 백엔드 | 상태 | 근거 |
 | --- | --- | --- |
 | **Vulkan** | 실제 동작 | compute + 레이트레이싱 이중 파이프라인. Mesa lavapipe 소프트웨어 ICD에서 GPU 없이 검증 가능. `render_scene` 출력이 CPU 참조와 **바이트 단위 0 차이**. `is_available()`은 compute ∧ render 이중 자체 점검 |
-| **Metal** | 컴파일 게이트 완료, 미점등 | 동형 이식 완료, 실기 검증 없음, `is_available()` 항상 false |
-| **WebGPU** | 결론만 | 타당성 평가 완료(이식량 4–6 인일), 렌더 경로 미구현 |
+| **Metal** | 코드 준비 완료（독립 Metal 백엔드 없음, 미점등）, 실기 미검증 | 동형 이식 완료(역사 자산), `is_available()` 항상 false |
+| **WebGPU** | 코드 준비 완료（T1/T2/T3 녹색）, 지원 범위는 여전히 Chrome/Edge 만；T3 는 모바일 기기 2대(Galaxy S10 + HONOR X40, 동일 wasm 바이트)에서 19/19 전항 통과 (둘 모두 Chrome/Edge 브랜드가 아니므로 브랜드 항목은 미검증) | 타당성 평가 완료(이식량 4–6 인일), 렌더 경로는 T03 에서 착륙; 실기 증거는 `docs/QA/real-device-webgpu-2026-10-30.md` §9 |
 
 <a id="engineering"></a>
 ## 엔지니어링 사실
@@ -240,7 +240,9 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 | --- | --- | --- |
 | 서드파티 코드 의존 없음 | 런타임 110 + 테스트 20 의존성 전부 저장소 내 `path` 의존성; `build.rs` 없음, 네이티브 링크 없음, 빌드 시 네트워크 없음 | 모든 포맷, 알고리즘, 폰트, 코덱을 여기서 작성해야 한다 |
 | 바이트 단위 결정성 | 고정소수점 IDCT, 고정 샘플링 열, 4차원 설정 해시; 같은 입력이면 플랫폼 간 동일 | 부동소수점 고속 경로를 포기하고, 해시맵 순회 순서에 의존할 수 없다 |
-| 단일 파일 배포 | 28 crate·642 파일을 18.9 MB UTF-8 텍스트 하나로 합치고 `node unpack.cjs`로 복원 | GitHub에서 소스를 바로 훑어보는 편의를 포기한다 |
+| 단일 파일 배포 | 29 crate·664 파일을 19.5 MB UTF-8 텍스트 하나로 합치고 `node unpack.cjs`로 복원 | GitHub에서 소스를 바로 훑어보는 편의를 포기한다 |
+
+> ⚠️ **v2.2 배포 정정**: v2.1 단일 파일 배포(`dist/prism-engine-v2.1-source.txt`, 2026-10-27 패키징)에는 BSDF 다중산란 보상 결함(과포화 금속의 스킴각 색 편이)이 포함되어 있었습니다; **v2.2 에서 수정됨**. v2.1 단일 파일 배포로 과포화 금속을 렌더링하는 사용자는 v2.2 로 업그레이드하세요.
 
 ### 결정성은 어떻게 검증되는가
 
@@ -249,7 +251,7 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 1. **서명 폐포**: 노드 그래프, 캐시 키, 스냅숏 키, 프레임 서명을 4차원 설정 해시로 통일. 파라미터가 바뀌면 키도 반드시 바뀌어 잘못된 재사용이 없다. 반복 노드 키에는 `(ε, n)`, 스트림 노드에는 프레임 번호가 들어가며, `None`이면 이전 동작으로 바이트 단위 퇴화한다.
 2. **바이트 고정점**: USD는 내보내기→가져오기→내보내기가 바이트 일치; WAV 16/24/32 bit 왕복이 일치; EXR은 공식 OpenEXR과 비트스트림 대 비트스트림으로 대조한다.
 3. **패키징 결정성**: 같은 소스를 두 번 패키징하면 SHA-256이 동일; 압축 해제 왕복에서 모든 파일을 바이트 단위로 비교한다.
-4. **테스트를 판정 기준으로**: 3929개 테스트 중 다수가 황금값을 고정(허용 오차 1e-2에서 1e-6으로, 실측 잔차 4.53e-7); 형상 충실도는 "대충 비슷하다"가 아니라 Hausdorff 거리로 상한을 정한다.
+4. **테스트를 판정 기준으로**: 4029개 테스트 중 다수가 황금값을 고정(허용 오차 1e-2에서 1e-6으로, 실측 잔차 4.53e-7); 형상 충실도는 "대충 비슷하다"가 아니라 Hausdorff 거리로 상한을 정한다.
 
 <a id="architecture"></a>
 ## 아키텍처
@@ -293,7 +295,7 @@ flowchart LR
 ## 빌드, 테스트, 게이트
 
 ```bash
-cargo test --workspace --release      # 3929 passed / 0 failed / 0 ignored
+cargo test --workspace --release      # 4029 passed / 0 failed / 0 ignored
 cargo xtest                           # 동등한 별칭
 cargo test -p prism-core --release    # 단일 crate 스모크 테스트
 
@@ -304,7 +306,7 @@ node tools/compliance_check.mjs --self-test  # 반증: 실패해야 하며, 판�
 node tools/pack_source_txt.mjs --verify      # 패키징과 언팩 왕복을 바이트 단위로 검증
 ```
 
-- 전체: **3929 passed / 0 failed / 0 ignored**, 179개 테스트 구간, 전 코어 병렬 171.5초(release).
+- 전체: **4029 passed / 0 failed / 0 ignored**, 188개 테스트 구간, 전 코어 병렬 110초(release).
 - CI는 여섯 job: 유령 쓰기 방어, 빌드 + 전체 테스트, wasm32 빌드, WGSL 정적 검사, 공식 OpenEXR과 비트스트림 상호 검증, Node 호스트 교차 판정.
 - 위생 스캔에는 여전히 적중이 남아 있습니다. 배포 문서 층은 정리되었고, 나머지는 소스 주석과 배포 대상이 아닌 저장소 파일에 있습니다. 스크립트의 존재는 잔여물을 **보이게 두고 하나씩 정리**하기 위함이며, 깨끗한 척하기 위함이 아닙니다.
 
@@ -315,16 +317,16 @@ node tools/pack_source_txt.mjs --verify      # 패키징과 언팩 왕복을 바
 <a id="boundaries"></a>
 ## 정직한 경계
 
-| 경계 | 현황 | 출로 |
-| --- | --- | --- |
-| DNG `Compression=7`(lossless JPEG) | 미구현. 실제 카메라 DNG는 읽을 수 없음 | 16 bit TIFF / PNG로 변환 후 사용 |
-| mp3 / AAC / FLAC | 디코딩은 외부 ffmpeg 탐색 경로, 인코딩은 직접 구현하지 않음 | ffmpeg 설치, 또는 WAV만 사용 |
-| 곡선 프리미티브 GPU | CPU 경로만 | 삼각화 후 SAH-BVH로 |
-| Metal | 게이트 준비 완료, 실기 미검증, 미점등 | Apple 기기가 생기면 연결 |
-| WebGPU | 타당성 결론만, 렌더 미구현 | 4–6 인일 |
-| 하드웨어 인코딩 | 세 플랫폼 탐색 골격만 | 대상 플랫폼별로 구현 |
-| GPU 가속비 | lavapipe에서 정확성만 검증, 실제 GPU 미측정 | 대상 하드웨어에서 측정 필요 |
-| 위생 스캔 | 소스 주석에 기존 적중 | 하나씩 정리, 스크립트로 추적 |
+| 경계 | 현황 | 출로 | 증거 / 거부점 |
+| --- | --- | --- | --- |
+| DNG `Compression=1/7/8`（32946 Deflate 포함） | 1/7/8 지원（32946 Deflate 포함）；실제 카메라 모델은 샘플 검증 안 됨 | 변환 불필요；실제 카메라 샘플로 golden 추가 가능（미지원 값 6/34892/34712/52546 은 구조적 거부） | `raw.rs:3282,3287`（읽기 측이 1/7/8/32946 분배）+ `raw_dng_synth.rs:260`（합성은 1/7/8/32946 지원）+ 设计 §7.3 / Q10（실기 등록표） |
+| mp3 / AAC / FLAC | 디코딩은 외부 ffmpeg 탐색 경로, 인코딩은 직접 구현하지 않음 | ffmpeg 설치, 또는 WAV만 사용 | `README.md:213`（AAC/mp3 인코딩 직접 구현 안 함, ffmpeg 경로） |
+| 곡선 프리미티브 GPU | CPU 경로만 | 삼각화 후 SAH-BVH로 | 구조적 거부점：GPU kernel 없음（`prism-vector/src/path.rs:8` CPU 평탄화；GPU 곡선은 T06 TODO, 设计 §6 WP-A） |
+| Metal | 코드 준비 완료（독립 Metal 백엔드 없음, 미점등）；`is_available()` 항상 false, 실기 미검증 | Apple 기기와 독립 백엔드 항목이 생기면 연결 | `prism-gpu/src/metal/mod.rs:9,192`（is_available 항상 false）+ `metal/render.rs:1`（미점등）+ 设计 §7.2 Metal 행 |
+| WebGPU | 코드 준비 완료（T1/T2/T3 녹색）, 지원 범위는 여전히 Chrome/Edge 만；**브라우저 환경 4개 / 기기 2대 / 빌드 2종에서 19/19**(Edge for Android 153 포함), 하드웨어 어댑터 확인됨(`isFallbackAdapter=false`); **데스크톱 미검증** | 데스크톱 Chrome/Edge에서 한 번 실행하면 종결 (약 5분) | `docs/v2.1-WebGPU可行性평가.md:13,152`（조건부 실현 가능, Chrome/Edge 우선）+ 设计 §7.2 WebGPU 행 + `docs/QA/real-device-webgpu-2026-10-30.md` §9 (실기 19/19) |
+| 하드웨어 인코딩 | 세 플랫폼 탐색 골격만, 구현 없음（C-2 대기 중 바인드 준비） | 대상 플랫폼별로 구현 | `prism-ffi-hwenc/src/lib.rs:14`（플랫폼 라이브러리 link 안 함）+ 设计 §7.2 硬件编码 행 |
+| GPU 가속비 | 검증 대기 등록: 정확성은 lavapipe 에서만 검증；실제 GPU 가속비는 미측정·수치 미기재（lavapipe 는 의사값） | 대상 하드웨어에서 측정 필요 | `README.md:228`（lavapipe 소프트웨어 ICD, 검증할 GPU 없음）+ 设计 §7.2 GPU 加速比 행（수치 기재 불가） |
+| 위생 스캔 | 소스 주석에 기존 적중（C-3 는 본 버전에서 제외, gate 유지） | 하나씩 정리, 스크립트로 추적 | `README.md:299,307`（hygiene_scan gate, 문서 계층 제로화）+ C-3 제외（设计 §6.2） |
 
 이것들은 "나중에"가 아니라 현재 명확히 지원하지 않는 항목입니다. 이슈에 숨기는 것보다 여기 적는 편이 낫다고 판단했습니다.
 
