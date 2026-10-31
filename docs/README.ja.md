@@ -87,7 +87,7 @@ Rust で書かれたプロシージャル・メディアエンジン。入力は
 ```bash
 # 1. 単一ファイルのソースパッケージを取得し、SHA-256 を検証
 curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.2/prism-engine-v2.2-source.txt
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.1/SHA256SUMS.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.2/SHA256SUMS.txt
 sha256sum -c SHA256SUMS.txt
 
 # 2. パッケージに埋め込まれた展開スクリプトを取り出す（Node 18+ のみ、npm install 不要）

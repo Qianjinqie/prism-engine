@@ -87,7 +87,7 @@ Rust로 작성된 프로시저럴 미디어 엔진. 입력은 `.prism` 장면 �
 ```bash
 # 1. 단일 파일 소스 패키지를 받고 SHA-256 검증
 curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.2/prism-engine-v2.2-source.txt
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.1/SHA256SUMS.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.2/SHA256SUMS.txt
 sha256sum -c SHA256SUMS.txt
 
 # 2. 패키지에 들어 있는 언팩 스크립트 추출 (Node 18+ 만 필요, npm install 불필요)

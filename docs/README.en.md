@@ -87,7 +87,7 @@ The table lists capabilities only. What each one cannot do is in [Honest boundar
 ```bash
 # 1. Fetch the single-file source package and verify it
 curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.2/prism-engine-v2.2-source.txt
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.1/SHA256SUMS.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.2/SHA256SUMS.txt
 sha256sum -c SHA256SUMS.txt
 
 # 2. Extract the unpack script embedded in the package (Node 18+ only, no npm install)

@@ -87,7 +87,7 @@
 ```bash
 # 1. Скачать пакет исходников и проверить SHA-256
 curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.2/prism-engine-v2.2-source.txt
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.1/SHA256SUMS.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.2/SHA256SUMS.txt
 sha256sum -c SHA256SUMS.txt
 
 # 2. Извлечь встроенный распаковщик (достаточно Node 18+, npm install не нужен)

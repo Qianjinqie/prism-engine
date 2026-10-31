@@ -87,7 +87,7 @@ A tabela lista apenas capacidades. O que cada uma não faz está em [Limites hon
 ```bash
 # 1. Baixar o pacote de código e verificar o SHA-256
 curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.2/prism-engine-v2.2-source.txt
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.1/SHA256SUMS.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.2/SHA256SUMS.txt
 sha256sum -c SHA256SUMS.txt
 
 # 2. Extrair o script de desempacotamento embutido (só Node 18+, sem npm install)

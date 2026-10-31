@@ -86,7 +86,7 @@ Rust 写的程序化媒体引擎。输入 `.prism` 场景文本或 Rust 调用�
 ```bash
 # 1. 取单文件源码包，顺便校验 SHA-256
 curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.2/prism-engine-v2.2-source.txt
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.1/SHA256SUMS.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.2/SHA256SUMS.txt
 sha256sum -c SHA256SUMS.txt
 
 # 2. 抽出包内的解包脚本（只需 Node 18+，不需要 npm install）
