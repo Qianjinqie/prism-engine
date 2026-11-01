@@ -84,6 +84,20 @@ impl AabbBvh {
         self.order.len()
     }
 
+    /// 节点数（实例化 TLAS 的规模核算用：叶子 ≤ 8 图元 ⇒ ≈ n/4 个节点）。
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    /// 本树自身的字节数（节点数组 + 叶子索引表；**不含**被引用的几何）。
+    ///
+    /// 用于"实例化内存与实例数解耦"的核算：1 万实例的 TLAS 只有这一坨，
+    /// 与几何三角形数无关。
+    pub fn mem_bytes(&self) -> usize {
+        self.nodes.len() * core::mem::size_of::<Node>()
+            + self.order.len() * core::mem::size_of::<u32>()
+    }
+
     /// 递归构建一个节点，返回其索引（调用方保证 `prims` 非空）。
     fn build_node(&mut self, aabbs: &[Aabb], centroids: &[Vec3], prims: &mut [u32]) -> u32 {
         debug_assert!(!prims.is_empty(), "build_node requires non-empty prim range");

@@ -42,7 +42,13 @@
 //!   与不可复现性）；
 //! - **不做 variant set（变体集）求值**：`variantSet`/`variants` 分支
 //!   记入 [`LayerReport::skipped_variants`]，不选择具体变体；
-//! - **不做 `Sub`/实例化（`instanceable`）去重**、不做点/法线属性
+//! - **不解析 `instanceable`（USD 原生实例化）**：它靠 references/payloads
+//!   表达，而本解析器**不递归读别的层**（见上一条），所以无从判定"这两个
+//!   prim 是同一个 prototype"。**但已不再展平**：`build_scene_instanced`
+//!   把 Xform 链留在实例记录里、原型顶点保持局部坐标，并按**几何内容**去重
+//!   （同一块局部几何被多处使用时只存一份）。旧的 `build_scene` 仍是
+//!   "烘焙"形态，保留作兼容入口。
+//! - 不做点/法线属性
 //!   插值（`interpolation` 记入 [`Attribute::interpolation`] 但不参与
 //!   法线重算）、不做 UV 集编号多路（只取 `st`/`st0`）、不做材质着色
 //!   求值（只保留 `material:binding` 关系目标路径）；
@@ -2719,6 +2725,210 @@ pub fn build_scene_report(layer: &Layer) -> Result<(Scene, LayerReport), UsdErro
     ))
 }
 
+// ===========================================================================
+//  保实例的场景构建（W3 / A3：**不再把 Xform 链烘进顶点**）
+// ===========================================================================
+
+/// 一条 USD 原型实例：`prototypes[prototype]` 的一份引用 + 它的世界变换。
+///
+/// `affine` 是 3×4 **行主序**，与 `prism_rt::instance::Instance` 的槽位一致。
+#[derive(Debug, Clone, PartialEq)]
+pub struct RenderInstance {
+    /// 共享原型下标（[`InstancedScene::prototypes`]）。
+    pub prototype: u32,
+    /// 源 prim 路径（报错定位用）。
+    pub path: String,
+    /// 世界变换（3×4 行主序）。
+    pub affine: [f32; 12],
+}
+
+/// 保实例的场景：共享原型 + 实例表。
+///
+/// # 与 [`Scene`] 的区别（W3）
+///
+/// [`Scene`] 是 W3 之前的形态：每个 `Mesh` prim 一份**已烘焙世界变换**的
+/// 顶点。本结构把变换**留在实例记录里**，原型顶点保持 prim 的局部坐标：
+///
+/// * 几何内存与 prim 数解耦（同一份局部几何被 N 个 prim 复用时只存一份）；
+/// * 变换可改（改实例不动顶点）；
+/// * 法线不必烘焙——渲染时按实例的**逆转置**变换，非等比缩放下才是对的
+///   （`Mesh::build_mesh` 当年对非等比缩放只能记账后近似，见模块头）。
+pub struct InstancedScene {
+    /// 层版本。
+    pub version: String,
+    /// 共享原型（局部坐标，三角化已完成）。
+    pub prototypes: Vec<RenderMesh>,
+    /// 实例表。
+    pub instances: Vec<RenderInstance>,
+    /// 非网格 prim 数量。
+    pub non_mesh_prims: usize,
+}
+
+impl InstancedScene {
+    /// 原型条数。
+    pub fn prototype_count(&self) -> usize {
+        self.prototypes.len()
+    }
+
+    /// 实例条数。
+    pub fn instance_count(&self) -> usize {
+        self.instances.len()
+    }
+
+    /// 若走展平会多出多少个几何副本（`instances − prototypes`）。
+    pub fn saved_copies(&self) -> usize {
+        self.instances.len().saturating_sub(self.prototypes.len())
+    }
+
+    /// 原型三角形总数（与实例数无关）。
+    pub fn triangle_count(&self) -> usize {
+        self.prototypes.iter().map(|p| p.triangle_count()).sum()
+    }
+}
+
+/// 世界变换 → 3×4 行主序 f32。
+fn mat4_to_affine32(m: &Mat4) -> [f32; 12] {
+    [
+        m.m[0][0] as f32,
+        m.m[0][1] as f32,
+        m.m[0][2] as f32,
+        m.m[0][3] as f32,
+        m.m[1][0] as f32,
+        m.m[1][1] as f32,
+        m.m[1][2] as f32,
+        m.m[1][3] as f32,
+        m.m[2][0] as f32,
+        m.m[2][1] as f32,
+        m.m[2][2] as f32,
+        m.m[2][3] as f32,
+    ]
+}
+
+/// 几何内容指纹（FNV-1a over f32/u32 位模式）：相同内容 ⇒ 同一个原型。
+///
+/// 用**内容**而不是 prim 路径做键：USD 里"同一块局部几何被多个 Xform 引用"
+/// 常常是复制粘贴出来的、路径不同内容相同；按路径去重会漏掉这类。
+fn render_mesh_fingerprint(m: &RenderMesh) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    fn eat(h: &mut u64, bytes: &[u8]) {
+        for b in bytes {
+            *h ^= *b as u64;
+            *h = h.wrapping_mul(0x100_0000_01b3);
+        }
+    }
+    for p in &m.positions {
+        for c in p {
+            eat(&mut h, &c.to_le_bytes());
+        }
+    }
+    for i in &m.indices {
+        eat(&mut h, &i.to_le_bytes());
+    }
+    h
+}
+
+/// 由层构建**保实例**的场景（原型局部坐标 + 每 prim 一条实例记录）。
+pub fn build_scene_instanced(layer: &Layer) -> Result<InstancedScene, UsdError> {
+    Ok(build_scene_instanced_report(layer)?.0)
+}
+
+/// 带记账报告的保实例场景构建。
+pub fn build_scene_instanced_report(
+    layer: &Layer,
+) -> Result<(InstancedScene, LayerReport), UsdError> {
+    let mut report = LayerReport::default();
+    let mut prototypes: Vec<RenderMesh> = Vec::new();
+    let mut fingerprints: Vec<u64> = Vec::new();
+    let mut instances: Vec<RenderInstance> = Vec::new();
+    let mut non_mesh = 0usize;
+    for p in &layer.prims {
+        collect_prim_instanced(
+            p,
+            Mat4::identity(),
+            &mut prototypes,
+            &mut fingerprints,
+            &mut instances,
+            &mut non_mesh,
+            &mut report,
+        )?;
+    }
+    for inst in &instances {
+        if let Some(mat) = prototypes
+            .get(inst.prototype as usize)
+            .and_then(|p| p.material.as_ref())
+        {
+            if !layer.all_paths.iter().any(|p| p == mat) {
+                return Err(UsdError::dangling_relationship(
+                    format!("prim {} 的关系 material:binding", inst.path),
+                    format!(
+                        "材质目标 {mat:?} 不存在于本层（已声明路径：{:?}）",
+                        layer.all_paths
+                    ),
+                ));
+            }
+        }
+    }
+    report.skipped_time_samples.sort();
+    report.skipped_variants.sort();
+    report.unresolved_asset_paths.sort();
+    report.non_uniform_normals.sort();
+    Ok((
+        InstancedScene {
+            version: layer.version.clone(),
+            prototypes,
+            instances,
+            non_mesh_prims: non_mesh,
+        },
+        report,
+    ))
+}
+
+/// 递归收集：原型按**局部坐标**建（`world = identity`），世界变换进实例记录。
+#[allow(clippy::too_many_arguments)]
+fn collect_prim_instanced(
+    prim: &Prim,
+    parent_world: Mat4,
+    prototypes: &mut Vec<RenderMesh>,
+    fingerprints: &mut Vec<u64>,
+    instances: &mut Vec<RenderInstance>,
+    non_mesh: &mut usize,
+    report: &mut LayerReport,
+) -> Result<(), UsdError> {
+    let local = local_transform(prim)?;
+    let world = parent_world.mul(&local);
+    if prim.type_name == "Mesh" {
+        // 顶点用 identity 建（局部坐标），世界变换留给实例记录。
+        let local_mesh = build_mesh(prim, Mat4::identity(), report)?;
+        let rm = local_mesh.to_render_mesh();
+        let fp = render_mesh_fingerprint(&rm);
+        let idx = match fingerprints.iter().position(|h| *h == fp) {
+            Some(i) => i as u32,
+            None => {
+                prototypes.push(rm);
+                fingerprints.push(fp);
+                prototypes.len() as u32 - 1
+            }
+        };
+        instances.push(RenderInstance {
+            prototype: idx,
+            path: prim.path.clone(),
+            affine: mat4_to_affine32(&world),
+        });
+    } else if !prim.type_name.is_empty() {
+        *non_mesh += 1;
+    }
+    for r in &prim.references {
+        report.unresolved_asset_paths.push(r.clone());
+    }
+    for p in &prim.payloads {
+        report.unresolved_asset_paths.push(p.clone());
+    }
+    for c in &prim.children {
+        collect_prim_instanced(c, world, prototypes, fingerprints, instances, non_mesh, report)?;
+    }
+    Ok(())
+}
+
 /// 递归收集 prim 子树中的网格（累加世界变换）。
 fn collect_prim(
     prim: &Prim,
@@ -4548,6 +4758,95 @@ def Xform "root"
         assert_eq!(bmin, [1.0, 2.0, 3.0]);
         assert_eq!(bmax, [2.0, 3.0, 3.0]);
         assert_eq!(rm.path, "/root/quad");
+    }
+
+    /// **W3 / A3**：USD 导入不再把 Xform 链烘进顶点 —— 产出"原型 + 实例"。
+    ///
+    /// 两个 Xform 各挂一块**完全相同**的局部网格 ⇒ 原型 1 份、实例 2 条；
+    /// 原型顶点保持局部坐标（不再平移），平移在实例的 affine 里。
+    #[test]
+    fn instanced_scene_keeps_xform_out_of_vertices() {
+        let src = r#"#usda 1.0
+def Xform "a"
+{
+    double3 xformOp:translate = (1, 0, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+    def Mesh "quad"
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(0,0,0), (1,0,0), (1,1,0), (0,1,0)]
+    }
+}
+def Xform "b"
+{
+    double3 xformOp:translate = (0, 5, 0)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+    def Mesh "quad"
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(0,0,0), (1,0,0), (1,1,0), (0,1,0)]
+    }
+}
+"#;
+        let p = parse_str(src).unwrap_or_else(|e| panic!("{e}"));
+        let is = build_scene_instanced(&p.layer).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(is.prototype_count(), 1, "内容相同的两块网格应共用一个原型");
+        assert_eq!(is.instance_count(), 2);
+        assert_eq!(is.saved_copies(), 1);
+        assert_eq!(is.triangle_count(), 2, "三角形总数与实例数无关");
+        // 原型是**局部坐标**（顶点未平移）。
+        assert_eq!(is.prototypes[0].positions[0], [0.0, 0.0, 0.0]);
+        assert_eq!(
+            is.prototypes[0].triangle(0),
+            Some([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]])
+        );
+        // 世界变换在实例记录里（平移列 = affine[3] / [7]）。
+        assert_eq!(is.instances[0].affine[3], 1.0);
+        assert_eq!(is.instances[0].affine[7], 0.0);
+        assert_eq!(is.instances[1].affine[3], 0.0);
+        assert_eq!(is.instances[1].affine[7], 5.0);
+        assert_eq!(is.instances[0].prototype, is.instances[1].prototype);
+        assert_eq!(is.instances[0].path, "/a/quad");
+        assert_eq!(is.instances[1].path, "/b/quad");
+
+        // 对照：旧路径（build_scene）仍是**烘焙**形态（顶点已平移、2 份几何）。
+        let flat = build_scene(&p.layer).unwrap();
+        assert_eq!(flat.render_meshes().len(), 2);
+        assert_eq!(flat.render_meshes()[0].positions[0], [1.0, 0.0, 0.0]);
+        assert_eq!(flat.render_meshes()[1].positions[0], [0.0, 5.0, 0.0]);
+    }
+
+    /// 非均匀缩放：实例化路径下法线**不需要**近似（逆转置由渲染器做），
+    /// 故 `non_uniform_normals` 只由旧路径（烘焙）产生——这是 W3 的
+    /// 一处实质改进，登记在此防回退。
+    #[test]
+    fn instanced_scene_does_not_need_nonuniform_normal_apology() {
+        let src = r#"#usda 1.0
+def Xform "s"
+{
+    double3 xformOp:scale = (1, 4, 1)
+    uniform token[] xformOpOrder = ["xformOp:scale"]
+    def Mesh "tri"
+    {
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        point3f[] points = [(0,0,0), (1,0,0), (0,1,0)]
+        normal3f[] normals = [(0,0,1), (0,0,1), (0,0,1)]
+    }
+}
+"#;
+        let p = parse_str(src).unwrap_or_else(|e| panic!("{e}"));
+        let (_, rep_flat) = build_scene_report(&p.layer).unwrap();
+        assert_eq!(rep_flat.non_uniform_normals.len(), 1, "旧路径仍要记账（它是近似）");
+        let (_, rep_inst) = build_scene_instanced_report(&p.layer).unwrap();
+        assert!(
+            rep_inst.non_uniform_normals.is_empty(),
+            "保实例路径不烘焙法线，故无需近似记账"
+        );
+        let is = build_scene_instanced(&p.layer).unwrap();
+        assert_eq!(is.instances[0].affine[5], 4.0, "缩放进实例记录");
     }
 
     /// 空场景 / 空网格：渲染就绪形态无 panic，计数为 0。

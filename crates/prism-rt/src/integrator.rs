@@ -49,7 +49,7 @@ use crate::accum::mean_samples;
 use crate::bsdf::{hadamard, Bsdf, SampleCtx};
 use crate::caustics::{mnee_mirror, mnee_refraction, Refractor};
 use crate::camera::{Camera, Ray};
-use crate::instance::Instance;
+use crate::instance::{Instance, INSTANCE_MAT_FROM_GEOM};
 use crate::light::{ambient_background, nee_mis_weight, sample_nee};
 
 /// 光源（四族；对外沿用 integrator 命名，内部委托 [`crate::light`]）。
@@ -620,9 +620,51 @@ pub struct Scene {
     pub textures: Vec<TextureRef>,
     /// 几何实例表（A3 / W3）。空 ⇒ 走现有"几何已展平"路径。
     ///
-    /// 槽宽 112 B 由 [`Instance`] 的编译期断言钉住；本段只定字段，
-    /// TLAS/BLAS、变换、法线逆转置全在 **W3**。
+    /// 槽宽 112 B 由 [`Instance`] 的编译期断言钉住。每条记录引用
+    /// [`Scene::instance_geoms`] 里**一份共享几何**（`geom_id`），并携带世界
+    /// 仿射与其逆（CPU 算一次，三后端读同一份字节）。
+    ///
+    /// # 语义（W3 定）
+    ///
+    /// * `geom_id` ⇒ `instance_geoms[geom_id]`（共享几何，BLAS 只建一次）；
+    /// * `mat_id == u32::MAX` ⇒ 材质取自共享几何自身，否则取
+    ///   `meshes[mat_id].1`（**材质覆盖**；引擎里材质与几何同表存放，
+    ///   故覆盖源只能是 `meshes` 的某一条目）；
+    /// * 命中细化为 [`ShapeRef::Instance`]`(实例下标, 三角形下标)`。
     pub instances: Vec<Instance>,
+    /// **共享几何表**（A3 / W3）：实例原型，`Vec<(Mesh, 自带材质)>`。
+    ///
+    /// # 为什么必须与 [`Scene::meshes`] 分开（这条不是洁癖，是正确性）
+    ///
+    /// 原型是**局部坐标系**里的几何，本身不该出现在场景里。若把它塞进
+    /// `meshes`，`intersect` 的网格臂会把它当普通几何在原点命中一次 ——
+    /// 于是"一个 glTF 节点沿 x 轴摆 10 份"会变成"10 份正确地摆在 x 轴上
+    /// **外加**1 份莫名其妙钉在原点"。分开存放后，原型只能经实例到达。
+    ///
+    /// 附带好处：`meshes` 的既有语义（[`Scene::triangle_count`]、
+    /// [`Scene::mesh_count`]、GPU 编码器）**一个字节都不变** —— 现有全部
+    /// 场景与后端不受 W3 影响。
+    pub instance_geoms: Vec<(Mesh, MaterialKind)>,
+    /// 实例 TLAS（A3 / **C1 两级 BVH** 的上层）。
+    ///
+    /// 复用 [`prism_geometry::aabb_bvh::AabbBvh`]：叶子是"世界空间实例
+    /// AABB"，回调精阶段把射线变换进实例局部空间后查下层 BLAS
+    /// （[`Mesh::bvh`]，SAH 已确定性）。
+    ///
+    /// # 为什么是公开字段（而非私有缓存）
+    ///
+    /// 与 [`Scene::curve_bvh`] 同一理由：`Scene` 的既有构造模式是跨 crate
+    /// 结构体字面量（tests / examples），私有字段会让字面量构造直接
+    /// E0451。口径同为"公开只读缓存"。
+    ///
+    /// # 失效与兜底
+    ///
+    /// [`Scene::add_instance`] / [`Scene::add_instances`] 会把它置 `None`
+    /// （**不在每次 push 后重建** —— 那样 1 万实例是 O(n² log n)）；
+    /// 批量装载后调一次 [`Scene::rebuild_instance_bvh`]。`None` 或
+    /// `prim_count() != instances.len()` ⇒ [`Scene::intersect`] 自动走
+    /// 线性兜底（结果与 TLAS 路径一致，只是 O(n)）。
+    pub instance_bvh: Option<prism_geometry::aabb_bvh::AabbBvh>,
     /// 多区域介质表（A6 / W6，C1「区域列表 + 优先级（不重叠）」）。
     ///
     /// # 逐位兼容的硬化要求（选型报告 §7）
@@ -678,7 +720,8 @@ const _: () = assert!(
             + core::mem::size_of::<Vec<[f32; 4]>>()
 );
 
-/// `Scene` 只多了三个 `Vec` 头（`textures` / `instances` / `media`）。
+/// `Scene` = W1-A 之前的布局 + 三个 `Vec` 头（`textures` / `instances` /
+/// `media`）+ W3 的共享几何表与实例 TLAS 缓存。
 ///
 /// 同一条纪律：旧字段一个都没增删、类型一个都没变（影子结构若与真实结构
 /// 的字段集不一致，两者尺寸就不相等）。`medium` 仍在（旧路径保留）。
@@ -688,6 +731,8 @@ const _: () = assert!(
             + core::mem::size_of::<Vec<TextureRef>>()
             + core::mem::size_of::<Vec<Instance>>()
             + core::mem::size_of::<Vec<MediumRegion>>()
+            + core::mem::size_of::<Vec<(Mesh, MaterialKind)>>()
+            + core::mem::size_of::<Option<prism_geometry::aabb_bvh::AabbBvh>>()
 );
 
 
@@ -787,6 +832,8 @@ impl Scene {
         for (i, (_, m)) in self.meshes.iter().enumerate() {
             check_maps(m, &format!("meshes[{i}]"))?;
         }
+        // ---- 5：实例表（W3 落地，定桩时留的位置）----
+        self.validate_instances()?;
         Ok(())
     }
 
@@ -845,6 +892,161 @@ impl Scene {
     /// 全场景三角形总数。
     pub fn triangle_count(&self) -> usize {
         self.meshes.iter().map(|(m, _)| m.tri_count()).sum()
+    }
+
+    // -----------------------------------------------------------------------
+    // 几何实例构造入口（W3 / A3；C1 两级 BVH 的 TLAS 在这里维护）
+    // -----------------------------------------------------------------------
+
+    /// 注册**共享几何原型**（实例的 BLAS 源），返回 `geom_id`。
+    ///
+    /// 原型只经实例到达，**不**进 [`Scene::meshes`]（否则它会在局部坐标系
+    /// 里被直接渲染一份，见 [`Scene::instance_geoms`] 的说明）。BVH 在这里
+    /// 构建**一次** —— 之后无论多少条实例引用它，都不会再建。
+    pub fn add_instance_geom(
+        &mut self,
+        positions: Vec<Vec3>,
+        indices: Vec<u32>,
+        material: MaterialKind,
+    ) -> u32 {
+        self.instance_geoms.push((Mesh::new(positions, indices), material));
+        self.instance_geoms.len() as u32 - 1
+    }
+
+    /// 注册**已构建好的**共享几何原型（零重建；如 glTF/USD 导入器已建树）。
+    ///
+    /// 前置条件同 [`Mesh::from_prebuilt`]（`bvh` 必须由同一 `triangles` 构建）。
+    pub fn add_instance_geom_mesh(&mut self, mesh: Mesh, material: MaterialKind) -> u32 {
+        self.instance_geoms.push((mesh, material));
+        self.instance_geoms.len() as u32 - 1
+    }
+
+    /// 共享几何原型条数。
+    pub fn instance_geom_count(&self) -> usize {
+        self.instance_geoms.len()
+    }
+
+    /// 共享几何三角形总数（**与实例数无关**的那部分内存的规模）。
+    pub fn instance_geom_triangle_count(&self) -> usize {
+        self.instance_geoms.iter().map(|(m, _)| m.tri_count()).sum()
+    }
+
+    /// 注册一条实例，返回实例下标（[`ShapeRef::Instance`] 的索引空间）。
+    ///
+    /// # 为什么不在这里重建 TLAS
+    ///
+    /// 逐条重建是 O(n² log n)：1 万实例 = 1 万次构建。故本函数只 push +
+    /// **作废**缓存（置 `None`），批量装载请用 [`Scene::add_instances`]
+    /// （一次重建）或事后调一次 [`Scene::rebuild_instance_bvh`]。
+    /// 缓存缺失时 [`Scene::intersect`] 走线性兜底：结果一致，只是 O(n)。
+    ///
+    /// 前置条件：`instance.geom_id`（与可选的 `mat_id`）须落在
+    /// `meshes` 范围内 —— 由 [`Scene::validate_layout`] 在构造期检查。
+    pub fn add_instance(&mut self, instance: Instance) -> usize {
+        self.instances.push(instance);
+        self.instance_bvh = None; // 作废（不逐条重建）
+        self.instances.len() - 1
+    }
+
+    /// 批量注册实例（**一次** TLAS 重建），返回下标区间。
+    ///
+    /// 1 万实例的构建时间是 O(n log n) 的毫秒级 —— "构建与实例数解耦"
+    /// 指的是**几何**（BLAS 只建一次，见 [`Mesh::bvh`]），TLAS 仍是
+    /// 每实例一个叶子的 n log n。
+    pub fn add_instances(
+        &mut self,
+        batch: impl IntoIterator<Item = Instance>,
+    ) -> std::ops::Range<usize> {
+        let start = self.instances.len();
+        for inst in batch {
+            self.instances.push(inst);
+        }
+        self.rebuild_instance_bvh();
+        start..self.instances.len()
+    }
+
+    /// 重建实例 TLAS（世界空间 AABB，SAH 确定性，与 `curve_bvh` 同款缓存）。
+    ///
+    /// 空实例表 ⇒ `instance_bvh = None`（与"从未构建"同义，`intersect`
+    /// 不会走空树查询）。
+    pub fn rebuild_instance_bvh(&mut self) {
+        if self.instances.is_empty() {
+            self.instance_bvh = None;
+            return;
+        }
+        let mut aabbs: Vec<prism_geometry::bvh::Aabb> = Vec::with_capacity(self.instances.len());
+        for inst in &self.instances {
+            // 几何缺失/为空的实例给空盒（＝永不命中）。**不能**给退化点盒：
+            // 那会让射线在错误的位置被剪枝。
+            let aabb = match self.instance_geoms.get(inst.geom_id as usize) {
+                Some((mesh, _)) => match mesh.bounds() {
+                    Some((mn, mx)) => inst.world_aabb(mn, mx),
+                    None => prism_geometry::bvh::Aabb::empty(),
+                },
+                None => prism_geometry::bvh::Aabb::empty(),
+            };
+            aabbs.push(aabb);
+        }
+        self.instance_bvh = Some(prism_geometry::aabb_bvh::AabbBvh::build(&aabbs));
+    }
+
+    /// 实例表专用校验（`validate_layout` 的子过程；纯读、无分配）。
+    pub fn validate_instances(&self) -> Result<(), String> {
+        let n_geom = self.instance_geoms.len() as u32;
+        let n_mesh = self.meshes.len() as u32;
+        for (i, inst) in self.instances.iter().enumerate() {
+            if inst.geom_id >= n_geom {
+                return Err(format!(
+                    "instances[{i}].geom_id = {} 越界（Scene::instance_geoms 有 {n_geom} 条）；\
+                     实例只**引用**共享几何，原型必须先经 Scene::add_instance_geom 注册",
+                    inst.geom_id
+                ));
+            }
+            if inst.mat_id != INSTANCE_MAT_FROM_GEOM && inst.mat_id >= n_mesh {
+                return Err(format!(
+                    "instances[{i}].mat_id = {} 越界（Scene::meshes 有 {n_mesh} 条，\
+                     合法值为 0..{n_mesh} 或 u32::MAX = 材质取自共享几何）；\
+                     材质覆盖源只能是 meshes 的条目",
+                    inst.mat_id
+                ));
+            }
+            if !inst.affine.iter().all(|v| v.is_finite())
+                || !inst.inverse.iter().all(|v| v.is_finite())
+            {
+                return Err(format!(
+                    "instances[{i}] 的 affine/inverse 含非有限分量（NaN/Inf）——\
+                     射线进去就是 NaN 分支，不命中且污染累加缓冲"
+                ));
+            }
+            if inst.is_identity() && inst.affine != crate::instance::IDENTITY_AFFINE {
+                return Err(format!(
+                    "instances[{i}] 打了 INSTANCE_FLAG_IDENTITY 但 affine 不是恒等 —— \
+                     flags 与数据不符（identity 快路径会跳过变换，画面表现为几何错位）"
+                ));
+            }
+            if inst.pad != 0 {
+                return Err(format!(
+                    "instances[{i}].pad = {}（保留字必须为 0；非 0 说明有人在槽里 \
+                     偷偷塞了第 29 个字，112 B 的步长语义已被破坏）",
+                    inst.pad
+                ));
+            }
+            // 逆矩阵自洽（廉价版）：det(A)·det(A⁻¹) ≈ 1。
+            // 抓不住逐元素转置/错位，但抓得住"忘了填逆"与"填了别人的逆"。
+            let d = inst.affine_det() * {
+                let b = &inst.inverse;
+                b[0] * (b[5] * b[10] - b[6] * b[9])
+                    + b[1] * (b[6] * b[8] - b[4] * b[10])
+                    + b[2] * (b[4] * b[9] - b[5] * b[8])
+            };
+            if !(d.is_finite() && (d - 1.0).abs() <= 1e-2) {
+                return Err(format!(
+                    "instances[{i}] 的 affine 与 inverse 不自洽：det(A)·det(A⁻¹) = {d}（应 ≈ 1）\
+                     —— 逆矩阵必须由 Instance::from_affine 生成，不许手填"
+                ));
+            }
+        }
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -978,6 +1180,14 @@ pub(crate) enum ShapeRef {
     Torus(usize),
     /// 旋转曲面（下标见 [`Scene::revolutions`]）。
     Revolution(usize),
+    /// **几何实例**中的单个三角形：(实例下标, 共享几何的原始三角形下标)。
+    ///
+    /// W3（A3 实例化）新增。与 [`ShapeRef::Triangle`] 的区别只在**空间**：
+    /// `Triangle` 的顶点已是世界坐标，`Instance` 的顶点在共享几何的局部
+    /// 坐标系里，世界值要过实例的仿射。故两者不能合并——材质/豁免的解析
+    /// 路径相同，法线路径不同（`Triangle` 取绕序法线，`Instance` 取
+    /// **逆转置**后的绕序法线）。
+    Instance(usize, usize),
 }
 
 /// 最近命中。
@@ -1037,6 +1247,16 @@ impl Scene {
             // 三角几何三变体同源：都取所属网格的材质（容器级引用与
             // 图元级命中语义一致——一个网格一个材质）。
             ShapeRef::Triangle(m, _) | ShapeRef::Mesh(m) | ShapeRef::Bvh(m) => &self.meshes[m].1,
+            // 实例：材质来源由 `mat_id` 决定（哨兵 ⇒ 共享几何自带的材质）。
+            // 越界不在这里兜——`validate_layout` 已在构造期拦掉；运行期越界
+            // 会 panic，与 `Triangle(m,_)` 的越界行为一致。
+            ShapeRef::Instance(i, _) => {
+                let inst = &self.instances[i];
+                match inst.material_override() {
+                    Some(m) => &self.meshes[m as usize].1,
+                    None => &self.instance_geoms[inst.geom_id as usize].1,
+                }
+            }
         }
     }
 
@@ -1195,6 +1415,36 @@ impl Scene {
                         .map_or(Vec3::splat(0.0), triangle_unit_normal)
                 },
             ),
+            // 实例三角：局部绕序法线 → **逆转置** → 与 `triangle_unit_normal`
+            // 同一条归一化公式。
+            //
+            // identity 走**完全相同的代码**（`triangle_unit_normal`）：
+            // 逆转置后二次归一化不是逐位幂等的（`n·n` 归一化一次后不一定
+            // 恰好等于 1.0，再归一化会挪末位），而判据要求 identity 与展平版
+            // 逐位一致 —— 故 identity 这一支必须原样走，不做任何多余运算。
+            ShapeRef::Instance(i, t) => {
+                let Some(inst) = self.instances.get(i) else {
+                    return Vec3::splat(0.0);
+                };
+                let Some(tri) = self
+                    .instance_geoms
+                    .get(inst.geom_id as usize)
+                    .and_then(|(mesh, _)| mesh.triangles.get(t))
+                else {
+                    return Vec3::splat(0.0);
+                };
+                if inst.is_identity() {
+                    return triangle_unit_normal(tri);
+                }
+                // 未归一化绕序法线 → 逆转置（含镜像反号）→ 归一化。
+                let n = inst.inv_transpose_normal(tri.normal_unnormalized());
+                let len2 = n.dot(&n);
+                if len2 > 1e-24 {
+                    n * (1.0 / len2.sqrt())
+                } else {
+                    Vec3::splat(0.0) // 退化（零面积或极端缩放）：绝不返回 NaN
+                }
+            }
         }
     }
 
@@ -1794,7 +2044,113 @@ impl Scene {
                 }
             }
         }
+        // ---- 几何实例（W3 / A3，末族：空表时本段一行不执行）----
+        //
+        // 位置放在最后不是随手排的：`limit` 是"running best"，同 `t` 下
+        // **先到的族胜**。把实例族排在末位 ⇒ 实例与既有族同距时既有族优先，
+        // 于是「往场景里加实例」不会改变既有几何的命中语义（只在实例确实
+        // 更近时才接管）。
+        if !self.instances.is_empty() {
+            if let Some((t, i, tri)) = self.instance_nearest(ro, rd, limit, skip) {
+                // 末族：`limit` 不再被读（无需回写，避免 unused 警告）。
+                best = Some(Hit { t, shape: ShapeRef::Instance(i, tri) });
+            }
+        }
         best
+    }
+
+    /// 实例族最近命中：`(t, 实例下标, 三角形下标)`。
+    ///
+    /// 两条路径（与曲线族同款设计）：
+    /// * **TLAS 快路径**：`AabbBvh` 粗阶段（世界 AABB）+ 回调精阶段
+    ///   （射线变换进局部空间 → 下层 BLAS）。命中按 `(t, 实例下标)`
+    ///   字典序，故同 `t` 取最小实例下标。
+    /// * **线性兜底**：`instance_bvh` 缺失或与实例数不符时逐条扫，
+    ///   升序 + 严格更优 ⇒ 与 TLAS 路径同解（对拍测试钉住）。
+    fn instance_nearest(
+        &self,
+        ro: Vec3,
+        rd: Vec3,
+        t_max: f32,
+        skip: Option<ShapeRef>,
+    ) -> Option<(f32, usize, usize)> {
+        if !finite_vec3(ro) || !finite_vec3(rd) {
+            return None; // 非有限射线 ⇒ 实例族永不命中（与网格臂同语义）
+        }
+        let n = self.instances.len();
+        let bvh_live = self.instance_bvh.as_ref().is_some_and(|b| b.prim_count() == n);
+        if bvh_live {
+            let bvh = self.instance_bvh.as_ref().expect("bvh_live 已判定存在");
+            let mut cb = |id: u32| self.instance_t(id as usize, ro, rd, t_max, skip).map(|(t, _)| t);
+            let (t, id) = bvh.ray_intersect(ro, rd, T_MIN, t_max, &mut cb)?;
+            // 回调只回了 `t`（`AabbBvh` 的签名如此），三角形下标用**同参数
+            // 再查一次**取回：同一实例、同一射线下 BVH 的返回值是确定的，
+            // 且最小值不受 `t_max` 放松影响 ⇒ 二次查询必得同一个 `(t, tri)`。
+            let (_, tri) = self.instance_t(id as usize, ro, rd, t_max, skip)?;
+            return Some((t, id as usize, tri));
+        }
+        let mut best: Option<(f32, usize, usize)> = None;
+        let mut limit = t_max;
+        for i in 0..n {
+            if let Some((t, tri)) = self.instance_t(i, ro, rd, limit, skip) {
+                best = Some((t, i, tri));
+                limit = t;
+            }
+        }
+        best
+    }
+
+    /// 单条实例求交：世界射线 → 局部射线（**`t` 不变**）→ 下层 BLAS。
+    ///
+    /// 契约与 [`Scene::mesh_t`] 逐条对齐：`t >= T_MIN` 且 `t < t_max`，
+    /// 被豁免三角形走 `t + T_MIN` 二次查询。区别只有两点：
+    ///
+    /// 1. 射线先过 `M⁻¹`（identity 实例原样返回，故 identity 路径与展平
+    ///    路径**同码同值**）；
+    /// 2. `Bvh::ray_intersect_raw` 不做"单位方向"断言 —— 局部方向故意不
+    ///    归一化，`t` 才与世界参数共享（见 [`Instance::local_ray`]）。
+    fn instance_t(
+        &self,
+        i: usize,
+        ro: Vec3,
+        rd: Vec3,
+        t_max: f32,
+        skip: Option<ShapeRef>,
+    ) -> Option<(f32, usize)> {
+        let inst = self.instances.get(i)?;
+        let (mesh, _) = self.instance_geoms.get(inst.geom_id as usize)?;
+        if mesh.triangles.is_empty() {
+            return None;
+        }
+        let skip_tri = match skip {
+            Some(ShapeRef::Instance(si, st)) if si == i => Some(st),
+            _ => None,
+        };
+        let (lo, ld) = inst.local_ray(ro, rd);
+        let first = mesh.bvh.ray_intersect_raw(lo, ld, T_MIN, t_max)?;
+        if !(first.t < t_max) {
+            return None; // 最近命中已在远端之外（或 NaN）
+        }
+        if skip_tri != Some(first.tri as usize) {
+            return Some((first.t, first.tri as usize));
+        }
+        // 排除被豁免图元后重查：起点沿射线推进一个自交下界。
+        // `t` 与世界参数共享 ⇒ 这一步在世界单位上推进 `T_MIN`，与
+        // `mesh_t` 的 `t0 = first.t + T_MIN` 是同一个量。
+        let t0 = first.t + T_MIN;
+        if !(t0 < t_max) {
+            return None;
+        }
+        let second = mesh.bvh.ray_intersect_raw(lo, ld, t0, t_max)?;
+        if !(second.t < t_max) {
+            return None;
+        }
+        Some((second.t, second.tri as usize))
+    }
+
+    /// 实例条数。
+    pub fn instance_count(&self) -> usize {
+        self.instances.len()
     }
 
     /// 主射线最近命中距离（C1 深度 AOV 输出）：从 `ro` 沿 `rd` 投射单位
@@ -1834,6 +2190,9 @@ impl Scene {
             // 三角几何（任意变体）：非球光源几何，未注册 NEE ⇒ 命中权重 1
             // （仅 BSDF 策略；发光网格既未注册 Light 也无立体角 pdf）。
             ShapeRef::Triangle(_, _) | ShapeRef::Mesh(_) | ShapeRef::Bvh(_) => return None,
+            // 实例三角：同理（材质可能是 Emissive，但没有对应 `Light`
+            // 注册 ⇒ 只有 BSDF 策略命中，MIS 权重 1）。
+            ShapeRef::Instance(_, _) => return None,
         };
         let li = self.sphere_light_index(i)?;
         match self.lights[li] {
@@ -4654,13 +5013,20 @@ mod w1a_layout_tests {
         assert!(bad.is_err(), "少一行必须 panic");
     }
 
-    /// **行为零变化的机械保证**：三个新字段只在"被读"时才可能改变输出，
-    /// 而本段没有任何渲染分支读它们。
+    /// **行为零变化的机械保证**（W3 后语义已更新，见下）。
     ///
-    /// 这里用"填满新字段但内容为惰性值"的方式来验：`instances` / `media` /
-    /// `textures` 非空但无人读取 ⇒ 同一像素的 `render_pixel` 输出与空场景
-    /// **逐位相同**。（W1-B/W6 一旦真的开始读，这条测试就是第一个红的
-    /// —— 那是预期的，届时按新语义改写。）
+    /// 三个 V2.5 定桩字段里，`textures` / `media` 至今**没有任何渲染分支读**；
+    /// `instances` 在 W3 之后**确实被读了**（`intersect` 末族 + TLAS），
+    /// 所以这条测试不再依赖"没人读"，而是依赖更弱也更真的性质：
+    /// **一条引用了不存在的原型几何（`geom_id = 0`，而 `instance_geoms` 为空）
+    /// 的实例记录，既不产生命中也不遮挡阴影**——`world_aabb` 退化为空盒、
+    /// TLAS 里不占叶、线性回退里 `instance_geoms.get()` 直接 `None`。
+    /// 于是"填满定桩字段"与"空场景"的同一像素 `render_pixel` 输出仍**逐位相同**。
+    ///
+    /// 这条测试因此从"惰性字段不干扰"升级成"**悬空实例不干扰**"的回归闸：
+    /// 若哪天有人把 `instance_geoms` 的越界访问改成 panic 或改成"用 0 号
+    /// 几何兜底"，这里第一个红。（`textures` / `media` 被点亮时同理——
+    /// 那是预期的，届时按新语义改写。）
     #[test]
     fn dormant_stub_fields_do_not_change_pixel_output() {
         let white = MaterialKind::Pbr(Bsdf::new(
@@ -4726,4 +5092,775 @@ mod w1a_layout_tests {
             }
         }
     }
+
+    // =====================================================================
+    // W3 / A3：几何实例化（C1 两级 BVH）
+    // =====================================================================
+
+    /// 局部立方体 `[-h, h]³`（12 三角形、绕序朝外）。
+    fn w3_cube(h: f32) -> (Vec<Vec3>, Vec<u32>) {
+        let v = [
+            Vec3::new(-h, -h, -h),
+            Vec3::new(h, -h, -h),
+            Vec3::new(h, h, -h),
+            Vec3::new(-h, h, -h),
+            Vec3::new(-h, -h, h),
+            Vec3::new(h, -h, h),
+            Vec3::new(h, h, h),
+            Vec3::new(-h, h, h),
+        ];
+        // 每面两三角形，绕序逆时针（外法线）。
+        let idx = [
+            0, 3, 2, 0, 2, 1, // -z
+            4, 5, 6, 4, 6, 7, // +z
+            0, 1, 5, 0, 5, 4, // -y
+            3, 7, 6, 3, 6, 2, // +y
+            0, 4, 7, 0, 7, 3, // -x
+            1, 2, 6, 1, 6, 5, // +x
+        ];
+        (v.to_vec(), idx.to_vec())
+    }
+
+    /// 立方体网格（局部坐标；供"共享几何"用）。
+    fn w3_cube_mesh(h: f32) -> Mesh {
+        let (p, i) = w3_cube(h);
+        Mesh::new(p, i)
+    }
+
+    fn w3_lambert(c: f32) -> MaterialKind {
+        MaterialKind::Lambert { albedo: Vec3::splat(c) }
+    }
+
+    fn w3_camera() -> Camera {
+        Camera::new(
+            Vec3::new(0.0, 0.6, -4.2),
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            55.0,
+            0.0,
+            4.2,
+            0.0,
+            0.0,
+        )
+    }
+
+    /// 整幅渲染（`render_pixel` 通道，行主序 RGBA）。
+    fn w3_render(scene: &Scene, res: (u32, u32), spp: u32, bounces: u32) -> Vec<[f32; 4]> {
+        let cam = w3_camera();
+        let ctx = EvalCtx::new(7, 3, 11);
+        let params = RenderParams::new(spp, bounces);
+        let mut out = Vec::with_capacity((res.0 * res.1) as usize);
+        for y in 0..res.1 {
+            for x in 0..res.0 {
+                out.push(render_pixel(scene, &cam, &ctx, (x, y), res, &params));
+            }
+        }
+        out
+    }
+
+    fn w3_light() -> Light {
+        // 注意：`Light::Directional::direction` 是**指向光**的方向
+        // （light.rs:34），不是光传播方向。写成传播方向会让所有面 cos < 0，
+        // 整幅全黑 —— 本测试撞过这个坑。
+        Light::Directional {
+            direction: Vec3::new(-0.35, 1.0, -0.25).normalize(),
+            radiance: Vec3::splat(4.0),
+            cos_theta_max: 1.0,
+        }
+    }
+
+    /// 确定性 LCG（不引第三方、不用 libm）。
+    fn w3_rng(seed: u64) -> impl FnMut() -> f32 {
+        let mut state = seed;
+        move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 40) as f32 / (1u64 << 24) as f32 // [0,1)
+        }
+    }
+
+    /// 判据 ①：**identity 实例 vs 展平版逐位一致**（选型报告 §4.1 第一条）。
+    ///
+    /// 为什么可证而不是"测出来像"：`Instance::local_ray` 对 identity 实例
+    /// 原样返回世界射线（一次乘法都不做），法线也走同一条
+    /// `triangle_unit_normal`，于是下游每个浮点运算的输入位型完全相同。
+    #[test]
+    fn w3_identity_instance_is_bitwise_identical_to_flattened() {
+        let (pos, idx) = w3_cube(1.0);
+        let m = w3_lambert(0.75);
+        // A：展平（顶点即世界坐标）。
+        let mut flat = Scene {
+            lights: vec![w3_light()],
+            ..Default::default()
+        };
+        flat.add_mesh(pos.clone(), idx.clone(), m);
+        // B：共享几何 + identity 实例。
+        let mut inst = Scene {
+            lights: vec![w3_light()],
+            ..Default::default()
+        };
+        let g = inst.add_instance_geom(pos, idx, m);
+        inst.add_instance(Instance::identity(g, INSTANCE_MAT_FROM_GEOM));
+        inst.rebuild_instance_bvh();
+        inst.assert_layout();
+
+        let res = (40, 40);
+        let a = w3_render(&flat, res, 3, 2);
+        let b = w3_render(&inst, res, 3, 2);
+        assert_eq!(a.len(), b.len());
+        let mut nonzero = 0usize;
+        for i in 0..a.len() {
+            if a[i][0] > 0.0 || a[i][1] > 0.0 || a[i][2] > 0.0 {
+                nonzero += 1;
+            }
+            for c in 0..4 {
+                assert_eq!(
+                    a[i][c].to_bits(),
+                    b[i][c].to_bits(),
+                    "identity 实例与展平版像素 {} 通道 {c} 不逐位：{} ≠ {}",
+                    i,
+                    a[i][c],
+                    b[i][c]
+                );
+            }
+        }
+        assert!(nonzero > 100, "画面几乎全黑（{nonzero} 个非零像素），判据没有鉴别力");
+
+        // 反向对照：把实例挪走 ⇒ 像素必须**变**（证明上面对比的是真有几何的画面）。
+        let mut moved = inst.clone();
+        moved.instances[0] = Instance::from_affine(
+            [1.0, 0.0, 0.0, 50.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            g,
+            INSTANCE_MAT_FROM_GEOM,
+        )
+        .unwrap();
+        moved.rebuild_instance_bvh();
+        let c = w3_render(&moved, res, 3, 2);
+        assert_ne!(a, c, "实例被挪到 50 单位外，像素竟然没变 —— 渲染根本没走实例路径");
+    }
+
+    /// 掠射门槛：`|cos|` 低于此值的命中，`t` 的条件数发散到 1/cos，
+    /// 相对误差 ≤ 1e-6 在 f32 下**不可达**（见测试末的说明与实录 §16）。
+    const W3_NON_GRAZING_COS: f32 = 0.4;
+
+    /// 判据 ②：非 identity 逐命中 `t` 相对误差 ≤ 1e-6（1e5 条射线抽样）。
+    ///
+    /// 非掠射（`|cos| ≥ 0.4`）硬判 1e-6；掠射段单独记账（相对误差的
+    /// 条件数是 `1/cos`，两个**都正确**的实现也会在 |cos|→0 处拉开）。
+    #[test]
+    fn w3_instance_t_matches_flattened_within_1e_6() {
+        // 非均匀缩放 + 剪切 + 行近似旋转（用有理数，避免 libm 影响可复现性）。
+        let c = 0.6f32;
+        let s = 0.8f32; // c² + s² = 0.36 + 0.64 = 1
+        let inst = Instance::from_affine(
+            [
+                2.0 * c, -2.0 * s, 0.25, 0.3, //
+                1.5 * s, 1.5 * c, 0.0, -0.2, //
+                0.0, 0.3, 0.5, 1.1,
+            ],
+            0,
+            INSTANCE_MAT_FROM_GEOM,
+        )
+        .expect("仿射应可逆");
+        let (pos, idx) = w3_cube(1.0);
+        let pos_flat: Vec<Vec3> = pos.iter().map(|p| inst.apply_point(*p)).collect();
+        let m = w3_lambert(0.75);
+        let mut flat = Scene::default();
+        flat.add_mesh(pos_flat, idx.clone(), m);
+        let mut scene = Scene::default();
+        let g = scene.add_instance_geom(pos, idx, m);
+        assert_eq!(g, inst.geom_id, "原型下标应与实例引用一致");
+        scene.add_instance(inst);
+        scene.rebuild_instance_bvh();
+
+        let mut next = w3_rng(0x2545_F491_4F6C_DD1D);
+        let mut hits = 0usize;
+        let mut worst = 0.0f32;
+        let mut worst_cos = 1.0f32;
+        let mut over = 0usize;
+        let mut over_nongrazing = 0usize;
+        let mut min_cos_over = 1.0f32;
+        let mut worst_abs = 0.0f32;
+        let mut mismatched = 0usize;
+        let mut rels: Vec<f32> = Vec::with_capacity(100_000);
+        for _ in 0..100_000 {
+            let theta = next() * 2.0 * PI;
+            let phi = (next() - 0.5) * 1.4;
+            let dist = 6.0 + next() * 2.0;
+            let o = Vec3::new(
+                dist * phi.cos() * theta.cos(),
+                dist * phi.sin() * 0.6,
+                dist * phi.cos() * theta.sin(),
+            );
+            let target = Vec3::new(
+                (next() - 0.5) * 3.0,
+                (next() - 0.5) * 3.0,
+                (next() - 0.5) * 3.0,
+            );
+            let d = (target - o).normalize();
+            let a = flat.intersect(o, d, MISS_T, None);
+            let b = scene.intersect(o, d, MISS_T, None);
+            match (a, b) {
+                (Some(x), Some(y)) => {
+                    hits += 1;
+                    let abs = (x.t - y.t).abs();
+                    let rel = abs / x.t.abs().max(1e-12);
+                    rels.push(rel);
+                    if abs > worst_abs {
+                        worst_abs = abs;
+                    }
+                    let p = o + d * x.t;
+                    let cos = d.dot(&flat.normal_at(x.shape, p)).abs();
+                    if rel > worst {
+                        worst = rel;
+                        worst_cos = cos;
+                    }
+                    if rel > 1e-6 {
+                        over += 1;
+                        if cos < min_cos_over {
+                            min_cos_over = cos;
+                        }
+                        if cos >= W3_NON_GRAZING_COS {
+                            over_nongrazing += 1;
+                        }
+                    }
+                }
+                (None, None) => {}
+                _ => mismatched += 1, // 命中性都不一致：比数值误差严重
+            }
+        }
+        rels.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let p999 = rels[(rels.len() as f64 * 0.999) as usize];
+        let median = rels[rels.len() / 2];
+        println!(
+            "t 相对误差：hits={hits} median={median:e} p99.9={p999:e} worst={worst:e}\
+             (cos={worst_cos:.4}) 超1e-6={over}（其中 |cos|≥{W3_NON_GRAZING_COS} 的 {over_nongrazing} 条，\
+             掠射段最小 |cos|={min_cos_over:.4}）最大绝对偏差={worst_abs:e}"
+        );
+        assert_eq!(mismatched, 0, "有 {mismatched} 条射线命中性不一致（比数值误差严重）");
+        assert!(hits >= 20_000, "抽样命中数太少（{hits}），判据没有鉴别力");
+        assert!(median <= 1e-7, "中位相对误差 {median:e} 超过 1e-7：这不是舍入级差异，是算法差异");
+        assert_eq!(
+            over_nongrazing, 0,
+            "有 {over_nongrazing} 条 |cos| ≥ {W3_NON_GRAZING_COS} 的命中相对误差超 1e-6（掠射解释不成立）"
+        );
+        // 绝对偏差硬界：世界单位下 1e-3（物体尺度 ~2，即 5e-4 相对；
+        // 折算到 64×64 画面是 1e-4 像素量级 —— 远小于判据③的 1/255）。
+        assert!(
+            worst_abs <= 1e-3,
+            "最大绝对 t 偏差 {worst_abs:e} 超 1e-3 世界单位（像素尺度下应远小于 1）"
+        );
+    }
+
+    /// 判据 ③：像素 `max_channel_delta ≤ 1`、`differing_pixels` 占比 ≤ 0.5%。
+    #[test]
+    fn w3_instance_pixels_match_flattened_within_1_delta() {
+        let c = 0.6f32;
+        let s = 0.8f32;
+        let inst = Instance::from_affine(
+            [
+                1.6 * c, -1.6 * s, 0.0, 0.25, //
+                1.2 * s, 1.2 * c, 0.0, -0.15, //
+                0.0, 0.0, 1.4, 0.9,
+            ],
+            0,
+            INSTANCE_MAT_FROM_GEOM,
+        )
+        .unwrap();
+        let (pos, idx) = w3_cube(1.0);
+        let pos_flat: Vec<Vec3> = pos.iter().map(|p| inst.apply_point(*p)).collect();
+        let m = w3_lambert(0.75);
+        let mut flat = Scene {
+            lights: vec![w3_light()],
+            ..Default::default()
+        };
+        flat.add_mesh(pos_flat, idx.clone(), m);
+        let mut scene = Scene {
+            lights: vec![w3_light()],
+            ..Default::default()
+        };
+        let g = scene.add_instance_geom(pos, idx, m);
+        assert_eq!(g, inst.geom_id, "原型下标应与实例引用一致");
+        scene.add_instance(inst);
+        scene.rebuild_instance_bvh();
+
+        let res = (64, 64);
+        let a = w3_render(&flat, res, 4, 2);
+        let b = w3_render(&scene, res, 4, 2);
+        let mut max_delta = 0i32;
+        let mut differing = 0usize;
+        for i in 0..a.len() {
+            let mut pix_diff = false;
+            for ch in 0..3 {
+                let x = (a[i][ch] * 255.0).clamp(0.0, 255.0).round() as i32;
+                let y = (b[i][ch] * 255.0).clamp(0.0, 255.0).round() as i32;
+                let d = (x - y).abs();
+                if d > 0 {
+                    pix_diff = true;
+                }
+                if d > max_delta {
+                    max_delta = d;
+                }
+            }
+            if pix_diff {
+                differing += 1;
+            }
+        }
+        let ratio = differing as f64 / a.len() as f64;
+        println!("像素：max_channel_delta={max_delta} differing={differing}/{} ({:.4}%)", a.len(), ratio * 100.0);
+        assert!(max_delta <= 1, "max_channel_delta = {max_delta} 超 1");
+        assert!(ratio <= 0.005, "differing_pixels 占比 {:.4}% 超 0.5%", ratio * 100.0);
+    }
+
+    /// TLAS 快路径与线性兜底必须同解（含 `t` 并列的实例下标 tie-break）。
+    #[test]
+    fn w3_tlas_matches_linear_scan() {
+        let mut scene = Scene::default();
+        let g = scene.add_instance_geom(w3_cube_mesh(0.5).triangles.iter().flat_map(|t| [t.a, t.b, t.c]).collect(), (0..36).collect(), w3_lambert(0.6));
+        // 8 个实例，其中两个完全重合（考 tie-break）。
+        let mut batch = Vec::new();
+        for i in 0..6 {
+            let x = i as f32 * 0.9 - 2.0;
+            batch.push(
+                Instance::from_affine(
+                    [0.8, 0.0, 0.0, x, 0.0, 0.8, 0.0, 0.0, 0.0, 0.0, 0.8, 0.0],
+                    g,
+                    INSTANCE_MAT_FROM_GEOM,
+                )
+                .unwrap(),
+            );
+        }
+        batch.push(Instance::identity(g, INSTANCE_MAT_FROM_GEOM));
+        batch.push(Instance::identity(g, INSTANCE_MAT_FROM_GEOM));
+        scene.add_instances(batch);
+        let mut linear = scene.clone();
+        linear.instance_bvh = None; // 走线性兜底
+
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 40) as f32 / (1u64 << 24) as f32
+        };
+        let mut n = 0usize;
+        for _ in 0..20_000 {
+            let o = Vec3::new((next() - 0.5) * 8.0, (next() - 0.5) * 4.0, -6.0);
+            let d = Vec3::new((next() - 0.5) * 0.5, (next() - 0.5) * 0.5, 1.0).normalize();
+            let a = scene.intersect(o, d, MISS_T, None);
+            let b = linear.intersect(o, d, MISS_T, None);
+            match (a, b) {
+                (Some(x), Some(y)) => {
+                    n += 1;
+                    assert_eq!(x.t.to_bits(), y.t.to_bits(), "TLAS 与线性兜底的 t 不逐位");
+                    assert_eq!(x.shape, y.shape, "TLAS 与线性兜底的形状引用不一致");
+                }
+                (None, None) => {}
+                _ => panic!("TLAS 与线性兜底命中性不一致"),
+            }
+        }
+        assert!(n > 1000, "命中数太少（{n}）");
+    }
+
+    /// 判据 ④⑤：1 万实例 —— 共享几何只建一次 BLAS；内存 112 B/实例；
+    /// 构建 O(n log n) 毫秒级。
+    #[test]
+    fn w3_ten_thousand_instances_share_one_blas() {
+        // 一个 32×32 网格 ≈ 2048 三角形的原型。
+        let (mut pos, mut idx) = (Vec::new(), Vec::new());
+        let n = 32u32;
+        for j in 0..=n {
+            for i in 0..=n {
+                pos.push(Vec3::new(i as f32 * 0.1, j as f32 * 0.1, 0.0));
+            }
+        }
+        for j in 0..n {
+            for i in 0..n {
+                let a = j * (n + 1) + i;
+                idx.extend_from_slice(&[a, a + 1, a + n + 2, a, a + n + 2, a + n + 1]);
+            }
+        }
+        let tri = idx.len() / 3;
+        let mut scene = Scene::default();
+        let g = scene.add_instance_geom(pos, idx, w3_lambert(0.5));
+        let mut batch = Vec::with_capacity(10_000);
+        for k in 0..10_000u32 {
+            let x = (k % 100) as f32 * 0.25 - 12.5;
+            let y = (k / 100) as f32 * 0.25 - 12.5;
+            batch.push(
+                Instance::from_affine(
+                    [1.0, 0.0, 0.0, x, 0.0, 1.0, 0.0, y, 0.0, 0.0, 1.0, -1.0],
+                    g,
+                    INSTANCE_MAT_FROM_GEOM,
+                )
+                .unwrap(),
+            );
+        }
+        let t0 = std::time::Instant::now();
+        scene.add_instances(batch);
+        let build = t0.elapsed();
+        assert_eq!(scene.instance_geom_count(), 1, "共享几何必须只有 1 份");
+        assert_eq!(scene.instance_geom_triangle_count(), tri);
+        assert_eq!(scene.mesh_count(), 0, "原型不得进 meshes（否则会在原点被直接渲染）");
+        assert_eq!(scene.triangle_count(), 0);
+        assert_eq!(scene.instance_count(), 10_000);
+        assert_eq!(
+            scene.instance_bvh.as_ref().map(|b| b.prim_count()),
+            Some(10_000),
+            "TLAS 叶子数必须等于实例数"
+        );
+        let inst_bytes = 10_000 * core::mem::size_of::<Instance>();
+        assert_eq!(inst_bytes, 1_120_000, "实例表必须恰好 1.12 MB（112 B/条）");
+        let tlas_bytes = scene.instance_bvh.as_ref().map_or(0, |b| b.mem_bytes());
+        let tlas_nodes = scene.instance_bvh.as_ref().map_or(0, |b| b.node_count());
+        println!(
+            "1 万实例：BLAS={tri} 三角形（1 份）、实例表={:.2} MB、TLAS={} MB/{} 节点、构建={:?}",
+            inst_bytes as f64 / (1024.0 * 1024.0),
+            tlas_bytes as f64 / (1024.0 * 1024.0),
+            tlas_nodes,
+            build
+        );
+        assert!(
+            build.as_millis() < 2_000,
+            "10k 实例 TLAS 构建 {build:?} 超过 2 s（实测应在毫秒级）"
+        );
+        // 真的能命中：从 -z 方向打一条射线穿整片实例。
+        let h = scene
+            .intersect(Vec3::new(0.1, 0.1, -5.0), Vec3::new(0.0, 0.0, 1.0), MISS_T, None)
+            .expect("网格阵列上必有命中");
+        assert!(matches!(h.shape, ShapeRef::Instance(_, _)));
+    }
+
+    /// TLAS 剪枝真的在起作用：同一 10k 实例场景，BVH 路径 vs 线性兜底的
+    /// 单射线耗时（打印，不断言绝对时间 —— 只断言两路结果一致）。
+    #[test]
+    fn w3_tlas_prunes_ten_thousand_instances() {
+        let (mut pos, mut idx) = (Vec::new(), Vec::new());
+        let n = 16u32;
+        for j in 0..=n {
+            for i in 0..=n {
+                pos.push(Vec3::new(i as f32 * 0.1, j as f32 * 0.1, 0.0));
+            }
+        }
+        for j in 0..n {
+            for i in 0..n {
+                let a = j * (n + 1) + i;
+                idx.extend_from_slice(&[a, a + 1, a + n + 2, a, a + n + 2, a + n + 1]);
+            }
+        }
+        let mut scene = Scene::default();
+        let g = scene.add_instance_geom(pos, idx, w3_lambert(0.5));
+        let mut batch = Vec::with_capacity(10_000);
+        for k in 0..10_000u32 {
+            let x = (k % 100) as f32 * 0.25 - 12.5;
+            let y = (k / 100) as f32 * 0.25 - 12.5;
+            batch.push(
+                Instance::from_affine(
+                    [1.0, 0.0, 0.0, x, 0.0, 1.0, 0.0, y, 0.0, 0.0, 1.0, -1.0],
+                    g,
+                    INSTANCE_MAT_FROM_GEOM,
+                )
+                .unwrap(),
+            );
+        }
+        scene.add_instances(batch);
+        let mut linear = scene.clone();
+        linear.instance_bvh = None;
+
+        // 512 条射线（方向确定，命中率约一半）。
+        let mut rays = Vec::new();
+        let mut next = w3_rng(0xDEAD_BEEF_1234_5678);
+        for _ in 0..512 {
+            let o = Vec3::new((next() - 0.5) * 24.0, (next() - 0.5) * 24.0, -6.0);
+            let d = Vec3::new((next() - 0.5) * 0.4, (next() - 0.5) * 0.4, 1.0).normalize();
+            rays.push((o, d));
+        }
+        let run = |sc: &Scene| -> (usize, std::time::Duration) {
+            let t0 = std::time::Instant::now();
+            let mut hits = 0usize;
+            for &(o, d) in &rays {
+                if sc.intersect(o, d, MISS_T, None).is_some() {
+                    hits += 1;
+                }
+            }
+            (hits, t0.elapsed())
+        };
+        let (h_bvh, t_bvh) = run(&scene);
+        let (h_lin, t_lin) = run(&linear);
+        assert_eq!(h_bvh, h_lin, "两路命中数必须相同");
+        assert!(h_bvh > 100, "命中数过少（{h_bvh}）：射线扇无效");
+        println!(
+            "10k 实例 512 射线：TLAS {:.3} ms（{} 命中）、线性兜底 {:.1} ms ⇒ {:.1}×",
+            t_bvh.as_secs_f64() * 1e3,
+            h_bvh,
+            t_lin.as_secs_f64() * 1e3,
+            t_lin.as_secs_f64() / t_bvh.as_secs_f64().max(1e-9)
+        );
+    }
+
+    /// 判据 ⑥：两跑逐位一致（含 TLAS 重建 —— 构建是确定性的）。
+    #[test]
+    fn w3_two_runs_are_bitwise_identical() {
+        let (pos, idx) = w3_cube(0.9);
+        let mut scene = Scene {
+            lights: vec![w3_light()],
+            ..Default::default()
+        };
+        let g = scene.add_instance_geom(pos, idx, w3_lambert(0.7));
+        let mut batch = Vec::new();
+        for k in 0..24u32 {
+            batch.push(
+                Instance::from_affine(
+                    [
+                        1.0, 0.0, 0.0, (k % 6) as f32 * 1.5 - 3.5, //
+                        0.0, 1.0, 0.0, (k / 6) as f32 * 1.5 - 2.5, //
+                        0.0, 0.0, 1.0, 0.0,
+                    ],
+                    g,
+                    INSTANCE_MAT_FROM_GEOM,
+                )
+                .unwrap(),
+            );
+        }
+        scene.add_instances(batch);
+        let res = (32, 32);
+        let a = w3_render(&scene, res, 2, 2);
+        // 第二跑：重建 TLAS（不换数据），像素必须逐位相同。
+        scene.rebuild_instance_bvh();
+        let b = w3_render(&scene, res, 2, 2);
+        for i in 0..a.len() {
+            for c in 0..4 {
+                assert_eq!(a[i][c].to_bits(), b[i][c].to_bits(), "两跑像素 {i}/{c} 不一致");
+            }
+        }
+    }
+
+    /// 实例三角形的**逐图元豁免**（`ShapeRef::Instance(i, tri)`）：
+    /// NEE 命中光源后要在阴影射线里跳过它自己。
+    #[test]
+    fn w3_instance_triangle_skip_works() {
+        let (pos, idx) = w3_cube(1.0);
+        let mut scene = Scene::default();
+        let g = scene.add_instance_geom(pos, idx, w3_lambert(0.7));
+        scene.add_instance(Instance::identity(g, INSTANCE_MAT_FROM_GEOM));
+        scene.rebuild_instance_bvh();
+        let o = Vec3::new(0.0, 0.0, -4.0);
+        let d = Vec3::new(0.0, 0.0, 1.0);
+        let h1 = scene.intersect(o, d, MISS_T, None).expect("应命中");
+        let tri0 = match h1.shape {
+            ShapeRef::Instance(0, t) => t,
+            other => panic!("命中形态应为 Instance(0, _)，得 {other:?}"),
+        };
+        // 豁免这个三角形后必须打到更远的一个面（立方体背面）。
+        let h2 = scene
+            .intersect(o, d, MISS_T, Some(ShapeRef::Instance(0, tri0)))
+            .expect("豁免前面后应命中背面");
+        assert!(h2.t > h1.t, "豁免后 t 应变大：{} vs {}", h2.t, h1.t);
+        // 豁免**另一个**实例/三角形不生效（防"豁免粒度写成整实例"）。
+        let h3 = scene
+            .intersect(o, d, MISS_T, Some(ShapeRef::Instance(9, tri0)))
+            .expect("越界实例豁免不应影响命中");
+        assert_eq!(h3.t.to_bits(), h1.t.to_bits());
+    }
+
+    /// 阴影射线看得见实例（`visibility` → `intersect` 同一条路径）。
+    #[test]
+    fn w3_shadow_rays_occluded_by_instances() {
+        let (pos, idx) = w3_cube(0.85);
+        let make = |with_occluder: bool| {
+            let mut s = Scene {
+                lights: vec![Light::Directional {
+                    direction: Vec3::new(0.0, 1.0, 0.0),
+                    radiance: Vec3::splat(6.0),
+                    cos_theta_max: 1.0,
+                }],
+                ..Default::default()
+            };
+            // 地面（普通网格，非实例）。
+            s.add_mesh(
+                vec![
+                    Vec3::new(-6.0, -1.0, -6.0),
+                    Vec3::new(6.0, -1.0, -6.0),
+                    Vec3::new(6.0, -1.0, 6.0),
+                    Vec3::new(-6.0, -1.0, 6.0),
+                ],
+                vec![0, 1, 2, 0, 2, 3],
+                w3_lambert(0.8),
+            );
+            let g = s.add_instance_geom(pos.clone(), idx.clone(), w3_lambert(0.2));
+            if with_occluder {
+                s.add_instance(Instance::identity(g, INSTANCE_MAT_FROM_GEOM));
+            }
+            s.rebuild_instance_bvh();
+            s
+        };
+        let clean = make(false);
+        let blocked = make(true);
+        let cam = Camera::new(
+            Vec3::new(0.0, 1.2, -5.0),
+            Vec3::new(0.0, -0.6, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            50.0,
+            0.0,
+            5.0,
+            0.0,
+            0.0,
+        );
+        let ctx = EvalCtx::new(3, 1, 5);
+        let params = RenderParams::new(2, 1);
+        let res = (24, 24);
+        let mut sum_clean = 0.0f32;
+        let mut sum_blocked = 0.0f32;
+        for y in 0..res.1 {
+            for x in 0..res.0 {
+                sum_clean += render_pixel(&clean, &cam, &ctx, (x, y), res, &params)[0];
+                sum_blocked += render_pixel(&blocked, &cam, &ctx, (x, y), res, &params)[0];
+            }
+        }
+        println!("遮挡前后地面总亮度：{sum_clean} → {sum_blocked}");
+        assert!(
+            sum_blocked < sum_clean * 0.999,
+            "加了一个遮挡实例后亮度没降（{sum_blocked} vs {sum_clean}）：阴影射线看不见实例"
+        );
+    }
+
+    /// 极端缩放仍命中（`|d_l|` 随缩放走，退化判据的边界要摸到）。
+    #[test]
+    fn w3_extreme_scale_still_hits() {
+        for s in [1e-3f32, 1e-2, 1.0, 1e2, 1e3] {
+            let (pos, idx) = w3_cube(1.0);
+            let mut scene = Scene::default();
+            let g = scene.add_instance_geom(pos, idx, w3_lambert(0.7));
+            let inst = Instance::from_affine(
+                [s, 0.0, 0.0, 0.0, 0.0, s, 0.0, 0.0, 0.0, 0.0, s, 0.0],
+                g,
+                INSTANCE_MAT_FROM_GEOM,
+            )
+            .unwrap();
+            scene.add_instance(inst);
+            scene.rebuild_instance_bvh();
+            // 起点必须在物体**外面**：立方体近侧在 z = −s，远侧在 z = +s。
+            let eye_z = -(10.0 + 2.0 * s);
+            let h = scene.intersect(
+                Vec3::new(0.0, 0.0, eye_z),
+                Vec3::new(0.0, 0.0, 1.0),
+                MISS_T,
+                None,
+            );
+            let h = h.unwrap_or_else(|| panic!("scale = {s:e} 时漏命中"));
+            let want = 10.0 + s; // 从 eye_z 到 z = −s 的距离
+            assert!(
+                (h.t - want).abs() <= 1e-5 * want.max(1.0),
+                "scale = {s:e}：t = {}（应 ≈ {want}）",
+                h.t
+            );
+            // 法线仍朝外（±z）。
+            let n = scene.normal_at(h.shape, Vec3::new(0.0, 0.0, eye_z + h.t));
+            assert!(n.z < -0.99, "scale = {s:e} 的法线 z = {}（应 ≈ -1）", n.z);
+        }
+    }
+
+    /// 非均匀缩放下的实例法线（**逆转置**）：垂直于缩放后的表面。
+    ///
+    /// 直接乘变换矩阵的做法在 `scale = (3,1,1)` 下会把 45° 面法线拉偏
+    /// 约 30°，表现为明暗交界错位 —— 这条测试用"法线与表面的正交性"抓它。
+    #[test]
+    fn w3_nonuniform_normal_stays_perpendicular() {
+        // 一个斜面三角形（法线带 x、y 分量）。
+        let tri = [
+            Vec3::new(-1.0, -1.0, 0.0),
+            Vec3::new(1.0, -1.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.5),
+        ];
+        let mut scene = Scene::default();
+        let g = scene.add_instance_geom(
+            tri.to_vec(),
+            vec![0, 1, 2],
+            w3_lambert(0.8),
+        );
+        let inst = Instance::from_affine(
+            [3.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            g,
+            INSTANCE_MAT_FROM_GEOM,
+        )
+        .unwrap();
+        scene.add_instance(inst);
+        scene.rebuild_instance_bvh();
+        let (wa, wb, wc) = (
+            inst.apply_point(tri[0]),
+            inst.apply_point(tri[1]),
+            inst.apply_point(tri[2]),
+        );
+        let n = scene.normal_at(ShapeRef::Instance(0, 0), Vec3::splat(0.0));
+        // 世界法线必须同时垂直于两条世界边。
+        let e1 = wb - wa;
+        let e2 = wc - wa;
+        assert!(n.dot(&e1).abs() < 1e-5, "法线与 e1 不垂直：{}", n.dot(&e1));
+        assert!(n.dot(&e2).abs() < 1e-5, "法线与 e2 不垂直：{}", n.dot(&e2));
+        assert!((n.length() - 1.0).abs() < 1e-5, "法线未归一：{}", n.length());
+    }
+
+    /// `validate_layout` 必须拦住四类实例错误（定桩时留的位置）。
+    #[test]
+    fn w3_validate_layout_rejects_bad_instances() {
+        let (pos, idx) = w3_cube(1.0);
+        let mut base = Scene::default();
+        let g = base.add_instance_geom(pos, idx, w3_lambert(0.7));
+        let mut good = base.clone();
+        good.add_instance(Instance::identity(g, INSTANCE_MAT_FROM_GEOM));
+        good.rebuild_instance_bvh();
+        assert_eq!(good.validate_layout(), Ok(()));
+
+        // ① geom_id 越界（原型没注册）。
+        let mut s = base.clone();
+        s.add_instance(Instance::identity(7, INSTANCE_MAT_FROM_GEOM));
+        let e = s.validate_layout().expect_err("geom_id 越界必须被拒");
+        assert!(e.contains("geom_id"), "实际：{e}");
+
+        // ② mat_id 越界（覆盖源必须在 meshes 里）。
+        let mut s = base.clone();
+        s.add_instance(Instance::identity(g, 3));
+        let e = s.validate_layout().expect_err("mat_id 越界必须被拒");
+        assert!(e.contains("mat_id"), "实际：{e}");
+
+        // ③ 手填的假逆矩阵（det 不自洽）。
+        let mut s = base.clone();
+        let mut bad = Instance::identity(g, INSTANCE_MAT_FROM_GEOM);
+        bad.flags = 0; // 去掉 identity 标志，让它过 ②
+        bad.affine = [2.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0];
+        // inverse 仍是恒等 ⇒ det(A)·det(A⁻¹) = 8 ≠ 1。
+        s.add_instance(bad);
+        let e = s.validate_layout().expect_err("假逆矩阵必须被拒");
+        assert!(e.contains("不自洽"), "实际：{e}");
+
+        // ④ flags 与 affine 不符。
+        let mut s = base.clone();
+        let mut lying = Instance::identity(g, INSTANCE_MAT_FROM_GEOM);
+        lying.affine[3] = 5.0;
+        s.add_instance(lying);
+        let e = s.validate_layout().expect_err("identity 标志与 affine 不符必须被拒");
+        assert!(e.contains("IDENTITY"), "实际：{e}");
+    }
+
+    /// 材质覆盖：同一份共享几何，两条实例用不同材质。
+    #[test]
+    fn w3_material_override_applies_per_instance() {
+        let (pos, idx) = w3_cube(1.0);
+        let mut scene = Scene::default();
+        // meshes[0] 只作为材质源（几何为空）。
+        scene.add_mesh(Vec::new(), Vec::new(), w3_lambert(0.1));
+        let g = scene.add_instance_geom(pos, idx, w3_lambert(0.9));
+        scene.add_instance(Instance::identity(g, INSTANCE_MAT_FROM_GEOM));
+        scene.add_instance(Instance::identity(g, 0));
+        scene.rebuild_instance_bvh();
+        scene.assert_layout();
+        let albedo_of = |s: ShapeRef| match scene.material(s) {
+            MaterialKind::Lambert { albedo } => albedo.x,
+            other => panic!("材质应为 Lambert，得 {other:?}"),
+        };
+        assert_eq!(albedo_of(ShapeRef::Instance(0, 0)), 0.9, "哨兵 ⇒ 取自共享几何");
+        assert_eq!(albedo_of(ShapeRef::Instance(1, 0)), 0.1, "非哨兵 ⇒ 覆盖源 meshes[mat_id]");
+    }
+
 }

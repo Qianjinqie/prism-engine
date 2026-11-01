@@ -42,6 +42,8 @@ pub mod caustics;
 pub mod camera;
 pub mod depth;
 pub mod gi;
+/// glTF 场景（保实例）→ [`integrator::Scene`] 的桥（W3 / A3）。
+pub mod gltf_import;
 pub mod hair_scatter;
 pub mod instance;
 pub mod integrator;

@@ -461,8 +461,30 @@ impl Bvh {
     }
 
     /// Möller–Trumbore 三角形命中（图元内命中；t 并列按图元索引 tie-break）。
+    ///
+    /// `rd` 须为单位向量；非单位方向（几何实例化把射线变换进局部空间后
+    /// **故意不归一化**，见 [`Bvh::ray_intersect_raw`]）请走另一个入口。
     pub fn ray_intersect(&self, ro: Vec3, rd: Vec3, t_min: f32, t_max: f32) -> Option<RayHit> {
         debug_assert!((rd.length() - 1.0).abs() < 1e-4, "ray_intersect requires unit rd");
+        self.ray_intersect_raw(ro, rd, t_min, t_max)
+    }
+
+    /// 同 [`Bvh::ray_intersect`]，但**不要求 `rd` 单位长度**。
+    ///
+    /// # 为什么需要这个入口（W3 实例化的核心手法）
+    ///
+    /// 实例化把世界射线变换到局部空间：`o_l = M⁻¹o`、`d_l = M⁻¹d`（线性块）。
+    /// 因为两者是**同一次仿射变换**作用在 `o` 与 `d` 上，局部点
+    /// `o_l + t·d_l ≡ M⁻¹(o + t·d)` —— **`t` 参数不变**。于是：
+    ///
+    /// * 世界空间的 `T_MIN` / `t_max` 可以直接当局部查询的界用，**不需要按
+    ///   缩放换算**（换算只有在归一化局部方向、让 `t_l = t·|M⁻¹d|` 时才出现）；
+    /// * `identity` 实例的 `o_l`/`d_l` 与世界射线逐位相同（`x·1.0 + 0.0` 精确），
+    ///   故 identity 路径与展平路径**逐位一致**有构造性保证，而不是"测出来像"。
+    ///
+    /// `Aabb::ray` 的 slab 算术与 Möller–Trumbore 都与 `|rd|` 无关，唯一被
+    /// 放松的就是入口那条"归一化"断言。
+    pub fn ray_intersect_raw(&self, ro: Vec3, rd: Vec3, t_min: f32, t_max: f32) -> Option<RayHit> {
         if self.tris.is_empty() {
             // 空树：安全返回空语义（bvh.rs:282 契约；与 closest_point/winding_number 对齐）。
             return None;

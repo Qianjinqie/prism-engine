@@ -445,12 +445,22 @@ impl std::error::Error for GltfError {}
 // 导入产物
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// 导入的网格实例（顶点已应用 node 平移缩放链）。
+/// 导入的网格（**局部坐标**：node 变换不再烘进顶点）。
+///
+/// # W3 的语义变更（A3 实例化）
+///
+/// W3 之前本结构的顶点是"已应用 node 平移缩放链"的世界坐标，同一 mesh 被
+/// N 个 node 引用就产出 N 份顶点副本。现在改为"一份局部几何 + N 条
+/// [`GltfInstance`]"，由调用方（`prism-rt` 的 `Scene::add_gltf_scene`）注册成
+/// 共享几何 + 实例记录。需要旧行为请用 [`parse_gltf`]（内部走
+/// [`GltfScene::flatten`]，逐位等价于 W3 之前）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct GltfMesh {
-    /// POSITION 顶点。
+    /// POSITION 顶点（**局部坐标**）。
     pub positions: Vec<Vec3>,
-    /// NORMAL 法线（与顶点一一对应；资产未提供时为空）。
+    /// NORMAL 法线（与顶点一一对应；资产未提供时为空）。局部坐标，未经
+    /// 逆转置——实例化后法线由渲染器按实例的逆转置变换（glTF 的 NORMAL
+    /// 本来就是局部量，这样才是对的）。
     pub normals: Vec<Vec3>,
     /// TEXCOORD_0（与顶点一一对应；资产未提供时为空）。
     pub uvs: Vec<[f32; 2]>,
@@ -458,6 +468,72 @@ pub struct GltfMesh {
     pub indices: Vec<u32>,
     /// 材质（primitive 未引用材质时为 None）。
     pub material: Option<PbrMaterial>,
+}
+
+/// 一条节点实例：`meshes[mesh]` 的一份引用 + 它的世界变换。
+///
+/// `affine` 是 3×4 **行主序**（`[m00,m01,m02,tx, m10,m11,m12,ty, m20,m21,m22,tz]`），
+/// 与 `prism_rt::instance::Instance` 的槽位一致，调用方可直接喂给
+/// `Instance::from_affine`（逆矩阵在 CPU 算一次）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct GltfInstance {
+    /// 共享几何下标（[`GltfScene::meshes`]）。
+    pub mesh: u32,
+    /// 源节点路径（`nodes[i]` / `meshes[m].primitives[p]`），用于报错定位。
+    pub path: String,
+    /// 世界变换（3×4 行主序）。
+    pub affine: [f32; 12],
+}
+
+/// glTF 场景（**保实例**）：共享几何表 + 实例表。
+#[derive(Debug, Clone, PartialEq)]
+pub struct GltfScene {
+    /// 共享几何（每个 `(mesh, primitive)` 一条）。
+    pub meshes: Vec<GltfMesh>,
+    /// 节点实例（每个 node × primitive 一条）。
+    pub instances: Vec<GltfInstance>,
+}
+
+impl GltfScene {
+    /// 展平：把每条实例的变换烘进顶点副本，得到 W3 之前的输出形态。
+    ///
+    /// 输出顺序 = 实例顺序（每个实例一条 `GltfMesh`），与 W3 之前"按
+    /// `(node, primitive)` 顺序 push"完全一致；顶点算术与
+    /// `Mat4::transform_point` 同序（`m0*x + m4*y + m8*z + m12`，w 恒 1
+    /// 故不做除法），因此**逐位等价**（`gltf_flatten_matches_pre_w3_bitwise`）。
+    pub fn flatten(&self) -> Vec<GltfMesh> {
+        let mut out = Vec::with_capacity(self.instances.len());
+        for inst in &self.instances {
+            let Some(src) = self.meshes.get(inst.mesh as usize) else {
+                continue;
+            };
+            let a = &inst.affine;
+            let mut m = src.clone();
+            for p in m.positions.iter_mut() {
+                *p = Vec3::new(
+                    a[0] * p.x + a[1] * p.y + a[2] * p.z + a[3],
+                    a[4] * p.x + a[5] * p.y + a[6] * p.z + a[7],
+                    a[8] * p.x + a[9] * p.y + a[10] * p.z + a[11],
+                );
+            }
+            out.push(m);
+        }
+        out
+    }
+
+    /// 省下的顶点副本数（0 表示资产本来就没有重复引用）。
+    pub fn saved_mesh_copies(&self) -> usize {
+        self.instances.len().saturating_sub(self.meshes.len())
+    }
+}
+
+/// 列主序 `Mat4` → 3×4 行主序仿射（丢最后一行 `0,0,0,1`）。
+pub fn mat4_to_affine(m: &Mat4) -> [f32; 12] {
+    [
+        m.0[0], m.0[4], m.0[8], m.0[12], //
+        m.0[1], m.0[5], m.0[9], m.0[13], //
+        m.0[2], m.0[6], m.0[10], m.0[14],
+    ]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -469,10 +545,16 @@ const CT_FLOAT: f64 = 5126.0;
 const CT_USHORT: f64 = 5123.0;
 const CT_UINT: f64 = 5125.0;
 
-/// 解析 glTF（JSON 文本 + 二进制 buffer）。
+/// 解析 glTF（JSON 文本 + 二进制 buffer）→ **保实例**的场景。
 ///
-/// 返回（网格实例列表，加载报告 warnings——未支持字段逐条列出，永不静默）。
-pub fn parse_gltf(json: &str, bin: &[u8]) -> Result<(Vec<GltfMesh>, Vec<String>), GltfError> {
+/// 返回（共享几何 + 实例表，加载报告 warnings——未支持字段逐条列出，永不静默）。
+///
+/// 同一 `(mesh, primitive)` 只解析一次（几何一份），每个引用它的 node 产出一条
+/// [`GltfInstance`]。这是 W3（A3）要求的形态：几何内存与实例数解耦。
+pub fn parse_gltf_scene(
+    json: &str,
+    bin: &[u8],
+) -> Result<(GltfScene, Vec<String>), GltfError> {
     let root = Json::parse(json).map_err(|e| GltfError::Json { offset: e.offset, msg: e.msg })?;
     let mut warn: Vec<String> = Vec::new();
 
@@ -493,7 +575,11 @@ pub fn parse_gltf(json: &str, bin: &[u8]) -> Result<(Vec<GltfMesh>, Vec<String>)
         .and_then(|m| m.arr())
         .ok_or_else(|| GltfError::Missing { path: "meshes".into(), what: "meshes 数组".into() })?;
 
-    let mut out = Vec::new();
+    let mut out: Vec<GltfMesh> = Vec::new();
+    let mut inst_out: Vec<GltfInstance> = Vec::new();
+    // 去重表：(mesh 下标, primitive 下标) → 已产出的几何下标。
+    // 线性查找即可：节点实例通常是个位数到几百，而重复引用集中在同一 mesh 上。
+    let mut seen: Vec<(usize, usize, u32)> = Vec::new();
     for (mesh_idx, world) in &instances {
         let mesh = meshes_json
             .get(*mesh_idx)
@@ -511,6 +597,15 @@ pub fn parse_gltf(json: &str, bin: &[u8]) -> Result<(Vec<GltfMesh>, Vec<String>)
             })?;
         for (pi, prim) in prims.iter().enumerate() {
             let path = format!("meshes[{mesh_idx}].primitives[{pi}]");
+            // 同一个 (mesh, primitive) 已经解过 ⇒ 只追加实例记录，几何复用。
+            if let Some((_, _, g)) = seen.iter().find(|(m, q, _)| *m == *mesh_idx && *q == pi) {
+                inst_out.push(GltfInstance {
+                    mesh: *g,
+                    path,
+                    affine: mat4_to_affine(world),
+                });
+                continue;
+            }
             // mode：只支持 TRIANGLES(4)（缺省即 4）。
             let mode = prim.get("mode").and_then(|m| m.num()).unwrap_or(4.0);
             if mode != 4.0 {
@@ -543,14 +638,12 @@ pub fn parse_gltf(json: &str, bin: &[u8]) -> Result<(Vec<GltfMesh>, Vec<String>)
                     hint: "POSITION 必须是 VEC3".into(),
                 });
             }
-            let mut positions: Vec<Vec3> = positions_raw
+            // W3：顶点保持**局部坐标**（node 变换改由实例记录承载）。
+            let positions: Vec<Vec3> = positions_raw
                 .floats
                 .chunks_exact(3)
                 .map(|c| Vec3::new(c[0], c[1], c[2]))
                 .collect();
-            for p in positions.iter_mut() {
-                *p = world.transform_point(*p);
-            }
             // NORMAL（可选）。
             let normals = match attr_index(attrs, "NORMAL", &format!("{path}.attributes"))? {
                 Some(ai) => {
@@ -634,7 +727,14 @@ pub fn parse_gltf(json: &str, bin: &[u8]) -> Result<(Vec<GltfMesh>, Vec<String>)
                     })
                 })
                 .transpose()?;
+            let geom_id = out.len() as u32;
             out.push(GltfMesh { positions, normals, uvs, indices, material });
+            seen.push((*mesh_idx, pi, geom_id));
+            inst_out.push(GltfInstance {
+                mesh: geom_id,
+                path,
+                affine: mat4_to_affine(world),
+            });
         }
     }
     // 未被场景引用的 mesh 逐条入报告（永不静默）。
@@ -644,7 +744,20 @@ pub fn parse_gltf(json: &str, bin: &[u8]) -> Result<(Vec<GltfMesh>, Vec<String>)
             warn.push(format!("meshes[{mi}]：未被任何 scene/node 引用，未导入"));
         }
     }
-    Ok((out, warn))
+    Ok((
+        GltfScene { meshes: out, instances: inst_out },
+        warn,
+    ))
+}
+
+/// 解析 glTF → **展平**的网格列表（W3 之前的形态，保留作兼容入口）。
+///
+/// 实现是 [`parse_gltf_scene`] + [`GltfScene::flatten`]：顶点算术与旧实现
+/// 逐位相同，输出顺序也相同，故老调用方（含 `tests/qa_edge_attack.rs`）
+/// 行为不变。**新代码请用 [`parse_gltf_scene`]** —— 它才是几何与实例解耦的形态。
+pub fn parse_gltf(json: &str, bin: &[u8]) -> Result<(Vec<GltfMesh>, Vec<String>), GltfError> {
+    let (scene, warn) = parse_gltf_scene(json, bin)?;
+    Ok((scene.flatten(), warn))
 }
 
 /// GLB 容器拆包：返回（JSON 文本，BIN chunk）。
