@@ -43,7 +43,11 @@ pub mod camera;
 pub mod depth;
 pub mod gi;
 pub mod hair_scatter;
+pub mod instance;
 pub mod integrator;
+/// W1-A 定桩的**静态布局门禁**（仅 `cfg(test)` 存在；`cargo test -p prism-rt --lib` 会跑）。
+#[cfg(test)]
+pub mod layout;
 pub mod light;
 /// 材质预设计数真源（V2.2-B-3 / T05；10 项可渲染预设，见 [`material::MaterialPreset`]）。
 pub mod material;
@@ -52,4 +56,5 @@ pub mod sampler;
 /// 光谱渲染切片（V2.2-B-1 / T08）：λ 轴 + 自研 CMF 分段有理 + 退化一致性。
 pub mod spectral;
 pub mod sss;
+pub mod texture;
 pub mod wavefront;

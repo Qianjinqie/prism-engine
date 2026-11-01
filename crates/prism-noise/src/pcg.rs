@@ -54,10 +54,28 @@ pub fn hash1(seed: u64, x: u64) -> u64 {
     permute(seed ^ x.wrapping_add(SALT1))
 }
 
+/// 2D hash, **前半段**：`permute(seed ^ (x + SALT1))`。
+///
+/// 拆出来只为让"前两个参数固定、只有 `y` 在变"的调用点把这一段提到循环外
+/// （`prism_rt::sampler` 的打散掩码就是这样：`(seed, MASK_SALT)` 固定，
+/// 每个维度只改 `y = dim`）。拆的是**同一个表达式**，故
+/// `hash2(s, x, y) == hash2_finish(hash2_prefix(s, x), y)` 逐位成立——
+/// 整数件的恒等变换，不是近似。
+#[inline]
+pub fn hash2_prefix(seed: u64, x: u64) -> u64 {
+    permute(seed ^ x.wrapping_add(SALT1))
+}
+
+/// 2D hash, **后半段**：`permute(prefix ^ (y + SALT2))`。见 [`hash2_prefix`]。
+#[inline]
+pub fn hash2_finish(prefix: u64, y: u64) -> u64 {
+    permute(prefix ^ y.wrapping_add(SALT2))
+}
+
 /// 2D hash: folds `(seed, x, y)` into a uniformly distributed `u64`.
 #[inline]
 pub fn hash2(seed: u64, x: u64, y: u64) -> u64 {
-    permute(permute(seed ^ x.wrapping_add(SALT1)) ^ y.wrapping_add(SALT2))
+    hash2_finish(hash2_prefix(seed, x), y)
 }
 
 /// 3D hash: folds `(seed, x, y, z)` into a uniformly distributed `u64`.

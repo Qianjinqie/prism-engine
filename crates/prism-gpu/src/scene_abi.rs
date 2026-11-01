@@ -23,6 +23,7 @@
 //! |---|---|---|
 //! | [`SceneAbiProfile::V1`] | 4 | params / spheres / lights / **out** |
 //! | [`SceneAbiProfile::V2`]（A-2 起的默认） | 6 | params / spheres / lights / triangles / nodes / **out** |
+//! | [`SceneAbiProfile::V3`]（W1-A 定桩，**尚无宿主**） | 9 | params / spheres / lights / triangles / nodes / textures / texmeta / cdf / **out** |
 //!
 //! V1 是 V2.1 及以前三份源与 `vulkan::scene` dispatch 编码所使用的剖面，**永久可用、
 //! 不得回归**（[`SceneAbi::bindings_for`]`(`[`SceneAbiProfile::V1`]`)`）。A-2 只把
@@ -111,6 +112,40 @@ pub const P_NUM_NODES: u32 = 23;
 /// `P_NUM_TRIS` / `P_NUM_NODES` 两字。
 pub const PARAMS_WORDS_V2: usize = 24;
 
+// ---------------------------------------------------------------------------
+// V3 剖面（W1-A 定桩）：参数块再追加两字
+// ---------------------------------------------------------------------------
+
+/// （V3）纹理条数（= `Scene::textures.len()`，同时是 `texmeta` 绑定的元素数）。
+pub const P_NUM_TEXTURES: u32 = 24;
+
+/// （V3）环境 CDF 的行数 H（`cdf` 绑定的长度口径 = `(W+1)·H·4` 字节，
+/// W 由环境图 `TextureRef.w` 给出）。
+///
+/// 之所以把 `H` 单独放进参数块、而不让 shader 从 `texmeta` 反推：shader 侧
+/// 需要的是一次**整数除法**就得到行跨度 `(W+1)`，而 `W` 与 `H` 分属两个
+/// 结构体时，反推要两次间接寻址 + 一次分支（"有没有环境图"）。参数块里
+/// 放一个 `H` 把这条依赖压成常量，且让"没有 CDF"时取 0 即可整段跳过。
+pub const P_CFD_ROWS: u32 = 25;
+
+/// **V3** 参数块字数：V2 的 24 字前缀逐字节不变，尾部追加
+/// `P_NUM_TEXTURES` / `P_CFD_ROWS` 两字。
+pub const PARAMS_WORDS_V3: usize = 26;
+
+/// 环境 CDF 的字节数口径：`(W+1)·H·4`。
+///
+/// 与 `prism_rt::texture::cdf_len_bytes` **同式同源**（本 crate 不依赖
+/// `prism-rt`，故公式各写一份，由各自的编译期断言钉在同一个数上：
+/// 2048×1024 → 8,392,704 B）。
+pub const fn cdf_len_bytes(w: u32, h: u32) -> usize {
+    ((w as usize) + 1) * (h as usize) * 4
+}
+
+/// V3 的 `texmeta` 元素步长（字节）：`array<vec4<u32>>`，两个 `vec4` = 32 B。
+///
+/// 与 `prism_rt::texture::TEXTURE_REF_BYTES` 同值（编译期断言互钉）。
+pub const TEXMETA_STRIDE_BYTES: u32 = 32;
+
 /// 每三角形占用的 f32 槽数：`{a.xyz, pad, b.xyz, pad, c.xyz, pad, pad, pad}`（12 = 48 B，
 /// 满足 WGSL `vec3<f32>` 的 16 B 对齐：每个 `vec3` 后补 1 个 pad）。
 pub const TRIANGLE_SLOTS: u32 = 12;
@@ -174,12 +209,24 @@ pub struct SceneAbi;
 /// * [`SceneAbiProfile::V2`]：`{0 params, 1 spheres, 2 lights, 3 triangles, 4 nodes, 5 out}`
 ///   （6 绑定）。A-2 曲线图元（三角化 → 扁平 BVH）走此剖面；参数块追加
 ///   `P_NUM_TRIS` / `P_NUM_NODES` 两字（[`PARAMS_WORDS_V2`]）。
+/// * [`SceneAbiProfile::V3`]（**W1-A 定桩，尚无宿主**）：9 绑定
+///   `{0 params, 1 spheres, 2 lights, 3 triangles, 4 nodes, 5 textures,
+///   6 texmeta, 7 cdf, 8 out}`。参数块再追加 `P_NUM_TEXTURES` / `P_CFD_ROWS`
+///   两字（[`PARAMS_WORDS_V3`]），总 26 字。
+///
+///   **本剖面在 W0-A 只有表，没有消费者**：没有 `encode_v3`，没有 WGSL/SPIR-V
+///   声明，没有 bind group。它的存在是为了让 W1-B（纹理）与 W2（环境光照）
+///   不必各自再改一次「槽位从哪儿开始」——那是并行开工前的唯一串行点。
+///   默认剖面仍是 V2（[`SceneAbiProfile::CURRENT`]），故任何既有输出的字节
+///   都不受影响。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SceneAbiProfile {
     /// 4 绑定（params / spheres / lights / out）。
     V1,
     /// 6 绑定（params / spheres / lights / triangles / nodes / out）。
     V2,
+    /// 9 绑定（params / spheres / lights / triangles / nodes / textures / texmeta / cdf / out）。
+    V3,
 }
 
 impl SceneAbiProfile {
@@ -203,6 +250,8 @@ impl SceneAbiProfile {
                 SceneBinding { binding: 4, name: "nodes", access: BindingAccess::ReadOnly },
                 SceneBinding { binding: 5, name: "out", access: BindingAccess::ReadWrite },
             ],
+            // W1-A 定桩：表在这里，消费者（WGSL / SPIR-V / bind group）在 W1-B/W2。
+            SceneAbiProfile::V3 => &V3_BINDINGS,
         }
     }
 
@@ -221,6 +270,7 @@ impl SceneAbiProfile {
         match self {
             SceneAbiProfile::V1 => PARAMS_WORDS,
             SceneAbiProfile::V2 => PARAMS_WORDS_V2,
+            SceneAbiProfile::V3 => PARAMS_WORDS_V3,
         }
     }
 
@@ -229,9 +279,127 @@ impl SceneAbiProfile {
         match self {
             SceneAbiProfile::V1 => "V1",
             SceneAbiProfile::V2 => "V2",
+            SceneAbiProfile::V3 => "V3",
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// V3 绑定表 + 编译期断言（W1-A 定桩的全部产出之一）
+// ---------------------------------------------------------------------------
+
+/// V3 剖面的绑定表：**顺序即 binding 编号**，末位恒为输出。
+///
+/// 选型报告 §11 的槽位顺序逐字落地：
+/// `{params, spheres, lights, triangles, nodes, textures, texmeta, cdf, out}`。
+pub const V3_BINDINGS: [SceneBinding; 9] = [
+    SceneBinding { binding: 0, name: "params", access: BindingAccess::ReadOnly },
+    SceneBinding { binding: 1, name: "spheres", access: BindingAccess::ReadOnly },
+    SceneBinding { binding: 2, name: "lights", access: BindingAccess::ReadOnly },
+    SceneBinding { binding: 3, name: "triangles", access: BindingAccess::ReadOnly },
+    SceneBinding { binding: 4, name: "nodes", access: BindingAccess::ReadOnly },
+    SceneBinding { binding: 5, name: "textures", access: BindingAccess::ReadOnly },
+    SceneBinding { binding: 6, name: "texmeta", access: BindingAccess::ReadOnly },
+    SceneBinding { binding: 7, name: "cdf", access: BindingAccess::ReadOnly },
+    SceneBinding { binding: 8, name: "out", access: BindingAccess::ReadWrite },
+];
+
+/// V3 各绑定的编号（宿主据此声明 `@binding(k)`，禁止写字面量）。
+pub const V3_PARAMS: u32 = 0;
+/// 见 [`V3_PARAMS`]。
+pub const V3_SPHERES: u32 = 1;
+/// 见 [`V3_PARAMS`]。
+pub const V3_LIGHTS: u32 = 2;
+/// 见 [`V3_PARAMS`]。
+pub const V3_TRIANGLES: u32 = 3;
+/// 见 [`V3_PARAMS`]。
+pub const V3_NODES: u32 = 4;
+/// 纹理像素（`array<vec4<f32>>`；**禁** `array<vec3<f32>>`）。
+pub const V3_TEXTURES: u32 = 5;
+/// 纹理元数据（`array<vec4<u32>>`，[`TEXMETA_STRIDE_BYTES`] 字节/条）。
+pub const V3_TEXMETA: u32 = 6;
+/// 环境 CDF（`array<u32>`，`(W+1)·H·4` 字节）。
+pub const V3_CDF: u32 = 7;
+/// 输出（**恒为最后一个绑定**）。
+pub const V3_OUT: u32 = 8;
+
+/// `Bsdf::maps` 的槽数（与 `prism_rt::bsdf::MAP_SLOTS` 同值）。
+///
+/// 两份常量不能互相 import（`prism-gpu` 不得反引 `prism-rt`），故各写一份
+/// 并由各自的断言钉在 4；真正的绑定关系在 W1-B 的编码器单测里对拍。
+pub const TEXMAP_SLOTS: u32 = 4;
+
+/// `const fn`：取绑定的访问属性（供 `const _` 断言用；`PartialEq` 不是 const）。
+const fn access_is_read_write(a: BindingAccess) -> bool {
+    match a {
+        BindingAccess::ReadWrite => true,
+        BindingAccess::ReadOnly => false,
+    }
+}
+
+/// `const fn` 字符串相等（`==` 在 const 上下文不可用）。
+const fn str_eq(a: &str, b: &str) -> bool {
+    let (ab, bb) = (a.as_bytes(), b.as_bytes());
+    if ab.len() != bb.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < ab.len() {
+        if ab[i] != bb[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// **V3 槽位顺序断言**（选型报告 §11 的槽位表逐格对账）。
+///
+/// 改错顺序（比如把 `texmeta` 和 `cdf` 对调）在这里就编不过——而不是等到
+/// W2 接线后 shader 从 CDF 里读出纹理元数据、表现出"环境光照成了一张贴图"。
+const _: () = {
+    let bs = V3_BINDINGS;
+    assert!(bs.len() == 9);
+    let mut i = 0;
+    while i < bs.len() {
+        // 连续前缀：binding 编号必须等于下标（宿主据此派生 bind group）。
+        assert!(bs[i].binding as usize == i);
+        i += 1;
+    }
+    // 顺序即语义（逐格比对，不靠"看起来对"）。
+    assert!(str_eq(bs[0].name, "params"));
+    assert!(str_eq(bs[1].name, "spheres"));
+    assert!(str_eq(bs[2].name, "lights"));
+    assert!(str_eq(bs[3].name, "triangles"));
+    assert!(str_eq(bs[4].name, "nodes"));
+    assert!(str_eq(bs[5].name, "textures"));
+    assert!(str_eq(bs[6].name, "texmeta"));
+    assert!(str_eq(bs[7].name, "cdf"));
+    assert!(str_eq(bs[8].name, "out"));
+    // **输出恒为最后一个绑定**（这是三份源共用的硬约束）。
+    assert!(str_eq(bs[8].name, "out"));
+    assert!(access_is_read_write(bs[8].access));
+    // 除输出外全部只读（写错的后果是驱动直接拒绝创建 bind group layout）。
+    let mut j = 0;
+    while j < 8 {
+        assert!(!access_is_read_write(bs[j].access));
+        j += 1;
+    }
+};
+
+/// 参数块尾部追加两字：V3 = V2 + 2，且两字的编号紧接 V2 末字。
+const _: () = assert!(PARAMS_WORDS_V3 == PARAMS_WORDS_V2 + 2);
+const _: () = assert!(P_NUM_TEXTURES == PARAMS_WORDS_V2 as u32);
+const _: () = assert!(P_CFD_ROWS == P_NUM_TEXTURES + 1);
+/// 参数块末字编号 + 1 == 字数（不多不少，`encode_v3` 才可能写满）。
+const _: () = assert!(PARAMS_WORDS_V3 == P_CFD_ROWS as usize + 1);
+/// CDF 长度口径：2048×1024 → 8,392,704 B（选型报告 §3.1 第 2 条）。
+const _: () = assert!(cdf_len_bytes(2048, 1024) == 8_392_704);
+/// `texmeta` 步长：`array<vec4<u32>>` 的 2 格 = 32 B（必须是 16 的倍数）。
+const _: () = assert!(TEXMETA_STRIDE_BYTES == 32);
+const _: () = assert!(TEXMETA_STRIDE_BYTES % 16 == 0);
+/// 四张贴图句柄（`base / metal-rough / normal / emissive`）。
+const _: () = assert!(TEXMAP_SLOTS == 4);
 
 impl SceneAbi {
     /// 入口名（WGSL `fn scene_main` / SPIR-V `OpEntryPoint`）。
@@ -640,6 +808,68 @@ mod tests {
         assert_eq!(SceneAbi::PROFILE, SceneAbiProfile::CURRENT);
         assert_eq!(SceneAbi::bindings(), SceneAbi::bindings_for(SceneAbiProfile::V2));
         assert_eq!(SceneAbi::bindings().len(), 6);
+    }
+
+    /// **V3 剖面（W1-A 定桩）**：9 绑定连续前缀，槽位顺序与选型报告 §11 逐字一致，
+    /// 输出恒为最后一个绑定，参数块尾部追加 `P_NUM_TEXTURES` / `P_CFD_ROWS`。
+    ///
+    /// 编译期断言（`const _`）已经把这张表钉住；本测试是它的**运行时镜像**，
+    /// 目的不是重复，而是让"断言被误删"这件事在测试层也留一道痕
+    /// （`const _` 被删掉时编译照样过）。
+    #[test]
+    fn bindings_v3_profile_matches_spec_slot_order() {
+        let bs = SceneAbi::bindings_for(SceneAbiProfile::V3);
+        assert_eq!(bs.len(), 9, "V3 剖面恒为 9 绑定");
+        let names: Vec<&str> = bs.iter().map(|b| b.name).collect();
+        assert_eq!(
+            names,
+            vec![
+                "params", "spheres", "lights", "triangles", "nodes", "textures", "texmeta",
+                "cdf", "out"
+            ],
+            "V3 绑定顺序必须与选型报告 §11 的槽位表逐字一致"
+        );
+        for (i, b) in bs.iter().enumerate() {
+            assert_eq!(b.binding, i as u32, "绑定必须从 0 起连续（连续前缀约束）");
+        }
+        // 输出恒为最后一个绑定。
+        let last = bs[bs.len() - 1];
+        assert_eq!(last.name, "out");
+        assert_eq!(last.access, BindingAccess::ReadWrite);
+        assert_eq!(SceneAbiProfile::V3.out_binding(), last.binding);
+        assert_eq!(SceneAbiProfile::V3.out_binding(), V3_OUT);
+        assert_eq!(SceneAbiProfile::V3.out_binding(), 8);
+        // 除输出外全部只读。
+        for b in &bs[..bs.len() - 1] {
+            assert_eq!(b.access, BindingAccess::ReadOnly, "{} 必须只读", b.name);
+        }
+        // 绑定编号常量与表逐格对应（宿主据此声明 `@binding(k)`）。
+        assert_eq!(
+            [
+                V3_PARAMS, V3_SPHERES, V3_LIGHTS, V3_TRIANGLES, V3_NODES, V3_TEXTURES, V3_TEXMETA,
+                V3_CDF, V3_OUT
+            ],
+            [0, 1, 2, 3, 4, 5, 6, 7, 8]
+        );
+    }
+
+    /// V3 参数块：`V2 前缀逐字节不变`，尾部只多两字。
+    ///
+    /// `encode_v3` 在 W1-B 落地；本段先钉死"前缀不许动、字数算得出来"。
+    #[test]
+    fn v3_params_words_and_cdf_len() {
+        assert_eq!(SceneAbiProfile::V3.params_words(), PARAMS_WORDS_V3);
+        assert_eq!(PARAMS_WORDS_V3, PARAMS_WORDS_V2 + 2);
+        assert_eq!(P_NUM_TEXTURES, PARAMS_WORDS_V2 as u32);
+        assert_eq!(P_CFD_ROWS, P_NUM_TEXTURES + 1);
+        assert_eq!(SceneAbiProfile::V3.name(), "V3");
+        // CDF 长度口径与 prism-rt 侧同式：2048×1024 → 8,392,704 B。
+        assert_eq!(cdf_len_bytes(2048, 1024), 8_392_704);
+        // texmeta 步长必须是 16 的倍数（`array<vec4<u32>>` 的 stride 要求）。
+        assert_eq!(TEXMETA_STRIDE_BYTES % 16, 0);
+        assert_eq!(TEXMETA_STRIDE_BYTES, 32);
+        // 四张贴图句柄。
+        assert_eq!(TEXMAP_SLOTS, 4);
     }
 
     /// V2 参数块的 V1 前缀**逐字节不变**（只追加 P_NUM_TRIS / P_NUM_NODES）。

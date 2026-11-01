@@ -24,16 +24,16 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use prism_gpu::CpuRefBackend;
+use prism_gpu::{CpuRefBackend, GpuDevice};
 use prism_mux::extprobe::{self, Codec, FfmpegProbe};
 use prism_mux::{write_mp4_jpeg_color, JpegConfig, TrackSpec};
-use prism_render::render_movie;
+use prism_render::{render_movie, RtBackend};
 
 /// render 子命令用法。
 pub const RENDER_USAGE: &str = r#"prism-app render — DSL v2 成片直达（整段渲染为 MP4）
 
 用法:
-  prism-app render <file.prism> [--out <FILE>] [--codec <h264|mjpeg>]
+  prism-app render <file.prism> [--out <FILE>] [--codec <h264|mjpeg>] [--fast]
 
 参数:
   <file.prism>   DSL v2 场景源文件（首行须为 // prism-dsl 1 版本头）
@@ -42,6 +42,9 @@ pub const RENDER_USAGE: &str = r#"prism-app render — DSL v2 成片直达（整
   --out <FILE>   输出文件路径（默认 output/render.mp4）
   --codec <C>    容器编码：h264（默认；无 ffmpeg 时自动降级 MJPEG）
                  或 mjpeg（内置 muxer，零外部依赖）
+  --fast         快速档：走 CpuRefBackend（单弹射 Lambert 射线投射，
+                 无阴影 / 无反射 / 无间接光）。用于出图预览与对拍基线，
+                 不是成片质量档
   -h, --help     显示本帮助
 
 说明:
@@ -50,10 +53,22 @@ pub const RENDER_USAGE: &str = r#"prism-app render — DSL v2 成片直达（整
   不支持的节点类型（particles / sim / compose）会得到明确的 R5xxx
   报错，而非静默跳过。
 
+  渲染器（D-19 双轨）:
+    默认     prism-rt 完整路径追踪（NEE + MIS + RR + 多弹射：
+             软阴影 / 镜面高光 / 间接光都在）
+    --fast   CpuRefBackend 单弹射 Lambert（ambient 0.08 + N·L，平光）
+
+  两档都是确定性实现：同参数两跑逐字节相同。
+
+  例外（既有行为，非本开关引入）: 曲线图元（sdf kind cylinder / cone /
+  torus / revolution）在 render_movie 里由 render_curve_frame 直接走
+  prism-rt，不经过设备抽象 —— 这类场景 --fast 不生效（两档出图逐字节相同）。
+
 示例:
   prism-app render demo.prism                        # -> output/render.mp4
   prism-app render demo.prism --out out/demo.mp4     # 指定输出文件
-  prism-app render demo.prism --codec mjpeg          # 强制内置 MJPEG"#;
+  prism-app render demo.prism --codec mjpeg          # 强制内置 MJPEG
+  prism-app render demo.prism --fast                 # 快速档（Lambert 对拍基线）"#;
 
 /// render 子命令配置（由参数解析构造）。
 struct RenderConfig {
@@ -63,6 +78,8 @@ struct RenderConfig {
     out: PathBuf,
     /// 请求的容器编码（`h264` 允许降级；`mjpeg` 为终态）。
     codec: Codec,
+    /// `--fast`：走 `CpuRefBackend`（Lambert）。`false` = `prism-rt` 路径追踪。
+    fast: bool,
 }
 
 /// render 子命令默认输出文件（相对运行时工作目录）。
@@ -116,10 +133,31 @@ pub fn run(args: &[String]) -> i32 {
     };
 
     // ---- 4. render_movie 直达路径（R5xxx 三段式，绝不静默）-------------------
-    let mut device = CpuRefBackend;
-    let deliverable = match render_movie(&compile, &mut device) {
+    // D-19 双轨：默认 prism-rt 完整路径追踪；`--fast` 走 CpuRefBackend（Lambert）。
+    // 两档都是 `&mut dyn GpuDevice`，`render_movie` 一行不改。
+    // 失败时**不**回退到另一档：要么出片，要么三段式报错。
+    let (renderer_name, renderer_detail): (&str, String) = if cfg.fast {
+        ("cpu-ref (Lambert)", "单弹射，ambient 0.08 + N·L".to_string())
+    } else {
+        let rt: RtBackend = RtBackend::default();
+        (
+            "rt-path-tracing",
+            format!("{} spp / {} 弹射", rt.spp, rt.max_bounces),
+        )
+    };
+    // 两个后端都先构造，再按开关取一个 trait object（`render_movie` 只认
+    // `&mut dyn GpuDevice`，故此处不需要分支化的调用点）。
+    let mut fast_device = CpuRefBackend;
+    let mut rt_device: RtBackend = RtBackend::default();
+    let device: &mut dyn GpuDevice = if cfg.fast {
+        &mut fast_device
+    } else {
+        &mut rt_device
+    };
+    let deliverable = match render_movie(&compile, device) {
         Ok(d) => d,
         Err(err) => {
+            // 绝不回退到另一档：失败就是失败（R5xxx 自带三段式）。
             eprintln!("prism-app render: {err}");
             return 1;
         }
@@ -215,6 +253,7 @@ pub fn run(args: &[String]) -> i32 {
     println!("  帧率      : {fps} fps");
     println!("  时长      : {} s", deliverable.duration);
     println!("  帧数      : {} 帧", deliverable.frames.len());
+    println!("  渲染器    : {renderer_name}（{renderer_detail}）");
     println!("  容器编码  : {}", codec_used.name());
     if let Some(note) = degraded_note {
         println!("  降级说明  : {note}");
@@ -256,12 +295,16 @@ fn parse_args(args: &[String]) -> Result<RenderConfig, String> {
         file: PathBuf::new(),
         out: PathBuf::from(DEFAULT_OUT),
         codec: Codec::H264,
+        fast: false,
     };
 
     let mut i: usize = 0;
     while i < args.len() {
         let arg: &str = args[i].as_str();
         match arg {
+            "--fast" => {
+                cfg.fast = true;
+            }
             "--out" => {
                 i += 1;
                 let value: &str = args
@@ -328,6 +371,22 @@ mod tests {
         assert_eq!(cfg.file, PathBuf::from("demo.prism"));
         assert_eq!(cfg.out, PathBuf::from(DEFAULT_OUT));
         assert!(matches!(cfg.codec, Codec::H264));
+        // D-19 默认档 = prism-rt 路径追踪（`--fast` 关着）。
+        assert!(!cfg.fast, "缺省必须走 prism-rt（fast = false）");
+    }
+
+    #[test]
+    fn fast_flag_parses() {
+        // 位置无关：`--fast` 在文件前 / 后都成立。
+        assert!(parse_args(&argv(&["--fast", "a.prism"])).expect("应解析成功").fast);
+        assert!(parse_args(&argv(&["a.prism", "--fast"])).expect("应解析成功").fast);
+        // 与其它选项共存。
+        let cfg: RenderConfig =
+            parse_args(&argv(&["a.prism", "--fast", "--codec", "mjpeg"])).expect("应解析成功");
+        assert!(cfg.fast);
+        assert!(matches!(cfg.codec, Codec::Mjpeg));
+        // 重复出现幂等。
+        assert!(parse_args(&argv(&["a.prism", "--fast", "--fast"])).expect("应解析成功").fast);
     }
 
     #[test]

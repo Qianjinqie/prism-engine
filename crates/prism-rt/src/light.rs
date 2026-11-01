@@ -66,7 +66,45 @@ pub enum Light {
         /// 背景辐亮度。
         radiance: Vec3,
     },
+    /// HDR 环境贴图（等距柱状 + 立体角 2D CDF；A2 / W2）。
+    ///
+    /// # W1-A 定桩：只有句柄
+    ///
+    /// 本变体在 W0-A 只落地**字段**（`u32` 句柄，保持 `Light: Copy`），
+    /// 采样（CDF 二分 + 边际条件反演 + MIS 融合）全是 **W2** 的事。
+    /// 当前它**不参与任何计算**：`sample_nee` 返回 `None`（NEE 不直接采它，
+    /// 走 CDF 才是 W2 的路子），`ambient_background` 只认 [`Light::Ambient`]
+    /// ⇒ 场景里出现本变体，本段的输出与"没有这盏灯"逐位相同。
+    ///
+    /// # 与 [`Light::Ambient`] **互斥**
+    ///
+    /// 两者都描述"逃逸射线看到的背景"。同时存在 ⇒ 逃逸分支会双计
+    /// （`ambient_background` 给常数、环境图给采样值），而双计的表现是
+    /// "背景偏亮"这种不会报错、只会被对拍抓到的 bug。故
+    /// [`crate::integrator::Scene::validate_layout`] 把它做成**构造期断言**。
+    Environment {
+        /// 环境贴图句柄（索引进 `Scene::textures`；`0` = 无 —— 与
+        /// [`crate::texture::NO_TEXTURE`] 同一约定）。
+        map: u32,
+    },
 }
+
+/// `Light` 必须仍是 `Copy`（选型报告 §2.2 / §3.1 第 4 条：`u32` 句柄而非
+/// `Arc<EnvMap>`，就是为了不动这个 derive）。
+///
+/// 静态证：`CopyOnly<T: Copy>` 的常量若 `Light` 不满足 `Copy` 就编不过。
+const _: () = {
+    /// 只接受 `Copy` 类型的零尺寸标记。
+    struct CopyOnly<T: Copy>(core::marker::PhantomData<T>);
+    let _: CopyOnly<Light> = CopyOnly(core::marker::PhantomData::<Light>);
+};
+
+/// `Light` 的尺寸不得因 `Environment` 变胖：`Rect`（4 × `Vec3` = 48 B）仍是
+/// 最大变体，判别式 1 B → 对齐后 52 B。`Environment { map }` 只占 4 B，
+/// 落在 `Rect` 的payload 之内 ⇒ 尺寸不变。
+const _: () = assert!(core::mem::size_of::<Light>() == 52);
+/// 对齐 4 B（全 f32/u32）。
+const _: () = assert!(core::mem::align_of::<Light>() == 4);
 
 /// NEE 采样结果：对着色点 `p` 采样灯光得到的一条入射辐射样本。
 #[derive(Debug, Clone, Copy)]
@@ -106,6 +144,14 @@ pub fn power_heuristic(a: f32, b: f32) -> f32 {
 pub fn nee_mis_weight(light: &Light, pdf_light: f32, pdf_bsdf: f32) -> f32 {
     match light {
         Light::Sphere { .. } => power_heuristic(pdf_light, pdf_bsdf),
+        // 环境**贴图**与球光同臂（选型报告 §3.1 第 4 条）：它是"BSDF 采样
+        // 可达的几何"（逃逸射线命中它），故两策略要配对。
+        //
+        // **本段该臂不可达**：`sample_nee` 对 `Environment` 恒返回 None，
+        // 没有任何调用方会拿着 Environment 的样本走到这里。定桩先把臂写对，
+        // 免得 W2 接线时忘掉——忘掉的表现是背景偏亮 ~2×（权重 1 而非 0.5），
+        // 且只在"同一方向既能被 BSDF 采到又能被 CDF 采到"时才显形。
+        Light::Environment { .. } => power_heuristic(pdf_light, pdf_bsdf),
         // 非几何灯：BSDF 采样路径取不到该灯的贡献，NEE 全额、无配对。
         _ => 1.0,
     }
@@ -198,6 +244,10 @@ pub fn sample_nee(light: &Light, p: Vec3, u1: f32, u2: f32) -> Option<LightSampl
             })
         }
         Light::Ambient { .. } => None, // 环境光只走逃逸背景路径，不 NEE
+        // W1-A 定桩：环境**贴图**也不走 NEE。它与 Ambient 的区别不在"能否
+        // NEE"，而在"背景是否有方向结构"：W2 会在逃逸分支用 CDF 做**方向**
+        // 重要性采样（那是 BSDF 侧的对偶策略，不是 NEE）。故这里恒 None。
+        Light::Environment { .. } => None,
     }
 }
 

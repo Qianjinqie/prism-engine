@@ -439,6 +439,50 @@ pub trait GpuDevice {
 }
 
 // ----------------------------------------------------------------------------
+// 美学后处理链（两档渲染器共用，单一事实源）
+// ----------------------------------------------------------------------------
+
+/// 逐像素后处理链：teal-orange → contrast → filmic(Reinhard) → clamp01。
+///
+/// # 为什么要单独成函数（而不是留在 `CpuRefBackend` 里内联）
+///
+/// D-19 双轨有**两个**产品渲染器（[`CpuRefBackend`] 与 `prism-render` 的
+/// `RtBackend`）。若两条路径各自内联一份后处理，微调一处（比如换 tone-map
+/// 曲线）就会让"两档差异"里混进后期差异，A/B 归因立刻失效——这正是
+/// `docs/v2.5-v3.0-路线图.md` §4.4「不得另起近似路径」要防的第二个事实源。
+/// 故本函数是**唯一**实现：`CpuRefBackend` 与 `RtBackend` 都调它。
+///
+/// # 语义
+///
+/// 顺序与常量逐字固定（改任何一个都会改变 `--fast` 的既有输出）：
+/// 1. `teal_orange`：亮度分流的双色补偿；
+/// 2. `contrast != 1.0`：以 0.5 为中心的线性对比度；
+/// 3. `filmic`：Reinhard `c / (1 + c)`；
+/// 4. 逐分量 clamp 到 `0.0..=1.0`（`Framebuffer::set_pixel` 随后 ×255 取整）。
+pub fn apply_aesthetic(color: Vec3, aesthetic: &AestheticReq) -> Vec3 {
+    let mut color = color;
+    if aesthetic.teal_orange {
+        let luma = 0.299 * color.x + 0.587 * color.y + 0.114 * color.z;
+        let shadow_tint = Vec3::new(0.10, 0.35, 0.45);
+        let high_tint = Vec3::new(1.0, 0.7, 0.3);
+        let shadow_comp = vmul(shadow_tint, color) * (1.0 - luma) * 0.5;
+        let high_comp = vmul(high_tint, color) * luma * 0.5;
+        color = color * 0.6 + shadow_comp + high_comp;
+    }
+
+    if aesthetic.contrast != 1.0 {
+        color = (color - Vec3::splat(0.5)) * aesthetic.contrast + Vec3::splat(0.5);
+    }
+
+    if aesthetic.filmic {
+        // Simple Reinhard tone-mapping.
+        color = vdiv(color, color + Vec3::splat(1.0));
+    }
+
+    clamp01(color)
+}
+
+// ----------------------------------------------------------------------------
 // CPU reference backend (real, runnable software ray tracer)
 // ----------------------------------------------------------------------------
 
@@ -560,27 +604,7 @@ impl GpuDevice for CpuRefBackend {
                 }
 
                 // --- Aesthetic post-processing -----------------------------
-                if req.aesthetic.teal_orange {
-                    let luma = 0.299 * color.x + 0.587 * color.y + 0.114 * color.z;
-                    let shadow_tint = Vec3::new(0.10, 0.35, 0.45);
-                    let high_tint = Vec3::new(1.0, 0.7, 0.3);
-                    let shadow_comp = vmul(shadow_tint, color) * (1.0 - luma) * 0.5;
-                    let high_comp = vmul(high_tint, color) * luma * 0.5;
-                    color = color * 0.6 + shadow_comp + high_comp;
-                }
-
-                if req.aesthetic.contrast != 1.0 {
-                    color = (color - Vec3::splat(0.5)) * req.aesthetic.contrast
-                        + Vec3::splat(0.5);
-                }
-
-                if req.aesthetic.filmic {
-                    // Simple Reinhard tone-mapping.
-                    color = vdiv(color, color + Vec3::splat(1.0));
-                }
-
-                color = clamp01(color);
-                fb.set_pixel(px, py, color);
+                fb.set_pixel(px, py, apply_aesthetic(color, &req.aesthetic));
             }
         }
 

@@ -2,9 +2,45 @@
 resolver = "2"
 members = ["crates/*"]
 
+# native 出货档（W0-C L1）。
+#
+# 路线图 W0-C 的原始建议是 `lto="fat"` + `codegen-units=1`。**实测该组合是
+# −15% 回归**（1080p/16spp：10.16 s → 11.86 s），故此处按数据取值。六组配置
+# 三轮交错实测（640×360/16spp，明细见选型报告 §14.1）：
+#
+# | lto   | codegen-units | 单帧    | 相对默认 |
+# |-------|---------------|---------|----------|
+# | false | 16            | 1.139 s | 1.00×（原状） |
+# | fat   |  1            | 1.343 s | **0.85×** |
+# | thin  |  1            | 1.365 s | 0.84× |
+# | fat   | 16            | 1.112 s | 1.02× |
+# | false |  1            | 1.137 s | 1.00× |
+# | thin  | 16            | 1.107 s | **1.03×** |
+#
+# 机理：`prism-math` 的 `Vec3::*` 全部带 `#[inline]`，MIR 随 rlib 导出 ⇒
+# **跨 crate 内联本来就生效**，"没有 LTO 就没有内联"这个前提不成立。真正的
+# 变量是 `codegen-units`：cgu=1 把所有代码并成一个 codegen unit，与 LTO 叠
+# 加后代码布局变差（i-cache / 寄存器压力），反而拖慢热循环。
+#
+# 故取 `thin`（轻量跨 crate 优化）+ 默认 16 个 codegen unit。
+# `opt-level = 3` 本就是 release 默认值，写出来只为把口径钉在明面上。
+#
+# `panic = "unwind"` 刻意**不**改成 `abort`：CLI 的 `catch_unwind` 兜底面
+# （渲染单帧失败不拖垮整条片子）依赖栈展开，改了等于静默废掉那条兜底。
+# `strip` 也**不**开：诊断符号是性能工作的基础设施，不拿它换体积。
+# `-C target-cpu=native` 不写：会让出货二进制在旧 CPU 上非法指令崩溃，与
+# "零第三方依赖、跨平台可跑"的定位冲突。
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 16
+
 # wasm32（D-14 移动端验证链路）：opt-level="s" + lto 显著缩小 .wasm 体积（手机
 # 走流量下载）；panic=abort 与 wasm 目标默认行为一致，且去掉展开表。
 # 注意：此 profile 只影响 `--target wasm32-unknown-unknown`（native 仍走 dev）。
+# **语义与 W0-C 之前逐字相同**：`lto` / `opt-level` / `panic` / `strip` 四项
+# 全被覆写；唯一继承来的 `codegen-units` 在 release 默认值与本次显式值都是
+# 16，故 wasm 产物体积口径未变（体积若有变化，只能归因于源码改动）。
 [profile.wasm]
 inherits = "release"
 opt-level = "z"

@@ -149,8 +149,22 @@ impl Camera {
             stream.pixel().1 as f32 + jy,
             resolution,
         );
-        let time = self.shutter_open
-            + stream.sample_1d(DIM_SHUTTER) * (self.shutter_close - self.shutter_open);
+        // 零长快门（静态场景的常态）：`time = open + u·(close−open) = open + u·0 = open`
+        // 与 `u` 无关 ⇒ 这一抽可以不抽，结果**逐位不变**。
+        //
+        // 为什么不是"改画质"：`ray.time` 在本仓除被拷贝外没有任何消费者（静态
+        // 场景无运动模糊），故跳过它连 ray 的位模式都不变。Sobol 维度是**绝对
+        // 寻址**（`dim_value(seed, dim, index)`），少抽一维不会让后续维度错位，
+        // 所以 NEE / BSDF 的抽样序列不受影响。
+        //
+        // 唯一位差异是病态输入 `shutter_open == -0.0`：改前算得 `-0.0 + 0.0 = +0.0`，
+        // 改后取 `-0.0`。两者数值相等、且 `time` 无消费者 ⇒ 像素输出仍逐字节相同。
+        let time: f32 = if self.shutter_close == self.shutter_open {
+            self.shutter_open
+        } else {
+            self.shutter_open
+                + stream.sample_1d(DIM_SHUTTER) * (self.shutter_close - self.shutter_open)
+        };
         if self.aperture_radius == 0.0 {
             // 针孔快路径：视点 = eye。
             return Ray { origin: self.eye, dir: d.normalize(), time };

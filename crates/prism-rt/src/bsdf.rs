@@ -392,7 +392,30 @@ fn energy_avg(alpha: f32, f0v: f32) -> f32 {
 // BSDF 主体
 // ---------------------------------------------------------------------------
 
+/// [`Bsdf::maps`] 槽位 0：基础色贴图（albedo / baseColor）。
+pub const MAP_BASE: usize = 0;
+/// [`Bsdf::maps`] 槽位 1：金属度-粗糙度贴图（glTF 惯例：G = roughness，B = metalness）。
+pub const MAP_METAL_ROUGH: usize = 1;
+/// [`Bsdf::maps`] 槽位 2：法线贴图（切线空间）。
+pub const MAP_NORMAL: usize = 2;
+/// [`Bsdf::maps`] 槽位 3：自发光贴图。
+pub const MAP_EMISSIVE: usize = 3;
+
+/// [`Bsdf::maps`] 的槽数。与 `scene_abi` 的 `TEXMAP_SLOTS` 同值（那边是 GPU 侧口径）。
+pub const MAP_SLOTS: usize = 4;
+
 /// Disney BSDF 参数包（与 glTF PbrMaterial 字段同构零转换，B3 确认）。
+///
+/// # W1-A 定桩：`maps`
+///
+/// 本段只**加字段**：`material_bsdf(m)` 的签名、`eval`/`pdf`/`sample` 的
+/// 语义一律不动（路线图 §4.2「W0-A 不产出任何用户可见能力」）。把贴图句柄
+/// 解析成标量的 `material_bsdf_at(m, uv)` 是 **W1-B** 的事。
+///
+/// 之所以让句柄随 `Bsdf` 走（而不是挂在 `MaterialKind` 上）：`Bsdf` 是
+/// `Copy` 的纯参数包，`material_bsdf` 返回的就是它；句柄放这里，
+/// W1-B 只需在返回**之后**按 `uv` 采样改写 `base_color`/`metalness`/
+/// `roughness`/法线四组标量，不必再动材质枚举或加生命周期。
 #[derive(Debug, Clone, Copy)]
 pub struct Bsdf {
     /// 反照率 / 透射着色（线性域）。
@@ -416,7 +439,60 @@ pub struct Bsdf {
     pub alpha_b: f32,
     /// 各向异性旋转角（弧度；绕几何法线旋转切线/副切线轴）。缺省 0。
     pub rotation: f32,
+    /// 四张贴图句柄（[`MAP_BASE`] / [`MAP_METAL_ROUGH`] / [`MAP_NORMAL`] /
+    /// [`MAP_EMISSIVE`]）。
+    ///
+    /// **句柄 0 = 无贴图**（[`crate::texture::NO_TEXTURE`]），不是"第 0 张贴图"。
+    /// 全 0 是缺省值，也是"参数完全由上面的标量决定"的语义 ⇒ 现有场景的
+    /// 行为与加字段前逐位相同（本段不读这个字段）。
+    ///
+    /// 用 `[u32; 4]` 而非 `Vec`/`Option`：保持 `Copy`、定长 16 B、无生命周期。
+    pub maps: [u32; MAP_SLOTS],
 }
+
+// ---------------------------------------------------------------------------
+// 编译期断言（W1-A 定桩：`Bsdf` 的尺寸与槽位被钉住）
+// ---------------------------------------------------------------------------
+
+/// W1-A 之前的 `Bsdf` 布局（影子结构；字段与加字段前逐字相同）。
+///
+/// 用增量断言而非写死 `72`：wasm32 下 `Vec3`/`f32` 尺寸虽同，但统一口径
+/// 更省心，且"只多了一个 `[u32; 4]`"这件事本身就是要钉的性质。
+#[allow(dead_code)] // 只用于 size_of：字段从不被读
+struct BsdfBeforeW1A {
+    base_color: Vec3,
+    metalness: f32,
+    roughness: f32,
+    ior: f32,
+    transmission: f32,
+    subsurface: f32,
+    subsurface_radius: Vec3,
+    alpha_t: f32,
+    alpha_b: f32,
+    rotation: f32,
+}
+
+/// `Bsdf` 只多了一个 `[u32; 4]`（16 B），其余一个字节都没多。
+///
+/// 钉住它的理由不是"72 这个数好看"，而是：`MaterialKind` 是 `Copy`，
+/// `material_bsdf` 按值返回它；尺寸一旦意外膨胀（有人把 `maps` 改成
+/// `Vec<u32>`），每样本的拷贝代价静默上升，而输出看不出变化。
+const _: () = assert!(
+    core::mem::size_of::<Bsdf>()
+        == core::mem::size_of::<BsdfBeforeW1A>() + core::mem::size_of::<[u32; MAP_SLOTS]>()
+);
+/// 对齐：4 B（全 f32/u32 ⇒ 跨 target 恒定）。
+const _: () = assert!(core::mem::align_of::<Bsdf>() == 4);
+/// 槽位数固定 4：`scene_abi` 的 GPU 侧口径据此声明，禁止"随手加第五张"。
+const _: () = assert!(MAP_SLOTS == 4);
+
+// **刻意不钉 `offset_of!(Bsdf, maps)`**：`Bsdf` 不是 GPU 字节布局（没有任何
+// `unsafe` 把它的字节按偏移读出来），字段顺序由编译器自由安排才是最优。
+// 真正需要钉顺序的是会进缓冲的结构体——那三个都带 `#[repr(C)]` 并逐字段
+// 断言偏移（`TextureRef` / `Instance` / `triangle_slots` 系列的槽位常量）。
+// 首版草稿在这里也写了一条 `offset_of!(…, maps) == 56`，编译即炸：
+// 非 `repr(C)` 结构体可以重排。删掉它不是因为"过不了"，而是因为它声称的
+// 性质本来就不该被声称。
 
 impl Bsdf {
     /// 构造（参数域断言，宪章 C19）。
@@ -469,7 +545,34 @@ impl Bsdf {
             alpha_t: iso_alpha,
             alpha_b: iso_alpha,
             rotation: 0.0,
+            // W1-A 定桩：无贴图（句柄 0）。`Bsdf::new` 不接句柄——
+            // W1-B 用 `with_maps` 或直接在构造后赋值，本段不动签名。
+            maps: [crate::texture::NO_TEXTURE; MAP_SLOTS],
         }
+    }
+
+    /// 设置四张贴图句柄，返回新 `Bsdf`（链式，保持 `Copy` 与零分配）。
+    ///
+    /// **本段只存不读**：采样/解码/法线改写都是 W1-B。现在调用它只改字段值，
+    /// 不改变任何渲染输出（`eval`/`pdf`/`sample` 一律不读 `maps`）。
+    #[inline]
+    pub fn with_maps(mut self, maps: [u32; MAP_SLOTS]) -> Self {
+        self.maps = maps;
+        self
+    }
+
+    /// 该 BSDF 是否引用了任何贴图（`maps` 全 0 ⇒ false）。
+    ///
+    /// W1-B 用它走"快路径"：无贴图时跳过采样器，与加字段前逐位相同。
+    #[inline]
+    pub fn has_any_map(&self) -> bool {
+        self.maps.iter().any(|&h| h != crate::texture::NO_TEXTURE)
+    }
+
+    /// 取某槽的句柄（[`MAP_BASE`] 等）；越界按"无贴图"处理。
+    #[inline]
+    pub fn map_handle(&self, slot: usize) -> u32 {
+        self.maps.get(slot).copied().unwrap_or(crate::texture::NO_TEXTURE)
     }
 
     /// 设置各向异性粗糙度（切线 α_t、副切线 α_b）与旋转角，返回新 `Bsdf`。

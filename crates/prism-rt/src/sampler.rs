@@ -174,6 +174,12 @@ fn direction_table() -> &'static [[u32; 32]; SOBOL_DIMS as usize] {
 
 /// Sobol 坐标（32 位定点）：`Sobol(index, dim) = ⊕_{k: index 第 k 位=1} V_{k+1}`。
 /// 纯整数异或——格 Zᵏ 运算，确定性是定理而非承诺。
+///
+/// 迭代只走 `index` 的**置位位**（`trailing_zeros` + `bits &= bits-1`），
+/// 而不是逐位右移 32 次。W0-C L5 前这里是 `while bits != 0 { if bits & 1 … }`，
+/// 平均走 31 次迭代；置位位平均 16 次。**结果逐位不变**：GF(2) 上的异或满足
+/// 交换律与结合律，求和顺序不影响值（这正是"整数件可以随便换写法、浮点件
+/// 不行"的分界）。
 #[inline]
 pub fn sobol_u32(dim: u16, index: u32) -> u32 {
     debug_assert!(
@@ -183,15 +189,33 @@ pub fn sobol_u32(dim: u16, index: u32) -> u32 {
     let row = &direction_table()[dim as usize];
     let mut v = 0u32;
     let mut bits = index;
-    let mut k = 0usize;
     while bits != 0 {
-        if bits & 1 == 1 {
-            v ^= row[k];
-        }
-        bits >>= 1;
-        k += 1;
+        let k = bits.trailing_zeros() as usize;
+        v ^= row[k];
+        bits &= bits - 1;
     }
     v
+}
+
+/// 一对 Sobol 坐标（维度 `dim` 与 `dim + 1`，共享同一 `index`）。
+///
+/// [`sample_2d`] 的专用件：两个维度走**同一趟**置位位循环，省掉一次位扫描。
+/// **结果与两次 [`sobol_u32`] 逐位相同**（同上：异或的顺序无关性）。
+#[inline]
+fn sobol_pair_u32(dim: u16, index: u32) -> (u32, u32) {
+    let table = direction_table();
+    let r0 = &table[dim as usize];
+    let r1 = &table[dim as usize + 1];
+    let mut v0 = 0u32;
+    let mut v1 = 0u32;
+    let mut bits = index;
+    while bits != 0 {
+        let k = bits.trailing_zeros() as usize;
+        v0 ^= r0[k];
+        v1 ^= r1[k];
+        bits &= bits - 1;
+    }
+    (v0, v1)
 }
 
 // ---------------------------------------------------------------------------
@@ -228,19 +252,58 @@ fn sobol_index(base: u64, sample: u32) -> u32 {
     sample ^ (pcg::hash1(base, IDX_SALT) as u32)
 }
 
+/// 打散掩码的哈希前缀：`hash2(base, MASK_SALT, ·)` 的前半段只依赖 `base`，
+/// 故**每像素只算一次**（`hash2_prefix` 是 `hash2` 的同一个表达式的前半段，
+/// 拆开不改变任何一位）。
+#[inline]
+fn mask_prefix(base: u64) -> u64 {
+    pcg::hash2_prefix(base, MASK_SALT)
+}
+
 /// 单维坐标值（含打散与超表兜底）：`Sobol(i, dim) ⊕ mask(seed, pixel, dim)`。
 #[inline]
 fn dim_value(seed: u64, dim: u16, index: u32) -> f32 {
+    dim_value_p(mask_prefix(seed), seed, dim, index)
+}
+
+/// [`dim_value`] 的"前缀已备好"版本（`prefix = mask_prefix(base)`）。
+#[inline]
+fn dim_value_p(prefix: u64, seed: u64, dim: u16, index: u32) -> f32 {
     if dim >= SOBOL_DIMS {
         // 超表兜底（lib.rs 模块文档声明）：PCG 纯函数流，确定性不变；
         // 低差异 net 性质不再保证（仅超出 64 维的深弹射路径会走到）。
         return pcg::hash2_f32(seed, dim as u64, index as u64);
     }
     // ② hash(种子, 像素, 维度) → 打散掩码。
-    let mask = pcg::hash2(seed, MASK_SALT, dim as u64) as u32;
+    let mask = pcg::hash2_finish(prefix, dim as u64) as u32;
     let v = sobol_u32(dim, index) ^ mask;
-    // 高 24 位 → [0,1)：24 位恰为 f32 尾数精度，乘 2^-24 是纯指数运算，
-    // 换算逐位可复现（与 prism-noise::pcg::unit_f32 同一技巧）。
+    to_unit(v)
+}
+
+/// 一对坐标值（维度 `dim` / `dim + 1`，共享 `index`）：与两次 [`dim_value`]
+/// 逐位相同，只是共用一趟位扫描。
+#[inline]
+fn dim_pair(seed: u64, dim: u16, index: u32) -> (f32, f32) {
+    dim_pair_p(mask_prefix(seed), dim, index)
+}
+
+/// [`dim_pair`] 的"前缀已备好"版本。调用方保证 `dim + 1 < SOBOL_DIMS`。
+#[inline]
+fn dim_pair_p(prefix: u64, dim: u16, index: u32) -> (f32, f32) {
+    let mask0 = pcg::hash2_finish(prefix, dim as u64) as u32;
+    let mask1 = pcg::hash2_finish(prefix, dim as u64 + 1) as u32;
+    let (v0, v1) = sobol_pair_u32(dim, index);
+    (to_unit(v0 ^ mask0), to_unit(v1 ^ mask1))
+}
+
+/// 32 位定点 Sobol 值 → `[0, 1)` 的 f32。
+///
+/// 取高 24 位乘 2^-24：24 位恰为 f32 尾数精度，乘 2^-24 是纯指数运算，
+/// 换算逐位可复现（与 `prism-noise::pcg::unit_f32` 同一技巧）。**乘的不是
+/// 除法**——除法在 2 的幂上是精确的，乘法更是，两者位相同，此处取乘法是为了
+/// 让编译器合成单条 `scalef` 而不是 `divss`。
+#[inline]
+fn to_unit(v: u32) -> f32 {
     ((v >> 8) as f32) * (1.0 / 16_777_216.0)
 }
 
@@ -255,10 +318,14 @@ pub fn sample_1d(ctx: &EvalCtx, si: &SampleIndex) -> f32 {
 pub fn sample_2d(ctx: &EvalCtx, si: &SampleIndex) -> (f32, f32) {
     let base = base_seed(ctx, si.pixel);
     let index = sobol_index(base, si.sample);
-    (
-        dim_value(base, si.dimension, index),
-        dim_value(base, si.dimension + 1, index),
-    )
+    if si.dimension + 1 >= SOBOL_DIMS {
+        // 超表兜底：两维各自独立走 PCG 流（与改前逐位相同）。
+        return (
+            dim_value(base, si.dimension, index),
+            dim_value(base, si.dimension + 1, index),
+        );
+    }
+    dim_pair(base, si.dimension, index)
 }
 
 /// 游程辅助流（介质 delta tracking 步进等变长随机序列）：PCG 纯函数流，
@@ -275,17 +342,35 @@ pub fn aux_1d(ctx: &EvalCtx, si: &SampleIndex, step: u32) -> f32 {
 
 /// 单像素单样本采样流：`(frame, pixel, sample, node_id, global_seed)` 的
 /// 纯函数包。同流同输出；不同像素/样本/维度互不串流（D-28 像素域）。
+///
+/// # 为什么把派生量存成字段（W0-C L5）
+///
+/// `base = hash4(种子, 像素, 帧, 节点)` 与 `index = 样本 ⊕ hash1(base)` 都是
+/// **纯函数**，且在整个流的生命周期内不变。改前每次 `sample_2d` 都重算这两
+/// 项——一条样本平均调 5.26 次 `sample_2d`，等于把同一个 `hash4`（4 次
+/// `pcg::permute`）算 5 遍。构造期算一次、字段存住，**取值逐位不变**（纯函数 +
+/// 相同输入 ⇒ 相同输出），于是这条优化对确定性是恒等变换，不是"测出来一致"。
 #[derive(Debug, Clone, Copy)]
 pub struct SampleStream<'a> {
     ctx: &'a EvalCtx,
     pixel: (u32, u32),
     sample: u32,
+    /// `base_seed(ctx, pixel)`：像素级常量。
+    base: u64,
+    /// `sobol_index(base, sample)`：样本级常量（全流共享同一 Sobol 索引）。
+    index: u32,
+    /// `hash2_prefix(base, MASK_SALT)`：打散掩码的哈希前缀（像素级常量）。
+    prefix: u64,
 }
 
 impl<'a> SampleStream<'a> {
     /// 以求值上下文 + 全局像素坐标 + 样本序号构造流句柄。
+    #[inline]
     pub fn new(ctx: &'a EvalCtx, pixel: (u32, u32), sample: u32) -> Self {
-        SampleStream { ctx, pixel, sample }
+        let base: u64 = base_seed(ctx, pixel);
+        let index: u32 = sobol_index(base, sample);
+        let prefix: u64 = mask_prefix(base);
+        SampleStream { ctx, pixel, sample, base, index, prefix }
     }
 
     /// 本流的像素坐标（相机投射取亚像素抖动基准）。
@@ -295,6 +380,9 @@ impl<'a> SampleStream<'a> {
     }
 
     /// 构造指定维度的 [`SampleIndex`]（frame/node_id 取自 ctx，D-28）。
+    ///
+    /// 只给 `aux_1d` 这类**不共享**像素级派生量的通道用；`sample_1d` /
+    /// `sample_2d` 直接吃缓存的 `base` / `index`，不走这里。
     #[inline]
     fn si(&self, dimension: u16) -> SampleIndex {
         SampleIndex {
@@ -306,16 +394,22 @@ impl<'a> SampleStream<'a> {
         }
     }
 
-    /// 一维 Sobol 抽取。
+    /// 一维 Sobol 抽取（与自由函数 [`sample_1d`] 逐位相同）。
     #[inline]
     pub fn sample_1d(&self, dimension: u16) -> f32 {
-        sample_1d(self.ctx, &self.si(dimension))
+        dim_value_p(self.prefix, self.base, dimension, self.index)
     }
 
-    /// 二维 Sobol 抽取（维度 d 与 d+1）。
+    /// 二维 Sobol 抽取（维度 d 与 d+1；与自由函数 [`sample_2d`] 逐位相同）。
     #[inline]
     pub fn sample_2d(&self, dimension: u16) -> (f32, f32) {
-        sample_2d(self.ctx, &self.si(dimension))
+        if dimension + 1 >= SOBOL_DIMS {
+            return (
+                dim_value_p(self.prefix, self.base, dimension, self.index),
+                dim_value_p(self.prefix, self.base, dimension + 1, self.index),
+            );
+        }
+        dim_pair_p(self.prefix, dimension, self.index)
     }
 
     /// 游程辅助抽取（变长序列：介质步进）。

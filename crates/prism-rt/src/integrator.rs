@@ -49,6 +49,7 @@ use crate::accum::mean_samples;
 use crate::bsdf::{hadamard, Bsdf, SampleCtx};
 use crate::caustics::{mnee_mirror, mnee_refraction, Refractor};
 use crate::camera::{Camera, Ray};
+use crate::instance::Instance;
 use crate::light::{ambient_background, nee_mis_weight, sample_nee};
 
 /// 光源（四族；对外沿用 integrator 命名，内部委托 [`crate::light`]）。
@@ -59,6 +60,7 @@ use crate::spectral::{
     cauchy_ior, flat_spectral_value, hero_wavelength, spectral_to_rgb, SpectralConfig,
 };
 use crate::sss::random_walk;
+use crate::texture::TextureRef;
 
 // ---------------------------------------------------------------------------
 // 场景原语（最小集）
@@ -374,6 +376,32 @@ pub struct Mesh {
     pub triangles: Vec<GeoTriangle>,
     /// SAH-BVH（与 `triangles` 同源构建）。
     pub bvh: GeoBvh,
+    /// 顶点域 uv（W1-A 定桩；`[u, v]` 与 `positions` **同长同序**）。
+    ///
+    /// # 为什么是顶点域而不是角点域
+    ///
+    /// 选型报告 §2.2 的决定：`uv` 定义在顶点上，则相邻面共享同一顶点 ⇒
+    /// 共享同一 `uv` ⇒ 位移/法线在缝处**逐位相等**，缝在结构上不存在
+    /// （W4 的判据 V4 靠这条成立）。角点域能表达硬边缝合，代价是每个
+    /// 角点都要独立 uv，而缝处"两个 uv 本该相等"变成需要校验的约定。
+    ///
+    /// 空 `Vec` = 该网格无 uv（现有全部网格都是这样）；
+    /// 非空时长度**必须**等于 `positions.len()`（W1-B 的校验，本段只定字段）。
+    ///
+    /// 用 `[f32; 2]` 而非任何三元组：uv 是二元量，且 `[f32; N]` 是保守类型
+    /// 集合里的写法（禁 `vec3<f32>`，见 [`crate::layout`]）。
+    pub uv: Vec<[f32; 2]>,
+    /// 顶点域切线（W1-A 定桩；`[tx, ty, tz, w]`，`w` = 副切线手性 ±1）。
+    ///
+    /// 由 uv 偏导在 **CPU 烘焙**（Lengyel 法），运行期零成本，且避免屏幕空间
+    /// 求导——后者按 2×2 quad 求导，跨后端/跨 tile 边界**不可复现**
+    /// （选型报告 §2.1 第 3 条）。本段只存字段，烘焙是 **W1-B**。
+    ///
+    /// 空 `Vec` = 无切线；非空时长度**必须**等于 `positions.len()`。
+    ///
+    /// 用 `[f32; 4]` 承载三元组 + 手性：定长 16 B、4 B 对齐，与
+    /// `TRIANGLE_SLOTS` 的"`vec3` 后补 pad"同款保守写法。
+    pub tangent: Vec<[f32; 4]>,
 }
 
 impl Mesh {
@@ -398,13 +426,27 @@ impl Mesh {
             valid.extend_from_slice(c);
         }
         let bvh = GeoBvh::build(&triangles);
-        Mesh { positions, indices: valid, triangles, bvh }
+        Mesh {
+            positions,
+            indices: valid,
+            triangles,
+            bvh,
+            uv: Vec::new(),
+            tangent: Vec::new(),
+        }
     }
 
     /// 三角形 soup 构造（无拓扑；BVH 在此构建一次）。
     pub fn from_triangles(triangles: Vec<GeoTriangle>) -> Self {
         let bvh = GeoBvh::build(&triangles);
-        Mesh { positions: Vec::new(), indices: Vec::new(), triangles, bvh }
+        Mesh {
+            positions: Vec::new(),
+            indices: Vec::new(),
+            triangles,
+            bvh,
+            uv: Vec::new(),
+            tangent: Vec::new(),
+        }
     }
 
     /// 顶点/索引**已构建树**的 soup 构造（零重建：直接接管调用方的树）。
@@ -412,7 +454,14 @@ impl Mesh {
     /// 前置条件：`bvh` 必须由同一 `triangles` 序列构建（否则图元索引
     /// 对不上）；本函数不做校验（O(n) 校验会抵消零重建收益）。
     pub fn from_prebuilt(triangles: Vec<GeoTriangle>, bvh: GeoBvh) -> Self {
-        Mesh { positions: Vec::new(), indices: Vec::new(), triangles, bvh }
+        Mesh {
+            positions: Vec::new(),
+            indices: Vec::new(),
+            triangles,
+            bvh,
+            uv: Vec::new(),
+            tangent: Vec::new(),
+        }
     }
 
     /// 扁平 f32 顶点（`[[x, y, z]; n]`）+ 索引流构造（USD/glTF 桥接用）。
@@ -541,7 +590,9 @@ pub struct Scene {
     pub revolutions: Vec<(Revolution, MaterialKind)>,
     /// 光源列表（NEE 采样对象）。
     pub lights: Vec<Light>,
-    /// 可选单一介质区域。
+    /// 可选单一介质区域（**旧路径**；A6 多区域介质到来后仍保留）。
+    ///
+    /// 语义不变：`media` 为空时按本字段走原分支（逐位兼容，见 [`Scene::media`]）。
     pub medium: Option<MediumRegion>,
     /// 曲线图元 BVH（[`Scene::add_cylinder`] 等构造入口维护；外部只读，
     /// 直接改四族字段后须调 [`Scene::rebuild_curve_bvh`]）。
@@ -554,9 +605,203 @@ pub struct Scene {
     /// 字面量构造直接编译失败（E0451；函数更新语法 `..Default::default()`
     /// 不能绕过私有性），故按"公开只读缓存"口径暴露。
     pub curve_bvh: Option<prism_geometry::aabb_bvh::AabbBvh>,
+
+    // -----------------------------------------------------------------
+    // W1-A 定桩（三个字段一次加完；空 ⇒ 行为与加字段前逐位相同）
+    //
+    // 这三块**本段只存不读**：没有任何渲染分支查询它们。所以「默认档与
+    // `--fast` 定桩前后逐字节相同」不是运气，是结构性结论。
+    // -----------------------------------------------------------------
+    /// 位图纹理表（A1 / W1）。元素只描述"像素在哪儿、多大、什么格式"，
+    /// 像素本体在 GPU 侧的扁平 `array<vec4<f32>>` 里（[`TextureRef::offset`]）。
+    ///
+    /// 空 ⇒ 无纹理（现有全部场景）。长度与 `scene_abi` 的 `P_NUM_TEXTURES`
+    /// 同源，禁止各后端各自数一遍。
+    pub textures: Vec<TextureRef>,
+    /// 几何实例表（A3 / W3）。空 ⇒ 走现有"几何已展平"路径。
+    ///
+    /// 槽宽 112 B 由 [`Instance`] 的编译期断言钉住；本段只定字段，
+    /// TLAS/BLAS、变换、法线逆转置全在 **W3**。
+    pub instances: Vec<Instance>,
+    /// 多区域介质表（A6 / W6，C1「区域列表 + 优先级（不重叠）」）。
+    ///
+    /// # 逐位兼容的硬化要求（选型报告 §7）
+    ///
+    /// `media.is_empty()` 时**必须**走 [`Scene::medium`] 的原分支、一行不改；
+    /// 否则旧场景的 aux 步计数会变（每个区域独立计数器一加，采样流就平移）。
+    /// 故本字段存在本身不改变任何输出——真正的切换在 W6。
+    pub media: Vec<MediumRegion>,
 }
 
+// ---------------------------------------------------------------------------
+// W1-A 定桩：Mesh / Scene 的布局断言
+// ---------------------------------------------------------------------------
+
+/// W1-A 之前的 `Mesh` 布局（**影子结构**：字段与加字段前逐字相同）。
+///
+/// 用它做"增量断言"而不是写死 `216`：本仓要出 wasm32（32 位，
+/// `Vec` 头 12 B），写死字节数会让 wasm 构建挂在一句与它无关的断言上。
+/// 影子结构随目标平台一起变，故断言在两种指针宽度下都成立。
+#[allow(dead_code)] // 只用于 size_of：字段从不被读
+struct MeshBeforeW1A {
+    positions: Vec<Vec3>,
+    indices: Vec<u32>,
+    triangles: Vec<GeoTriangle>,
+    bvh: GeoBvh,
+}
+
+/// W1-A 之前的 `Scene` 布局（影子结构）。
+#[allow(dead_code)] // 只用于 size_of：字段从不被读
+struct SceneBeforeW1A {
+    spheres: Vec<(Sphere, MaterialKind)>,
+    boxes: Vec<(Aabb, MaterialKind)>,
+    paraboloids: Vec<(Paraboloid, MaterialKind)>,
+    planes: Vec<(Plane, MaterialKind)>,
+    meshes: Vec<(MeshBeforeW1A, MaterialKind)>,
+    cylinders: Vec<(Cylinder, MaterialKind)>,
+    cones: Vec<(Cone, MaterialKind)>,
+    toruses: Vec<(Torus, MaterialKind)>,
+    revolutions: Vec<(Revolution, MaterialKind)>,
+    lights: Vec<Light>,
+    medium: Option<MediumRegion>,
+    curve_bvh: Option<prism_geometry::aabb_bvh::AabbBvh>,
+}
+
+/// `Mesh` 只多了两个 `Vec` 头，其余一个字节都没多。
+///
+/// 这条比"`size_of == 216`"强：写死数字只能抓住"总长变了"，抓不住
+/// "总量没变但字段换了"（比如把 `triangles` 从 `Vec` 换成 `Box<[…]>`）。
+const _: () = assert!(
+    core::mem::size_of::<Mesh>()
+        == core::mem::size_of::<MeshBeforeW1A>()
+            + core::mem::size_of::<Vec<[f32; 2]>>()
+            + core::mem::size_of::<Vec<[f32; 4]>>()
+);
+
+/// `Scene` 只多了三个 `Vec` 头（`textures` / `instances` / `media`）。
+///
+/// 同一条纪律：旧字段一个都没增删、类型一个都没变（影子结构若与真实结构
+/// 的字段集不一致，两者尺寸就不相等）。`medium` 仍在（旧路径保留）。
+const _: () = assert!(
+    core::mem::size_of::<Scene>()
+        == core::mem::size_of::<SceneBeforeW1A>()
+            + core::mem::size_of::<Vec<TextureRef>>()
+            + core::mem::size_of::<Vec<Instance>>()
+            + core::mem::size_of::<Vec<MediumRegion>>()
+);
+
+
 impl Scene {
+    /// **W1-A 定桩：场景布局自检**（构造期断言的实际落点）。
+    ///
+    /// 返回 `Ok(())` 或第一条违规的可读描述。纯读、无分配、无浮点——
+    /// 每帧调一次也不影响确定性（不进 `per-sample` 路径）。
+    ///
+    /// # 查什么
+    ///
+    /// 1. **[`Light::Environment`] 与 [`Light::Ambient`] 不可并存**
+    ///    —— 两者都描述"逃逸射线看到的背景"，同时生效即双计
+    ///    （选型报告 §3.1 第 4 条末句）。双计的表现是背景偏亮，
+    ///    不会报错、只会被对拍抓到，所以必须在构造期拦。
+    /// 2. `Environment` 的句柄必须落在 `textures` 范围内（或为 0 = 无）。
+    /// 3. `Mesh::uv` / `Mesh::tangent` 非空时必须与 `positions` **同长**
+    ///    —— 短一寸就是越界读，而越界读在 CPU 上是 panic、在 GPU 上是垃圾像素。
+    /// 4. `Bsdf::maps` 的每个非 0 句柄必须落在 `textures` 范围内。
+    ///
+    /// # 为什么不 panic
+    ///
+    /// 调用方（[`Scene::assert_layout`] / 调度层）自己决定"报错还是继续"。
+    /// 本函数只回答"合法吗"，与 `Scene` 的其余 API 同为纯函数。
+    pub fn validate_layout(&self) -> Result<(), String> {
+        let n_tex = self.textures.len() as u32;
+        // ---- 1/2：环境光互斥 + 句柄范围 ----
+        let mut has_ambient = false;
+        let mut has_env = false;
+        for (i, l) in self.lights.iter().enumerate() {
+            match l {
+                Light::Ambient { .. } => has_ambient = true,
+                Light::Environment { map } => {
+                    has_env = true;
+                    if !crate::texture::handle_in_range(*map, n_tex) {
+                        return Err(format!(
+                            "lights[{i}] 是 Light::Environment，map 句柄 {map} 越界\
+                             （Scene::textures 有 {n_tex} 条，合法句柄为 1..={n_tex}，\
+                             0 表示无贴图）；句柄 k 映射到 textures[k-1]"
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+        if has_ambient && has_env {
+            return Err(
+                "Light::Ambient 与 Light::Environment 不可并存：两者都描述逃逸背景，\
+                 同时生效会让背景双计（ambient_background 给常数 + 环境图给采样值）。\
+                 二选一：要方向结构用 Environment，要平光用 Ambient"
+                    .to_string(),
+            );
+        }
+        // ---- 3：uv / tangent 与 positions 同长 ----
+        for (i, (m, _)) in self.meshes.iter().enumerate() {
+            if !m.uv.is_empty() && m.uv.len() != m.positions.len() {
+                return Err(format!(
+                    "meshes[{i}].uv 有 {} 条，但 positions 有 {} 条；\
+                     顶点域 uv 必须与 positions 同长同序（否则按顶点下标取值会越界）",
+                    m.uv.len(),
+                    m.positions.len()
+                ));
+            }
+            if !m.tangent.is_empty() && m.tangent.len() != m.positions.len() {
+                return Err(format!(
+                    "meshes[{i}].tangent 有 {} 条，但 positions 有 {} 条（同 uv 的约束）",
+                    m.tangent.len(),
+                    m.positions.len()
+                ));
+            }
+        }
+        // ---- 4：Bsdf::maps 句柄范围 ----
+        let check_maps = |mat: &MaterialKind, where_: &str| -> Result<(), String> {
+            if let MaterialKind::Pbr(b) = mat {
+                for slot in 0..crate::bsdf::MAP_SLOTS {
+                    let h = b.maps[slot];
+                    if !crate::texture::handle_in_range(h, n_tex) {
+                        return Err(format!(
+                            "{where_} 的 Bsdf::maps[{slot}] 句柄 {h} 越界\
+                             （Scene::textures 有 {n_tex} 条，合法句柄为 1..={n_tex}，\
+                             0 表示无贴图）；句柄 k 映射到 textures[k-1]"
+                        ));
+                    }
+                }
+            }
+            Ok(())
+        };
+        for (i, (_, m)) in self.spheres.iter().enumerate() {
+            check_maps(m, &format!("spheres[{i}]"))?;
+        }
+        for (i, (_, m)) in self.boxes.iter().enumerate() {
+            check_maps(m, &format!("boxes[{i}]"))?;
+        }
+        for (i, (_, m)) in self.planes.iter().enumerate() {
+            check_maps(m, &format!("planes[{i}]"))?;
+        }
+        for (i, (_, m)) in self.meshes.iter().enumerate() {
+            check_maps(m, &format!("meshes[{i}]"))?;
+        }
+        Ok(())
+    }
+
+    /// [`Scene::validate_layout`] 的 panic 版（构造期断言的调用形态）。
+    ///
+    /// # Panics
+    ///
+    /// 布局违规时 panic。违规是**编程错误**（场景构造错），不是用户输入错误，
+    /// 与 `Bsdf::new` 的参数域断言同风格：早炸比晚出脏帧好。
+    pub fn assert_layout(&self) {
+        if let Err(msg) = self.validate_layout() {
+            panic!("场景布局违规（W1-A 定桩断言）：{msg}");
+        }
+    }
+
     /// 注册**索引三角网格**（顶点流 + 索引流；内建 BVH 在此构建），
     /// 返回网格下标（[`ShapeRef`] 索引空间 / [`Scene::meshes`] 下标）。
     pub fn add_mesh(
@@ -1435,6 +1680,7 @@ impl Scene {
     }
 
     /// 最近命中（可跳过指定形状——阴影射线对被采样光源豁免）。
+    #[inline]
     pub(crate) fn intersect(
         &self,
         ro: Vec3,
@@ -4259,5 +4505,225 @@ mod tests {
         }
         assert!(lit > 0, "曲线场景应至少有一个像素被照亮");
         println!("曲线四族双路径 parity：{res:?} spp{} 逐位一致，lit = {lit}", params.spp);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// W1-A 定桩：布局不变式测试（断言"真的会拦"）
+// ---------------------------------------------------------------------------
+//
+// 这一组测试的存在理由与 `crate::layout` 相同：断言写完不验等于没写。
+// 每条都构造一个**违规**场景并要求被拒绝，而不是只测"合法场景通过"
+// ——后者在断言被删掉时仍然全绿。
+
+#[cfg(test)]
+mod w1a_layout_tests {
+    use super::*;
+    use crate::texture::{cdf_len_bytes, NO_TEXTURE, TEX_FMT_RGBA16F, SRGB_LINEAR};
+
+    #[test]
+    fn default_scene_passes_layout_check() {
+        // `Scene::default()` 必须合法：它是所有字面量的补全项
+        // （`..Default::default()`），若默认值非法，全部既有场景都会被拦。
+        let s = Scene::default();
+        assert!(s.media.is_empty(), "media 缺省为空 ⇒ 走旧 medium 分支");
+        assert!(s.textures.is_empty() && s.instances.is_empty());
+        assert_eq!(s.validate_layout(), Ok(()));
+        s.assert_layout(); // 不 panic 即为通过
+    }
+
+    #[test]
+    fn ambient_and_environment_cannot_coexist() {
+        let mut s = Scene::default();
+        s.lights.push(Light::Ambient { radiance: Vec3::splat(0.05) });
+        s.textures.push(crate::texture::TextureRef::new(
+            2048,
+            1024,
+            1,
+            0,
+            TEX_FMT_RGBA16F,
+            SRGB_LINEAR,
+        ));
+        // 先验"只有 Ambient"合法。
+        assert_eq!(s.validate_layout(), Ok(()));
+        // 加一盏环境图灯 ⇒ 必须被拒（双计）。
+        s.lights.push(Light::Environment { map: 0 });
+        let err = s.validate_layout().expect_err("Ambient + Environment 必须被拒");
+        assert!(err.contains("不可并存"), "错误消息须点明互斥，实际：{err}");
+    }
+
+    #[test]
+    #[should_panic(expected = "场景布局违规")]
+    fn assert_layout_panics_on_dual_background() {
+        let mut s = Scene::default();
+        s.lights.push(Light::Ambient { radiance: Vec3::splat(0.1) });
+        s.lights.push(Light::Environment { map: 0 });
+        s.assert_layout();
+    }
+
+    #[test]
+    fn environment_handle_must_be_in_range() {
+        let mut s = Scene::default();
+        // 句柄 0 = 无贴图 ⇒ 合法（不引用任何 texture）。
+        s.lights.push(Light::Environment { map: NO_TEXTURE });
+        assert_eq!(s.validate_layout(), Ok(()));
+        // 非 0 句柄越界 ⇒ 拒。
+        s.lights[0] = Light::Environment { map: 3 };
+        let err = s.validate_layout().expect_err("越界句柄必须被拒");
+        assert!(err.contains("越界"), "实际：{err}");
+        // 补一张纹理后，句柄 1（= textures[0]）合法；句柄 2 仍越界。
+        s.textures.push(crate::texture::TextureRef::new(
+            1024,
+            512,
+            1,
+            0,
+            TEX_FMT_RGBA16F,
+            SRGB_LINEAR,
+        ));
+        s.lights[0] = Light::Environment { map: 1 };
+        assert_eq!(s.validate_layout(), Ok(()));
+        s.lights[0] = Light::Environment { map: 2 };
+        assert!(s.validate_layout().is_err(), "句柄 2 超出 1 条纹理");
+    }
+
+    #[test]
+    fn uv_and_tangent_must_match_positions_len() {
+        let mut s = Scene::default();
+        let mut m = Mesh::new(
+            vec![
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+            ],
+            vec![0, 1, 2],
+        );
+        // 空 = 无 uv ⇒ 合法（现有全部网格都是这样）。
+        assert_eq!(s.validate_layout(), Ok(()));
+        // 长度不符 ⇒ 拒。
+        m.uv = vec![[0.0, 0.0]; 2];
+        s.meshes.push((m, MaterialKind::Mirror));
+        let err = s.validate_layout().expect_err("uv 与 positions 不同长必须被拒");
+        assert!(err.contains("uv"), "实际：{err}");
+        // 补齐 ⇒ 合法。
+        s.meshes[0].0.uv = vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
+        assert_eq!(s.validate_layout(), Ok(()));
+        // tangent 同理。
+        s.meshes[0].0.tangent = vec![[1.0, 0.0, 0.0, 1.0]; 1];
+        let err = s.validate_layout().expect_err("tangent 与 positions 不同长必须被拒");
+        assert!(err.contains("tangent"), "实际：{err}");
+        s.meshes[0].0.tangent = vec![[1.0, 0.0, 0.0, 1.0]; 3];
+        assert_eq!(s.validate_layout(), Ok(()));
+    }
+
+    #[test]
+    fn bsdf_map_handle_must_be_in_range() {
+        let mut s = Scene::default();
+        let b = Bsdf::new(Vec3::splat(0.8), 0.0, 0.5, 1.5, 0.0, 0.0, Vec3::splat(0.3));
+        // 全 0 句柄 ⇒ 合法（无贴图）。
+        assert!(!b.has_any_map());
+        s.spheres.push((
+            Sphere { center: Vec3::new(0.0, 0.0, 0.0), radius: 1.0 },
+            MaterialKind::Pbr(b),
+        ));
+        assert_eq!(s.validate_layout(), Ok(()));
+        // 句柄 1 但没有纹理 ⇒ 拒。
+        s.spheres[0].1 = MaterialKind::Pbr(b.with_maps([1, 0, 0, 0]));
+        let err = s.validate_layout().expect_err("越界贴图句柄必须被拒");
+        assert!(err.contains("maps[0]"), "实际：{err}");
+        // 补纹理 ⇒ 合法。
+        s.textures.push(crate::texture::TextureRef::new(
+            8,
+            8,
+            4,
+            0,
+            TEX_FMT_RGBA16F,
+            SRGB_LINEAR,
+        ));
+        assert_eq!(s.validate_layout(), Ok(()));
+    }
+
+    /// CDF 长度口径 `(W+1)·H·4`：编译期常量与运行时断言两条路径都对，
+    /// 且**少一行会被拦住**（off-by-one-row 是最容易犯的错）。
+    #[test]
+    fn cdf_len_formula_and_off_by_one_row() {
+        assert_eq!(cdf_len_bytes(2048, 1024), 8_392_704);
+        crate::texture::assert_cdf_len(2048, 1024, 8_392_704);
+        let bad = std::panic::catch_unwind(|| {
+            crate::texture::assert_cdf_len(2048, 1024, cdf_len_bytes(2048, 1023))
+        });
+        assert!(bad.is_err(), "少一行必须 panic");
+    }
+
+    /// **行为零变化的机械保证**：三个新字段只在"被读"时才可能改变输出，
+    /// 而本段没有任何渲染分支读它们。
+    ///
+    /// 这里用"填满新字段但内容为惰性值"的方式来验：`instances` / `media` /
+    /// `textures` 非空但无人读取 ⇒ 同一像素的 `render_pixel` 输出与空场景
+    /// **逐位相同**。（W1-B/W6 一旦真的开始读，这条测试就是第一个红的
+    /// —— 那是预期的，届时按新语义改写。）
+    #[test]
+    fn dormant_stub_fields_do_not_change_pixel_output() {
+        let white = MaterialKind::Pbr(Bsdf::new(
+            Vec3::splat(0.72),
+            0.0,
+            0.5,
+            1.5,
+            0.0,
+            0.0,
+            Vec3::splat(0.3),
+        ));
+        let mut base = Scene::default();
+        base.spheres.push((
+            Sphere { center: Vec3::new(0.0, 0.0, 0.0), radius: 1.0 },
+            white,
+        ));
+        base.lights
+            .push(Light::Directional {
+                direction: Vec3::new(0.3, -1.0, 0.2).normalize(),
+                radiance: Vec3::splat(3.0),
+                cos_theta_max: 1.0,
+            });
+
+        let mut stubbed = base.clone();
+        stubbed.textures.push(crate::texture::TextureRef::new(
+            16, 16, 5, 0, TEX_FMT_RGBA16F, SRGB_LINEAR,
+        ));
+        stubbed.instances.push(crate::instance::Instance::identity(0, 0));
+        // media 与旧 medium 并存也是"未读"的：本段不查它。
+        stubbed.media.push(MediumRegion {
+            bounds: Aabb::new(Vec3::splat(-1.0), Vec3::splat(1.0)),
+            medium: crate::media::Medium::Homogeneous(crate::media::HomogeneousMedium::new(
+                0.1, 0.9, 0.0,
+            )),
+        });
+
+        let cam = Camera::new(
+            Vec3::new(0.0, 0.0, -4.0),
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            60.0,
+            0.0,
+            4.0,
+            0.0,
+            0.0,
+        );
+        let ctx = prism_core::EvalCtx::new(0, 0, 0);
+        let params = RenderParams::new(4, 2);
+        let res = (8u32, 8u32);
+        for y in 0..res.1 {
+            for x in 0..res.0 {
+                let a = render_pixel(&base, &cam, &ctx, (x, y), res, &params);
+                let b = render_pixel(&stubbed, &cam, &ctx, (x, y), res, &params);
+                for c in 0..4 {
+                    assert_eq!(
+                        a[c].to_bits(),
+                        b[c].to_bits(),
+                        "定桩字段改变了像素 ({x},{y}) 通道 {c}：{} ≠ {}",
+                        a[c],
+                        b[c]
+                    );
+                }
+            }
+        }
     }
 }
