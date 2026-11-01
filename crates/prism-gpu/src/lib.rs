@@ -557,10 +557,13 @@ impl CpuRefBackend {
     ///
     /// # 语义（与 `scene_frame_v3.wgsl` 逐式相同）
     ///
-    /// * 只读 `maps[MAP_BASE]`（槽 0）：命中点 uv 处的双线性采样**替换** albedo；
-    /// * 句柄 `0` 或越界 ⇒ 按"无贴图"处理（保持球自带 albedo）；
-    /// * 足迹恒 0（lod 0、1 tap）——各向异性未支持，见 [`cpu_tex`]；
-    /// * 其余三个槽（metal-rough / normal / emissive）不读：着色模型里没有落点。
+    /// * 读 `maps[MAP_BASE]`（槽 0）：命中点 uv 处的三线性采样**替换** albedo；
+    /// * 读 `maps[MAP_METAL_ROUGH]`（槽 1）：G = roughness、B = metalness（glTF），
+    ///   置位即启用两瓣 PBR（diffuse 按 (1−m) 衰减 + F0=0.04 镜面瓣 NdotH⁴）；
+    /// * 读 `maps[MAP_NORMAL]`（槽 2）：切线空间法线经 `plane_tangent_basis` 旋到
+    ///   世界空间扰动着色法线；
+    /// * 句柄 `0` 或越界 ⇒ 按"无贴图"处理（保持球自带 albedo / 纯 Lambert 基线）；
+    /// * 足迹走解析足迹（三线性 + mip + 各向异性），见 [`cpu_tex`]。
     pub fn render_scene_with_textures(
         &mut self,
         req: &SceneRenderRequest,
@@ -656,17 +659,67 @@ impl CpuRefBackend {
                     let p = origin + dir * closest_t;
                     let n = (p - s.center).normalize();
 
-                    // ---- 纹理（W1-C）：`maps[MAP_BASE]` 在命中点 uv 处**替换** albedo ----
+                    // ---- 纹理（W1 段 1 + 段 2）：命中点 uv 处解析采样 ----
                     // 判据与 `scene_frame_v3.wgsl` 逐字相同：句柄非 0 **且**在表内，
                     // 否则按"无贴图"处理（越界句柄不 panic、不采样成白）。
                     // 无纹理集时 `has_textures == false` ⇒ 整段短路（V2 行为不回归）。
+                    //
+                    // 采样走**解析足迹**（与 GPU 同一 `spread0`、`footprint_at`、
+                    // SVD 约定）⇒ 三线性 + mip + 各向异性，llvmpipe 上逐位对齐。
                     let mut albedo = s.albedo;
+                    let view = -dir;                       // 出射（视线）方向，单位化
+                    let mut n_shade = n;                   // 着色法线（默认 = 几何法线）
+                    let mut metalness = 0.0f32;
+                    let mut roughness = 0.0f32;
+                    let mut use_pbr = false;
                     if has_textures {
+                        let uv = cpu_tex::sphere_uv(p, s.center, s.radius);
+                        let spread0 = 2.0 * tan_f / req.height as f32;
+                        let (foot_c0, foot_c1) =
+                            cpu_tex::footprint_at(p, n, dir, closest_t, spread0, s.center, s.radius);
+
+                        // MAP_BASE（W1-C）：替换 albedo。
                         let base_map = s.maps[scene_abi::MAP_BASE_SLOT];
                         if tex_table.has(base_map) {
-                            let uv = cpu_tex::sphere_uv(p, s.center, s.radius);
-                            if let Some(t) = tex_table.sample_base(base_map, uv) {
+                            if let Some(t) =
+                                tex_table.sample_with_footprint(base_map, uv, foot_c0, foot_c1)
+                            {
                                 albedo = Vec3::new(t[0], t[1], t[2]);
+                            }
+                        }
+
+                        // MAP_METAL_ROUGH（段 2）：G = roughness、B = metalness（glTF）。
+                        // 置位即启用两瓣 PBR（diffuse 按 (1−m) 衰减、加 F0=0.04 镜面瓣）。
+                        // 句柄清 0（或越界）⇒ `use_pbr = false` ⇒ 纯 Lambert 基线。
+                        let mr_map = s.maps[scene_abi::MAP_METAL_ROUGH_SLOT];
+                        if tex_table.has(mr_map) {
+                            if let Some(c) =
+                                tex_table.sample_with_footprint(mr_map, uv, foot_c0, foot_c1)
+                            {
+                                roughness = c[1].clamp(0.0, 1.0);
+                                metalness = c[2].clamp(0.0, 1.0);
+                                use_pbr = true;
+                            }
+                        }
+
+                        // MAP_NORMAL（段 2）：切线空间法线 → 世界空间扰动着色法线。
+                        // `+Z` 朝外、B 已含手性；退化（零长）⇒ 退回几何法线，绝不 NaN。
+                        // 句柄清 0 ⇒ `n_shade = n`，与无法线贴图逐字节相同。
+                        let nm_map = s.maps[scene_abi::MAP_NORMAL_SLOT];
+                        if tex_table.has(nm_map) {
+                            if let Some(c) =
+                                tex_table.sample_with_footprint(nm_map, uv, foot_c0, foot_c1)
+                            {
+                                let ns = Vec3::new(
+                                    2.0 * c[0] - 1.0,
+                                    2.0 * c[1] - 1.0,
+                                    2.0 * c[2] - 1.0,
+                                );
+                                let (tb0, tb1) = cpu_tex::plane_tangent_basis(n);
+                                let shaded = tb0 * ns.x + tb1 * ns.y + n * ns.z;
+                                if dot(shaded, shaded) > 1e-12 {
+                                    n_shade = shaded.normalize();
+                                }
                             }
                         }
                     }
@@ -674,10 +727,28 @@ impl CpuRefBackend {
                     let ambient = Vec3::splat(0.08);
                     let mut acc = Vec3::splat(0.0);
                     for light in &req.lights {
-                        let diff = dot(n, light.direction.normalize()).max(0.0);
+                        let ldir = light.direction.normalize();
+                        let lint = light.intensity;
+                        let lcolor = light.color;
+                        let diff = dot(n_shade, ldir).max(0.0);
                         // albedo * (ambient + diff * intensity * color)
-                        let term = ambient + light.color * (diff * light.intensity);
-                        acc = acc + vmul(albedo, term);
+                        let term = ambient + lcolor * (diff * lint);
+                        let mut contrib = vmul(albedo, term);
+                        if use_pbr {
+                            let h = (ldir + view).normalize();
+                            let ndh = dot(n_shade, h).max(0.0);
+                            let x2 = ndh * ndh;
+                            let spec_lobe = x2 * x2; // NdotH⁴（无超越函数，与 GPU 逐位一致）
+                            let f0 = Vec3::new(0.04, 0.04, 0.04)
+                                + (albedo - Vec3::new(0.04, 0.04, 0.04)) * metalness;
+                            let rough_factor = 1.0 - 0.75 * roughness;
+                            let spec = f0 * (spec_lobe * rough_factor);
+                            let diffuse = albedo * (1.0 - metalness);
+                            let diff_contrib = vmul(diffuse, term);
+                            let spec_contrib = vmul(spec, lcolor * (diff * lint));
+                            contrib = diff_contrib + spec_contrib;
+                        }
+                        acc = acc + contrib;
                     }
                     color = acc;
                 } else if let Some(n) = curve_hit {

@@ -8,7 +8,7 @@
 //! * 在非 wasm 目标上，`render_scene` 走 CPU 兜底以保证可编译、可测试；
 //!   在 wasm 目标上，若 device 获取失败亦回退 CPU，绝不 panic（harness 要求）。
 
-use crate::scene_abi::SceneAbi;
+use crate::scene_abi::{SceneAbi, SceneAbiProfile};
 use crate::shaders;
 use crate::web::{self, GpuHandle, WebGpuSupport, INVALID_HANDLE};
 use crate::{Framebuffer, GpuDevice, SceneRenderRequest};
@@ -396,6 +396,41 @@ fn histogram(@builtin(global_invocation_id) gid: vec3<u32>) {
 /// 工作组 `[8,8,1]`、4 绑定连续前缀 `{0,1,2,3}` = params/spheres/lights/out，
 /// 全部以 `crate::scene_abi` 为唯一真源（WGSL 内的 `const` 字面量只是其镜像）。
 pub static WGSL_SCENE_FRAME: &str = include_str!("../../shaders/scene_frame.wgsl");
+
+/// V3 光追场景整帧 kernel 的 WGSL 源（W1-C 九绑定 `scene_frame_v3.wgsl`）。
+///
+/// 与 `crates/prism-gpu/shaders/scene_frame_v3.wgsl` 是**同一份**源（经
+/// `include_str!` 引入，避免与 `SHADERS` 表里的登记副本漂移）。入口 `scene_main`、
+/// 工作组 `[8,8,1]`、9 绑定连续前缀 `{0..8}` = params/spheres/lights/triangles/nodes/
+/// textures/texmeta/cdf/out，全部以 `crate::scene_abi::V3_BINDINGS` 为唯一真源
+/// （WGSL 内的 `const` 字面量只是其镜像）。`scene_dispatch_plan_v3` 据此派生
+/// bind group 的 9 个 entry。
+pub static WGSL_SCENE_FRAME_V3: &str = include_str!("../../shaders/scene_frame_v3.wgsl");
+
+/// 由场景请求派生 **V3 剖面** dispatch 规划（纯函数；native/wasm 同口径）。
+///
+/// 与 [`scene_dispatch_plan`]（V2 默认剖面）唯一差别是剖面：V3 用 9 绑定
+/// {params,spheres,lights,triangles,nodes,textures,texmeta,cdf,out}，绑定数取
+/// `SceneAbi::bindings_for(V3).binding_count()`。其余（入口、工作组、工作组数
+/// 推算、WGSL 源登记）与 V2 同源锚定。
+pub fn scene_dispatch_plan_v3(req: &SceneRenderRequest) -> SceneDispatchPlan {
+    let profile = SceneAbiProfile::V3;
+    let wg = SceneAbi::WORKGROUP;
+    let w = req.width.max(1);
+    let h = req.height.max(1);
+    SceneDispatchPlan {
+        entry: SceneAbi::ENTRY,
+        workgroup: wg,
+        groups: [
+            w.div_ceil(wg[0].max(1)),
+            h.div_ceil(wg[1].max(1)),
+            wg[2].max(1),
+        ],
+        bindings: profile.binding_count(),
+        profile,
+        wgsl_present: shaders::source("scene_frame_v3.wgsl").is_some(),
+    }
+}
 
 /// [`WGSL_SCAN_BLOCK`] 的 `Params` 结构在 WGSL uniform 地址空间中的字节长度。
 ///

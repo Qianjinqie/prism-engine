@@ -1024,6 +1024,13 @@ static TESTS: &[TestItem] = &[
         run: t_gpu_scene_frame,
         collect: Some(c_gpu_scene_frame),
     },
+    TestItem {
+        id: "gpu.scene_frame_v3",
+        name: "真 WebGPU：scene_frame_v3 九绑定 dispatch（带纹理集/金属度-粗糙度/法线），与 CPU 参考（render_scene_with_textures）统计对拍 + 双跑一致",
+        needs_gpu: true,
+        run: t_gpu_scene_frame_v3,
+        collect: Some(c_gpu_scene_frame_v3),
+    },
 ];
 
 /// 测试项总数。
@@ -2536,16 +2543,17 @@ static COVERAGE: &[(&str, &[(&str, &str, &str)])] = &[
         "scene_frame_v3.wgsl",
         &[(
             "scene_main",
-            ST_SKIP,
-            "W1-C：V3 九绑定 kernel 的 WGSL 已落地且**已入库编译产物**\
-             `shaders/spv/scene_frame_v3.spv`（`tools/wgsl2spv`/naga 30.0.1，D-21）——\
-             编译器缺位这条理由已不存在。本项仍如实标 SKIP 的原因是**运行时**：\
-             WebGPU 宿主（`web/device.rs`）尚未接 V3 的纹理绑定与 dispatch，\
-             真机对拍只在 Vulkan 腿（lavapipe/llvmpipe）做过（报告 §18）。\
-             绑定/参数块/纹素元素类型与 `scene_abi::V3_BINDINGS` 的逐格对账由\
-             `scene_abi::tests::v3_wgsl_bindings_and_types_match_abi` 在 CPU 侧完成；\
-             球块句柄槽序（8..11）与 WGSL/`Bsdf::maps` 的逐格对账见\
-             `scene_abi::tests::v3_map_slot_order_matches_bsdf_and_wgsl_cell_by_cell`",
+            ST_COVERED,
+            "W1-C 收口：V3 九绑定 kernel 的 WGSL 已落地、已入库编译产物\
+             `shaders/spv/scene_frame_v3.spv`（naga 30.0.1，D-21），且**真 dispatch 链路已接**：\
+             `web/scene_gpu.rs::submit_scene_frame_v3` 按 `scene_abi::V3_BINDINGS`（9 绑定\
+             {params,spheres,lights,triangles,nodes,textures,texmeta,cdf,out}）建 buffer + \
+             bind group + dispatch，`encode_v3` 单一真源编码，pipeline 走独立缓存 `PIPE_V3`。\
+             真机对拍由 `gpu.scene_frame_v3` 项完成（无 device 时如实 SKIP，不伪绿）；\
+             Vulkan 腿（lavapipe/llvmpipe）的逐位对拍见 `vulkan::v3_frame` 系列测试（报告 §18）。\
+             三后端同场景 `differing_pixels=0` 的判据在 Vulkan 腿已实测达成（llvmpipe 上\
+             max_channel_delta=0 && differing_pixels=0）。WebGPU 腿的实测数字待有 device 的\
+             浏览器环境跑 `gpu.scene_frame_v3` 后回填，本行仅标 COVERED 表示 dispatch 链路已真接。",
         )],
     ),
     ("rt_shade.wgsl", &[]),
@@ -6652,6 +6660,11 @@ thread_local! {
         const { RefCell::new([None; SCENE_SUBMISSIONS]) };
     /// run 阶段登记的 GPU 错误 scope 数（collect 阶段成对 pop）。
     static SCENE_ERR_SCOPES: Cell<u32> = const { Cell::new(0) };
+    /// `gpu.scene_frame_v3` 在 run 阶段登记的帧句柄（V3 九绑定，带纹理集）。
+    static SCENE_V3_FRAMES: RefCell<[Option<SceneFrame>; SCENE_SUBMISSIONS]> =
+        const { RefCell::new([None; SCENE_SUBMISSIONS]) };
+    /// V3 run 阶段登记的 GPU 错误 scope 数（collect 阶段成对 pop）。
+    static SCENE_V3_ERR_SCOPES: Cell<u32> = const { Cell::new(0) };
 }
 
 /// CPU 参考渲染的**唯一调用点**。
@@ -6660,6 +6673,18 @@ thread_local! {
 /// 一眼可见（`CpuRefBackend`，与生产路径同一实现），也避免这段调用散落在多处。
 fn scene_cpu_ref(req: &SceneRenderRequest) -> crate::Framebuffer {
     CpuRefBackend.render_scene(req)
+}
+
+/// V3 CPU 参考渲染的**唯一调用点**（带纹理集）。
+///
+/// 与 [`scene_cpu_ref`] 同口径，只是走 `render_scene_with_textures`（W1 段 1+段 2
+/// 的 CPU 参考：基础色三线性 + 金属度-粗糙度 PBR + 法线扰动，与 V3 shader 逐式同构）。
+/// 判据 3 与判据 5 要对拍的就是这一份。
+fn scene_cpu_ref_v3(
+    req: &SceneRenderRequest,
+    textures: &[crate::scene_abi::TextureUpload<'_>],
+) -> crate::Framebuffer {
+    CpuRefBackend.render_scene_with_textures(req, textures)
 }
 
 /// 把一帧的像素复制出来（未落盘 ⇒ `None`）。
@@ -6832,6 +6857,128 @@ fn scene_request(scene: usize) -> SceneRenderRequest {
         },
         curves,
     }
+}
+
+// ---------------------------------------------------------------------------
+// V3 测试纹理集（确定性、无随机；全部 `'static`，供 run/collect 复用同一份）
+// ---------------------------------------------------------------------------
+
+/// 8×8 线性渐变（x→R，y→G，B=0.5），单级。用作基础色贴图（MAP_BASE）。
+const fn v3_grad_tex() -> [[f32; 4]; 64] {
+    let mut t = [[0f32; 4]; 64];
+    let mut i = 0usize;
+    while i < 64 {
+        let x = (i % 8) as f32 / 7.0;
+        let y = (i / 8) as f32 / 7.0;
+        t[i] = [x, y, 0.5, 1.0];
+        i += 1;
+    }
+    t
+}
+/// 4×4 常量纹理（glTF 约定：G=roughness、B=metalness），用作金属度-粗糙度贴图。
+const fn v3_solid_tex(r: f32, g: f32, b: f32) -> [[f32; 4]; 16] {
+    let mut t = [[0f32; 4]; 16];
+    let mut i = 0usize;
+    while i < 16 {
+        t[i] = [r, g, b, 1.0];
+        i += 1;
+    }
+    t
+}
+const V3_BASE_TEX: [[f32; 4]; 64] = v3_grad_tex();
+const V3_MR_TEX: [[f32; 4]; 16] = v3_solid_tex(0.0, 0.3, 0.5); // G=0.3、B=0.5
+const V3_NM_TEX: [[f32; 4]; 16] = v3_solid_tex(0.5, 0.5, 1.0); // 恒等法线 (0,0,1)
+
+/// 构造 V3 场景 `scene` 的渲染请求 **+ 纹理集 + 环境**（run 与 collect 各自重建，
+/// 保证两次拿到**逐字段相同**的请求与纹理，否则对拍比的就不是同一件事）。
+///
+/// 几何与 V2 的 [`scene_request`] 同形（A=单球铺满 8×8、B/BC=偏左小球+右侧圆柱），
+/// 但球带三张贴图句柄 `maps=[1,2,3,0]`（基础色/金属度-粗糙度/法线）。无环境图
+/// （`env=None`，V3 的 cdf 绑定传空缓冲，shader 在 `P_CFD_ROWS==0` 时跳过环境项）。
+fn scene_request_v3(
+    scene: usize,
+) -> (
+    SceneRenderRequest,
+    Vec<crate::scene_abi::TextureUpload<'static>>,
+    Option<crate::scene_abi::EnvCdf<'static>>,
+) {
+    let (w, h) = if scene == SCN_A {
+        (SCENE_A_W, SCENE_A_H)
+    } else {
+        (SCENE_B_W, SCENE_B_H)
+    };
+    // 两场景都用带贴图的小球（albedo 留白，让"基础色贴图是否生效"一目了然）。
+    let sphere = crate::SphereReq {
+        center: if scene == SCN_A {
+            Vec3::new(0.0, 0.0, 0.0)
+        } else {
+            Vec3::new(-0.3, -0.1, 0.0)
+        },
+        radius: if scene == SCN_A { 1.0 } else { 0.35 },
+        albedo: Vec3::new(1.0, 1.0, 1.0),
+        roughness: 0.4,
+        metalness: 0.1,
+        maps: [1, 2, 3, 0],
+    };
+    let curves = if scene == SCN_B {
+        vec![crate::CurveReq::Cylinder {
+            center: Vec3::new(0.32, 0.0, 0.0),
+            radius: 0.18,
+            height: 1.4,
+            axis: Vec3::new(0.0, 1.0, 0.0),
+        }]
+    } else {
+        Vec::new()
+    };
+    let req = SceneRenderRequest {
+        width: w,
+        height: h,
+        camera: crate::CameraReq {
+            eye: Vec3::new(0.0, 0.0, -4.0),
+            target: Vec3::new(0.0, 0.0, 0.0),
+            fov: 60.0_f32.to_radians(),
+            aspect: w as f32 / h as f32,
+        },
+        lights: vec![crate::LightReq {
+            direction: Vec3::new(-0.3, -0.4, -1.0),
+            color: Vec3::new(1.0, 0.96, 0.9),
+            intensity: 1.0,
+        }],
+        spheres: vec![sphere],
+        aesthetic: crate::AestheticReq {
+            teal_orange: false,
+            contrast: 1.0,
+            filmic: false,
+        },
+        curves,
+    };
+    let textures = vec![
+        crate::scene_abi::TextureUpload {
+            w: 8,
+            h: 8,
+            levels: 1,
+            fmt: 1,
+            srgb: 0,
+            texels: &V3_BASE_TEX,
+        },
+        crate::scene_abi::TextureUpload {
+            w: 4,
+            h: 4,
+            levels: 1,
+            fmt: 1,
+            srgb: 0,
+            texels: &V3_MR_TEX,
+        },
+        crate::scene_abi::TextureUpload {
+            w: 4,
+            h: 4,
+            levels: 1,
+            fmt: 1,
+            srgb: 0,
+            texels: &V3_NM_TEX,
+        },
+    ];
+    (req, textures, None)
 }
 
 /// 场景的人类可读标签（报告用）。
@@ -7108,6 +7255,257 @@ fn c_gpu_scene_frame() -> Status {
          （max_channel_delta={curve_max_delta}）；CPU 参考侧同对照差 {cpu_curve_diff}/{n_cpu}\
          个像素，两侧同向 ⇒ triangles/nodes 绑定确实参与了着色 ✓\n\
          注：CPU 量化用 `(v*255).round()`，WGSL 用 `u32(v*255)` 截断，故多数像素有 ±1 级\
+         系统性差；这是 PSNR 天花板的主要来源（约 48～53 dB），远高于 40 dB 门限",
+        SCENE_A_W * SCENE_A_H * 4,
+        SCENE_B_W * SCENE_B_H * 4,
+        min_db10 / 10,
+        min_db10 % 10,
+    );
+    set_result(&report);
+    Status::Pass
+}
+
+// ---------------------------------------------------------------------------
+// V3 整帧真 WebGPU dispatch（九绑定：V2 六绑定 + textures/texmeta/cdf）
+// ---------------------------------------------------------------------------
+
+/// 单帧的判据 0～3（尺寸 / 字节数 / 非全零非纯色 / vs CPU 参考），带纹理集版本。
+///
+/// 与 [`scene_check_frame`] 唯一差别：CPU 参考走 [`scene_cpu_ref_v3`]（带纹理集的
+/// `render_scene_with_textures`），其余判据口径完全一致（PSNR ≥ 40 dB 门限、非全零、
+/// 多色数）。
+fn scene_check_frame_v3(
+    label: &str,
+    req: &SceneRenderRequest,
+    textures: &[crate::scene_abi::TextureUpload<'_>],
+    frame: SceneFrame,
+) -> Result<(Vec<u8>, SceneParity), Status> {
+    let want = req.width * req.height * 4;
+    if frame.width() != req.width || frame.height() != req.height {
+        return Err(fail(format!(
+            "{label}：帧句柄尺寸 {}×{} ≠ 请求 {}×{}（帧槽复用错位）",
+            frame.width(),
+            frame.height(),
+            req.width,
+            req.height
+        )));
+    }
+    if frame.read_len() != want {
+        return Err(fail(format!(
+            "{label}：提交时请求的读回字节数 {} ≠ w*h*4 = {want}——有设备分支的「返 w*h*4」不成立",
+            frame.read_len()
+        )));
+    }
+    let Some(px) = scene_frame_pixels(frame) else {
+        return Err(fail(format!(
+            "{label}：第 {} 帧读回未落盘（宿主 settle 未完成，或 copy_out 失败）",
+            frame.slot()
+        )));
+    };
+    if px.len() != want as usize {
+        return Err(fail(format!(
+            "{label}：读回 {} 字节 ≠ w*h*4 = {want}",
+            px.len()
+        )));
+    }
+    if !px.iter().any(|&b| b != 0) {
+        return Err(fail(format!(
+            "{label}：读回 {want} 字节全为 0——字节数对了但没有任何渲染内容（假绿），\
+             shader 可能整体早退或 dispatch 工作组数为 0"
+        )));
+    }
+    let colors = scene_distinct_colors(&px);
+    if colors < 2 {
+        return Err(fail(format!(
+            "{label}：整帧只有 1 种颜色——scene_main 未按像素着色\
+             （常见根因：params 的 P_WIDTH/P_HEIGHT 未写入、或工作组数算成 1×1）"
+        )));
+    }
+    let cpu = scene_cpu_ref_v3(req, textures);
+    if cpu.pixels.len() != want as usize {
+        return Err(fail(format!(
+            "{label}：CPU 参考帧 {} 字节 ≠ w*h*4 = {want}（CPU 侧被拒帧，请求尺寸非法？）",
+            cpu.pixels.len()
+        )));
+    }
+    let Some(parity) = scene_parity(&px, &cpu.pixels, req.width * req.height) else {
+        return Err(fail(format!("{label}：GPU/CPU 帧长度不足以对比")));
+    };
+    if !parity.passes_40db {
+        return Err(fail(format!(
+            "{label}：PSNR {}.{} dB < 门限 40.0 dB（sum_sq={} 超出精确整数上界\
+             sum_sq·10⁴ ≤ 255²·channels，max_channel_delta={}，differing_pixels={}/{}）——\
+             这是真机浮点/求交差异的实测值，**不得靠改阈值消红**，须由交付总监裁决口径",
+            parity.psnr_db10 / 10,
+            parity.psnr_db10 % 10,
+            parity.sum_sq,
+            parity.max_channel_delta,
+            parity.differing_pixels,
+            parity.pixels
+        )));
+    }
+    Ok((px, parity))
+}
+
+fn t_gpu_scene_frame_v3() -> Status {
+    let dev = match ready_device("gpu.scene_frame_v3") {
+        Ok(d) => d,
+        Err(s) => return s,
+    };
+    // 提交顺序：A 双跑 → B 双跑 → BC 单跑（下标与 collect 的 `scene*SCENE_RUNS` 对齐）。
+    let mut frames: [Option<SceneFrame>; SCENE_SUBMISSIONS] = [None; SCENE_SUBMISSIONS];
+    let mut read_bytes = 0u32;
+    for (i, &scene) in SCENE_ORDER.iter().enumerate() {
+        let (req, textures, env) = scene_request_v3(scene);
+        match scene_gpu::submit_scene_frame_v3(dev, &req, &textures, env) {
+            Ok(f) => frames[i] = Some(f),
+            Err(e) => {
+                return fail(format!(
+                    "gpu.scene_frame_v3：第 {i} 次提交失败（场景 {}，{}×{}）——{e}\n\
+                     提示：本项要求 device 已就绪（先跑 device.init 并等其 PASS）；\
+                     若为 `TooLarge`，说明场景规模超出宿主竞技场容量",
+                    scene_label(scene),
+                    req.width,
+                    req.height
+                ));
+            }
+        }
+        read_bytes = read_bytes.saturating_add(req.width * req.height * 4);
+    }
+    SCENE_V3_ERR_SCOPES.with(|c| c.set(scene_gpu::take_err_scopes()));
+    SCENE_V3_FRAMES.with(|f| *f.borrow_mut() = frames);
+    set_result(&format!(
+        "已提交 {SCENE_SUBMISSIONS} 次真 WebGPU 场景整帧 dispatch（scene_frame_v3.wgsl 的 scene_main，九绑定）：\n\
+         A {SCENE_A_W}×{SCENE_A_H}（带贴图球+灯）连跑 {SCENE_RUNS} 次、\
+         B {SCENE_B_W}×{SCENE_B_H}（带贴图球+圆柱+灯）连跑 {SCENE_RUNS} 次、\
+         对照（B 去掉曲线）跑 1 次\n\
+         绑定剖面：V3 九绑定 {{params,spheres,lights,triangles,nodes,textures,texmeta,cdf,out}}，\
+         dispatch 工作组数由 scene_dispatch_plan_v3 从 scene_abi 派生\n\
+         已登记读回 {read_bytes} 字节，待宿主 settle 后与 CPU 参考（CpuRefBackend::render_scene_with_textures，同式）\
+         统计对拍（门限 PSNR ≥ 40 dB）"
+    ));
+    Status::Pending
+}
+
+fn c_gpu_scene_frame_v3() -> Status {
+    use core::fmt::Write as _;
+    let dev = match ready_device("gpu.scene_frame_v3") {
+        Ok(d) => d,
+        Err(s) => return s,
+    };
+    let scopes = SCENE_V3_ERR_SCOPES.with(|c| c.get());
+    if let Err(s) = check_errors_counted("gpu.scene_frame_v3", dev, scopes) {
+        return s;
+    }
+    if gpu::device_lost(dev) != 0 {
+        return fail("gpu.scene_frame_v3：device 在 dispatch 期间 lost");
+    }
+    let frames = SCENE_V3_FRAMES.with(|f| *f.borrow());
+    let mut report = String::from(
+        "真 WebGPU 场景整帧 dispatch（scene_frame_v3.wgsl 的 scene_main，V3 九绑定）\
+         与 CPU 参考统计对拍 ✓\n",
+    );
+    let mut min_db10 = PSNR_DB10_CAP;
+    let mut px_b: Option<Vec<u8>> = None;
+    let mut px_bc: Option<Vec<u8>> = None;
+    for scene in 0..SCN_COUNT {
+        let (req, textures, _env) = scene_request_v3(scene);
+        let label = scene_label(scene);
+        let Some(first) = frames[scene * SCENE_RUNS] else {
+            return fail(format!(
+                "gpu.scene_frame_v3：第 {} 帧句柄缺失（本项 run 未成功提交过；请先运行本项）",
+                scene * SCENE_RUNS
+            ));
+        };
+        let (px, parity) = try_status!(scene_check_frame_v3(label, &req, &textures, first));
+        if scene != SCN_BC {
+            let Some(second) = frames[scene * SCENE_RUNS + 1] else {
+                return fail(format!("{label}：第 2 跑的帧句柄缺失"));
+            };
+            let Some(px2) = scene_frame_pixels(second) else {
+                return fail(format!("{label}：第 2 跑读回未落盘，无法核对确定性"));
+            };
+            if px2.len() != px.len() {
+                return fail(format!(
+                    "{label}：两跑读回长度不同（{} vs {}）——buffer 尺寸算错？",
+                    px.len(),
+                    px2.len()
+                ));
+            }
+            if px2 != px {
+                let at = px
+                    .iter()
+                    .zip(px2.iter())
+                    .position(|(a, b)| a != b)
+                    .unwrap_or(0);
+                return fail(format!(
+                    "{label}：同设备连跑两次读回**不一致**（首个不同偏移 {at}，\
+                     GPU-run1={} vs GPU-run2={}）——违反全链路确定性铁律",
+                    px[at], px2[at]
+                ));
+            }
+        }
+        if parity.psnr_db10 < min_db10 {
+            min_db10 = parity.psnr_db10;
+        }
+        let _ = write!(
+            report,
+            "  {label}: 读回 {} B == w*h*4 ✓  非全零 ✓  色数(≤8) {}  PSNR {}.{} dB\
+             （max_channel_delta {}，differing_pixels {}/{}）{}\n",
+            px.len(),
+            scene_distinct_colors(&px),
+            parity.psnr_db10 / 10,
+            parity.psnr_db10 % 10,
+            parity.max_channel_delta,
+            parity.differing_pixels,
+            parity.pixels,
+            if scene == SCN_BC { "  对照单跑" } else { "  双跑逐位一致 ✓" }
+        );
+        if scene == SCN_B {
+            px_b = Some(px);
+        } else if scene == SCN_BC {
+            px_bc = Some(px);
+        }
+    }
+    // 判据 5：曲线路径真被消费（B 与「B 去掉曲线」必须不同）。
+    let (Some(b), Some(bc)) = (px_b, px_bc) else {
+        return fail("gpu.scene_frame_v3：场景 B / 对照帧的像素缺失，无法核对曲线路径");
+    };
+    let n = b.len().min(bc.len()) / 4;
+    let mut curve_diff_px = 0usize;
+    let mut curve_max_delta = 0u32;
+    for i in 0..n {
+        let o = i * 4;
+        let mut d = 0u32;
+        for c in 0..3 {
+            let dd = (b[o + c] as i32 - bc[o + c] as i32).unsigned_abs();
+            if dd > d {
+                d = dd;
+            }
+        }
+        if d > 0 {
+            curve_diff_px += 1;
+        }
+        if d > curve_max_delta {
+            curve_max_delta = d;
+        }
+    }
+    if curve_diff_px == 0 {
+        return fail(
+            "gpu.scene_frame_v3：含曲线的场景 B 与「B 去掉曲线」的对照帧**逐像素完全相同**——\
+             说明 triangles/nodes 绑定没有被 scene_main 真正消费（V3 曲线路径未被判对）",
+        );
+    }
+    let _ = write!(
+        report,
+        "判据 1（核心）：三帧读回字节数均 == w*h*4（{SCENE_A_W}×{SCENE_A_H}×4={}、\
+         {SCENE_B_W}×{SCENE_B_H}×4={}）——「有设备返 w*h*4」成立 ✓\n\
+         判据 2：非全零 + 每帧色数 ≥ 2（排除「读回成功但全黑/纯色」的假绿）✓\n\
+         判据 3：PSNR ≥ 40.0 dB，最低实测 {}.{} dB ✓\n\
+         判据 4：同设备连跑两次读回**逐位一致**（A、B 各 2 跑）✓\n\
+         判据 5：曲线路径真被消费——B 与「B 去掉曲线」有 {curve_diff_px}/{n} 个像素不同\
+         （max_channel_delta={curve_max_delta}）✓\n\
+         注：CPU 量化用 (v*255).round()，WGSL 用 u32(v*255) 截断，故多数像素有 ±1 级\
          系统性差；这是 PSNR 天花板的主要来源（约 48～53 dB），远高于 40 dB 门限",
         SCENE_A_W * SCENE_A_H * 4,
         SCENE_B_W * SCENE_B_H * 4,
@@ -8331,9 +8729,9 @@ mod tests {
             .filter(|(_, st, _)| *st == ST_COVERED)
             .count();
         assert_eq!(
-            covered, 19,
-            "COVERED 入口应为 19 个（particles 3 + sph 3 + cloth 3 + wavefront 5 + GI 4 \
-             + scene_frame 1）"
+            covered, 20,
+            "COVERED 入口应为 20 个（particles 3 + sph 3 + cloth 3 + wavefront 5 + GI 4 \
+             + scene_frame 1 + scene_frame_v3 1）"
         );
     }
 
@@ -8377,7 +8775,13 @@ mod tests {
     #[test]
     fn new_gpu_items_skip_cleanly_without_device() {
         DEVICE.with(|d| d.set(0));
-        for id in ["gpu.sim_particles", "gpu.sim_sph", "gpu.sim_cloth", "gpu.rt_wavefront"] {
+        for id in [
+            "gpu.sim_particles",
+            "gpu.sim_sph",
+            "gpu.sim_cloth",
+            "gpu.rt_wavefront",
+            "gpu.scene_frame_v3",
+        ] {
             let idx = TESTS.iter().position(|t| t.id == id).expect("清单含该项");
             assert!(TESTS[idx].needs_gpu, "{id} 必须标注 needs_gpu");
             assert!(TESTS[idx].collect.is_some(), "{id} 必须有 collect 阶段（读回判对）");

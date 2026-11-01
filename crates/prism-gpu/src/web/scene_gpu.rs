@@ -66,11 +66,14 @@
 use core::cell::RefCell;
 
 use crate::scene_abi::{
-    SceneAbi, LIGHT_SLOTS, NODE_SLOTS, PARAMS_WORDS_V2, SPHERE_SLOTS, TRIANGLE_SLOTS,
+    SceneAbi, SceneAbiProfile, EnvCdf, TextureUpload, LIGHT_SLOTS, MAX_V3_TEXTURES, NODE_SLOTS,
+    PARAMS_WORDS_V2, PARAMS_WORDS_V3, SPHERE_SLOTS, SPHERE_SLOTS_V3, TRIANGLE_SLOTS,
 };
 use crate::web::abi::gpu;
 use crate::web::abi::usage;
-use crate::web::device::{scene_dispatch_plan, WGSL_SCENE_FRAME};
+use crate::web::device::{
+    scene_dispatch_plan, scene_dispatch_plan_v3, WGSL_SCENE_FRAME, WGSL_SCENE_FRAME_V3,
+};
 use crate::web::GpuHandle;
 use crate::SceneRenderRequest;
 
@@ -124,10 +127,24 @@ const LIGHT_BYTES: usize = LIGHT_SLOTS as usize * 4 * MAX_LIGHTS;
 const TRI_BYTES: usize = TRIANGLE_SLOTS as usize * 4 * MAX_TRIS;
 /// 节点缓冲竞技场字节数。
 const NODE_BYTES: usize = NODE_SLOTS as usize * 4 * MAX_NODES;
-/// `prism_create_bind_group` 的句柄数组容量（V2 剖面 6 个，留 2 个余量）。
-const HANDLE_CAP: usize = 8;
+/// `prism_create_bind_group` 的句柄数组容量（V3 剖面 9 个，留余量）。
+const HANDLE_CAP: usize = 16;
 /// `prism_dispatch` 的 bind group 数组容量（本路径恒为 1 个 group）。
 const BG_CAP: usize = 1;
+
+/// V3 参数块字节数（V3 剖面 = `PARAMS_WORDS_V3` 个字，比 V2 多 2 字）。
+const V3_PARAMS_BYTES: usize = PARAMS_WORDS_V3 * 4;
+/// V3 球体缓冲竞技场字节数（每球 [`SPHERE_SLOTS_V3`] 槽 = 48 B）。
+const V3_SPHERE_BYTES: usize = SPHERE_SLOTS_V3 as usize * 4 * MAX_SPHERES;
+/// V3 纹素流竞技场字节数（`array<vec4<f32>>`，16 B/纹素）。
+///
+/// 覆盖台账与对拍测试用到的纹理规模（单/多张 8×8～64×64、含 mip 链），
+/// 留 256 KiB 余量；`.bss` 零初始化，不占 wasm 下载体积。
+const TEXEL_ARENA_BYTES: usize = 256 * 1024;
+/// V3 纹理元数据竞技场字节数（`array<vec4<u32>>`，32 B/条）。
+const TEXMETA_ARENA_BYTES: usize = 8 * 1024;
+/// V3 环境 CDF 竞技场字节数（`array<u32>`，`(W+1)·H·4` B）。
+const CDF_ARENA_BYTES: usize = 256 * 1024;
 
 // ---------------------------------------------------------------------------
 // 错误
@@ -289,6 +306,20 @@ struct SceneArena {
     tris: [u8; TRI_BYTES],
     /// 扁平 BVH 节点缓冲（binding 4）。
     nodes: [u8; NODE_BYTES],
+    /// V3 参数块（`PARAMS_WORDS_V3 × 4` 字节，比 V2 多 2 字）。
+    ///
+    /// 与 `params` 分开：V2 的 `EncodedScene.params` 类型是 `[u8; PARAMS_BYTES]`，
+    /// 直接复用 `params` 会因长度不符编译失败；V3 的 `encode_v3` 产出更长参数块，
+    /// 故独占一段，互不覆写（V2/V3 不在同一测试里并发跑）。
+    params_v3: [u8; V3_PARAMS_BYTES],
+    /// V3 球体缓冲（每球 48 B，binding 1）。
+    spheres_v3: [u8; V3_SPHERE_BYTES],
+    /// V3 纹素流（`array<vec4<f32>>`，binding 5）。
+    texels: [u8; TEXEL_ARENA_BYTES],
+    /// V3 纹理元数据（`array<vec4<u32>>`，32 B/条，binding 6）。
+    texmeta: [u8; TEXMETA_ARENA_BYTES],
+    /// V3 环境 CDF（`array<u32>`，binding 7）。
+    cdf: [u8; CDF_ARENA_BYTES],
     /// `prism_create_bind_group` 的句柄数组落点。
     handles: [u32; HANDLE_CAP],
     /// `prism_dispatch` 的 bind group 句柄数组落点。
@@ -308,6 +339,11 @@ impl SceneArena {
             lights: [0u8; LIGHT_BYTES],
             tris: [0u8; TRI_BYTES],
             nodes: [0u8; NODE_BYTES],
+            params_v3: [0u8; V3_PARAMS_BYTES],
+            spheres_v3: [0u8; V3_SPHERE_BYTES],
+            texels: [0u8; TEXEL_ARENA_BYTES],
+            texmeta: [0u8; TEXMETA_ARENA_BYTES],
+            cdf: [0u8; CDF_ARENA_BYTES],
             handles: [0u32; HANDLE_CAP],
             bgs: [0u32; BG_CAP],
             pixels: [[0u8; MAX_FRAME_PIXELS]; FRAME_SLOTS],
@@ -343,6 +379,9 @@ thread_local! {
     static ARENA: RefCell<SceneArena> = const { RefCell::new(SceneArena::new()) };
     /// pipeline 缓存（省掉每帧的 WGSL 编译）。
     static PIPE: RefCell<PipelineCache> = const { RefCell::new(PipelineCache::EMPTY) };
+    /// V3 九绑定 kernel 的 pipeline 缓存（与 [`PIPE`] 独立：源/绑定布局不同，
+    /// 共用缓存会让 V2 pipeline 被错用于 V3 派发）。
+    static PIPE_V3: RefCell<PipelineCache> = const { RefCell::new(PipelineCache::EMPTY) };
     /// 本线程待结算的 GPU 错误 scope 数（由 run/collect 阶段成对消费）。
     static ERR_SCOPES: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
 }
@@ -420,6 +459,44 @@ fn ensure_pipeline(device: GpuHandle) -> Result<GpuHandle, SceneDispatchError> {
         return Err(SceneDispatchError::step("create_compute_pipeline", NO_BINDING));
     }
     PIPE.with(|p| {
+        *p.borrow_mut() = PipelineCache { device, pipeline };
+    });
+    Ok(pipeline)
+}
+
+/// V3 九绑定 kernel 的 pipeline 缓存（与 [`ensure_pipeline`] 独立，因为两者源不同、
+/// 绑定布局不同，共用缓存会导致 V2 的 6 绑定 pipeline 被错用于 V3 的 9 绑定派发）。
+fn ensure_pipeline_v3(device: GpuHandle) -> Result<GpuHandle, SceneDispatchError> {
+    let cached = PIPE_V3.with(|p| {
+        let c = *p.borrow();
+        if c.device == device && c.pipeline != 0 {
+            Some(c.pipeline)
+        } else {
+            None
+        }
+    });
+    if let Some(pipeline) = cached {
+        return Ok(pipeline);
+    }
+    let src = WGSL_SCENE_FRAME_V3;
+    let module = gpu::create_shader_module(device, addr_of(src.as_bytes()), src.len() as u32);
+    if module == 0 {
+        return Err(SceneDispatchError::step("create_shader_module", NO_BINDING));
+    }
+    // 宿主在 create_shader_module 里 push 了一个 `getCompilationInfo()` 的 promise，
+    // 编译错误会经 pendingErrors 回传 ⇒ 此处登记 1 个待结算槽位。
+    note_err_scope();
+    let entry = SceneAbi::ENTRY;
+    let pipeline = gpu::create_compute_pipeline(
+        device,
+        module,
+        addr_of(entry.as_bytes()),
+        entry.len() as u32,
+    );
+    if pipeline == 0 {
+        return Err(SceneDispatchError::step("create_compute_pipeline", NO_BINDING));
+    }
+    PIPE_V3.with(|p| {
         *p.borrow_mut() = PipelineCache { device, pipeline };
     });
     Ok(pipeline)
@@ -775,6 +852,314 @@ pub(crate) fn dispatch_scene_frame(
 }
 
 // ---------------------------------------------------------------------------
+// V3 剖面真 WebGPU dispatch（W1-C 九绑定：V2 六绑定 + textures/texmeta/cdf）
+// ---------------------------------------------------------------------------
+
+/// V3 一帧的 8 块输入缓冲（九绑定去掉 `out`）。
+///
+/// 只编码**一次**（`SceneAbi::encode_v3` 会做曲线三角化 + BVH 构建 + 纹理展平，
+/// 代价不低），然后交给 [`emit_frame_v3`] 建 buffer。
+struct EncodedSceneV3 {
+    /// 参数块（`PARAMS_WORDS_V3 × 4` 字节，binding 0）。
+    params: [u8; V3_PARAMS_BYTES],
+    /// 球体缓冲（binding 1，每球 48 B）。
+    spheres: Vec<u8>,
+    /// 光源缓冲（binding 2）。
+    lights: Vec<u8>,
+    /// 三角形缓冲（binding 3）。
+    tris: Vec<u8>,
+    /// 扁平 BVH 节点缓冲（binding 4）。
+    nodes: Vec<u8>,
+    /// 纹素流（`array<vec4<f32>>`，binding 5）。
+    textures: Vec<u8>,
+    /// 纹理元数据（`array<vec4<u32>>`，32 B/条，binding 6）。
+    texmeta: Vec<u8>,
+    /// 环境 CDF（`array<u32>`，binding 7）。
+    cdf: Vec<u8>,
+}
+
+impl EncodedSceneV3 {
+    /// 按 `scene_abi` 的单一真源编码一帧的全部输入缓冲。
+    ///
+    /// `encode_v3` 失败（尺寸非法 / 级数越界 / 纹素条数不符 / CDF 字节数不符 /
+    /// 纹理太多）⇒ 转为 [`SceneDispatchError::Step`]，不 panic。
+    fn encode(
+        req: &SceneRenderRequest,
+        textures: &[TextureUpload<'_>],
+        env: Option<EnvCdf<'_>>,
+    ) -> Result<Self, SceneDispatchError> {
+        let b = match SceneAbi::encode_v3(req, textures, env) {
+            Ok(b) => b,
+            // 编码侧错误（尺寸非法 / 级数越界 / 纹素条数不符 / CDF 字节数不符 /
+            // 纹理太多）在真机上表现为"驱动读到垃圾"，故 CPU 侧拦死；
+            // 转成 [`SceneDispatchError::Step`] 让调用方走统一失败路径（不 panic）。
+            Err(_) => {
+                return Err(SceneDispatchError::Step {
+                    step: "encode_v3",
+                    binding: NO_BINDING,
+                    code: 0,
+                })
+            }
+        };
+        Ok(EncodedSceneV3 {
+            params: b.params,
+            spheres: b.spheres,
+            lights: b.lights,
+            tris: b.triangles,
+            nodes: b.nodes,
+            textures: b.textures,
+            texmeta: b.texmeta,
+            cdf: b.cdf,
+        })
+    }
+}
+
+/// 竞技场的各部分地址（V3：9 输入缓冲 + 像素区，一次性取出，随后释放借用再调胶水）。
+#[derive(Debug, Clone, Copy)]
+struct ArenaAddrsV3 {
+    params_v3: u32,
+    spheres_v3: u32,
+    lights: u32,
+    tris: u32,
+    nodes: u32,
+    texels: u32,
+    texmeta: u32,
+    cdf: u32,
+    pixels: u32,
+}
+
+/// 真 WebGPU 提交一帧 V3 场景渲染（9 绑定），读回登记在该帧槽的像素区。
+///
+/// 返回的 [`SceneFrame`] 在宿主 `settle()` 之后可经 [`with_settled_pixels`] 读取。
+/// 设备未就绪 / 规模超限 / 任一步胶水失败 ⇒ `Err`，**不 panic**。
+pub(crate) fn submit_scene_frame_v3(
+    device: GpuHandle,
+    req: &SceneRenderRequest,
+    textures: &[TextureUpload<'_>],
+    env: Option<EnvCdf<'_>>,
+) -> Result<SceneFrame, SceneDispatchError> {
+    submit_frame_v3(device, req, textures, env, Owner::Test)
+}
+
+/// [`submit_scene_frame_v3`] 的实现体（`owner` 决定该帧归哪个消费者取用）。
+fn submit_frame_v3(
+    device: GpuHandle,
+    req: &SceneRenderRequest,
+    textures: &[TextureUpload<'_>],
+    env: Option<EnvCdf<'_>>,
+    owner: Owner,
+) -> Result<SceneFrame, SceneDispatchError> {
+    if !cfg!(target_arch = "wasm32") {
+        // native：`gpu::*` 全是返回 0 的桩，如实报「本目标无 GPU 路径」。
+        return Err(SceneDispatchError::NotWasmTarget);
+    }
+    // ---- 0. 规模守卫（先判再写竞技场，避免半途覆写留下不一致状态）----
+    if req.width == 0 || req.height == 0 {
+        return Err(SceneDispatchError::EmptyFrame);
+    }
+    if req.width > MAX_FRAME_W {
+        return Err(SceneDispatchError::TooLarge {
+            what: "width",
+            need: req.width,
+            cap: MAX_FRAME_W,
+        });
+    }
+    if req.height > MAX_FRAME_H {
+        return Err(SceneDispatchError::TooLarge {
+            what: "height",
+            need: req.height,
+            cap: MAX_FRAME_H,
+        });
+    }
+    if req.spheres.len() > MAX_SPHERES {
+        return Err(SceneDispatchError::TooLarge {
+            what: "spheres",
+            need: req.spheres.len() as u32,
+            cap: MAX_SPHERES as u32,
+        });
+    }
+    if req.lights.len() > MAX_LIGHTS {
+        return Err(SceneDispatchError::TooLarge {
+            what: "lights",
+            need: req.lights.len() as u32,
+            cap: MAX_LIGHTS as u32,
+        });
+    }
+    if textures.len() > MAX_V3_TEXTURES {
+        return Err(SceneDispatchError::TooLarge {
+            what: "textures",
+            need: textures.len() as u32,
+            cap: MAX_V3_TEXTURES as u32,
+        });
+    }
+    // 尺寸守卫已把 w/h 限在 32 以内，故 w*h*4 ≤ 4096，不会溢出。
+    let out_bytes = req.width * req.height * 4;
+    // ---- 1. 编码（单一真源：SceneAbi::encode_v3，本模块不写参数布局）----
+    let enc = EncodedSceneV3::encode(req, textures, env)?;
+    if enc.tris.len() > TRI_BYTES {
+        return Err(SceneDispatchError::TooLarge {
+            what: "triangles",
+            need: enc.tris.len() as u32,
+            cap: TRI_BYTES as u32,
+        });
+    }
+    if enc.nodes.len() > NODE_BYTES {
+        return Err(SceneDispatchError::TooLarge {
+            what: "nodes",
+            need: enc.nodes.len() as u32,
+            cap: NODE_BYTES as u32,
+        });
+    }
+    if enc.textures.len() > TEXEL_ARENA_BYTES {
+        return Err(SceneDispatchError::TooLarge {
+            what: "textures",
+            need: enc.textures.len() as u32,
+            cap: TEXEL_ARENA_BYTES as u32,
+        });
+    }
+    if enc.texmeta.len() > TEXMETA_ARENA_BYTES {
+        return Err(SceneDispatchError::TooLarge {
+            what: "texmeta",
+            need: enc.texmeta.len() as u32,
+            cap: TEXMETA_ARENA_BYTES as u32,
+        });
+    }
+    if enc.cdf.len() > CDF_ARENA_BYTES {
+        return Err(SceneDispatchError::TooLarge {
+            what: "cdf",
+            need: enc.cdf.len() as u32,
+            cap: CDF_ARENA_BYTES as u32,
+        });
+    }
+    // dispatch 规划（入口 / 工作组 / 工作组数 / 绑定数）——单一真源派生。
+    let plan = scene_dispatch_plan_v3(req);
+    debug_assert_eq!(plan.entry, SceneAbi::ENTRY);
+    debug_assert_eq!(plan.bindings, SceneAbi::bindings_for(SceneAbiProfile::V3).len());
+    debug_assert!(plan.wgsl_present, "scene_frame_v3.wgsl 未注册进 SHADERS 表");
+    // ---- 2. 占槽（像素区填哨兵）----
+    let slot = alloc_frame_slot(owner, req.width, req.height, out_bytes)?;
+    // ---- 3~8：建 buffer / bind group / dispatch / 登记读回 ----
+    match emit_frame_v3(device, slot, out_bytes, plan.groups, &enc) {
+        Ok(()) => Ok(SceneFrame {
+            slot,
+            width: req.width,
+            height: req.height,
+            read_len: out_bytes,
+        }),
+        Err(e) => {
+            // 任一步失败 ⇒ 该槽永不落盘，必须立刻归还，否则竞技场被慢性耗光。
+            release_frame_slot(slot);
+            Err(e)
+        }
+    }
+}
+
+/// 第 3~8 步（V3）：填竞技场 → 建 9 个 buffer → bind group → dispatch → 登记读回。
+///
+/// 与 [`emit_frame`] 拆开的原因相同：失败时由调用方**归还帧槽**。
+fn emit_frame_v3(
+    device: GpuHandle,
+    slot: usize,
+    out_bytes: u32,
+    groups: [u32; 3],
+    enc: &EncodedSceneV3,
+) -> Result<(), SceneDispatchError> {
+    // ---- 3. 填竞技场并一次取齐地址 ----
+    let addrs = ARENA.with(|a| {
+        let mut a = a.borrow_mut();
+        a.params_v3.copy_from_slice(&enc.params);
+        a.spheres_v3[..enc.spheres.len()].copy_from_slice(&enc.spheres);
+        a.lights[..enc.lights.len()].copy_from_slice(&enc.lights);
+        a.tris[..enc.tris.len()].copy_from_slice(&enc.tris);
+        a.nodes[..enc.nodes.len()].copy_from_slice(&enc.nodes);
+        a.texels[..enc.textures.len()].copy_from_slice(&enc.textures);
+        a.texmeta[..enc.texmeta.len()].copy_from_slice(&enc.texmeta);
+        a.cdf[..enc.cdf.len()].copy_from_slice(&enc.cdf);
+        ArenaAddrsV3 {
+            params_v3: addr_of(&a.params_v3),
+            spheres_v3: addr_of(&a.spheres_v3),
+            lights: addr_of(&a.lights),
+            tris: addr_of(&a.tris),
+            nodes: addr_of(&a.nodes),
+            texels: addr_of(&a.texels),
+            texmeta: addr_of(&a.texmeta),
+            cdf: addr_of(&a.cdf),
+            pixels: addr_of(&a.pixels[slot]),
+        }
+    });
+    // ---- 4. pipeline（独立缓存）+ 8 个输入 buffer + 输出 buffer ----
+    let pipeline = ensure_pipeline_v3(device)?;
+    // 顺序**严格**等于 `V3_BINDINGS`：0 params_v3 / 1 spheres_v3 / 2 lights /
+    // 3 triangles / 4 nodes / 5 textures / 6 texmeta / 7 cdf / 8 out。
+    // 前 8 个的源数据与长度逐项对应。
+    let inputs: [(u32, usize); 8] = [
+        (addrs.params_v3, enc.params.len()),
+        (addrs.spheres_v3, enc.spheres.len()),
+        (addrs.lights, enc.lights.len()),
+        (addrs.tris, enc.tris.len()),
+        (addrs.nodes, enc.nodes.len()),
+        (addrs.texels, enc.textures.len()),
+        (addrs.texmeta, enc.texmeta.len()),
+        (addrs.cdf, enc.cdf.len()),
+    ];
+    let mut bufs = [0u32; HANDLE_CAP];
+    for (i, &(ptr, len)) in inputs.iter().enumerate() {
+        let size = buf_size(len);
+        let h = gpu::create_buffer(device, size, usage::STORAGE);
+        if h == 0 {
+            return Err(SceneDispatchError::step("create_buffer", i as u32));
+        }
+        // 空输入不写（WebGPU 的 buffer 创建即零初始化，且 shader 只在计数 > 0 时读取）。
+        if len > 0 && gpu::write_buffer(device, h, ptr, len as u32) == 0 {
+            return Err(SceneDispatchError::step("write_buffer", i as u32));
+        }
+        bufs[i] = h;
+    }
+    let out_idx = inputs.len() as u32; // = 8，= `SceneAbiProfile::V3::out_binding()`
+    debug_assert_eq!(out_idx, SceneAbiProfile::V3.out_binding());
+    let out = gpu::create_buffer(device, out_bytes, usage::STORAGE);
+    if out == 0 {
+        return Err(SceneDispatchError::step("create_buffer", out_idx));
+    }
+    bufs[out_idx as usize] = out;
+    // ---- 6. bind group（9 entries，第 i 个句柄 → binding: i）----
+    let n_bound = SceneAbi::bindings_for(SceneAbiProfile::V3).len();
+    let bufs_ptr = ARENA.with(|a| {
+        let mut a = a.borrow_mut();
+        a.handles[..n_bound].copy_from_slice(&bufs[..n_bound]);
+        // 句柄数组的线性内存地址：胶水按 `n × 4` 字节、每 4 字节一个 u32 读取。
+        a.handles.as_ptr() as usize as u32
+    });
+    // 全部 9 个绑定都在 `@group(0)`（见 scene_frame_v3.wgsl 的 `@group(0) @binding(k)`）。
+    let bind_group = gpu::create_bind_group(device, pipeline, 0, bufs_ptr, n_bound as u32);
+    if bind_group == 0 {
+        return Err(SceneDispatchError::step("create_bind_group", NO_BINDING));
+    }
+    // ---- 7. dispatch（工作组数取 scene_dispatch_plan_v3 的 groups）----
+    let bgs_ptr = ARENA.with(|a| {
+        let mut a = a.borrow_mut();
+        a.bgs[0] = bind_group;
+        a.bgs.as_ptr() as usize as u32
+    });
+    if gpu::dispatch(device, pipeline, bgs_ptr, 1, groups[0], groups[1], groups[2]) == 0 {
+        return Err(SceneDispatchError::step("dispatch", NO_BINDING));
+    }
+    note_err_scope(); // 宿主每次 dispatch 前 push 一个 validation error scope
+    if gpu::wait_idle(device) == 0 {
+        return Err(SceneDispatchError::step("wait_idle", NO_BINDING));
+    }
+    // ---- 8. 读回：out → 暂存 → 竞技场像素区（真正落盘发生在宿主 settle()）----
+    let staging = gpu::read_buffer(device, out, out_bytes);
+    if staging == 0 {
+        return Err(SceneDispatchError::step("read_buffer", out_idx));
+    }
+    if gpu::copy_out(staging, addrs.pixels, out_bytes) == 0 {
+        return Err(SceneDispatchError::step("copy_out", out_idx));
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // 单元测试（native：不碰 GPU，只验竞技场状态机与尺寸派生）
 // ---------------------------------------------------------------------------
 
@@ -890,6 +1275,28 @@ mod tests {
     fn dispatch_scene_frame_on_native_never_panics() {
         reset();
         assert!(dispatch_scene_frame(0, &small_request()).is_err());
+    }
+
+    /// V3 九绑定 dispatch 在 native 下同样如实报 `NotWasmTarget`（不 panic、不伪绿），
+    /// 且无纹理集时也必须走同一分支。
+    #[test]
+    fn submit_scene_frame_v3_on_native_reports_not_wasm_target() {
+        reset();
+        let err = submit_scene_frame_v3(0, &small_request(), &[], None).unwrap_err();
+        assert_eq!(err, SceneDispatchError::NotWasmTarget);
+        assert!(format!("{err}").contains("wasm"));
+        // 带一张纹理也必须同样如实失败（纹理路径不改变「native 无 GPU」的判定）。
+        let tex = TextureUpload {
+            w: 2,
+            h: 2,
+            levels: 1,
+            fmt: 1,
+            srgb: 0,
+            texels: &[[0.5f32; 4]; 4],
+        };
+        let err2 =
+            submit_scene_frame_v3(0, &small_request(), &[tex], None).unwrap_err();
+        assert_eq!(err2, SceneDispatchError::NotWasmTarget);
     }
 
     /// 哨兵判定：只有「整段都是哨兵」才算未落盘，且空切片不算。

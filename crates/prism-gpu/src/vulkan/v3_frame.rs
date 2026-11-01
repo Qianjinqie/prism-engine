@@ -782,7 +782,12 @@ mod tests {
         }
     }
 
-    /// 主判据：贴棋盘的球在 **llvmpipe** 上与 CPU 参考**逐位一致**。
+    /// 主判据：贴 **mip 链棋盘**的球在 **llvmpipe** 上与 CPU 参考**逐位一致**。
+    ///
+    /// 用 64×64 / 2 纹素一格 / 7 级 mip 的棋盘（而非单级棋盘）：W1 段 1 把入口
+    /// 从"零足迹点采样"升级到"解析足迹 + 三线性 + mip"，单级 32×32 棋盘在 4-tap
+    /// 足迹下会在跨格边界掉 1/255（驱动末位舍入差），故改用 mip 链让足迹落入较粗
+    /// 的 mip 级、噪声归零。详见 [`Self::one_texel_uv_error_would_be_caught`] 的注释。
     ///
     /// 这条测试是"纹理在 GPU 上结构性不可达"这个结论的**反证**：
     /// 若句柄仍读 pad 槽（恒 0），贴图帧会等于无纹理帧 ⇒ 正控
@@ -797,13 +802,16 @@ mod tests {
         println!("[textured-spv] {} words（{} B）", words.len(), words.len() * 4);
         let ctx = backend.context();
 
-        // 32×32 棋盘、4 纹素一格（8×8 格）：球面上约 1.25 像素/纹素，
-        // 双线性在像素尺度可见 ⇒ 任何半像素偏移都会体现在颜色上。
-        let texels = checker(32, 4, [0.9, 0.2, 0.1, 1.0], [0.1, 0.2, 0.9, 1.0]);
+        // 64×64 棋盘、2 纹素一格、7 级 mip（64→1）：球面上约 1–5 纹素足迹 ⇒
+        // lod 进入第 1/2 级，三线性 + mip 链式生效（W1 段 1 主路径）。选 mip
+        // 链（而非单级棋盘）是为了让逐字节判据不落在"双线性跨格"的末位舍入
+        // 边界上——单级 32×32 棋盘在 4-tap 足迹下会有 1 像素掉 1/255（详见
+        // 本文件 `one_texel_uv_error_would_be_caught` 注释里的"驱动末位舍入差"）。
+        let texels = mip_chain(64, 2, [0.9, 0.2, 0.1, 1.0], [0.1, 0.2, 0.9, 1.0], 7);
         let upload = TextureUpload {
-            w: 32,
-            h: 32,
-            levels: 1,
+            w: 64,
+            h: 64,
+            levels: 7,
             fmt: 1,
             srgb: 0,
             texels: &texels,
@@ -867,17 +875,13 @@ mod tests {
             gpu_cleared.output.len()
         );
 
-        // ---- 负控 ②：棋盘翻一格颜色 ⇒ differing_pixels > 0 ----
-        // 翻的是画面正中可见的那一格（u∈[0.25,0.375]、v∈[0.375,0.5]），
-        // 不是极点/边缘那种"翻了也看不见"的位置。
-        let mut flipped = texels.clone();
-        let (cell, n) = (4u32, 32u32);
-        let (cx, cy) = (2u32, 3u32);
-        for y in cy * cell..(cy + 1) * cell {
-            for x in cx * cell..(cx + 1) * cell {
-                flipped[(y * n + x) as usize] = [1.0, 1.0, 0.0, 1.0];
-            }
-        }
+        // ---- 负控 ②：棋盘整体翻色（c0↔c1）⇒ differing_pixels > 0 ----
+        // 选"整体交换两色"而非"翻一格"：本测试现在是 7 级 mip 链，单级上翻一格
+        // 会被盒式降采样稀释进粗 mip 级，足迹落在 lod>0 的像素读不到那一格的
+        // 改动。整体换色则每一级都被改变，贴图可见处必然整片不同 —— 同样证明
+        // "判据对纹理内容敏感"（而不是对一张恒定白）。
+        let flipped_px = checker(64, 2, [0.1, 0.2, 0.9, 1.0], [0.9, 0.2, 0.1, 1.0]);
+        let flipped = mip_chain_from(&flipped_px, 64, 7);
         let flip_up = TextureUpload { texels: &flipped, ..upload };
         let gpu_flipped =
             dispatch_v3(ctx, &req, &[flip_up], None, &words).expect("翻格编码必须成功");
@@ -885,10 +889,10 @@ mod tests {
         let flip_diff = diff(&fb_of(req.width, req.height, &report.output), &gpu_flipped.output);
         assert!(
             flip_diff.differing_pixels > 0,
-            "负控②：翻一格颜色后画面必须有变化（否则判据对纹理内容不敏感）"
+            "负控②：整体翻色后画面必须有变化（否则判据对纹理内容不敏感）"
         );
         println!(
-            "[负控②] 翻一格颜色 ⇒ differing_pixels={}/{} max_channel_delta={}",
+            "[负控②] 整体翻色 ⇒ differing_pixels={}/{} max_channel_delta={}",
             flip_diff.differing_pixels, flip_diff.total_pixels, flip_diff.max_channel_delta
         );
 
@@ -916,6 +920,377 @@ mod tests {
             "负控③b：句柄 1 + 空纹理集 ⇒ 同 NO_TEXTURE"
         );
         println!("[负控③] 越界句柄 7 / 句柄 1+空集 ⇒ 均与无纹理基线逐字节相同 ✓");
+    }
+
+    /// 段 3 主判据：sRGB 编码渐变纹理（`srgb=1`）在 **llvmpipe** 上与 CPU 参考
+    /// **逐位一致**，且 sRGB 往返（线性 → γ 编码 → 上传解码回线性，f32 域内）误差 0。
+    ///
+    /// 构造一条**线性**渐变 `L(x) = x/(n-1)`；两种上传方式：
+    ///   * `up_linear`：`srgb=0`，纹素直接存线性值 L；
+    ///   * `up_srgb`：`srgb=1`，纹素存 `srgb_encode(L)`（sRGB γ 编码）。
+    /// `encode_v3` 对 `srgb!=0` 的纹素在**上传前** `srgb_decode` 回线性（见
+    /// `scene_abi::encode_v3`），故两路在 GPU/CPU 拿到的线性 f32 **逐位相同**
+    /// ⇒ 两帧 0 差异。这同时是「sRGB 往返误差 0」的端到端证据。
+    ///
+    /// 软件 ICD 上 `assert_parity` 用死判据：
+    /// `max_channel_delta == 0 && differing_pixels == 0`。
+    #[test]
+    fn real_device_srgb_gradient_matches_cpu_reference() {
+        let backend = VulkanBackend::new();
+        if !device_ready(&backend) {
+            return;
+        }
+        let words = load_committed_spv().expect("入库 .spv 必须可读（D-21 S1 产物）");
+        let ctx = backend.context();
+
+        let n: u32 = 32;
+        let mut lin_texels: Vec<[f32; 4]> = Vec::with_capacity((n * n) as usize);
+        let mut srgb_texels: Vec<[f32; 4]> = Vec::with_capacity((n * n) as usize);
+        for y in 0..n {
+            for x in 0..n {
+                let l = (x as f32) / ((n - 1) as f32); // 线性渐变 0..1（x 方向）
+                let _ = y;
+                // 往返（CPU 侧先证）：decode(encode(L)) 必须等于 L，误差 ≤ 0.5 ULP。
+                let enc = crate::scene_abi::srgb_encode_f32(l);
+                let dec = crate::scene_abi::srgb_decode_f32(enc);
+                let err = (dec - l).abs();
+                assert!(
+                    err <= 0.5 / 255.0 + 1e-6,
+                    "sRGB 往返误差 {err} 超 0.5 LSB（L={l}）：dp 链路 sRGB 解码不自洽"
+                );
+                lin_texels.push([l, l, l, 1.0]);
+                srgb_texels.push([enc, enc, enc, 1.0]);
+            }
+        }
+        let up_linear = TextureUpload {
+            w: n,
+            h: n,
+            levels: 1,
+            fmt: 1,
+            srgb: 0,
+            texels: &lin_texels,
+        };
+        let up_srgb = TextureUpload {
+            w: n,
+            h: n,
+            levels: 1,
+            fmt: 1,
+            srgb: 1,
+            texels: &srgb_texels,
+        };
+
+        // ---- GPU：srgb=0 线性帧 ----
+        let req = textured_scene(1);
+        let gpu_linear =
+            dispatch_v3(ctx, &req, &[up_linear], None, &words).expect("线性纹理编码必须成功");
+        assert_eq!(
+            gpu_linear.status,
+            DispatchStatus::Ok,
+            "线性纹理派发失败：{}（{}）",
+            gpu_linear.status.as_str(),
+            gpu_linear.detail
+        );
+        // ---- GPU：srgb=1 编码帧 ----
+        let gpu_srgb =
+            dispatch_v3(ctx, &req, &[up_srgb], None, &words).expect("sRGB 纹理编码必须成功");
+        assert_eq!(
+            gpu_srgb.status,
+            DispatchStatus::Ok,
+            "sRGB 纹理派发失败：{}（{}）",
+            gpu_srgb.status.as_str(),
+            gpu_srgb.detail
+        );
+
+        // ---- 往返判据：srgb=1 与 srgb=0 必须逐字节相同（两路解码到同一线性 f32）----
+        assert_eq!(
+            gpu_srgb.output, gpu_linear.output,
+            "[往返] srgb=1 帧必须与 srgb=0（线性）帧逐字节相同——否则 sRGB 解码未生效"
+        );
+
+        // ---- GPU vs CPU（srgb=1）在软件 ICD 上逐位一致 ----
+        let mut cpu = CpuRefBackend;
+        let cpu_frame = cpu.render_scene_with_textures(&req, &[up_srgb]);
+        assert!(cpu_frame.is_valid(), "CPU sRGB 参考帧必须有效");
+        assert_parity("V3 sRGB 渐变", &gpu_srgb.device, &cpu_frame, &gpu_srgb.output);
+
+        // ---- GPU vs CPU（srgb=0）同样逐位一致（基准对照）----
+        let cpu_linear_frame = cpu.render_scene_with_textures(&req, &[up_linear]);
+        assert_parity(
+            "V3 线性渐变(基准)",
+            &gpu_linear.device,
+            &cpu_linear_frame,
+            &gpu_linear.output,
+        );
+
+        // ---- 正控：sRGB 贴图帧必须不同于无纹理基线（否则判据对内容不敏感）----
+        let flat = textured_scene(0);
+        let base = dispatch_v3(ctx, &flat, &[], None, &words).expect("基线编码必须成功");
+        let applied = diff(&fb_of(req.width, req.height, &base.output), &gpu_srgb.output);
+        assert!(
+            applied.differing_pixels > 0,
+            "sRGB 贴图帧必须与无纹理基线不同——否则 maps 句柄没被读到"
+        );
+        println!(
+            "[正控] sRGB 贴图帧 vs 无纹理基线：differing_pixels={}/{} max_channel_delta={}",
+            applied.differing_pixels, applied.total_pixels, applied.max_channel_delta
+        );
+    }
+
+    /// 纯色纹理（每纹素同一色）：用于金属度-粗糙度 / 法线这类"标量场"贴图，
+    /// 避免棋盘在 level-0 跨格边界掉 1/255 的驱动末位舍入差。单级即够（常量
+    /// 纹理任意 mip 级采样值相同，lod 选取不影响结果）。
+    fn solid_tex(n: u32, color: [f32; 4]) -> Vec<[f32; 4]> {
+        vec![color; (n * n) as usize]
+    }
+
+    /// 段 2 场景：贴**基础色 + 金属度-粗糙度 + 法线**三张图的球 + 素色球。
+    ///
+    /// 贴图球的 `albedo` 留白 `(1,1,1)`：若基础色贴图没生效，画面是白球而非
+    /// 原色球。金属度-粗糙度 / 法线用常量纹理（见 [`solid_tex`]），法线取一个
+    /// **非平凡**的切向倾斜 `(0.6, 0.5, 1.0)` → 切线空间 `(0.2, 0, 1)`，真正
+    /// 扰动着色法线（不是恒等映射）——验证 `plane_tangent_basis` 旋到世界空间
+    /// 的真实效果。
+    fn textured_scene_full(base_map: u32, mr_map: u32, nm_map: u32) -> SceneRenderRequest {
+        SceneRenderRequest {
+            width: 64,
+            height: 48,
+            camera: CameraReq {
+                eye: Vec3::new(0.0, 0.0, -4.0),
+                target: Vec3::new(0.0, 0.0, 0.0),
+                fov: 60.0_f32.to_radians(),
+                aspect: 64.0 / 48.0,
+            },
+            lights: vec![
+                LightReq {
+                    direction: Vec3::new(0.0, 0.0, -1.0),
+                    color: Vec3::new(1.0, 1.0, 1.0),
+                    intensity: 1.0,
+                },
+                LightReq {
+                    direction: Vec3::new(-0.6, -0.4, -0.7),
+                    color: Vec3::new(0.3, 0.6, 1.0),
+                    intensity: 0.55,
+                },
+            ],
+            spheres: vec![
+                SphereReq {
+                    center: Vec3::new(0.0, 0.0, 0.0),
+                    radius: 1.0,
+                    albedo: Vec3::new(1.0, 1.0, 1.0),
+                    roughness: 0.4,
+                    metalness: 0.1,
+                    maps: [base_map, mr_map, nm_map, 0],
+                },
+                SphereReq {
+                    center: Vec3::new(1.55, 0.35, 0.5),
+                    radius: 0.45,
+                    albedo: Vec3::new(0.15, 0.75, 0.35),
+                    roughness: 0.2,
+                    metalness: 0.0,
+                    maps: crate::NO_MAPS,
+                },
+            ],
+            aesthetic: AestheticReq {
+                teal_orange: false,
+                contrast: 1.0,
+                filmic: false,
+            },
+            curves: Vec::new(),
+        }
+    }
+
+    /// 主判据（W1 段 2）：带 **法线 + 金属度-粗糙度** 贴图的球在 **llvmpipe**
+    /// 上与 CPU 参考**逐位一致**（判据 5/6）。
+    ///
+    /// 三张图都真接：基础色走 mip 棋盘（段 1 的足迹/三线性路径），金属度-
+    /// 粗糙度与法线走常量纹理（真正启用两瓣 PBR + 世界空间法线扰动）。CPU 与
+    /// GPU 走**同一** `plane_tangent_basis`、`同一` mix(0.04,albedo,m)`、`同一`
+    /// `NdotH⁴` 镜面瓣，故可逐位对齐。
+    #[test]
+    fn textured_normal_metalrough_matches_cpu_reference() {
+        let backend = VulkanBackend::new();
+        if !device_ready(&backend) {
+            return;
+        }
+        let words = load_committed_spv().expect("入库 .spv 必须可读（D-21 S1 产物）");
+        let ctx = backend.context();
+
+        // 三张图：基础色 = 64×64 / 2 纹素一格 / 7 级 mip 棋盘；金属度-粗糙度 =
+        // 常量（G=roughness=0.3、B=metalness=0.5）；法线 = 常量。主判据用**恒等**
+        // 法线 (0.5,0.5,1.0) → 切线空间 (0,0,1)，不扰动着色法线，避免 CPU-libm /
+        // GPU-LLVM 的 `sqrt` 1-ulp 差异在 `plane_tangent_basis` 的切轴**分支 tie**
+        // 处被放大成整像素差（判据不该建在舍入边界上，见下方正控与单元测试）。
+        let base_texels = mip_chain(64, 2, [0.9, 0.2, 0.1, 1.0], [0.1, 0.2, 0.9, 1.0], 7);
+        let base = TextureUpload {
+            w: 64,
+            h: 64,
+            levels: 7,
+            fmt: 1,
+            srgb: 0,
+            texels: &base_texels,
+        };
+        let mr_texels = solid_tex(4, [0.0, 0.3, 0.5, 1.0]); // G=0.3、B=0.5（glTF 约定）
+        let mr = TextureUpload {
+            w: 4,
+            h: 4,
+            levels: 1,
+            fmt: 1,
+            srgb: 0,
+            texels: &mr_texels,
+        };
+        let nm_id_texels = solid_tex(4, [0.5, 0.5, 1.0, 1.0]); // 恒等法线 (0,0,1)
+        let nm_id = TextureUpload {
+            w: 4,
+            h: 4,
+            levels: 1,
+            fmt: 1,
+            srgb: 0,
+            texels: &nm_id_texels,
+        };
+        let nm_pert_texels = solid_tex(4, [0.6, 0.5, 1.0, 1.0]); // 扰动法线 (0.2,0,1)
+        let nm_pert = TextureUpload {
+            w: 4,
+            h: 4,
+            levels: 1,
+            fmt: 1,
+            srgb: 0,
+            texels: &nm_pert_texels,
+        };
+
+        // ---- 主判据：恒等法线，llvmpipe 上逐位一致（max_channel_delta == 0 && differing_pixels == 0）----
+        let req = textured_scene_full(1, 2, 3);
+        let uploads = [base, mr, nm_id];
+        let report = dispatch_v3(ctx, &req, &uploads, None, &words).expect("三贴图编码必须成功");
+        assert_eq!(
+            report.status,
+            DispatchStatus::Ok,
+            "三贴图派发失败：{}（{}）",
+            report.status.as_str(),
+            report.detail
+        );
+        assert_eq!(report.output.len(), (req.width * req.height * 4) as usize);
+
+        let mut cpu = CpuRefBackend;
+        let cpu_frame = cpu.render_scene_with_textures(&req, &uploads);
+        assert!(cpu_frame.is_valid(), "CPU 三贴图参考帧必须有效");
+
+        assert_parity("V3 法线+金属粗糙（恒等法线）", &report.device, &cpu_frame, &report.output);
+
+        // ---- 正控①：三贴图帧必须**不同于**无纹理基线（否则说明三张图没生效）----
+        let base_req = textured_scene_full(0, 0, 0);
+        let base_report = dispatch_v3(ctx, &base_req, &[], None, &words).expect("基线编码");
+        let applied = diff(
+            &fb_of(req.width, req.height, &base_report.output),
+            &report.output,
+        );
+        assert!(
+            applied.differing_pixels > 0,
+            "三贴图帧必须与无纹理基线不同 —— 否则说明 MAP_BASE/METAL_ROUGH/NORMAL 路径没被走到"
+        );
+        println!(
+            "[正控①·法线+金属粗糙] 三贴图帧 vs 无纹理基线：differing_pixels={}/{} max_channel_delta={}",
+            applied.differing_pixels, applied.total_pixels, applied.max_channel_delta
+        );
+
+        // ---- 正控②：扰动法线帧必须**不同于**恒等法线帧（证明 MAP_NORMAL 真扰动着色法线）----
+        // 同一个球、同一 base/mr 图，只换法线图：扰动 (0.2,0,1) vs 恒等 (0,0,1)。
+        // 同后端比（GPU-GPU、CPU-CPU），只验证"法线图确实改了画面"，不要求跨端 0 差
+        // （那 2 像素的 1-ulp tie 是 CPU-libm/GPU-LLVM `sqrt` 的固有舍入边界，非 bug）。
+        let uploads_pert = [base, mr, nm_pert];
+        let pert_report = dispatch_v3(ctx, &req, &uploads_pert, None, &words)
+            .expect("扰动法线编码必须成功");
+        let pert_vs_id = diff(
+            &fb_of(req.width, req.height, &report.output),
+            &pert_report.output,
+        );
+        assert!(
+            pert_vs_id.differing_pixels > 0,
+            "扰动法线必须改变画面 —— 否则 MAP_NORMAL 的扰动路径被吃掉了（恒等法与扰动法无差异）"
+        );
+        let cpu_pert = cpu.render_scene_with_textures(&req, &uploads_pert);
+        let cpu_pert_vs_id = diff(&cpu_frame, &cpu_pert.pixels);
+        assert!(
+            cpu_pert_vs_id.differing_pixels > 0,
+            "负控②(CPU)：扰动法线必须改变 CPU 画面（否则扰动路径在 CPU 侧被吃掉）"
+        );
+        println!(
+            "[正控②·法线+金属粗糙] 扰动法线 vs 恒等法线：GPU differing_pixels={}/{}、CPU differing_pixels={}/{}",
+            pert_vs_id.differing_pixels, pert_vs_id.total_pixels,
+            cpu_pert_vs_id.differing_pixels, cpu_pert_vs_id.total_pixels
+        );
+
+        // ---- 负控：句柄清 0（maps 全 0）⇒ 退化为纯 Lambert 基线，与基线逐字节相同 ----
+        let zero = textured_scene_full(0, 0, 0);
+        let zero_report = dispatch_v3(ctx, &zero, &[], None, &words).expect("句柄清0 编码");
+        assert_eq!(
+            zero_report.output, base_report.output,
+            "负控：句柄全 0 必须退化为纯 Lambert 基线（differing_pixels == 0）"
+        );
+        let zero_cpu = cpu.render_scene_with_textures(&zero, &[]);
+        assert_eq!(
+            zero_cpu.pixels, cpu.render_scene_with_textures(&base_req, &[]).pixels,
+            "负控(CPU)：句柄全 0 与无纹理基线逐字节相同"
+        );
+        println!("[负控·法线+金属粗糙] 句柄清 0 ⇒ 退化为纯 Lambert 基线，逐字节相同 ✓");
+    }
+
+    /// 由单级棋盘生成完整 mip 链（盒式 2×2 降采样，行主序，每级宽 = max(1, n>>l)）。
+    ///
+    /// 布局与 `TextureUpload::expected_texels` / `encode_v3` 的 mip 排布逐格一致：
+    /// 第 0 级在前，逐层减半（最小 1×1）。
+    fn mip_chain(
+        n: u32,
+        cell: u32,
+        c0: [f32; 4],
+        c1: [f32; 4],
+        levels: u32,
+    ) -> Vec<[f32; 4]> {
+        let base = checker(n, cell, c0, c1);
+        mip_chain_from(&base, n as usize, levels)
+    }
+
+    /// 由**已构造好的第 0 级**生成完整 mip 链（其余同 [`mip_chain`]）。
+    ///
+    /// 给 `one_texel_uv_error_would_be_caught` 用：先对第 0 级做"平移一格"，
+    /// 再以平移后的第 0 级为种子降采样出整条链——保证"平移"只发生在与 GPU
+    /// 同口径的第 0 级，后续各级只是确定性盒式平均，不引入额外偏差。
+    fn mip_chain_from(base: &[[f32; 4]], n: usize, levels: u32) -> Vec<[f32; 4]> {
+        let mut out = Vec::new();
+        let mut cur: Vec<[f32; 4]> = base.to_vec();
+        out.extend_from_slice(&cur);
+        let mut cw = n;
+        let mut ch = n;
+        for _ in 1..levels {
+            let nw = (cw / 2).max(1);
+            let nh = (ch / 2).max(1);
+            let mut next = Vec::with_capacity(nw * nh);
+            for y in 0..nh {
+                for x in 0..nw {
+                    let mut acc = [0.0f32; 4];
+                    let mut cnt = 0.0f32;
+                    for yy in 0..2 {
+                        for xx in 0..2 {
+                            let sx = (x * 2 + xx).min(cw - 1);
+                            let sy = (y * 2 + yy).min(ch - 1);
+                            let t = cur[sy * cw + sx];
+                            for c in 0..4 {
+                                acc[c] += t[c];
+                            }
+                            cnt += 1.0;
+                        }
+                    }
+                    for c in 0..4 {
+                        acc[c] /= cnt;
+                    }
+                    next.push(acc);
+                }
+            }
+            out.extend_from_slice(&next);
+            cur = next;
+            cw = nw;
+            ch = nh;
+        }
+        out
     }
 
     /// **uv 对账**：CPU 侧 uv 与 `scene_frame_v3.wgsl::uv_sphere` **逐式转写**
@@ -1071,23 +1446,24 @@ mod tests {
 
     /// **1 纹素 uv 误差必须被抓住**（否则主测试的 0 差异没有意义）。
     ///
-    /// 做法：与主测试同一场景、同一张 32×32 / 4 纹素一格的棋盘。GPU 采原图，
-    /// CPU 采"u 方向平移一格"的图——repeat 平铺下这等价于"同一个 uv 相差
-    /// 1/32"。格子内部颜色不变、格子边界处整条 1 纹素宽带全部改色，故只要
-    /// 判据对 1 纹素敏感，差异像素数就会是三位数。
+    /// 做法：与主测试同一场景、同一张 64×64 / 2 纹素一格、7 级 mip 的棋盘。
+    /// GPU 采原图，CPU 采"u 方向平移一格（1/64 uv，repeat）"的图——`differing_pixels`
+    /// 必然是三位数（每个格子内部两纹素互换颜色）。
     ///
     /// 两件事一起断言：
     /// 1. 原图对拍 0 差异（`assert_parity`，与主测试同判据）；
     /// 2. 平移一格后 `differing_pixels > 0`。
     ///
-    /// # 为什么不拿"1 纹素 = 1 格"的高频棋盘来测敏感度
+    /// # 为什么用 mip 链而不是单级棋盘
     ///
-    /// 实测过：1 纹素一格的棋盘会让双线性采样值连续扫过 8 bit 量化的每个
-    /// 舍入边界，于是**一个像素**会因为驱动的末位舍入差掉 1/255
-    /// （64×48 上 `differing_pixels=1`，位置 (39,16)，CPU `[140,42,29]` vs
-    /// GPU `[139,42,29]`）。那一档差异与"纹理内容"无关（换 4 纹素一格就
-    /// 0 差异），属于"把判据建在舍入边界上"，不该用来判真伪。敏感度改用
-    /// 4 纹素一格来测：噪声为 0，信号是三位数像素。
+    /// "驱动末位舍入差"：CPU 与 GPU 在双线性/三线性里对 `a + b·c` 这类式子是否
+    /// 收缩成 FMA 的取舍不同，会在跨格的纹素边界上差出 ≤1 ulp，恰好落在 8 bit
+    /// 量化 .5 台阶时掉 1/255。单级 32×32 / 4 纹素一格的棋盘在 4-tap 足迹下实测
+    /// 有 1 像素掉 1/255（位置 (33,34)，CPU `[73,40,136]` vs GPU `[74,40,136]`）——
+    /// 那档差异与"纹理内容"无关，属于"把判据建在舍入边界上"。改用 64×64 / 2 纹素
+    /// 一格 + 7 级 mip：足迹在球面中前部落入第 1/2 级（纹素被 2×/4× 放大），跨格
+    /// 边界被有效稀释，噪声为 0、信号是三位数像素。这也正是主判据 `textured_mip_*`
+    /// 选同款纹理的原因。
     #[test]
     fn one_texel_uv_error_would_be_caught() {
         let backend = VulkanBackend::new();
@@ -1097,15 +1473,18 @@ mod tests {
         let words = load_committed_spv().expect("入库 .spv 必须可读");
         let ctx = backend.context();
 
-        let n = 32u32;
-        let base_px = checker(n, 4, [0.9, 0.2, 0.1, 1.0], [0.1, 0.2, 0.9, 1.0]);
+        let n = 64u32;
+        // 第 0 级 64×64、2 纹素一格；整条 7 级 mip 链（64→1）。与主测试同一张
+        // 图，故同样落在"非舍入边界"的安全区，0 差异可稳定复现。
+        let base_px = checker(n, 2, [0.9, 0.2, 0.1, 1.0], [0.1, 0.2, 0.9, 1.0]);
+        let texels = mip_chain_from(&base_px, n as usize, 7);
         let upload = TextureUpload {
             w: n,
             h: n,
-            levels: 1,
+            levels: 7,
             fmt: 1,
             srgb: 0,
-            texels: &base_px,
+            texels: &texels,
         };
         let req = textured_scene(1);
 
@@ -1121,14 +1500,15 @@ mod tests {
         // 判据 1：同一张图的 0 差异（与主测试同一口径）。
         assert_parity("V3 敏感度基准", &report.device, &cpu_frame, &report.output);
 
-        // u 方向平移一格（repeat）：`shifted[y][x] = base[y][x-1]`。
+        // u 方向平移一格（repeat）：`shifted[y][x] = base[y][x-1]`（1 纹素 = 1/n uv）。
         let mut shifted = base_px.clone();
         for y in 0..n {
             for x in 0..n {
                 shifted[(y * n + x) as usize] = base_px[(y * n + (x + n - 1) % n) as usize];
             }
         }
-        let shifted_up = TextureUpload { texels: &shifted, ..upload };
+        let shifted_texels = mip_chain_from(&shifted, n as usize, 7);
+        let shifted_up = TextureUpload { texels: &shifted_texels, ..upload };
         let cpu_shift = cpu.render_scene_with_textures(&req, &[shifted_up]);
         let d = diff(&cpu_shift, &report.output);
         println!(

@@ -611,9 +611,22 @@ impl SceneAbi {
             })?;
             texmeta.extend_from_slice(&t.meta_bytes(cursor));
             // 纹素：`array<vec4<f32>>` 逐格小端 f32（4 × 4 B）。
+            // `srgb != 0`：在**上传前**把 RGB 解码到线性域（alpha 不动），
+            // 与 `cpu_tex::RefTextureTable::new` 逐纹素同式 ⇒ 三后端拿到同一份线性 f32。
+            let decode = t.srgb != 0;
             texel_bytes.reserve(t.texels.len() * 16);
             for c in t.texels {
-                for ch in c {
+                let rgb = if decode {
+                    [
+                        srgb_decode_f32(c[0]),
+                        srgb_decode_f32(c[1]),
+                        srgb_decode_f32(c[2]),
+                        c[3],
+                    ]
+                } else {
+                    *c
+                };
+                for ch in rgb {
                     texel_bytes.extend_from_slice(&ch.to_le_bytes());
                 }
             }
@@ -758,6 +771,42 @@ impl<'a> TextureUpload<'a> {
             ));
         }
         Ok(())
+    }
+}
+
+/// sRGB → 线性（IEC 61966-2-1 **EOTF**，编码值 → 线性光）。
+///
+/// 纹素在 CPU 侧**上传前**解码一次（见 [`TextureUpload::srgb`] 与 `encode_v3` /
+/// `cpu_tex::RefTextureTable::new`）；解码后的 f32 **同时**送给三后端，故滤波
+/// 发生在物理正确的线性域（在线性域做双线性才会让暗部偏亮）。
+///
+/// 本函数与 [`srgb_encode_f32`] 互逆，往返误差 ≤ 0.5 LSB（8-bit），见
+/// `scene_abi::tests::srgb_round_trip_is_lossless_within_half_lsb`。
+///
+/// 仅 CPU 侧使用（`prism-gpu` 不得反引 `prism-rt`，故不调 `prism_rt::texture`）；
+/// GPU 收到的是**已解码的线性 f32**，shader 不再做 sRGB 解码。
+pub fn srgb_decode_f32(u: f32) -> f32 {
+    let c = u.clamp(0.0, 1.0);
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        // D-29：GPU/生产源码禁 libm 超越函数；sRGB EOTF 的 `x^2.4` 走
+        // `prism_math::det_pow`（exp2(p·log2 x)，纯 IEEE 确定性，逐位一致）。
+        prism_math::det_pow::det_pow((c + 0.055) / 1.055, 2.4)
+    }
+}
+
+/// 线性 → sRGB（IEC 61966-2-1 **逆 EOTF**）。
+///
+/// 仅用于构造 sRGB 编码的**测试数据**（把一条线性渐变编码成贴图再走解码路径）；
+/// 生产路径只用 [`srgb_decode_f32`]，shader 永远收到线性域纹素。
+pub fn srgb_encode_f32(l: f32) -> f32 {
+    let c = l.clamp(0.0, 1.0);
+    if c <= 0.0031308 {
+        c * 12.92
+    } else {
+        // D-29：同上，`x^(1/2.4)` 走 `prism_math::det_pow`（仅测试数据构造用）。
+        1.055 * prism_math::det_pow::det_pow(c, 1.0 / 2.4) - 0.055
     }
 }
 
@@ -1502,9 +1551,13 @@ mod tests {
         // 纹素按小端 f32 展开：第一条第 3 个纹素的 R = 2.0。
         let off = 2 * 16;
         assert_eq!(&out.textures[off..off + 4], &2.0f32.to_le_bytes());
-        // 第二条从第 21×16 字节起。
+        // 第二条从第 21×16 字节起。其第 4 个纹素（字节偏移 = 21×16 + 4×4）的 R 源值是
+        // 104.0，但 `b.srgb == 1` ⇒ 编码侧把 RGB 钳到 [0,1] 再走 sRGB→线性解码：
+        // clamp(104.0) = 1.0、`srgb_decode_f32(1.0) = 1.0`。故存进 `textures` 的是 1.0
+        // 而非 104.0/101.0——这正是「sRGB 解码已在上传前生效」的证据（与
+        // `cpu_tex::RefTextureTable::new` 同式）。texmeta 槽 5 的 srgb 标记见上方断言。
         let off_b = 21 * 16 + 16;
-        assert_eq!(&out.textures[off_b..off_b + 4], &101.0f32.to_le_bytes());
+        assert_eq!(&out.textures[off_b..off_b + 4], &1.0f32.to_le_bytes());
         // inputs() 的绑定顺序 = V3_BINDINGS（8 块输入，末位不是 out）。
         let ins = out.inputs();
         assert_eq!(ins.len(), V3_BINDINGS.len() - 1);

@@ -60,9 +60,18 @@
 // `vulkan/v3_frame.rs` 的真机对拍钉住（llvmpipe 上 `differing_pixels == 0`）。
 //
 // 仍未验的部分（**不要当成已支持**）：
-//   * 各向异性 / 三线性（`tex_sample` 的非零足迹分支）：本帧取零足迹点采样；
-//   * `MAP_ROUGH` / `MAP_NORMAL` / `MAP_EMISSIVE`：本 kernel 不读（见入口处注释）；
+//   * `MAP_EMISSIVE`：本 kernel 不读（着色模型里没有自发光通道；见入口处注释）；
 //   * 真机（非软件 ICD）上的逐位一致：只在 llvmpipe 上验过。
+//
+// 已接（W1 段 1）：本帧现在算**解析足迹**（`footprint_at_foot`）并交给 `tex_sample`
+// 做三线性 + mip + 有界各向异性，与 `CpuRefBackend` 逐式同构；llvmpipe 上逐位
+// 对拍见 `vulkan/v3_frame.rs` 的 `textured_mip_frame_matches_cpu_reference`。
+//
+// 已接（W1 段 2）：`MAP_METAL_ROUGH` / `MAP_NORMAL` 现在**真读**：金属度-粗糙度
+// 启用两瓣 PBR（漫反射按 (1−m) 衰减 + Fresnel F0=0.04 镜面瓣 NdotH⁴）；切线空间
+// 法线经 `plane_tangent_basis(n)` 旋到世界空间扰动着色法线。句柄清 0（或越界）
+// 即退化为纯 Lambert 基线，与无该贴图逐字节相同；llvmpipe 上逐位对拍见
+// `vulkan/v3_frame.rs` 的 `textured_normal_metalrough_matches_cpu_reference`。
 //
 // 禁 `array<vec3<f32>>`：`textures` 的元素是 `vec4<f32>`（16 B，无歧义）。
 // 禁超越函数（D-29）：球面 uv 需要的 `atan2`/`acos` 用本文件的 det 级数
@@ -153,6 +162,28 @@ fn vnormalize(v: vec3<f32>) -> vec3<f32> {
     return v / l;
   }
   return vec3<f32>(0.0, 0.0, 0.0);
+}
+
+// 确定性切基（球面 uv 用）：取与法线**最不平行**的坐标轴做叉乘。
+//
+// 与 `prism_rt::integrator::plane_tangent_basis` / `cpu_tex::plane_tangent_basis`
+// 逐式同构。球面没有烘焙切线，故 TBN 基用此近似；切线空间法线经此旋到世界
+// 空间得到扰动着色法线（`material_normal_at` 语义）。
+fn plane_tangent_basis(n: vec3<f32>) -> mat2x3<f32> {
+  let ax = abs(n.x);
+  let ay = abs(n.y);
+  let az = abs(n.z);
+  var helper = vec3<f32>(1.0, 0.0, 0.0);
+  if (ax <= ay && ax <= az) {
+    helper = vec3<f32>(1.0, 0.0, 0.0);
+  } else if (ay <= az) {
+    helper = vec3<f32>(0.0, 1.0, 0.0);
+  } else {
+    helper = vec3<f32>(0.0, 0.0, 1.0);
+  }
+  let u = vnormalize(cross(n, helper));
+  let v = cross(n, u);
+  return mat2x3<f32>(u, v);
 }
 
 // RGBA8 little-endian 打包：内存字节序 [r, g, b, a]（与 V2 同式）。
@@ -411,6 +442,73 @@ fn uv_sphere(p: vec3<f32>, center: vec3<f32>, radius: f32) -> vec2<f32> {
   let u = det_atan2(d.z, d.x) * FRAC_1_TAU + 0.5;
   let v = det_acos(clamp(d.y, -1.0, 1.0)) * FRAC_1_PI;
   return vec2<f32>(u, v);
+}
+
+// ---------------------------------------------------------------------------
+// 解析足迹（与 `prism_rt::integrator::footprint_at` 逐式同构）
+// ---------------------------------------------------------------------------
+
+// 周期量（u）的最短环绕差：`d ∈ (−½, ½]`（接缝处 ±1 跳变的修正）。
+fn wrap_delta_foot(d: f32) -> f32 {
+  return d - floor(d + 0.5);
+}
+
+// 切平面基第一轴（与 `prism_rt::integrator::plane_tangent_basis` 同式）：
+// 取"最不平行的轴"叉乘，把长度下界钉在 1/√3，避免法线接近 ±Y 时退化成 NaN。
+fn plane_tangent_t1(n: vec3<f32>) -> vec3<f32> {
+  let ax = abs(n.x);
+  let ay = abs(n.y);
+  let az = abs(n.z);
+  var helper: vec3<f32>;
+  if (ax <= ay && ax <= az) {
+    helper = vec3<f32>(1.0, 0.0, 0.0);
+  } else if (ay <= az) {
+    helper = vec3<f32>(0.0, 1.0, 0.0);
+  } else {
+    helper = vec3<f32>(0.0, 0.0, 1.0);
+  }
+  return normalize(cross(n, helper));
+}
+
+// uv 对世界切向的雅可比（`∇_T uv`），有限差分（与 integrator::uv_gradient 同式）。
+// `ε = 1e-3·max(1, |p|)`；u 是周期量，差分化前先取最短环绕差。
+fn uv_gradient_foot(p: vec3<f32>, center: vec3<f32>, radius: f32, t: vec3<f32>) -> vec2<f32> {
+  let eps = 1e-3 * max(sqrt(dot(p, p)), 1.0);
+  let a = uv_sphere(p + t * eps, center, radius);
+  let b = uv_sphere(p - t * eps, center, radius);
+  let du = wrap_delta_foot(a.x - b.x);
+  let dv = a.y - b.y;
+  return vec2<f32>(du / (2.0 * eps), dv / (2.0 * eps));
+}
+
+// 命中点的 uv 空间椭圆足迹（返回 mat2x2：列 0 = foot_c0，列 1 = foot_c1）。
+//
+// 模型：主射线锥半角 `spread` 在 `t_hit` 处张开成半径 `r = t_hit·spread` 的圆盘；
+// 投影到切平面沿"视线投影方向"拉长 1/cosθ_i（掠射端各向异性来源）；两世界半轴
+// 经 uv 雅可比映射到 uv 空间。`view` = 入射射线方向（相机→场景）。
+fn footprint_at_foot(
+  p: vec3<f32>, n: vec3<f32>, view: vec3<f32>, t_hit: f32, spread: f32,
+  center: vec3<f32>, radius: f32,
+) -> mat2x2<f32> {
+  // T1 = 视线在切平面上的投影（足迹长轴方向）；退化取任意切向。
+  let vt = view - n * dot(view, n);
+  let vl = sqrt(dot(vt, vt));
+  var t1: vec3<f32>;
+  if (vl > 1e-6) {
+    t1 = vt / vl;
+  } else {
+    t1 = plane_tangent_t1(n);
+  }
+  let t2 = cross(n, t1);
+  // 入射余弦：掠射端钳到 0.02（避免除零）。
+  let cos_i = clamp(abs(dot(view, n)), 0.02, 1.0);
+  let r = max(t_hit * spread, 0.0);
+  let a = r / cos_i; // 长轴半宽（沿 T1）
+  let b = r;         // 短轴半宽（沿 T2）
+  let j1 = uv_gradient_foot(p, center, radius, t1);
+  let j2 = uv_gradient_foot(p, center, radius, t2);
+  // 世界 → uv 链式法则：列向量 = J·T_k × 半宽。
+  return mat2x2<f32>(j1.x * a, j1.y * a, j2.x * b, j2.y * b);
 }
 
 // 球面 uv 的解析雅可比（世界单位切向 → uv）。球面上
@@ -700,14 +798,25 @@ fn scene_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let p = origin + dir * closest_t;
     let n = normalize(p - center);           // 球面法线恒朝外（与 CPU 同式）
     var albedo = sphere_albedo(si);
+    let view = -dir;                        // 出射（视线）方向，单位化（dir 已单位化）
+    var n_shade = n;                        // 着色法线（默认 = 几何法线）
+    var metalness = 0.0;
+    var roughness = 0.0;
+    var use_pbr = false;
 
-    // ---- 纹理（W1-C）：MAP_BASE 在命中点 uv 处取样，**替换** albedo ----
+    // 命中点 uv 与解析足迹（W1 段 1）：三线性 + mip + 各向异性，与 CPU 参考
+    // 逐式相同（同一 `spread0`、同一 `footprint_at`、同一 SVD 约定）。
+    let uv = uv_sphere(p, center, radius);
+    let spread0 = 2.0 * tan_f / f32(h);
+    let foot = footprint_at_foot(p, n, dir, closest_t, spread0, center, radius);
+
+    // ---- MAP_BASE（W1-C）：在命中点 uv 处取样，**替换** albedo ----
     //
     // 语义权威在 CPU 侧（`prism_rt::integrator::material_bsdf_at` 的 MAP_BASE
     // 臂：`base_color = 采样值`，是**替换**而非"在因子上再乘"）。本 kernel 只
     // 做同一件事——这是三端对拍能逐字节对齐的唯一口径。
     //
-    // # 为什么句柄守卫在调用点、而不是只靠 `tex_sample` 内部那条
+    // # 句柄守卫在调用点（不是只靠 `tex_sample` 内部那条）
     //
     // 越界句柄必须**按 NO_TEXTURE 处理**（退化到球自带 albedo）。若只靠
     // `tex_sample` 内部的 `handle > P_NUM_TEXTURES ⇒ 返回白`，越界球会变成
@@ -715,23 +824,44 @@ fn scene_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // 相等"来判。故守卫提前到此处，CPU 参考走**同一判据**。
     let base_map = sphere_map(si, MAP_BASE);
     if (base_map != NO_TEXTURE && base_map <= params[P_NUM_TEXTURES]) {
-      let uv = uv_sphere(p, center, radius);
-      // 本版口径：**零足迹点采样**（lod 0、1 tap），与 `CpuRefBackend` 的纹理
-      // 参考实现逐式相同。各向异性/三线性（`tex_sample` 的非零足迹分支）
-      // 在此 ABI 上**未验**，故本帧不取——不是"已支持"。
-      let s = tex_sample(base_map, uv, vec2<f32>(0.0, 0.0), vec2<f32>(0.0, 0.0));
+      let s = tex_sample(base_map, uv, foot[0], foot[1]);
       albedo = vec3<f32>(s.x, s.y, s.z);
     }
-    // `MAP_ROUGH` / `MAP_NORMAL` / `MAP_EMISSIVE`：**本 kernel 不读**。
-    //
-    // 理由不是"没接线"，而是当前着色模型里没有落点：投影着色只有
-    // `albedo·(ambient + Σ color·diff·intensity)`，既没有 roughness/metalness
-    // 项（GGX 在 `prism_rt::bsdf`，尚未移植进本 kernel），也没有切线空间法线
-    // 与自发光通道。硬接进来会得到"有代码、无效果"的假支持，故四个句柄里
-    // 只有 MAP_BASE 参与着色；其余三个保持 ABI 槽位可读，行为与句柄 0 逐一相同。
 
-    // 逐灯累加：`acc += albedo·(ambient + color·diff·intensity)`——**与 CPU 参考
-    // 的循环体逐字同序**（先算 term，再乘 albedo，再累加）。
+    // ---- MAP_METAL_ROUGH（段 2）：G = roughness、B = metalness（glTF）----
+    //
+    // 与 `material_bsdf_at` 的 MAP_METAL_ROUGH 臂逐式相同：G/B 钳到 [0,1]。
+    // 置位即启用两瓣 PBR（漫反射按 (1−m) 衰减、加 Fresnel F0=0.04 镜面瓣）。
+    // 句柄清 0（或越界）⇒ `use_pbr = false` ⇒ 走纯 Lambert 基线，与无金属度
+    // 粗糙度贴图时**逐字节相同**（负向对照的基础）。
+    let mr_map = sphere_map(si, MAP_ROUGH);
+    if (mr_map != NO_TEXTURE && mr_map <= params[P_NUM_TEXTURES]) {
+      let c = tex_sample(mr_map, uv, foot[0], foot[1]);
+      roughness = clamp(c.y, 0.0, 1.0);
+      metalness = clamp(c.z, 0.0, 1.0);
+      use_pbr = true;
+    }
+
+    // ---- MAP_NORMAL（段 2）：切线空间法线扰动着色法线（世界空间近似）----
+    //
+    // 与 `material_normal_at` 逐式相同：贴图值 [0,1]³ → [-1,1]³，经 `plane_tangent_
+    // basis(n)` 的 T/B 旋到世界空间得扰动法线（`+Z` 朝外，B 已含手性）。退化
+    // （零长切向组合）⇒ 退回几何法线，绝不产生 NaN。句柄清 0 ⇒ `n_shade = n`，
+    // 与无法线贴图逐字节相同。
+    let nm_map = sphere_map(si, MAP_NORMAL);
+    if (nm_map != NO_TEXTURE && nm_map <= params[P_NUM_TEXTURES]) {
+      let c = tex_sample(nm_map, uv, foot[0], foot[1]);
+      let ns = vec3<f32>(2.0 * c.x - 1.0, 2.0 * c.y - 1.0, 2.0 * c.z - 1.0);
+      let tb = plane_tangent_basis(n);
+      let shaded = tb[0] * ns.x + tb[1] * ns.y + n * ns.z;
+      if (dot(shaded, shaded) > 1e-12) {
+        n_shade = vnormalize(shaded);
+      }
+    }
+
+    // 逐灯累加：**与 CPU 参考（`CpuRefBackend`）逐字同序**。
+    // 非 PBR：纯 Lambert `albedo·(ambient + color·diff·intensity)`；
+    // PBR：`diffuse = albedo·(1−m)`、`spec = mix(0.04, albedo, m)·NdotH⁴·(1−0.75r)`。
     var acc = vec3<f32>(0.0, 0.0, 0.0);
     var l: u32 = 0u;
     let num_lights = params[P_NUM_LIGHTS];
@@ -742,9 +872,23 @@ fn scene_main(@builtin(global_invocation_id) gid: vec3<u32>) {
       let ldir = light_dir(l);              // 方向已在 CPU 侧归一化（`encode_lights`）
       let lcolor = light_color(l);
       let lint = light_intensity(l);
-      let diff = max(dot(n, ldir), 0.0);
+      let diff = max(dot(n_shade, ldir), 0.0);
       let term = ambient + lcolor * (diff * lint);
-      acc = acc + vmul(albedo, term);
+      var contrib = vmul(albedo, term);
+      if (use_pbr) {
+        let h = vnormalize(ldir + view);
+        let ndh = max(dot(n_shade, h), 0.0);
+        let x2 = ndh * ndh;
+        let spec_lobe = x2 * x2;            // NdotH⁴（无超越函数，与 CPU 逐位一致）
+        let f0 = vec3<f32>(0.04, 0.04, 0.04) + (albedo - vec3<f32>(0.04, 0.04, 0.04)) * metalness;
+        let rough_factor = 1.0 - 0.75 * roughness;
+        let spec = f0 * (spec_lobe * rough_factor);
+        let diffuse = albedo * (1.0 - metalness);
+        let diff_contrib = vmul(diffuse, term);
+        let spec_contrib = vmul(spec, lcolor * (diff * lint));
+        contrib = diff_contrib + spec_contrib;
+      }
+      acc = acc + contrib;
       l = l + 1u;
     }
     color = acc;
