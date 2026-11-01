@@ -408,6 +408,11 @@ fn raw_unavailable(status: DispatchStatus, detail: &str) -> RawRun {
 /// 单输入（探针 / 背景帧）与多输入（光追场景：参数 + 球 + 灯）走**同一条**
 /// 装配路径——新增输入只是多给几个切片，不引入第二套装配代码。
 ///
+/// `explicit_words` 为 `None` ⇒ 按 `kernel.spv_module` 查嵌入表（内置模块的既有
+/// 口径）；为 `Some(words)` ⇒ 用调用方给的 SPIR-V 字流（D-21：把入库的
+/// `scene_frame_v3.spv` 直接交给真设备，而不必先把开发期产物塞进主仓静态表——
+/// 那会让 release 二进制凭空多一份只有验证用得上的字节码）。
+///
 /// # Safety
 /// 调用方须保证 `ctx` 的 device/queue 有效（由 [`VulkanContext`] 的类型不变量
 /// 保证）。函数内部所有 FFI 调用前均判空，任何失败都走清理分支——不 panic。
@@ -418,6 +423,7 @@ unsafe fn run_on_device(
     kernel: &KernelDesc,
     plan: &DispatchPlan,
     inputs: &[&[u8]],
+    explicit_words: Option<&[u32]>,
 ) -> RawRun {
     let device = ctx.device;
     let fns = &ctx.device_fns;
@@ -558,11 +564,17 @@ unsafe fn run_on_device(
     }
 
     // --- 步骤 1：SPIR-V → VkShaderModule --------------------------------
-    let Some(words) = super::spirv::module(kernel.spv_module) else {
-        return raw_unavailable(
-            DispatchStatus::ShaderModuleFailed,
-            "kernel 未嵌入 SPIR-V（本环境无 glslang，RT kernel 的 SPIR-V 待真机生成）",
-        );
+    let words: &[u32] = match explicit_words {
+        Some(w) => w,
+        None => match super::spirv::module(kernel.spv_module) {
+            Some(w) => w,
+            None => {
+                return raw_unavailable(
+                    DispatchStatus::ShaderModuleFailed,
+                    "kernel 未嵌入 SPIR-V（本环境无 glslang，RT kernel 的 SPIR-V 待真机生成）",
+                )
+            }
+        },
     };
     let smci = vk::VkShaderModuleCreateInfo {
         s_type: vk::VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
@@ -1001,6 +1013,28 @@ pub(crate) fn dispatch_inputs(
     extent: [u32; 3],
     inputs: &[&[u8]],
 ) -> ByteRunReport {
+    dispatch_inputs_with_words(ctx, kernel, extent, inputs, None)
+}
+
+/// [`dispatch_inputs`] 的「显式 SPIR-V 字流」变体（D-21）。
+///
+/// `words = None` 的语义与 [`dispatch_inputs`] **逐字相同**（同一段代码，只是
+/// 多一个可选入参）；`words = Some(&[...])` 时完全绕过 `spirv::MODULES` 的名字
+/// 查表，直接把这串字交给 `vkCreateShaderModule`。
+///
+/// 为什么需要它：V3 场景 kernel 的 SPIR-V 是**入库产物**
+/// （`crates/prism-gpu/shaders/spv/scene_frame_v3.spv`，由 `tools/wgsl2spv`
+/// 用 naga 生成）。把它也登记进 `spirv::MODULES` 会让每份 release 二进制
+/// 凭空背着 40 KB 只有验证路径用得上的字节码——而 D-21 的裁定是"工具与产物
+/// 都不进发布路径"。
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn dispatch_inputs_with_words(
+    ctx: Option<&VulkanContext>,
+    kernel: &KernelDesc,
+    extent: [u32; 3],
+    inputs: &[&[u8]],
+    words: Option<&[u32]>,
+) -> ByteRunReport {
     let plan = plan(kernel, extent);
     // 反越界守卫先于任何设备/FFI 分支（纯布局检查，环境无关）。
     if let Some(detail) = capacity_violation(kernel, &plan) {
@@ -1022,7 +1056,7 @@ pub(crate) fn dispatch_inputs(
         ),
         Some(ctx) => {
             // SAFETY: `ctx` 由 `VulkanBackend` 持有，device/queue 遵循类型不变量。
-            let raw = unsafe { run_on_device(ctx, kernel, &plan, inputs) };
+            let raw = unsafe { run_on_device(ctx, kernel, &plan, inputs, words) };
             ByteRunReport {
                 status: raw.status,
                 kernel: kernel.name,

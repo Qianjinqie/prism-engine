@@ -1,0 +1,9 @@
+# spv_manifest.txt —— WGSL → SPIR-V 产物清单（D-21）
+#
+# 由 `tools/wgsl2spv` 生成，**不要手改**；`.spv` 是二进制，手改一定对不上。
+# 修复/重生成命令：cargo run --manifest-path tools/wgsl2spv/Cargo.toml -- --all
+# 校验：cargo test -p prism-gpu --test spv_freshness
+#
+# 格式（每行，字段间两个空格）：
+#   <wgsl_sha256>  <spv_sha256>  <wgsl相对路径>  <entry>  <naga版本>
+3d765a3b3c9affbd36eb3fa2aca1a34f02826d54b6f7ad28c1abc7ba35d365e5  697fbe938e0d5b9a774fd17d5a8892712896eb5a7d896403130b9f623e6d96ce  crates/prism-gpu/shaders/scene_frame_v3.wgsl  scene_main  30.0.1

@@ -2,6 +2,18 @@
 resolver = "2"
 members = ["crates/*"]
 
+# D-21 裁定：`tools/` 是**开发期工具**目录，不属于交付物。
+#
+# "零第三方依赖"约束的是**交付物自包含**——别人 clone 下来 `cargo build`
+# 不联网、不拉 crates.io、源码里没有第三方代码。`tools/wgsl2spv` 借 naga 把
+# WGSL 翻成 SPIR-V，它不参与构建，只是把编译器当尺子用；产物（`.spv`）提交
+# 入库，`build.rs` 不生成、不调用，release 路径不经过本目录。
+#
+# 把 `tools` 从这里踢出去，是为了让"工具悄悄长成依赖"这件事在**结构上不可
+# 能**：主仓 `cargo build` / `cargo test` / `cargo tree` 完全看不见 naga，
+# 而 `crates/prism-gpu/tests/spv_freshness.rs` 会反查这一行仍然生效。
+exclude = ["tools"]
+
 # native 出货档（W0-C L1）。
 #
 # 路线图 W0-C 的原始建议是 `lto="fat"` + `codegen-units=1`。**实测该组合是

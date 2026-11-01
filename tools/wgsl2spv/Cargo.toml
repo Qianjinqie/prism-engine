@@ -1,0 +1,16 @@
+[package]
+name = "wgsl2spv"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "D-21 开发期工具：WGSL → SPIR-V（借 naga，不入主仓构建）"
+
+# 独立 workspace：自带 Cargo.lock 并入库。主仓 `Cargo.toml` 的
+# `[workspace] exclude = ["tools"]` 把本目录踢出主 workspace，故
+# `cargo build/test/tree` 在主仓完全看不见 naga。
+[workspace]
+
+[dependencies]
+# 唯一依赖。D-21 裁定：naga 只作**开发期尺子**，产物（.spv）提交入库，
+# 构建/发布路径一律不经过本 crate。
+naga = { version = "30", default-features = false, features = ["wgsl-in", "spv-out"] }

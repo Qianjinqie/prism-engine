@@ -113,6 +113,18 @@ pub mod background;
 /// 逐位一致是硬判据，跨后端视觉等价走统计阈值——见 `tests/qa_render_scene.rs`）。
 pub mod scene;
 
+/// **V3 九绑定场景 kernel 的真机派发 harness**（D-21 / V6 第三条腿）。
+///
+/// 只在**native 的测试构建**里存在：它读的是**入库产物**
+/// `shaders/spv/scene_frame_v3.spv`（由 `tools/wgsl2spv` 用 naga 生成），
+/// release 二进制一个字节都不多背。判据与 `tests/qa_render_scene.rs` 逐字同口径
+/// （软件 ICD 上 `differing_pixels == 0`、`max_channel_delta == 0`）。
+///
+/// wasm32 下也排除：本 crate 的 wasm 分支没有 `VulkanContext`（走 WebGPU 宿主），
+/// 而 `compute::dispatch_inputs_with_words` 本来就是 `#[cfg(not(wasm32))]`。
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod v3_frame;
+
 // ---------------------------------------------------------------------------
 // 探测结果（跨平台可见的诊断结构）
 // ---------------------------------------------------------------------------
@@ -454,6 +466,19 @@ impl VulkanBackend {
         {
             None
         }
+    }
+
+    /// 已建立的设备上下文（`None` = 本平台无可用 Vulkan 设备）。
+    ///
+    /// 只给**同一 crate 内的测试 harness** 用（D-21 的 V3 场景 kernel 真机对拍
+    /// 需要把入库的 `.spv` 直接喂给 `compute::dispatch_inputs_with_words`），
+    /// 故与 `v3_frame` 同一条 `cfg`：非测试构建里连符号都不存在。
+    ///
+    /// 不对外部调用方暴露：`VulkanContext` 的生命周期与销毁顺序由本类型独占，
+    /// 第三方拿到裸引用就会绕过 [`GpuDevice::is_available`] 的能力口径。
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    pub(crate) fn context(&self) -> Option<&VulkanContext> {
+        self.context.as_deref()
     }
 
     /// 探测成功时选中的 graphics 队列族索引；否则 `None`（诊断量）。
