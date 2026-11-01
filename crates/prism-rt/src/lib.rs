@@ -56,5 +56,7 @@ pub mod sampler;
 /// 光谱渲染切片（V2.2-B-1 / T08）：λ 轴 + 自研 CMF 分段有理 + 退化一致性。
 pub mod spectral;
 pub mod sss;
+/// 位图纹理采样器（W1-B）：双线性 + mip 三级线性 + 有界各向异性（解析足迹）。
+pub mod texsample;
 pub mod texture;
 pub mod wavefront;

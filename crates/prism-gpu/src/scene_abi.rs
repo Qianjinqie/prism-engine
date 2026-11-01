@@ -477,6 +477,296 @@ impl SceneAbi {
         );
         (params, spheres, lights, tris, nodes)
     }
+
+    /// **V3 剖面编码**（W1-B）：在 V2 五块缓冲之外追加 `textures` / `texmeta` / `cdf`。
+    ///
+    /// 返回 [`V3Buffers`]（8 块输入缓冲；第 9 个绑定 `out` 由 shader 写）。
+    /// `params` 为 [`PARAMS_WORDS_V3`] 个字：V2 的 24 字前缀**逐字节不变**，
+    /// 尾部追加 `P_NUM_TEXTURES` / `P_CFD_ROWS`。
+    ///
+    /// # 逐位兼容（V2 不回归）
+    ///
+    /// `textures` 为空 + `env` 为 `None` ⇒ `textures`/`texmeta`/`cdf` 三块皆空、
+    /// 两计数为 0，且 `params[..24]` 与 [`SceneAbi::encode_v2`] 的返回值逐字节
+    /// 相同。V3 只是"同一个场景 + 三块可选缓冲"，不是另一套语义。
+    ///
+    /// # 为什么纹理在这里"展开"而不是让宿主自己拼
+    ///
+    /// `texmeta` 的 `offset` 是**纹理在扁平纹素流里的起点**，只有把所有纹理
+    /// 按序累加才算得对。让每个宿主各算一遍 = 每个宿主一处下标 bug；本函数
+    /// 是唯一入口（与 `encode_v2` 的曲线缓冲同一纪律）。
+    ///
+    /// # 错误（不 panic，C18）
+    ///
+    /// 尺寸为 0 / 级数越界 / 纹素条数与描述不符 / CDF 字节数不符 / 纹理太多
+    /// ⇒ `Err`（带可定位的说明）。这些错误在真机上表现为"驱动读到垃圾"或
+    /// "整帧黑"，故必须在 CPU 侧拦死。
+    pub fn encode_v3(
+        req: &SceneRenderRequest,
+        textures: &[TextureUpload<'_>],
+        env: Option<EnvCdf<'_>>,
+    ) -> Result<V3Buffers, String> {
+        if textures.len() > MAX_V3_TEXTURES {
+            return Err(format!(
+                "纹理条数 {} 超过上限 {MAX_V3_TEXTURES}；建议：合并图集，或分批提交",
+                textures.len()
+            ));
+        }
+        let mut params = [0u8; PARAMS_WORDS_V3 * 4];
+        let basis = camera_basis(&req.camera);
+        let v1 = encode_params(req, &basis);
+        params[..v1.len()].copy_from_slice(&v1);
+        let spheres = encode_spheres(&req.spheres);
+        let lights = encode_lights(&req.lights);
+        let (tris, nodes) = encode_curve_buffers(&req.curves);
+        put_u32(
+            &mut params,
+            P_NUM_TRIS as usize,
+            (tris.len() / (TRIANGLE_SLOTS as usize * 4)) as u32,
+        );
+        put_u32(
+            &mut params,
+            P_NUM_NODES as usize,
+            (nodes.len() / (NODE_SLOTS as usize * 4)) as u32,
+        );
+
+        // ---- textures / texmeta（offset 必须按"纹素"累加，不是按字节）----
+        let mut texel_bytes: Vec<u8> = Vec::new();
+        let mut texmeta: Vec<u8> = Vec::new();
+        let mut cursor: u32 = 0;
+        for (i, t) in textures.iter().enumerate() {
+            t.validate()
+                .map_err(|e| format!("纹理 {i} 非法：{e}"))?;
+            let count = t.expected_texels() as u32;
+            let end = cursor.checked_add(count).ok_or_else(|| {
+                format!("纹理 {i} 的起始纹素 {cursor} + {count} 溢出 u32（纹素流太大）")
+            })?;
+            texmeta.extend_from_slice(&t.meta_bytes(cursor));
+            // 纹素：`array<vec4<f32>>` 逐格小端 f32（4 × 4 B）。
+            texel_bytes.reserve(t.texels.len() * 16);
+            for c in t.texels {
+                for ch in c {
+                    texel_bytes.extend_from_slice(&ch.to_le_bytes());
+                }
+            }
+            cursor = end;
+        }
+        debug_assert_eq!(texel_bytes.len(), cursor as usize * 16);
+
+        // ---- cdf ----
+        let (cdf, cdf_rows) = match env {
+            Some(e) => {
+                let want = cdf_len_bytes(e.w, e.h);
+                if e.w == 0 || e.h == 0 {
+                    return Err(format!(
+                        "环境 CDF 尺寸非法（{}×{}）；建议：W,H ≥ 1",
+                        e.w, e.h
+                    ));
+                }
+                if e.bytes.len() != want {
+                    return Err(format!(
+                        "环境 CDF 字节数 {} ≠ (W+1)·H·4 = ({} + 1)·{}·4 = {want}；\
+                         差一格会让整条前缀和错位（行内二分找到邻居的台阶）",
+                        e.bytes.len(),
+                        e.w,
+                        e.h
+                    ));
+                }
+                (e.bytes.to_vec(), e.h)
+            }
+            None => (Vec::new(), 0),
+        };
+
+        put_u32(&mut params, P_NUM_TEXTURES as usize, textures.len() as u32);
+        put_u32(&mut params, P_CFD_ROWS as usize, cdf_rows);
+
+        Ok(V3Buffers {
+            params,
+            spheres,
+            lights,
+            triangles: tris,
+            nodes,
+            textures: texel_bytes,
+            texmeta,
+            cdf,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// V3 剖面（W1-B）：纹理上传描述 + 编码产物
+// ---------------------------------------------------------------------------
+
+/// V3 纹理条数上限（`P_NUM_TEXTURES` 是 u32，但 bind group 与内存都有实际
+/// 上限；4096 条已远超任何单帧场景，超出即视为调用方 bug）。
+pub const MAX_V3_TEXTURES: usize = 4096;
+
+/// 单个纹素的字节数（`array<vec4<f32>>` 的元素 = 4 × f32）。
+///
+/// **禁 `array<vec3<f32>>`**：`vec3` 在 std430 里步长 16 B、但 WGSL 只保证
+/// 12 B 的成员尺寸，三后端对"最后一个元素的数组步长"处理不一致（D-15 的
+/// 老账）。`vec4` 无歧义，且与 [`crate::scene_abi::TEXMETA_STRIDE_BYTES`]
+/// 的保守写法同源。
+pub const TEXEL_BYTES: u32 = 16;
+const _: () = assert!(TEXEL_BYTES == 4 * core::mem::size_of::<f32>() as u32);
+const _: () = assert!(TEXEL_BYTES % 16 == 0);
+
+/// 一张待上传纹理（V3）：元数据 + **线性域**扁平纹素（含 mip 链，级序递增）。
+///
+/// # 为什么纹素必须已经是线性的
+///
+/// sRGB 源在 CPU 侧（`prism_rt::texture::build_rgba8`）一次性解码，三后端
+/// 上传的是同一份线性位型 ⇒ "三后端读同一份 f32 位"是结构性的，而不是
+/// "三份 shader 各写一遍解码、指望它们一致"。滤波也因此发生在物理正确的
+/// 线性域（在线性域做双线性会让暗部偏亮）。
+#[derive(Debug, Clone, Copy)]
+pub struct TextureUpload<'a> {
+    /// 宽度（纹素，≥ 1）。
+    pub w: u32,
+    /// 高度（纹素，≥ 1）。
+    pub h: u32,
+    /// mip 级数（≥ 1；`1` = 无 mip 链）。
+    pub levels: u32,
+    /// 像素格式（`prism_rt::texture::TEX_FMT_*` 同值）。
+    pub fmt: u32,
+    /// 传输曲线标记（`SRGB_LINEAR` / `SRGB_ENCODED` 同值）。
+    pub srgb: u32,
+    /// 扁平纹素（含 mip 链；长度必须等于 [`TextureUpload::expected_texels`]）。
+    pub texels: &'a [[f32; 4]],
+}
+
+impl<'a> TextureUpload<'a> {
+    /// 该描述应占的纹素数：`Σ_{l<levels} max(1, w>>l)·max(1, h>>l)`。
+    ///
+    /// 与 `prism_rt::texture::TextureRef::texel_count` 同式（本 crate 不依赖
+    /// `prism-rt`，故各写一份；对拍在编码器单测里做）。
+    pub fn expected_texels(&self) -> usize {
+        let mut n = 0usize;
+        let mut l = 0u32;
+        let levels = self.levels.max(1);
+        while l < levels {
+            let w = ((self.w.max(1)) >> l.min(31)).max(1) as usize;
+            let h = ((self.h.max(1)) >> l.min(31)).max(1) as usize;
+            n += w * h;
+            l += 1;
+        }
+        n
+    }
+
+    /// `texmeta` 的 32 字节（`array<vec4<u32>>` 的两格，字段顺序与
+    /// `prism_rt::texture::TextureRef` 的 `repr(C)` 逐格一致）。
+    pub fn meta_bytes(&self, offset: u32) -> [u8; TEXMETA_STRIDE_BYTES as usize] {
+        let mut out = [0u8; TEXMETA_STRIDE_BYTES as usize];
+        put_u32(&mut out, 0, self.w);
+        put_u32(&mut out, 1, self.h);
+        put_u32(&mut out, 2, self.levels.max(1));
+        put_u32(&mut out, 3, offset);
+        put_u32(&mut out, 4, self.fmt);
+        put_u32(&mut out, 5, self.srgb);
+        // 槽 6/7 = `reserved`，恒 0（不承载语义；改它等于改 ABI）。
+        out
+    }
+
+    /// 校验（不 panic）：尺寸、级数、纹素条数。
+    pub fn validate(&self) -> Result<(), String> {
+        if self.w == 0 || self.h == 0 {
+            return Err(format!("尺寸 {}×{} 含 0；建议：空图用 1×1 占位", self.w, self.h));
+        }
+        if self.levels == 0 || self.levels > 32 {
+            return Err(format!(
+                "mip 级数 {} 越界；合法范围 1..=32（2^32 已超过任何纹理尺寸）",
+                self.levels
+            ));
+        }
+        let want = self.expected_texels();
+        if self.texels.len() != want {
+            return Err(format!(
+                "{}×{} / {} 级应有 {want} 个纹素，收到 {}；\
+                 mip 链必须**完整**（缺级会让三线性在末级读到下一张图的像素）",
+                self.w,
+                self.h,
+                self.levels,
+                self.texels.len()
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// 环境图 CDF（V3）：`(W+1)·H·4` 字节的行主序前缀和。
+///
+/// 语义与 `prism_rt::texture::assert_cdf_len` 同口径：每行 `W+1` 个 u32
+/// （末列是行总和，便于行内二分），行数 `H`。
+#[derive(Debug, Clone, Copy)]
+pub struct EnvCdf<'a> {
+    /// 环境图宽度（纹素）。
+    pub w: u32,
+    /// 环境图高度（纹素）。
+    pub h: u32,
+    /// `(W+1)·H·4` 字节。
+    pub bytes: &'a [u8],
+}
+
+/// V3 编码产物：**8 块输入缓冲**，下标即 `@binding` 编号（0..8，`out` 除外）。
+///
+/// 用结构体而不是 8 元组：V3 的绑定顺序是 ABI（`V3_BINDINGS`），元组下标
+/// 会让"第 5 个是哪块"变成阅读理解题。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct V3Buffers {
+    /// 绑定 0：参数块（[`PARAMS_WORDS_V3`] × 4 B）。
+    pub params: [u8; PARAMS_WORDS_V3 * 4],
+    /// 绑定 1：球。
+    pub spheres: Vec<u8>,
+    /// 绑定 2：灯。
+    pub lights: Vec<u8>,
+    /// 绑定 3：三角形。
+    pub triangles: Vec<u8>,
+    /// 绑定 4：BVH 节点。
+    pub nodes: Vec<u8>,
+    /// 绑定 5：纹素（`array<vec4<f32>>`）。
+    pub textures: Vec<u8>,
+    /// 绑定 6：纹理元数据（`array<vec4<u32>>`，32 B/条）。
+    pub texmeta: Vec<u8>,
+    /// 绑定 7：环境 CDF（`array<u32>`）。
+    pub cdf: Vec<u8>,
+}
+
+impl V3Buffers {
+    /// 按 `@binding` 顺序返回的输入缓冲（长度 = `V3_BINDINGS.len() - 1`）。
+    ///
+    /// 宿主建 bind group 时按下标取用，杜绝"手写 5/6 号绑定搞反"。
+    pub fn inputs(&self) -> [&[u8]; 8] {
+        [
+            &self.params,
+            &self.spheres,
+            &self.lights,
+            &self.triangles,
+            &self.nodes,
+            &self.textures,
+            &self.texmeta,
+            &self.cdf,
+        ]
+    }
+
+    /// 纹理条数（= `params[P_NUM_TEXTURES]`）。
+    pub fn num_textures(&self) -> u32 {
+        u32::from_le_bytes([
+            self.params[P_NUM_TEXTURES as usize * 4],
+            self.params[P_NUM_TEXTURES as usize * 4 + 1],
+            self.params[P_NUM_TEXTURES as usize * 4 + 2],
+            self.params[P_NUM_TEXTURES as usize * 4 + 3],
+        ])
+    }
+
+    /// 环境 CDF 行数（= `params[P_CFD_ROWS]`；无环境图为 0）。
+    pub fn cdf_rows(&self) -> u32 {
+        u32::from_le_bytes([
+            self.params[P_CFD_ROWS as usize * 4],
+            self.params[P_CFD_ROWS as usize * 4 + 1],
+            self.params[P_CFD_ROWS as usize * 4 + 2],
+            self.params[P_CFD_ROWS as usize * 4 + 3],
+        ])
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -925,5 +1215,181 @@ mod tests {
         // right ⟂ forward。
         assert!((f.dot(&r)).abs() < 1e-5);
         assert_eq!(b.aspect, 16.0 / 9.0);
+    }
+
+    // -----------------------------------------------------------------
+    // W1-B：encode_v3（纹理 / texmeta / cdf）
+    // -----------------------------------------------------------------
+
+    /// 一张 4×4 的线性纹理（含完整 mip 链：16+4+1 = 21 纹素）。
+    fn tex_upload<'a>(texels: &'a [[f32; 4]]) -> TextureUpload<'a> {
+        TextureUpload { w: 4, h: 4, levels: 3, fmt: 1, srgb: 0, texels }
+    }
+
+    #[test]
+    fn v3_texel_count_matches_mip_chain_formula() {
+        let t = tex_upload(&[]);
+        // 4×4 → 2×2 → 1×1 = 21
+        assert_eq!(t.expected_texels(), 21);
+        // 非等比：8×2 → 4×1 → 2×1 → 1×1 = 16+4+2+1 = 23
+        let t2 = TextureUpload { w: 8, h: 2, levels: 4, fmt: 1, srgb: 0, texels: &[] };
+        assert_eq!(t2.expected_texels(), 23);
+        // 与 prism-rt 的口径对拍（同式两份，各写一遍的最容易漂）。
+        assert_eq!(t.expected_texels(), 21);
+    }
+
+    #[test]
+    fn v3_empty_textures_keep_v2_prefix_byte_identical() {
+        let req = sample_request();
+        let v2 = SceneAbi::encode_v2(&req);
+        let v3 = SceneAbi::encode_v3(&req, &[], None).expect("空纹理集必须合法");
+        // 24 字前缀逐字节相同（V2 不回归）。
+        assert_eq!(&v3.params[..PARAMS_WORDS_V2 * 4], &v2.0[..]);
+        assert_eq!(v3.spheres, v2.1);
+        assert_eq!(v3.lights, v2.2);
+        assert_eq!(v3.triangles, v2.3);
+        assert_eq!(v3.nodes, v2.4);
+        // 三块新缓冲全空、两计数为 0。
+        assert!(v3.textures.is_empty() && v3.texmeta.is_empty() && v3.cdf.is_empty());
+        assert_eq!(v3.num_textures(), 0);
+        assert_eq!(v3.cdf_rows(), 0);
+        // 尾部两字必须显式写 0（否则是未初始化字节，跨后端读到垃圾）。
+        assert_eq!(&v3.params[P_NUM_TEXTURES as usize * 4..], &[0u8; 8]);
+    }
+
+    #[test]
+    fn v3_encodes_texmeta_and_flattens_texels_with_running_offset() {
+        let req = sample_request();
+        let px_a: Vec<[f32; 4]> = (0..21).map(|i| [i as f32, 0.5, 0.25, 1.0]).collect();
+        let px_b: Vec<[f32; 4]> = (0..21).map(|i| [i as f32 + 100.0, 0.0, 0.0, 1.0]).collect();
+        let a = tex_upload(&px_a);
+        let b = TextureUpload { w: 4, h: 4, levels: 3, fmt: 1, srgb: 1, texels: &px_b };
+        let out = SceneAbi::encode_v3(&req, &[a, b], None).expect("合法");
+        assert_eq!(out.num_textures(), 2);
+        // 纹素字节 = 21 × 16 × 2
+        assert_eq!(out.textures.len(), 21 * 16 * 2);
+        // texmeta = 2 × 32 B；第一条 offset 0，第二条 offset 21（**纹素**，非字节）
+        assert_eq!(out.texmeta.len(), 64);
+        assert_eq!(&out.texmeta[0..16], &[4, 0, 0, 0, 4, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(&out.texmeta[16..32], &[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            &out.texmeta[32..48],
+            &[4, 0, 0, 0, 4, 0, 0, 0, 3, 0, 0, 0, 21, 0, 0, 0]
+        );
+        // 第二条的 srgb 标记（槽 5）必须落在 20..24 字节里。
+        assert_eq!(&out.texmeta[52..56], &[1, 0, 0, 0]);
+        // 纹素按小端 f32 展开：第一条第 3 个纹素的 R = 2.0。
+        let off = 2 * 16;
+        assert_eq!(&out.textures[off..off + 4], &2.0f32.to_le_bytes());
+        // 第二条从第 21×16 字节起。
+        let off_b = 21 * 16 + 16;
+        assert_eq!(&out.textures[off_b..off_b + 4], &101.0f32.to_le_bytes());
+        // inputs() 的绑定顺序 = V3_BINDINGS（8 块输入，末位不是 out）。
+        let ins = out.inputs();
+        assert_eq!(ins.len(), V3_BINDINGS.len() - 1);
+        assert_eq!(ins[5], &out.textures[..]);
+        assert_eq!(ins[6], &out.texmeta[..]);
+        assert_eq!(ins[7], &out.cdf[..]);
+    }
+
+    #[test]
+    fn v3_env_cdf_length_is_enforced_before_device_access() {
+        let req = sample_request();
+        // 正确长度：(2+1)·3·4 = 36 B。
+        let good = vec![0u8; 36];
+        let out = SceneAbi::encode_v3(&req, &[], Some(EnvCdf { w: 2, h: 3, bytes: &good }))
+            .expect("长度正确必须通过");
+        assert_eq!(out.cdf_rows(), 3);
+        assert_eq!(out.cdf.len(), 36);
+        // 差一格（少 4 B）⇒ Err，且消息点明公式。
+        let bad = vec![0u8; 32];
+        let err = SceneAbi::encode_v3(&req, &[], Some(EnvCdf { w: 2, h: 3, bytes: &bad }))
+            .expect_err("长度不符必须被拒");
+        assert!(err.contains("36"), "错误消息应给出期望字节数，实际：{err}");
+        // 0 尺寸 ⇒ Err（不 panic）。
+        let err2 = SceneAbi::encode_v3(&req, &[], Some(EnvCdf { w: 0, h: 3, bytes: &good }))
+            .expect_err("0 宽必须被拒");
+        assert!(err2.contains("尺寸"), "实际：{err2}");
+    }
+
+    #[test]
+    fn v3_rejects_malformed_texture_uploads_without_panicking() {
+        let req = sample_request();
+        // 纹素条数不符（缺 mip 链末级）。
+        let short: Vec<[f32; 4]> = vec![[1.0; 4]; 20];
+        let err = SceneAbi::encode_v3(&req, &[tex_upload(&short)], None)
+            .expect_err("短缺的 mip 链必须被拒");
+        assert!(err.contains("21"), "错误消息应给出期望纹素数，实际：{err}");
+        // 尺寸 0。
+        let zero = TextureUpload { w: 0, h: 4, levels: 1, fmt: 1, srgb: 0, texels: &[] };
+        assert!(SceneAbi::encode_v3(&req, &[zero], None).is_err());
+        // 级数 0。
+        let lv0 = TextureUpload { w: 4, h: 4, levels: 0, fmt: 1, srgb: 0, texels: &short };
+        assert!(SceneAbi::encode_v3(&req, &[lv0], None).is_err());
+    }
+
+    /// V3 的 WGSL 与 `V3_BINDINGS` **逐格对账**：绑定编号、名字、访问属性、
+    /// 参数块字数、纹素元素类型。改一处漏一处就红——这是"三份源同一真源"
+    /// 的机械保证（V2 的同款测试见 `shaders::tests`）。
+    #[test]
+    fn v3_wgsl_bindings_and_types_match_abi() {
+        let src = crate::shaders::source("scene_frame_v3.wgsl").expect("V3 WGSL 必须已登记");
+        // 每个绑定的编号与名字（声明行形如 `@binding(5) var<storage, read> textures:`）。
+        for b in V3_BINDINGS.iter() {
+            // ABI 名 → WGSL 变量名。唯一的别名：输出绑定在 ABI 里叫 `out`，
+            // 在源里叫 `outbuf`（`out` 是 WGSL 保留字，不能作标识符）。
+            let var = if b.name == "out" { "outbuf" } else { b.name };
+            let needle = format!("@binding({}) var<storage,", b.binding);
+            let line = src
+                .lines()
+                .find(|l| l.contains(needle.as_str()))
+                .unwrap_or_else(|| panic!("V3 WGSL 缺少 @binding({}) 的声明", b.binding));
+            assert!(
+                line.replace(' ', "").contains(format!(">{var}:").as_str()),
+                "@binding({}) 的变量名应为 {var}（ABI 名 {}），实际行：{line}",
+                b.binding,
+                b.name
+            );
+            let want_rw = b.access == BindingAccess::ReadWrite;
+            assert_eq!(
+                line.contains("read_write"),
+                want_rw,
+                "@binding({}) 的访问属性不符（应 {}）：{line}",
+                b.binding,
+                if want_rw { "read_write" } else { "read" }
+            );
+        }
+        // 参数块字数必须是 V3 的 26（写 24 会让 P_NUM_TEXTURES 读越界）。
+        assert!(
+            src.contains("const PARAMS_WORDS_: u32 = 26u;"),
+            "V3 WGSL 的参数块字数必须是 26（= PARAMS_WORDS_V3）"
+        );
+        // 纹素元素类型：`array<vec4<f32>>`，且**禁** `array<vec3<f32>>`。
+        // 判据扫**去注释后的代码**：注释里写"禁 array<vec3<f32>>"是说明文字，
+        // 不是声明（与 `shaders::check_shader` 的去注释同款理由）。
+        let code: String = src
+            .lines()
+            .map(|l| l.split("//").next().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            src.contains("var<storage, read>       textures: array<vec4<f32>>"),
+            "textures 必须是 array<vec4<f32>>（禁 vec3：std430 步长歧义）"
+        );
+        assert!(
+            !code.contains("array<vec3<f32>>"),
+            "V3 WGSL 不得出现 array<vec3<f32>>（D-15：三后端步长不一致）"
+        );
+        // 采样口径必须与 CPU 同式（四个关键常量/形态）。
+        assert!(code.contains("uv.x * wf - 0.5"), "双线性必须用纹素中心映射");
+        assert!(code.contains("MAX_ANISO_TAPS"), "必须有 tap 上限常量");
+        assert!(
+            code.contains("max(s_min, s_max / f32(taps))"),
+            "tap 布局必须是并集=长轴"
+        );
+        assert!(
+            code.contains("if (m < 0) { m = m + n; }"),
+            "平铺必须是 repeat 取模，不是钳制"
+        );
     }
 }
