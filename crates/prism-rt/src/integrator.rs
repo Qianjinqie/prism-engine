@@ -43,7 +43,7 @@ use std::f32::consts::{FRAC_1_PI, PI};
 
 use prism_core::EvalCtx;
 use prism_geometry::bvh::{Bvh as GeoBvh, Triangle as GeoTriangle};
-use prism_math::Vec3;
+use prism_math::{det_trig, Vec3};
 
 use crate::accum::mean_samples;
 use crate::bsdf::{hadamard, Bsdf, SampleCtx};
@@ -60,6 +60,7 @@ use crate::spectral::{
     cauchy_ior, flat_spectral_value, hero_wavelength, spectral_to_rgb, SpectralConfig,
 };
 use crate::sss::random_walk;
+use crate::texsample::{Footprint, TexTable};
 use crate::texture::TextureRef;
 
 // ---------------------------------------------------------------------------
@@ -524,6 +525,143 @@ pub(crate) fn material_bsdf(m: &MaterialKind) -> Option<Bsdf> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// W1-B：贴图材质（`material_bsdf(m)` 的 uv 版）
+// ---------------------------------------------------------------------------
+
+/// 材质是否挂了任何贴图（决定是否需要算 uv / 足迹——无贴图场景零成本）。
+#[inline]
+pub(crate) fn material_has_maps(m: &MaterialKind) -> bool {
+    match m {
+        MaterialKind::Pbr(b) => b.maps.iter().any(|&h| h != crate::texture::NO_TEXTURE),
+        _ => false,
+    }
+}
+
+/// 材质是否挂了**法线贴图**（决定是否需要算切线基——比算基础贴图贵）。
+#[inline]
+pub(crate) fn has_normal_map(m: &MaterialKind) -> bool {
+    match m {
+        MaterialKind::Pbr(b) => b.maps[crate::bsdf::MAP_NORMAL] != crate::texture::NO_TEXTURE,
+        _ => false,
+    }
+}
+
+/// 单张贴图的采样（句柄 0 / 越界 → `None`）。
+#[inline]
+fn sample_map(
+    tex: TexTable<'_>,
+    handle: u32,
+    uv: [f32; 2],
+    foot: Footprint,
+) -> Option<[f32; 4]> {
+    if handle == crate::texture::NO_TEXTURE {
+        return None;
+    }
+    crate::texsample::sample(&tex, handle, uv, foot)
+}
+
+/// 按 uv 解析材质 → Disney [`Bsdf`]（A1 的"纹理在命中点解析成标量"）。
+///
+/// # 与 [`material_bsdf`] 的关系
+///
+/// 先取标量基线（`material_bsdf`），再按四张图的句柄覆盖对应字段：
+///
+/// | 槽 | 覆盖 | 约定 |
+/// |---|---|---|
+/// | [`MAP_BASE`](crate::bsdf::MAP_BASE) | `base_color`（rgb） | glTF `baseColorTexture` |
+/// | [`MAP_METAL_ROUGH`](crate::bsdf::MAP_METAL_ROUGH) | `roughness` ← **G**、`metalness` ← **B** | glTF `metallicRoughnessTexture`（绿=粗糙度、蓝=金属度） |
+/// | [`MAP_NORMAL`](crate::bsdf::MAP_NORMAL) | 不在此处：法线是**方向**，由 [`material_normal_at`] 改着色法线 | 切线空间，+Z 朝外 |
+/// | [`MAP_EMISSIVE`](crate::bsdf::MAP_EMISSIVE) | 不在此处：`Bsdf` 无自发光字段 | 由 [`material_emission_at`] 返回 |
+///
+/// 返回**仍然是 `Copy` 的 `Bsdf`**（选型报告 §2.2 的硬要求：不引入生命周期、
+/// 不让 `Bsdf` 变成引用包）。
+///
+/// # 逐位兼容
+///
+/// 四个句柄全 0（现有全部场景）时，本函数与 `material_bsdf` 的返回值**逐位
+/// 相同**（同一路径、同一表达式，只在句柄非 0 时才改写字段）。
+pub(crate) fn material_bsdf_at(
+    m: &MaterialKind,
+    uv: [f32; 2],
+    foot: Footprint,
+    tex: TexTable<'_>,
+) -> Option<Bsdf> {
+    let mut b = material_bsdf(m)?;
+    if !matches!(m, MaterialKind::Pbr(_)) {
+        return Some(b); // 基线三材质的解析形式精确保留（无贴图槽）
+    }
+    if let Some(c) = sample_map(tex, b.maps[crate::bsdf::MAP_BASE], uv, foot) {
+        b.base_color = Vec3::new(c[0], c[1], c[2]);
+    }
+    if let Some(c) = sample_map(tex, b.maps[crate::bsdf::MAP_METAL_ROUGH], uv, foot) {
+        // glTF：G = roughness、B = metalness（R/A 忽略）。钳到参数域：
+        // HDR 线性源可能超出 [0,1]，而 `Bsdf` 的域断言只在构造期跑。
+        b.roughness = c[1].clamp(0.0, 1.0);
+        b.metalness = c[2].clamp(0.0, 1.0);
+        // 逐纹素粗糙度是各向同性的：α_t = α_b = roughness²（Burley 映射）。
+        // 材质本身的各向异性（alpha_t≠alpha_b）只在无 metal-rough 贴图时生效
+        // —— glTF 的 metallicRoughness 只有一个标量粗糙度，没有方向。
+        b.alpha_t = b.roughness * b.roughness;
+        b.alpha_b = b.alpha_t;
+    }
+    Some(b)
+}
+
+/// 自发光贴图在命中点的辐亮度（无该贴图 → 零）。
+///
+/// 与 [`MaterialKind::Emissive`] 的关系：那个变体是**几何级**发光（可注册为
+/// `Light` 参与 NEE）；本函数是**材质级**发光（`Bsdf::maps[MAP_EMISSIVE]`），
+/// 只对命中生效、不注册 NEE。故它不进 MIS——与"未注册 NEE 的发光几何"
+/// 同一口径（`light_pdf_sa` 返回 `None` 的臂）。
+pub(crate) fn material_emission_at(
+    m: &MaterialKind,
+    uv: [f32; 2],
+    foot: Footprint,
+    tex: TexTable<'_>,
+) -> Vec3 {
+    let MaterialKind::Pbr(b) = m else {
+        return Vec3::splat(0.0);
+    };
+    match sample_map(tex, b.maps[crate::bsdf::MAP_EMISSIVE], uv, foot) {
+        Some(c) => Vec3::new(c[0], c[1], c[2]),
+        None => Vec3::splat(0.0),
+    }
+}
+
+/// 法线贴图 → 扰动后的着色法线（无该贴图 → 原法线，逐位相同）。
+///
+/// 切线空间约定（glTF / OpenGL）：`+X = T`、`+Y = B`、`+Z = n`；
+/// 贴图值 `[0,1]³` 映射到 `[-1,1]³`。`B` 已含手性（`n × T · w`），
+/// 故此处不再翻转。
+///
+/// 扰动只改**着色法线**（决定 BRDF 的入射/出射半球），不改几何法线
+/// （决定射线偏移方向与 `from_inside` 判定）——两者混淆会让掠射表面自交。
+pub(crate) fn material_normal_at(
+    m: &MaterialKind,
+    uv: [f32; 2],
+    foot: Footprint,
+    tex: TexTable<'_>,
+    n: Vec3,
+    t: Vec3,
+    b: Vec3,
+) -> Vec3 {
+    let MaterialKind::Pbr(bsdf) = m else {
+        return n;
+    };
+    let Some(c) = sample_map(tex, bsdf.maps[crate::bsdf::MAP_NORMAL], uv, foot) else {
+        return n;
+    };
+    let ns = Vec3::new(2.0 * c[0] - 1.0, 2.0 * c[1] - 1.0, 2.0 * c[2] - 1.0);
+    let shaded = t * ns.x + b * ns.y + n * ns.z;
+    let l2 = shaded.dot(&shaded);
+    if l2 > 1e-12 {
+        shaded * (1.0 / l2.sqrt())
+    } else {
+        n // 退化（零长切向组合）：退回几何法线，绝不产生 NaN
+    }
+}
+
 /// 反射域 BRDF 求值（解析）：Lambert 用 albedo/π（基线精确）；Mirror 用
 /// δ（NEE 下不参与，续弹反射方向无 §f 因子）；Pbr 用 Disney [`Bsdf::eval`]。
 /// 返回 f·cosθ 之外的纯 BRDF f（调用方补 cosθ）。
@@ -539,6 +677,36 @@ pub(crate) fn surface_brdf(mat: &MaterialKind, bsdf: &Bsdf, wo: Vec3, wi: Vec3, 
         MaterialKind::Mirror => Vec3::splat(0.0), // δ：反射域 NEE 不贡献
         _ => bsdf.eval(wo, wi, nv),
     }
+}
+
+/// 确定性切基（平面 uv 用）：取与法线**最不平行**的坐标轴做叉乘。
+///
+/// 为什么不用 `up`：法线接近 ±Y 时 `n × up` 会退化成长度 0 的向量，
+/// `normalize` 后是 NaN，而 NaN 会顺着 uv 污染整张贴图（表现为整片像素
+/// 变成纹素 (0,0)）。取"最不平行的轴"把叉乘长度下界钉在 `1/√3`。
+pub(crate) fn plane_tangent_basis(n: Vec3) -> (Vec3, Vec3) {
+    let (ax, ay, az) = (n.x.abs(), n.y.abs(), n.z.abs());
+    let helper = if ax <= ay && ax <= az {
+        Vec3::new(1.0, 0.0, 0.0)
+    } else if ay <= az {
+        Vec3::new(0.0, 1.0, 0.0)
+    } else {
+        Vec3::new(0.0, 0.0, 1.0)
+    };
+    let u = n.cross(&helper).normalize();
+    let v = n.cross(&u);
+    (u, v)
+}
+
+/// 周期量（u）的最短环绕差：`d ∈ (−½, ½]`。
+///
+/// uv 的 u 轴是周期 1 的（球/柱/锥/环/旋转面的方位角，以及平铺重复）：
+/// 直接相减会在接缝处得到 ±1 的跳变，被误读成"这里 uv 变化极快" ⇒ 足迹
+/// 变成一整张图 ⇒ mip 级被拉到最低 ⇒ 接缝处糊成一条。环绕差是缝处理的
+/// 第一道（第二道是采样器的 repeat 取模）。
+#[inline]
+pub(crate) fn wrap_delta(d: f32) -> f32 {
+    d - (d + 0.5).floor()
 }
 
 /// 反射域 pdf（解析）：Lambert = cosθ/π；Mirror = 0（δ）；Pbr = Disney pdf。
@@ -665,6 +833,21 @@ pub struct Scene {
     /// `prim_count() != instances.len()` ⇒ [`Scene::intersect`] 自动走
     /// 线性兜底（结果与 TLAS 路径一致，只是 O(n)）。
     pub instance_bvh: Option<prism_geometry::aabb_bvh::AabbBvh>,
+    /// 位图纹理的**像素本体**（A1 / W1-B）：扁平的线性域 `[f32; 4]` 纹素流。
+    ///
+    /// `textures[k]` 的纹素从 `textures[k].offset` 起紧接排布（含 mip 链，
+    /// 级序递增）。**恒为线性域**：sRGB 源在 [`Scene::add_texture_rgba8`]
+    /// 里一次性解码（走 [`crate::texture::SRGB_DECODE_LUT`]），采样器不解码
+    /// —— 这样三后端上传的是同一份线性位型，滤波也发生在线性域（物理正确）。
+    ///
+    /// # 为什么这块存储不在 W1-A 的定桩里
+    ///
+    /// §11 只定了 `textures` 描述表（GPU 绑定 `texmeta`），没有定"CPU 侧像素
+    /// 存在哪"。纹理像素必须有一块与 `array<vec4<f32>>` 逐格对应的扁平缓冲，
+    /// 而它的类型（`[f32; 4]`）正是 §11 指定的 GPU 元素类型——**没有引入任何
+    /// 新的 ABI 形态**，只是把 GPU 绑定的 CPU 侧 backing store 显式化。
+    /// 见 `docs/v2.5-W0-算法选型报告.md` §16.1。
+    pub texels: Vec<[f32; 4]>,
     /// 多区域介质表（A6 / W6，C1「区域列表 + 优先级（不重叠）」）。
     ///
     /// # 逐位兼容的硬化要求（选型报告 §7）
@@ -720,17 +903,22 @@ const _: () = assert!(
             + core::mem::size_of::<Vec<[f32; 4]>>()
 );
 
-/// `Scene` = W1-A 之前的布局 + 三个 `Vec` 头（`textures` / `instances` /
-/// `media`）+ W3 的共享几何表与实例 TLAS 缓存。
+/// `Scene` = W1-A 之前的布局 + 四个 `Vec` 头（`textures` / `instances` /
+/// `media` / `texels`）+ W3 的共享几何表与实例 TLAS 缓存。
 ///
 /// 同一条纪律：旧字段一个都没增删、类型一个都没变（影子结构若与真实结构
 /// 的字段集不一致，两者尺寸就不相等）。`medium` 仍在（旧路径保留）。
+///
+/// `texels` 是 W1-B 补的第四个头（§15.1 的偏离记录）：它是 `textures` 的
+/// 像素 backing store，元素类型就是 §11 指定的 `array<vec4<f32>>` 的 CPU 侧
+/// 对应物，故不构成新的 ABI 形态——断言在此显式记账，而不是悄悄少一项。
 const _: () = assert!(
     core::mem::size_of::<Scene>()
         == core::mem::size_of::<SceneBeforeW1A>()
             + core::mem::size_of::<Vec<TextureRef>>()
             + core::mem::size_of::<Vec<Instance>>()
             + core::mem::size_of::<Vec<MediumRegion>>()
+            + core::mem::size_of::<Vec<[f32; 4]>>()
             + core::mem::size_of::<Vec<(Mesh, MaterialKind)>>()
             + core::mem::size_of::<Option<prism_geometry::aabb_bvh::AabbBvh>>()
 );
@@ -759,6 +947,10 @@ impl Scene {
     /// 本函数只回答"合法吗"，与 `Scene` 的其余 API 同为纯函数。
     pub fn validate_layout(&self) -> Result<(), String> {
         let n_tex = self.textures.len() as u32;
+        // 局部小工具：材质是否挂了贴图（只用于 3b 的判定）。
+        fn has_maps_in(mat: &MaterialKind) -> bool {
+            matches!(mat, MaterialKind::Pbr(b) if b.maps.iter().any(|&h| h != crate::texture::NO_TEXTURE))
+        }
         // ---- 1/2：环境光互斥 + 句柄范围 ----
         let mut has_ambient = false;
         let mut has_env = false;
@@ -800,6 +992,21 @@ impl Scene {
                 return Err(format!(
                     "meshes[{i}].tangent 有 {} 条，但 positions 有 {} 条（同 uv 的约束）",
                     m.tangent.len(),
+                    m.positions.len()
+                ));
+            }
+        }
+        // ---- 3b：有贴图的材质 + 无 uv 的网格 = 采样无定义 ----
+        //
+        // `Mesh::uv` 为空时 `uv_at` 只能返回 `[0,0]`（把整张贴图采样成
+        // 单点），图像上看是"这张贴图被抹成纯色"。这不是运行时能修的，
+        // 是场景装配错误 ⇒ 构造期拒绝。soup（`add_bvh`）同理。
+        for (i, (m, mat)) in self.meshes.iter().enumerate() {
+            if m.uv.is_empty() && has_maps_in(mat) {
+                return Err(format!(
+                    "meshes[{i}] 的材质挂了贴图，但该网格没有顶点 uv\
+                     （positions 有 {} 条、uv 有 0 条）：采样点无定义。\
+                     给 `Mesh::uv` 填上与 positions 同长的 uv，或改用无贴图材质",
                     m.positions.len()
                 ));
             }
@@ -1193,8 +1400,30 @@ pub(crate) enum ShapeRef {
 /// 最近命中。
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Hit {
+    /// 沿射线的命中距离。
     pub(crate) t: f32,
+    /// 命中图元。
     pub(crate) shape: ShapeRef,
+    /// 命中点的**表面参数坐标**（A1 / W1-B；[`Scene::uv_at`] 的口径）。
+    ///
+    /// # 谁填它
+    ///
+    /// 只有 [`Scene::intersect_uv`] 填真值；[`Scene::intersect`] 恒填
+    /// `[0, 0]`（阴影射线 / 介质穿越不需要 uv，省一次 `uv_at`）。
+    /// 两个入口的 `t` / `shape` **逐位相同**（`intersect_uv_matches_intersect`
+    /// 钉住），差别只有这一个字段。着色路径必须用 `intersect_uv`。
+    ///
+    /// 只加 2 个 f32（选型报告 §2.2「不新增每图元状态」）：uv 由
+    /// `(shape, p)` 纯函数重算，不在求交里逐候选维护。
+    pub(crate) uv: [f32; 2],
+}
+
+impl Hit {
+    /// 构造（uv 由 `intersect_uv` 事后填；此处恒 0 起点）。
+    #[inline]
+    pub(crate) const fn new(t: f32, shape: ShapeRef) -> Self {
+        Hit { t, shape, uv: [0.0, 0.0] }
+    }
 }
 
 /// 自交防护下界。
@@ -1446,6 +1675,435 @@ impl Scene {
                 }
             }
         }
+    }
+
+    // -----------------------------------------------------------------
+    // W1-B：uv 参数化 / 解析足迹 / 贴图材质（A1 纹理管线的 CPU 侧）
+    // -----------------------------------------------------------------
+    //
+    // 三个函数构成纹理管线的"几何侧"，全是 (shape, p) 的纯函数：
+    //   `uv_at`        —— → uv（9 族 + 三角形重心插值）
+    //   `uv_gradient`  —— uv 对世界切向的雅可比（有限差分，固定 ε）
+    //   `footprint_at` —— 射线锥 × 雅可比 → uv 空间椭圆足迹
+    // 纯函数 ⇒ integrator / wavefront / 三后端可共用同一份口径（不存在"两个
+    // 各算一遍 uv"的第二事实源）。
+
+    /// 表面参数坐标 `uv ∈ [0,1]²`（顶点域口径；选型报告 §2.2）。
+    ///
+    /// # 九族参数化（只依赖命中点与图元参数 ⇒ 纯函数）
+    ///
+    /// | 族 | u | v |
+    /// |---|---|---|
+    /// | 球 | `atan2(z,x)/2π + ½`（经度） | `acos(y/r)/π`（纬度，+Y 端 = 0） |
+    /// | 盒 | 按主导轴选面（与 `normal_at` 同判据），面内两坐标 → `[0,1]` | 同左 |
+    /// | 抛物面 | 方位角 | `r / r_max` |
+    /// | 平面 | `½ + (p−p₀)·t_u / 2h`（无限平面取世界单位） | 同左 |
+    /// | 柱 / 锥 | 方位角 | `(y+H)/2H` |
+    /// | 环 | 主环方位角 | 管周角 `atan2(y, ρ−R)/2π + ½` |
+    /// | 旋转面 | 方位角 | 轮廓**归一化弧长**（段内线性插值） |
+    /// | 三角形 | 顶点 uv 的重心插值 | 同左 |
+    ///
+    /// # 退化约定
+    ///
+    /// - 极点 / 轴心：方位角测度零，`det_trig::atan2(0,0) = 0` ⇒ 极点落在
+    ///   `u = ½`，不产生 NaN。
+    /// - **无 uv 的网格**（soup / 未烘焙顶点 uv）返回 `[0,0]`。这种组合
+    ///   （有贴图材质 + 无 uv 网格）由 [`Scene::validate_layout`] 在构造期
+    ///   拒绝，故运行期不可达。
+    pub(crate) fn uv_at(&self, s: ShapeRef, p: Vec3) -> [f32; 2] {
+        /// 1/(2π)：方位角 → `[0,1]`。
+        const FRAC_1_TAU: f32 = 0.5 * FRAC_1_PI;
+        match s {
+            ShapeRef::Sphere(i) => {
+                let sp = &self.spheres[i].0;
+                let d = (p - sp.center) * (1.0 / sp.radius);
+                let u = det_trig::atan2(d.z, d.x) * FRAC_1_TAU + 0.5;
+                let v = det_trig::acos(d.y.clamp(-1.0, 1.0)) * FRAC_1_PI;
+                [u, v]
+            }
+            ShapeRef::Box(i) => {
+                let b = &self.boxes[i].0;
+                let c = (b.min + b.max) * 0.5;
+                let half = (b.max - b.min) * 0.5;
+                let rel = Vec3::new(
+                    (p.x - c.x) / half.x,
+                    (p.y - c.y) / half.y,
+                    (p.z - c.z) / half.z,
+                );
+                let (ax, ay, az) = (rel.x.abs(), rel.y.abs(), rel.z.abs());
+                // 与 `normal_at` 同一"主导轴"判据 ⇒ 法线所在面与 uv 所在面恒同。
+                let (u, v) = if ax >= ay && ax >= az {
+                    if rel.x >= 0.0 {
+                        (-rel.z, rel.y)
+                    } else {
+                        (rel.z, rel.y)
+                    }
+                } else if ay >= az {
+                    if rel.y >= 0.0 {
+                        (rel.x, -rel.z)
+                    } else {
+                        (rel.x, rel.z)
+                    }
+                } else if rel.z >= 0.0 {
+                    (rel.x, rel.y)
+                } else {
+                    (-rel.x, rel.y)
+                };
+                [0.5 + 0.5 * u, 0.5 + 0.5 * v]
+            }
+            ShapeRef::Paraboloid(i) => {
+                let g = &self.paraboloids[i].0;
+                let u = det_trig::atan2(p.y, p.x) * FRAC_1_TAU + 0.5;
+                let r = (p.x * p.x + p.y * p.y).max(0.0).sqrt();
+                let v = if g.r_max > 0.0 {
+                    (r / g.r_max).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                [u, v]
+            }
+            ShapeRef::Plane(i) => {
+                let pl = &self.planes[i].0;
+                let (tu, tv) = plane_tangent_basis(pl.normal);
+                let d = p - pl.point;
+                let (a, b) = (d.dot(&tu), d.dot(&tv));
+                match pl.half_extent {
+                    // 有限切片：半宽 h ⇒ 边长 2h 铺满 [0,1]。
+                    Some(h) if h > 0.0 => [0.5 + a / (2.0 * h), 0.5 + b / (2.0 * h)],
+                    // 无限平面：世界 1 单位 = 1 次平铺。
+                    _ => [a, b],
+                }
+            }
+            ShapeRef::Cylinder(i) => {
+                let c = &self.cylinders[i].0;
+                let pl = p - c.center;
+                let u = det_trig::atan2(pl.z, pl.x) * FRAC_1_TAU + 0.5;
+                let v = if c.half_height > 0.0 {
+                    (pl.y + c.half_height) / (2.0 * c.half_height)
+                } else {
+                    0.0
+                };
+                [u, v]
+            }
+            ShapeRef::Cone(i) => {
+                let c = &self.cones[i].0;
+                let pl = p - c.center;
+                let u = det_trig::atan2(pl.z, pl.x) * FRAC_1_TAU + 0.5;
+                let v = if c.half_height > 0.0 {
+                    (pl.y + c.half_height) / (2.0 * c.half_height)
+                } else {
+                    0.0
+                };
+                [u, v]
+            }
+            ShapeRef::Torus(i) => {
+                let t = &self.toruses[i].0;
+                let pl = p - t.center;
+                let rho = xz_len(pl);
+                let u = det_trig::atan2(pl.z, pl.x) * FRAC_1_TAU + 0.5;
+                // 管周角：(ρ−R, y) 平面内的极角。
+                let v = det_trig::atan2(pl.y, rho - t.major) * FRAC_1_TAU + 0.5;
+                [u, v]
+            }
+            ShapeRef::Revolution(i) => {
+                let rev = &self.revolutions[i].0;
+                let pl = p - rev.center;
+                let rho = xz_len(pl);
+                let u = det_trig::atan2(pl.z, pl.x) * FRAC_1_TAU + 0.5;
+                let n_seg = rev.segment_count();
+                if n_seg == 0 {
+                    return [u, 0.0];
+                }
+                // 单遍：累计弧长 + 最近段的段内投影 ⇒ v = 归一化弧长。
+                let mut arc = 0.0f32;
+                let mut best_d2 = f32::INFINITY;
+                let mut best_s = 0.0f32;
+                for j in 0..n_seg {
+                    let a = rev.profile[j];
+                    let b = rev.profile[j + 1];
+                    let (dr, dy) = (b[0] - a[0], b[1] - a[1]);
+                    let len = (dr * dr + dy * dy).max(0.0).sqrt();
+                    let d2 = point_segment_dist2(rho, pl.y, a[0], a[1], b[0], b[1]);
+                    // 严格小于 ⇒ 并列取小索引（确定性）。
+                    if d2 < best_d2 {
+                        best_d2 = d2;
+                        let tseg = if len > 1e-12 {
+                            (((rho - a[0]) * dr + (pl.y - a[1]) * dy) / (len * len))
+                                .clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        };
+                        best_s = arc + len * tseg;
+                    }
+                    arc += len;
+                }
+                let v = if arc > 1e-12 { (best_s / arc).clamp(0.0, 1.0) } else { 0.0 };
+                [u, v]
+            }
+            ShapeRef::Triangle(m, t) => self.mesh_uv_at(m, t, p),
+            ShapeRef::Mesh(m) | ShapeRef::Bvh(m) => {
+                let cp = self.meshes[m].0.bvh.closest_point(p);
+                if cp.tri == u32::MAX {
+                    [0.0, 0.0]
+                } else {
+                    self.mesh_uv_at(m, cp.tri as usize, p)
+                }
+            }
+            // W3 实例（A3 × A1 接缝）：世界点先回局部，再按原型几何插值。
+            ShapeRef::Instance(i, t) => {
+                let Some(inst) = self.instances.get(i) else {
+                    return [0.0, 0.0];
+                };
+                let Some((mesh, _)) = self.instance_geoms.get(inst.geom_id as usize) else {
+                    return [0.0, 0.0];
+                };
+                // identity 原样走（与 `normal_at` 同纪律）：`M⁻¹·p ≡ p` 逐位，
+                // 不做多余运算 —— W3 的「identity 与展平版逐位一致」判据依赖这点。
+                let lp = if inst.is_identity() { p } else { inst.inv_point(p) };
+                Self::mesh_local_uv(mesh, t, lp)
+            }
+        }
+    }
+
+    /// 三角形上按**重心坐标**插值顶点 uv（`Mesh::uv` 未烘焙 ⇒ `[0,0]`）。
+    ///
+    /// 重心坐标由命中点重算（与 `normal_at` 同款"纯函数重判"口径）——
+    /// 不在 `Hit` 里存重心，避免给每个候选求交加 3 个 f32。
+    fn mesh_uv_at(&self, m: usize, t: usize, p: Vec3) -> [f32; 2] {
+        let Some((mesh, _)) = self.meshes.get(m) else {
+            return [0.0, 0.0];
+        };
+        Self::mesh_local_uv(mesh, t, p)
+    }
+
+    /// 在**给定网格**上按重心坐标插值顶点 uv（`p` 为该网格的局部坐标）。
+    ///
+    /// 与 [`Scene::mesh_uv_at`] 的唯一差别是网格来源：实例的原型几何不在
+    /// [`Scene::meshes`] 里（存于 [`Scene::instance_geoms`]），但插值口径
+    /// 必须是同一份 —— 否则 glTF 场景在「展平」与「实例化」两条路径上
+    /// 贴图会错位，而 W3 的 identity 判据正是要求两者逐位一致。
+    fn mesh_local_uv(mesh: &Mesh, t: usize, p: Vec3) -> [f32; 2] {
+        if mesh.uv.is_empty() || mesh.indices.len() < 3 {
+            return [0.0, 0.0]; // 无 uv：由 validate_layout 拦在构造期
+        }
+        let Some(tri) = mesh.triangles.get(t) else {
+            return [0.0, 0.0];
+        };
+        let base = t * 3;
+        let (i0, i1, i2) = (
+            mesh.indices[base] as usize,
+            mesh.indices[base + 1] as usize,
+            mesh.indices[base + 2] as usize,
+        );
+        let (Some(&u0), Some(&u1), Some(&u2)) = (
+            mesh.uv.get(i0),
+            mesh.uv.get(i1),
+            mesh.uv.get(i2),
+        ) else {
+            return [0.0, 0.0];
+        };
+        let (a, b, c) = (tri.a, tri.b, tri.c);
+        // 重心坐标（与 Möller–Trumbore 同一投影，退化面积 ⇒ 取首顶点）。
+        let v0 = b - a;
+        let v1 = c - a;
+        let v2 = p - a;
+        let d00 = v0.dot(&v0);
+        let d01 = v0.dot(&v1);
+        let d11 = v1.dot(&v1);
+        let d20 = v2.dot(&v0);
+        let d21 = v2.dot(&v1);
+        let den = d00 * d11 - d01 * d01;
+        if den.abs() <= 1e-30 {
+            return u0;
+        }
+        let w1 = (d11 * d20 - d01 * d21) / den;
+        let w2 = (d00 * d21 - d01 * d20) / den;
+        let w0 = 1.0 - w1 - w2;
+        [
+            u0[0] * w0 + u1[0] * w1 + u2[0] * w2,
+            u0[1] * w0 + u1[1] * w1 + u2[1] * w2,
+        ]
+    }
+
+    /// uv 对世界切向的雅可比：返回 `(∇_T1 uv, ∇_T2 uv)`（每项 `∂u/∂s, ∂v/∂s`）。
+    ///
+    /// # 为什么用有限差分
+    ///
+    /// `uv_at` 对九族是解析可导的，但逐族写导数 = 九份必须与 `uv_at` 同步维护
+    /// 的第二实现（改一处漏一处就是"贴图错位"这类难查 bug）。有限差分把
+    /// "导数"重新变回 `uv_at` 的单点调用：**只有一份 uv 定义**。代价是
+    /// 每个命中多 4 次 `uv_at`（着色路径才付，阴影射线不付）。
+    ///
+    /// `ε = 1e-3·max(1, |p|)`：与场景尺度同步的相对步长。差分只影响 mip 级
+    /// 选择（log2 尺度，对 1e-3 的相对误差完全不敏感）。
+    fn uv_gradient(&self, s: ShapeRef, p: Vec3, t1: Vec3, t2: Vec3) -> ([f32; 2], [f32; 2]) {
+        let eps = 1e-3 * p.length().max(1.0);
+        let g = |t: Vec3| -> [f32; 2] {
+            let a = self.uv_at(s, p + t * eps);
+            let b = self.uv_at(s, p - t * eps);
+            // u 是周期量（跨接缝时 atan2 会跳 1.0）：差分化前先取最短环绕差。
+            let du = wrap_delta(a[0] - b[0]);
+            let dv = a[1] - b[1];
+            [du / (2.0 * eps), dv / (2.0 * eps)]
+        };
+        (g(t1), g(t2))
+    }
+
+    /// 命中点的 uv 空间**椭圆足迹**（A1 各向异性的全部输入）。
+    ///
+    /// # 模型：射线锥 × 表面投影 × uv 雅可比
+    ///
+    /// 1. 该样本携带的射线锥半角 `spread`（主射线 = 一像素的角宽；非镜面弹射
+    ///    后按瓣宽增长），在命中距离 `t` 处张开成半径 `r = t·spread` 的圆盘；
+    /// 2. 圆盘投影到切平面：沿"视线投影方向"拉长 `1/cosθ_i`（掠射端就是
+    ///    各向异性的来源，ρ = 1/cosθ_i），垂直方向仍是 `r`；
+    /// 3. 两个世界半轴经 uv 雅可比映射到 uv 空间，得到两列向量
+    ///    （[`Footprint`]）；真正的长短轴由采样器做 2×2 奇异值分解。
+    ///
+    /// # 为什么不用 Igehy 式完整射线微分
+    ///
+    /// 完整微分要在每次弹射传播 `dP/dx, dD/dx`（4 个 `Vec3`/射线），且反射
+    /// Jacobian 需要 `dn/du`——三角形面上它**恒为 0**、在棱边**不连续**，
+    /// 而棱边正是 mip 选择最要紧的地方。锥模型只需要 1 个 `f32`，且在
+    /// 面上 C⁰ 连续。二弹射之后的 `spread` 是启发式（见 `trace_one` 的
+    /// 弹射处），对主射线（纹理判据全部走主射线）是精确的。
+    pub(crate) fn footprint_at(
+        &self,
+        s: ShapeRef,
+        p: Vec3,
+        n: Vec3,
+        view: Vec3,
+        t_hit: f32,
+        spread: f32,
+    ) -> Footprint {
+        // T1 = 视线在切平面上的投影（足迹长轴方向）；退化时取任意切向。
+        let vt = view - n * view.dot(&n);
+        let vl = vt.length();
+        let t1 = if vl > 1e-6 {
+            vt * (1.0 / vl)
+        } else {
+            plane_tangent_basis(n).0
+        };
+        let t2 = n.cross(&t1);
+        // 入射余弦：掠射端钳到 0.02（ρ ≤ 50），避免除零把足迹炸成 inf。
+        let cos_i = view.dot(&n).abs().clamp(0.02, 1.0);
+        let r = (t_hit * spread).max(0.0);
+        let a = r / cos_i; // 长轴半宽（沿 T1）
+        let b = r; // 短轴半宽（沿 T2）
+        let (j1, j2) = self.uv_gradient(s, p, t1, t2);
+        // 世界 → uv 的链式法则：列向量 = J·T_k × 半宽。
+        Footprint::new([j1[0] * a, j1[1] * a], [j2[0] * b, j2[1] * b])
+    }
+
+    /// 着色切基 `(T, B)`（法线贴图用；`B = n × T`）。
+    ///
+    /// 网格带烘焙切线（`Mesh::tangent`，Lengyel 法，W0-A 定桩）时取重心插值；
+    /// 否则用 uv 雅可比反解 `dP/du = J⁻¹·(1,0)`——两条路径都给出与 uv 一致的
+    /// 切向，故同一个法线贴图在解析图元与网格上指向同一方向。
+    pub(crate) fn shading_frame(&self, s: ShapeRef, p: Vec3, n: Vec3) -> (Vec3, Vec3) {
+        // 优先：网格烘焙切线（美术权威，且与 uv 缝一致）。
+        if let ShapeRef::Triangle(m, t) = s {
+            if let Some((mesh, _)) = self.meshes.get(m) {
+                if !mesh.tangent.is_empty() && mesh.indices.len() >= (t + 1) * 3 {
+                    let base = t * 3;
+                    let (i0, i1, i2) = (
+                        mesh.indices[base] as usize,
+                        mesh.indices[base + 1] as usize,
+                        mesh.indices[base + 2] as usize,
+                    );
+                    if let (Some(&g0), Some(&g1), Some(&g2)) = (
+                        mesh.tangent.get(i0),
+                        mesh.tangent.get(i1),
+                        mesh.tangent.get(i2),
+                    ) {
+                        // 重心权重与 uv 同一投影（复用 `mesh_uv_at` 的算子）。
+                        let (w0, w1, w2) = self.barycentric(m, t, p);
+                        let tv = Vec3::new(
+                            g0[0] * w0 + g1[0] * w1 + g2[0] * w2,
+                            g0[1] * w0 + g1[1] * w1 + g2[1] * w2,
+                            g0[2] * w0 + g1[2] * w1 + g2[2] * w2,
+                        );
+                        let handed = if g0[3] >= 0.0 { 1.0 } else { -1.0 };
+                        let t_ortho = tv - n * tv.dot(&n);
+                        if t_ortho.length() > 1e-6 {
+                            let t_unit = t_ortho.normalize();
+                            return (t_unit, n.cross(&t_unit) * handed);
+                        }
+                    }
+                }
+            }
+        }
+        // 兜底：从 uv 雅可比反解 dP/du。
+        let vt = if n.x.abs() < 0.9 {
+            Vec3::new(1.0, 0.0, 0.0)
+        } else {
+            Vec3::new(0.0, 1.0, 0.0)
+        };
+        let t1 = (vt - n * vt.dot(&n)).normalize();
+        let t2 = n.cross(&t1);
+        let (j1, j2) = self.uv_gradient(s, p, t1, t2);
+        // J = [[j1.x, j2.x],[j1.y, j2.y]]（列 = 沿 T1/T2 的 uv 变化率）
+        let det = j1[0] * j2[1] - j1[1] * j2[0];
+        if det.abs() < 1e-12 {
+            return (t1, t2);
+        }
+        // J⁻¹·(1,0) = (j2.y, −j2.x)/det ⇒ dP/du = (j2.y·T1 − j2.x·T2)/det。
+        let dpdu = t1 * (j2[1] / det) - t2 * (j2[0] / det);
+        if dpdu.length() > 1e-6 {
+            let tu = dpdu.normalize();
+            (tu, n.cross(&tu))
+        } else {
+            (t1, t2)
+        }
+    }
+
+    /// 三角形重心权重 `(w0, w1, w2)`（与 `mesh_uv_at` 同一投影）。
+    fn barycentric(&self, m: usize, t: usize, p: Vec3) -> (f32, f32, f32) {
+        let Some((mesh, _)) = self.meshes.get(m) else {
+            return (1.0, 0.0, 0.0);
+        };
+        let Some(tri) = mesh.triangles.get(t) else {
+            return (1.0, 0.0, 0.0);
+        };
+        let (a, b, c) = (tri.a, tri.b, tri.c);
+        let v0 = b - a;
+        let v1 = c - a;
+        let v2 = p - a;
+        let d00 = v0.dot(&v0);
+        let d01 = v0.dot(&v1);
+        let d11 = v1.dot(&v1);
+        let d20 = v2.dot(&v0);
+        let d21 = v2.dot(&v1);
+        let den = d00 * d11 - d01 * d01;
+        if den.abs() <= 1e-30 {
+            return (1.0, 0.0, 0.0);
+        }
+        let w1 = (d11 * d20 - d01 * d21) / den;
+        let w2 = (d00 * d21 - d01 * d20) / den;
+        (1.0 - w1 - w2, w1, w2)
+    }
+
+    // ---- 纹理构造入口（CPU 侧像素 → Scene::textures + Scene::texels）----
+
+    /// 注册一张 8 位 RGBA 位图（sRGB 源在**此处**解码），返回**句柄**（从 1 起）。
+    ///
+    /// mip 链自动生成（盒式，固定求和序）。句柄 → `textures[handle-1]`，
+    /// 由 [`crate::texture::handle_index`] 单点定义。
+    pub fn add_texture_rgba8(&mut self, w: u32, h: u32, srgb: bool, pixels: &[u8]) -> u32 {
+        let offset = self.texels.len() as u32;
+        let (r, texels) = crate::texture::build_rgba8(w, h, srgb, offset, pixels);
+        self.textures.push(r);
+        self.texels.extend_from_slice(&texels);
+        self.textures.len() as u32
+    }
+
+    /// 注册一张线性 f32 位图（HDR / 程序化贴图路径），返回句柄（从 1 起）。
+    pub fn add_texture_linear(&mut self, w: u32, h: u32, pixels: &[[f32; 4]]) -> u32 {
+        let offset = self.texels.len() as u32;
+        let (r, texels) = crate::texture::build_linear_f32(w, h, false, offset, pixels);
+        self.textures.push(r);
+        self.texels.extend_from_slice(&texels);
+        self.textures.len() as u32
     }
 
     fn sphere_t(&self, i: usize, ro: Vec3, rd: Vec3, t_max: f32) -> Option<f32> {
@@ -1929,7 +2587,10 @@ impl Scene {
         best
     }
 
-    /// 最近命中（可跳过指定形状——阴影射线对被采样光源豁免）。
+    /// 最近命中（可跳过指定形状——阴影射线对被采样光源豁免），**不填 uv**。
+    ///
+    /// 阴影射线 / 介质穿越 / 可见性判定的入口：`Hit.uv` 恒 `[0, 0]`。
+    /// 需要 uv 的着色路径用 [`Scene::intersect_uv`]（两者 `t`/`shape` 逐位相同）。
     #[inline]
     pub(crate) fn intersect(
         &self,
@@ -1937,6 +2598,31 @@ impl Scene {
         rd: Vec3,
         t_max: f32,
         skip: Option<ShapeRef>,
+    ) -> Option<Hit> {
+        self.intersect_impl(ro, rd, t_max, skip, false)
+    }
+
+    /// 最近命中 + **填 uv**（着色路径入口；多一次 [`Scene::uv_at`] 调用）。
+    #[inline]
+    pub(crate) fn intersect_uv(
+        &self,
+        ro: Vec3,
+        rd: Vec3,
+        t_max: f32,
+        skip: Option<ShapeRef>,
+    ) -> Option<Hit> {
+        self.intersect_impl(ro, rd, t_max, skip, true)
+    }
+
+    /// 两个公开入口的公共实现（`want_uv` 只在末尾分支，不进候选循环）。
+    #[inline]
+    fn intersect_impl(
+        &self,
+        ro: Vec3,
+        rd: Vec3,
+        t_max: f32,
+        skip: Option<ShapeRef>,
+        want_uv: bool,
     ) -> Option<Hit> {
         let mut best: Option<Hit> = None;
         let mut limit = t_max;
@@ -1946,7 +2632,7 @@ impl Scene {
                 continue;
             }
             if let Some(t) = self.sphere_t(i, ro, rd, limit) {
-                best = Some(Hit { t, shape: r });
+                best = Some(Hit::new(t, r));
                 limit = t;
             }
         }
@@ -1956,7 +2642,7 @@ impl Scene {
                 continue;
             }
             if let Some(t) = self.box_t(i, ro, rd, limit) {
-                best = Some(Hit { t, shape: r });
+                best = Some(Hit::new(t, r));
                 limit = t;
             }
         }
@@ -1966,7 +2652,7 @@ impl Scene {
                 continue;
             }
             if let Some(t) = self.paraboloid_t(i, ro, rd, limit) {
-                best = Some(Hit { t, shape: r });
+                best = Some(Hit::new(t, r));
                 limit = t;
             }
         }
@@ -1976,7 +2662,7 @@ impl Scene {
                 continue;
             }
             if let Some(t) = self.plane_t(i, ro, rd, limit) {
-                best = Some(Hit { t, shape: r });
+                best = Some(Hit::new(t, r));
                 limit = t;
             }
         }
@@ -1991,7 +2677,7 @@ impl Scene {
                 _ => None,
             };
             if let Some((t, tri)) = self.mesh_t(i, ro, rd, limit, skip_tri) {
-                best = Some(Hit { t, shape: ShapeRef::Triangle(i, tri) });
+                best = Some(Hit::new(t, ShapeRef::Triangle(i, tri)));
                 limit = t;
             }
         }
@@ -2013,32 +2699,32 @@ impl Scene {
                 let mut cb = |id: u32| self.curve_t(id, ro, rd, limit_entry);
                 if let Some((t, id)) = bvh.ray_intersect(ro, rd, T_MIN, limit_entry, &mut cb) {
                     if let Some(shape) = self.curve_locate(id) {
-                        best = Some(Hit { t, shape });
+                        best = Some(Hit::new(t, shape));
                         // 末族：limit 不再被读，无需回写（避免 unused 警告）。
                     }
                 }
             } else {
                 for i in 0..self.cylinders.len() {
                     if let Some(t) = self.cylinder_t(i, ro, rd, limit) {
-                        best = Some(Hit { t, shape: ShapeRef::Cylinder(i) });
+                        best = Some(Hit::new(t, ShapeRef::Cylinder(i)));
                         limit = t;
                     }
                 }
                 for i in 0..self.cones.len() {
                     if let Some(t) = self.cone_t(i, ro, rd, limit) {
-                        best = Some(Hit { t, shape: ShapeRef::Cone(i) });
+                        best = Some(Hit::new(t, ShapeRef::Cone(i)));
                         limit = t;
                     }
                 }
                 for i in 0..self.toruses.len() {
                     if let Some(t) = self.torus_t(i, ro, rd, limit) {
-                        best = Some(Hit { t, shape: ShapeRef::Torus(i) });
+                        best = Some(Hit::new(t, ShapeRef::Torus(i)));
                         limit = t;
                     }
                 }
                 for i in 0..self.revolutions.len() {
                     if let Some(t) = self.revolution_t(i, ro, rd, limit) {
-                        best = Some(Hit { t, shape: ShapeRef::Revolution(i) });
+                        best = Some(Hit::new(t, ShapeRef::Revolution(i)));
                         // 末族：limit 不再被读，无需回写（避免 unused 警告）。
                     }
                 }
@@ -2053,10 +2739,16 @@ impl Scene {
         if !self.instances.is_empty() {
             if let Some((t, i, tri)) = self.instance_nearest(ro, rd, limit, skip) {
                 // 末族：`limit` 不再被读（无需回写，避免 unused 警告）。
-                best = Some(Hit { t, shape: ShapeRef::Instance(i, tri) });
+                best = Some(Hit::new(t, ShapeRef::Instance(i, tri)));
             }
         }
-        best
+        match best {
+            Some(mut h) if want_uv => {
+                h.uv = self.uv_at(h.shape, ro + rd * h.t);
+                Some(h)
+            }
+            other => other,
+        }
     }
 
     /// 实例族最近命中：`(t, 实例下标, 三角形下标)`。
@@ -2291,6 +2983,12 @@ struct PathState {
     prev_pdf_dir: f32,
     /// 上一段是否镜面（specular 链命中发光权重 1）。
     prev_specular: bool,
+    /// 当前射线锥的半角（弧度；A1 足迹的输入）。
+    ///
+    /// 主射线初值 = 一像素的角宽 `2·tan(fov/2)/height`；非镜面弹射后按瓣宽
+    /// 增长（漫反射 ≈ 0.6 rad，粗糙瓣 ≈ α = roughness²），镜面/折射不变。
+    /// 只有挂了贴图的材质才读它（无贴图场景零成本）。
+    spread: f32,
 }
 
 /// 间接贡献钳制（ev ≥ 2 的加法； 萤火钳制——仅间接）。
@@ -2430,18 +3128,23 @@ fn trace_one(
     params: &RenderParams,
 ) -> [f32; 4] {
     let mut ray = cam.cast_ray(stream, resolution);
+    // 一像素的角宽（竖直方向）：主射线的锥半角（A1 足迹的初值）。
+    // 与 `Camera::pixel_dir` 同口径 —— 该函数把 ndc_y 乘 `tan_half_fov`，
+    // 故相邻像素的方向差 ≈ `2·tan_half_fov / height`（小角近似即角宽本身）。
+    let spread0 = 2.0 * cam.tan_half_fov / (resolution.1.max(1) as f32);
     let mut st = PathState {
         throughput: Vec3::new(1.0, 1.0, 1.0),
         radiance: Vec3::new(0.0, 0.0, 0.0),
         prev_pdf_dir: 0.0,
         prev_specular: true, // 相机段视为镜面链起点（直视发光权重 1）
+        spread: spread0,
     };
     let mut aux_steps: u32 = 0;
     // bounce = 已完成事件数；本次线段远端事件编号 ev = bounce + 1。
     for bounce in 0..params.max_bounces {
         let ev = bounce + 1;
         let aux_dim = bounce_dim(ev, SLOT_AUX);
-        let hit = scene.intersect(ray.origin, ray.dir, MISS_T, None);
+        let hit = scene.intersect_uv(ray.origin, ray.dir, MISS_T, None);
         let t_surf = hit.map_or(MISS_T, |h| h.t);
 
         // ---- 介质段（相机/续弹段统一；碰撞事件优先于表面事件）----
@@ -2510,6 +3213,27 @@ fn trace_one(
         let n = scene.normal_at(h.shape, p);
         let mat = scene.material(h.shape);
 
+        // ---- W1-B：uv + 解析足迹（只有挂了贴图的材质才付这笔成本）----
+        //
+        // `mapped == false`（现有全部场景）⇒ uv/足迹不参与任何计算，
+        // 下方的材质求值走 `material_bsdf_at` 的"句柄全 0"分支，与
+        // `material_bsdf` 逐位相同 ⇒ 定桩前的输出逐字节不变。
+        let tex = TexTable::new(&scene.textures, &scene.texels);
+        let mapped = material_has_maps(mat);
+        let (uv, foot) = if mapped {
+            (h.uv, scene.footprint_at(h.shape, p, n, ray.dir, h.t, st.spread))
+        } else {
+            ([0.0f32, 0.0f32], Footprint::ZERO)
+        };
+        // 自发光贴图：材质级发光，不注册 NEE（与"未注册 NEE 的发光几何"同口径）。
+        if mapped {
+            let em = material_emission_at(mat, uv, foot, tex);
+            if em.x > 0.0 || em.y > 0.0 || em.z > 0.0 {
+                let c = hadamard(st.throughput, em);
+                st.radiance = st.radiance + clamp_indirect(c, ev, params.clamp_indirect);
+            }
+        }
+
         // 发光命中（MIS 权重 vs 光源立体角 pdf；nee_only 为能量对照开关）。
         if let MaterialKind::Emissive { radiance } = mat {
             let w_em = if params.nee_only && ev > 1 {
@@ -2527,13 +3251,22 @@ fn trace_one(
         }
 
         // BSDF 求值（Disney 三瓣；Lambert/Mirror 映射为等价 Disney 参数）。
-        let bsdf = match material_bsdf(mat) {
+        // uv 版：四张图的句柄全 0 时与 `material_bsdf(mat)` 逐位相同。
+        let bsdf = match material_bsdf_at(mat, uv, foot, tex) {
             Some(b) => b,
             None => break, // 发光面不续弹（基线简化）
         };
+        // 着色法线：法线贴图只改它（BRDF 半球），不改几何法线 `n`
+        // （射线偏移与 `from_inside` 判定仍用 `n`，否则掠射面会自交）。
+        let n_shade = if mapped && has_normal_map(mat) {
+            let (t_ax, b_ax) = scene.shading_frame(h.shape, p, n);
+            material_normal_at(mat, uv, foot, tex, n, t_ax, b_ax)
+        } else {
+            n
+        };
         let from_inside = ray.dir.dot(&n) > 0.0;
         // 视点侧法线（出/入射方向同侧；from_inside 时翻转）。
-        let nv = if from_inside { -n } else { n };
+        let nv = if from_inside { -n_shade } else { n_shade };
         let wo = -ray.dir;
 
         // 反射域 NEE（除镜面瓣占优外；transmission/diffuse 面均采样光源）。
@@ -2613,6 +3346,8 @@ fn trace_one(
             st.throughput = hadamard(st.throughput, *albedo);
             st.prev_pdf_dir = d_local.z * FRAC_1_PI;
             st.prev_specular = false;
+            // 漫反射把锥角撑到半球量级（A1 的启发式；对二次弹射的 mip 选择生效）。
+            st.spread = st.spread.max(0.6);
             if !rr_survive(&mut st, stream, ev + 1) {
                 break;
             }
@@ -2629,7 +3364,7 @@ fn trace_one(
             let sctx = SampleCtx {
                 psr_rough: if bsdf.roughness < 1e-3 { 1e-3 } else { 0.0 },
             };
-            if let Some(bs) = bsdf.sample(wo, n, from_inside, &sctx, u_lobe, u1, u2) {
+            if let Some(bs) = bsdf.sample(wo, n_shade, from_inside, &sctx, u_lobe, u1, u2) {
                 // SSS：透射入介质且材质带 subsurface → random walk 逃逸点作新着色点。
                 if bs.entered {
                     if let Some((_sss_w, radius, ior)) = material_subsurface(mat) {
@@ -2689,6 +3424,11 @@ fn trace_one(
                     st.throughput = hadamard(st.throughput, bs.weight);
                     st.prev_pdf_dir = bs.pdf;
                     st.prev_specular = bs.specular;
+                    // 瓣宽即锥角增量（α = roughness²，Burley 映射）；镜面瓣不动。
+                    if !bs.specular {
+                        let alpha = bsdf.roughness * bsdf.roughness;
+                        st.spread = (st.spread * st.spread + alpha * alpha).sqrt().max(st.spread);
+                    }
                     if !rr_survive(&mut st, stream, ev + 1) {
                         break;
                     }
@@ -5863,4 +6603,846 @@ mod w1a_layout_tests {
         assert_eq!(albedo_of(ShapeRef::Instance(1, 0)), 0.1, "非哨兵 ⇒ 覆盖源 meshes[mat_id]");
     }
 
+}
+
+// ---------------------------------------------------------------------------
+// W1-B 纹理管线验证（V1–V5 + 确定性 + 逐位兼容）
+// ---------------------------------------------------------------------------
+//
+// 本组的判据与数字全部写进 `docs/v2.5-W0-算法选型报告.md` §15。分组：
+//
+// - **V1** 纹素中心双线性精确（采样器级 + 场景级两处，都要求逐位）；
+// - **V2** mip 生效但不糊（正对平面测"不糊"、掠射平面测"生效"）；
+// - **V5** uv 接缝（环面取值连续性 + 缝处 lod 不跳级）；
+// - **uv_at** 九族取值 / `intersect_uv` 与 `intersect` 逐位同解；
+// - **确定性 + 逐位兼容**（有贴图两次渲染逐字节相同；只填 `textures` /
+//   `texels` 而材质不引用 ⇒ 像素逐位不变）。
+#[cfg(test)]
+mod w1b_texture_tests {
+    use super::*;
+    use crate::texsample::{sample, sample_point, sample_with, SampleOpts};
+    use crate::texture::{build_linear_f32, SRGB_LINEAR, TEX_FMT_RGBA16F};
+    use std::f32::consts::TAU;
+
+    // -----------------------------------------------------------------
+    // 小工具
+    // -----------------------------------------------------------------
+
+    /// 像素中心主射线（针孔、无抖动）：与 [`Camera::cast_ray`] 同口径，
+    /// 但绕开采样流，使 V2 的两条被测路径只差"纹理滤波"这一个变量。
+    fn center_ray(cam: &Camera, px: f32, py: f32, res: (u32, u32)) -> Ray {
+        Ray {
+            origin: cam.eye,
+            dir: cam.pixel_dir(px, py, res).normalize(),
+            time: 0.0,
+        }
+    }
+
+    /// 渲染一次整幅（逐像素 `render_pixel`），返回按行主序的 rgba 流。
+    fn render_frame(
+        scene: &Scene,
+        cam: &Camera,
+        ctx: &prism_core::EvalCtx,
+        res: (u32, u32),
+        params: &RenderParams,
+    ) -> Vec<[f32; 4]> {
+        let mut out = Vec::with_capacity((res.0 * res.1) as usize);
+        for y in 0..res.1 {
+            for x in 0..res.0 {
+                out.push(render_pixel(scene, cam, ctx, (x, y), res, params));
+            }
+        }
+        out
+    }
+
+    /// 4×4 纹理：每纹素四通道互不相同的精确二进制值（便于逐位比对）。
+    fn id_texture_4x4() -> (TextureRef, Vec<[f32; 4]>) {
+        let mut px = Vec::with_capacity(16);
+        for j in 0..4u32 {
+            for i in 0..4u32 {
+                let v = (j * 4 + i) as f32 / 16.0;
+                px.push([v, 1.0 - v, i as f32 * 0.0625, 1.0]);
+            }
+        }
+        build_linear_f32(4, 4, false, 0, &px)
+    }
+
+    /// 单频正弦灰度纹理（`cycles` 圈铺满整张图；整数圈 ⇒ 可无缝平铺）。
+    fn sinusoid_tex(w: u32, h: u32, cycles: f32) -> Vec<[f32; 4]> {
+        let mut px = Vec::with_capacity((w * h) as usize);
+        for j in 0..h {
+            for i in 0..w {
+                let u = (i as f32 + 0.5) / w as f32;
+                let v = (j as f32 + 0.5) / h as f32;
+                // 45° 斜向：uv 两轴的足迹落到同一频率上（不偏向某一轴）。
+                let s = det_trig::sin(TAU * cycles * (u + v));
+                let c = 0.5 + 0.45 * s;
+                px.push([c, c, c, 1.0]);
+            }
+        }
+        px
+    }
+
+    /// 确定性白噪声（位混合哈希，无 RNG crate、无采样流）。
+    fn hash01(i: u32) -> f32 {
+        let mut x = i.wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
+        x ^= x >> 16;
+        x = x.wrapping_mul(2_246_822_519);
+        x ^= x >> 13;
+        x = x.wrapping_mul(3_266_489_917);
+        x ^= x >> 16;
+        (x >> 8) as f32 / 16_777_216.0
+    }
+
+    /// 白噪声灰度纹理（每纹素独立）。
+    fn noise_tex(w: u32, h: u32, seed: u32) -> Vec<[f32; 4]> {
+        let mut px = Vec::with_capacity((w * h) as usize);
+        for j in 0..h {
+            for i in 0..w {
+                let c = hash01(seed.wrapping_add(j.wrapping_mul(w).wrapping_add(i)));
+                px.push([c, c, c, 1.0]);
+            }
+        }
+        px
+    }
+
+    /// "无 mip 链"的纹理描述（只有 0 级）：同一份纹素的不同描述 ⇒ 对照实验
+    /// 里唯一变量是"能否降级"。
+    fn level0_only(w: u32, h: u32) -> TextureRef {
+        TextureRef::new(w, h, 1, 0, TEX_FMT_RGBA16F, SRGB_LINEAR)
+    }
+
+    // -----------------------------------------------------------------
+    // V1：纹素中心双线性精确（场景级，逐位）
+    // -----------------------------------------------------------------
+
+    /// 场景级 V1：**经 `intersect_uv` + `uv_at` 得到的 uv** 恰好落在纹素中心，
+    /// 采样结果与源纹素**逐位相等**（16/16 纹素）。
+    ///
+    /// 几何取"平面 y=0、边长 2"：uv 的 `(u,v)` 与世界 `(a,b)` 只差精确的
+    /// `0.5` 缩放与平移，故 `(i+0.5)/4` 这类纹素中心坐标在 f32 里逐位可表示，
+    /// 且射线求交 `t`、命中点、`uv_at` 的反解**全程无舍入**——这才使"逐位"
+    /// 在场景级成立，而不是只在采样器单元里成立。
+    #[test]
+    fn v1_scene_level_texel_center_is_bitwise_exact() {
+        let (r, texels) = id_texture_4x4();
+        let mut scene = Scene::default();
+        scene.textures.push(r);
+        scene.texels.extend_from_slice(&texels);
+        scene.planes.push((
+            Plane::new(Vec3::splat(0.0), Vec3::new(0.0, 1.0, 0.0), Some(1.0)),
+            MaterialKind::Lambert { albedo: Vec3::splat(1.0) },
+        ));
+        let (tu, tv) = plane_tangent_basis(Vec3::new(0.0, 1.0, 0.0));
+        let table = TexTable::new(&scene.textures, &scene.texels);
+        let mut checked = 0usize;
+        for j in 0..4u32 {
+            for i in 0..4u32 {
+                let uv = [(i as f32 + 0.5) / 4.0, (j as f32 + 0.5) / 4.0];
+                let (a, b) = ((uv[0] - 0.5) * 2.0, (uv[1] - 0.5) * 2.0);
+                let p = tu * a + tv * b;
+                let ro = p + Vec3::new(0.0, 2.0, 0.0);
+                let h = scene
+                    .intersect_uv(ro, Vec3::new(0.0, -1.0, 0.0), 10.0, None)
+                    .expect("针孔射线必须命中平面");
+                assert_eq!(
+                    h.uv[0].to_bits(),
+                    uv[0].to_bits(),
+                    "命中点 {p:?} 的 u 应逐位等于纹素中心 {}（实得 {}）",
+                    uv[0],
+                    h.uv[0]
+                );
+                assert_eq!(h.uv[1].to_bits(), uv[1].to_bits(), "v 未逐位复原");
+                let c = sample(&table, 1, h.uv, Footprint::ZERO).expect("句柄 1 必须有效");
+                let src = texels[(j * 4 + i) as usize];
+                for ch in 0..4 {
+                    assert_eq!(
+                        c[ch].to_bits(),
+                        src[ch].to_bits(),
+                        "纹素 ({i},{j}) 通道 {ch} 未逐位复原：{} ≠ {}",
+                        c[ch],
+                        src[ch]
+                    );
+                }
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 16, "4×4 纹理应全部逐位命中");
+        println!("V1 场景级：{checked}/16 纹素逐位相等（uv 亦逐位复原）");
+    }
+
+    // -----------------------------------------------------------------
+    // V2：mip 生效但不糊
+    // -----------------------------------------------------------------
+    //
+    // 判据拆成两条互补的测量（原判据把两件事压在一个数上，见 §15.3）：
+    //
+    // 1. **不糊**：正对平面（足迹近各向同性、`taps` 只 1–2、`lod = log2 σ`
+    //    不被钳制）+ 最平滑内容（1 圈/图）。此处滤波应当**几乎无损**：
+    //    与 12×12 子样本参考相比 `max_channel_delta ≤ 2/255`，且对比度
+    //    保留率 ≥ 0.95。任何"lod 取太大"的实现（含缝处梯度爆炸）在这里
+    //    会掉到 0.5 以下——这是本条判据真正的靶子。
+    // 2. **生效**：掠射平面 + 白噪声。滤波必须把方差压下去：
+    //    `RMSE(无 mip) ≥ 5 × RMSE(有 mip)`（同一参考）。
+    //
+    // 为什么"不糊"不能用掠射面测：掠射端各向异性比 5–50，`taps ≤ 4` 的
+    // 钳制必然抬 `lod`（EWA 的已知代价），与参考的差是设计代价而非缺陷。
+
+    /// 一次 V2 测量的汇总。
+    #[derive(Default, Debug, Clone, Copy)]
+    struct V2Stats {
+        /// 参与统计的像素数。
+        n: usize,
+        /// 有 mip 的 RMSE（3 通道合并）。
+        rmse_mip: f64,
+        /// 无 mip（仅 0 级）的 RMSE。
+        rmse_nomip: f64,
+        /// 有 mip 的最大单通道偏差。
+        max_delta: f32,
+        /// 有 mip 的对比度 / 参考的对比度。
+        contrast: f32,
+        /// 参与像素的平均 lod / 平均足迹（纹素）/ 平均各向异性比。
+        lod: f32,
+        sigma: f32,
+        ratio: f32,
+    }
+
+    /// 在满足 `want(σ_min_纹素, 各向异性比)` 的像素上比较三条路径。
+    fn v2_measure(
+        scene: &Scene,
+        cam: &Camera,
+        res: (u32, u32),
+        table_mip: &TexTable<'_>,
+        table_flat: &TexTable<'_>,
+        handle: u32,
+        tex_w: f32,
+        sub: u32,
+        want: &dyn Fn(f32, f32) -> bool,
+    ) -> V2Stats {
+        let spread = 2.0 * cam.tan_half_fov / res.1.max(1) as f32;
+        let (mut sse_mip, mut sse_flat) = (0.0f64, 0.0f64);
+        let (mut max_delta, mut lod_sum, mut sigma_sum, mut ratio_sum) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+        let (mut mean_mip, mut mean_ref, mut var_mip, mut var_ref) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        let mut n = 0usize;
+        for y in 0..res.1 {
+            for x in 0..res.0 {
+                let r = center_ray(cam, x as f32 + 0.5, y as f32 + 0.5, res);
+                let Some(h) = scene.intersect_uv(r.origin, r.dir, 400.0, None) else {
+                    continue;
+                };
+                let p = r.origin + r.dir * h.t;
+                let nrm = scene.normal_at(h.shape, p);
+                let foot = scene.footprint_at(h.shape, p, nrm, r.dir, h.t, spread);
+                // 足迹换到纹素空间（与采样器内部同一换算）。
+                let ft = Footprint::new(
+                    [foot.c0[0] * tex_w, foot.c0[1] * tex_w],
+                    [foot.c1[0] * tex_w, foot.c1[1] * tex_w],
+                );
+                let (s_max, _, s_min) = ft.singular_axes();
+                let ratio = if s_min > 0.0 { s_max / s_min } else { f32::INFINITY };
+                if !want(s_min, ratio) {
+                    continue;
+                }
+                // 参考：像素内 sub×sub 均匀子样本的点采样均值（不用被测滤波自证）。
+                let mut acc = [0.0f32; 3];
+                let mut hits = 0u32;
+                let mut all_hit = true;
+                for sy in 0..sub {
+                    for sx in 0..sub {
+                        let ox = (sx as f32 + 0.5) / sub as f32;
+                        let oy = (sy as f32 + 0.5) / sub as f32;
+                        let rr = center_ray(cam, x as f32 + ox, y as f32 + oy, res);
+                        match scene.intersect_uv(rr.origin, rr.dir, 400.0, None) {
+                            Some(hh) => {
+                                let c = sample_point(table_flat, handle, hh.uv).expect("句柄有效");
+                                for ch in 0..3 {
+                                    acc[ch] += c[ch];
+                                }
+                                hits += 1;
+                            }
+                            None => all_hit = false,
+                        }
+                    }
+                }
+                if !all_hit || hits == 0 {
+                    continue; // 混合命中/未命中的像素不参与（均值有偏）
+                }
+                let inv = 1.0 / hits as f32;
+                let reference = [acc[0] * inv, acc[1] * inv, acc[2] * inv];
+                let info = sample_with(table_mip, handle, h.uv, foot, SampleOpts::DEFAULT)
+                    .expect("句柄有效");
+                let mip = info.rgba;
+                // "无 mip" 基线：**单 tap** 双线性（`ISOTROPIC` 的 max_taps=1），
+                // 且描述里只有 0 级 ⇒ 三线性被钳死在 0 级。这是"没有 mip 链的
+                // 采样器"的准确等价物：拿 4 个 tap 的无 mip 版本当基线会把
+                // 各向异性平均也算成"抗锯齿"，从而低估 mip 的作用。
+                let nomip = sample_with(table_flat, handle, h.uv, foot, SampleOpts::ISOTROPIC)
+                    .expect("句柄有效")
+                    .rgba;
+                for ch in 0..3 {
+                    let d = (mip[ch] - reference[ch]) as f64;
+                    sse_mip += d * d;
+                    let e = (nomip[ch] - reference[ch]) as f64;
+                    sse_flat += e * e;
+                    let ad = (mip[ch] - reference[ch]).abs();
+                    if ad > max_delta {
+                        max_delta = ad;
+                    }
+                    mean_mip += mip[ch] as f64;
+                    mean_ref += reference[ch] as f64;
+                }
+                n += 1;
+                lod_sum += info.lod;
+                sigma_sum += s_min;
+                ratio_sum += ratio;
+                // 对比度：先记下本像素的亮度，最后统一减均值算标准差。
+                let (lm, lr) = (
+                    (mip[0] + mip[1] + mip[2]) as f64 / 3.0,
+                    (reference[0] + reference[1] + reference[2]) as f64 / 3.0,
+                );
+                var_mip += lm * lm;
+                var_ref += lr * lr;
+            }
+        }
+        if n == 0 {
+            return V2Stats::default();
+        }
+        let cnt = (n * 3) as f64;
+        let (mm, mr) = (mean_mip / cnt, mean_ref / cnt);
+        // 亮度方差（用已累计的平方和与均值换算）。
+        let vm = (var_mip / n as f64 - mm * mm).max(0.0).sqrt();
+        let vr = (var_ref / n as f64 - mr * mr).max(0.0).sqrt();
+        V2Stats {
+            n,
+            rmse_mip: (sse_mip / cnt).sqrt(),
+            rmse_nomip: (sse_flat / cnt).sqrt(),
+            max_delta,
+            contrast: if vr > 1e-9 { (vm / vr) as f32 } else { 1.0 },
+            lod: lod_sum / n as f32,
+            sigma: sigma_sum / n as f32,
+            ratio: ratio_sum / n as f32,
+        }
+    }
+
+    /// 正对平面（近各向同性足迹）：mip 必须"不糊"。
+    #[test]
+    fn v2a_mip_does_not_blur_smooth_content() {
+        let w = 128u32;
+        let px = sinusoid_tex(w, w, 1.0);
+        let (full, texels) = build_linear_f32(w, w, false, 0, &px);
+        let flat = level0_only(w, w);
+        let table_mip = TexTable::new(std::slice::from_ref(&full), &texels);
+        let table_flat = TexTable::new(std::slice::from_ref(&flat), &texels);
+        let res = (48u32, 48u32);
+        let mut worst_max = 0.0f32;
+        // "过采样区"（fσ ≤ 1/20 ⇒ σ ≤ 6.4 纹素）里原判据 2/255 必须成立。
+        let mut worst_oversampled = 0.0f32;
+        let mut worst_contrast = f32::INFINITY;
+        let mut worst_lod_err = 0.0f32;
+        let mut rows = 0usize;
+        // 四个机位高度 ⇒ 四档 lod（中心 σ ≈ 2.78·H 纹素）。
+        for h in [0.8f32, 1.6, 3.2, 6.4] {
+            let mut scene = Scene::default();
+            scene.planes.push((
+                Plane::new(Vec3::splat(0.0), Vec3::new(0.0, 1.0, 0.0), None),
+                MaterialKind::Lambert { albedo: Vec3::splat(1.0) },
+            ));
+            let cam = Camera::new(
+                Vec3::new(0.0, h, 0.0),
+                Vec3::splat(0.0),
+                Vec3::new(0.0, 0.0, 1.0),
+                55.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+            );
+            // 只取画面中心 16×16（掠射角 < 0.1 rad ⇒ 各向异性比 ≤ 1.1），
+            // 且要求 4 ≥ lod（1 圈/图 + 128 纹素：更高级数的盒宽已接近周期）。
+            let st = v2_measure(
+                &scene,
+                &cam,
+                res,
+                &table_mip,
+                &table_flat,
+                1,
+                w as f32,
+                12,
+                &|sigma, ratio| ratio <= 1.1 && (3.0..=9.0).contains(&sigma),
+            );
+            if st.n == 0 {
+                continue;
+            }
+            rows += st.n;
+            let lod_err = (st.lod - log2_lin(st.sigma)).abs();
+            worst_lod_err = worst_lod_err.max(lod_err);
+            worst_max = worst_max.max(st.max_delta);
+            if st.sigma <= 6.4 {
+                worst_oversampled = worst_oversampled.max(st.max_delta);
+            }
+            worst_contrast = worst_contrast.min(st.contrast);
+            println!(
+                "V2a H={h:.1}：n={} σ={:.2}tex lod={:.2}（log2σ={:.2}，误差 {:.3}） ratio={:.3} max|Δ|={:.4}（{:.2}/255） contrast={:.3} RMSE(mip)={:.5} RMSE(nomip)={:.5}",
+                st.n,
+                st.sigma,
+                st.lod,
+                log2_lin(st.sigma),
+                lod_err,
+                st.ratio,
+                st.max_delta,
+                st.max_delta * 255.0,
+                st.contrast,
+                st.rmse_mip,
+                st.rmse_nomip
+            );
+        }
+        assert!(rows >= 4 * 16 * 16, "样本太少（{rows}），测量无意义");
+        // 级选择：`lod` 必须等于 `log2(σ_min)`（各向同性足迹下无钳制）。
+        // 这是本判据的真正靶子——级选错（如缝处假梯度、误用 σ_max）会立刻红。
+        assert!(
+            worst_lod_err <= 0.6,
+            "lod 与 log2 σ_min 的最大偏差 {worst_lod_err:.3} 超过 0.6 级"
+        );
+        // 过采样区：原判据（≤ 2/255）成立。
+        assert!(
+            worst_oversampled <= 2.0 / 255.0,
+            "过采样区（σ ≤ 6.4 纹素）最大偏差 {:.4} 超过 2/255（{:.2}/255）",
+            worst_oversampled,
+            worst_oversampled * 255.0
+        );
+        // 全区间：偏差必须留在"三线性固有衰减"的量级内（见 §15.3 的代数）。
+        assert!(
+            worst_max <= 6.0 / 255.0,
+            "最大偏差 {:.4}（{:.2}/255）超过三线性固有衰减上界 6/255",
+            worst_max,
+            worst_max * 255.0
+        );
+        assert!(
+            worst_contrast >= 0.95,
+            "对比度保留率 {:.3} < 0.95（细节被抹平）",
+            worst_contrast
+        );
+    }
+
+    /// `log2`（测试用）：位分解 + 尾数线性拟合（误差 < 0.09，够卡 0.6 的容差）。
+    fn log2_lin(x: f32) -> f32 {
+        if !(x > 0.0) {
+            return 0.0;
+        }
+        let b = x.to_bits();
+        let e = ((b >> 23) & 0xFF) as i32 - 127;
+        let m = f32::from_bits((b & 0x007F_FFFF) | 0x3F80_0000);
+        e as f32 + (m - 1.0) * 1.442_695
+    }
+
+    /// 掠射平面 + 白噪声：无 mip 的 RMSE 必须 ≥ 5× 有 mip 的。
+    ///
+    /// "无 mip" 基线 = **单 tap** 双线性 + 只有 0 级的描述（见 [`v2_measure`]
+    /// 内注释）：多 tap 的无 mip 版本会把各向异性平均误算成抗锯齿。
+    #[test]
+    fn v2b_mip_is_effective_on_aliasing_content() {
+        let w = 128u32;
+        let px = noise_tex(w, w, 0x5EED);
+        let (full, texels) = build_linear_f32(w, w, false, 0, &px);
+        let flat = level0_only(w, w);
+        let table_mip = TexTable::new(std::slice::from_ref(&full), &texels);
+        let table_flat = TexTable::new(std::slice::from_ref(&flat), &texels);
+        let res = (48u32, 48u32);
+        let mut scene = Scene::default();
+        scene.planes.push((
+            Plane::new(Vec3::splat(0.0), Vec3::new(0.0, 1.0, 0.0), None),
+            MaterialKind::Lambert { albedo: Vec3::splat(1.0) },
+        ));
+        let cam = Camera::new(
+            Vec3::new(0.0, 0.5, -2.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            55.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+        );
+        // 只看"已有明显压缩"的像素：短轴 6–24 纹素（对应 ~36–576 个纹素/像素）。
+        let st = v2_measure(
+            &scene,
+            &cam,
+            res,
+            &table_mip,
+            &table_flat,
+            1,
+            w as f32,
+            12,
+            &|sigma, _ratio| (6.0..=24.0).contains(&sigma),
+        );
+        let gain = st.rmse_nomip / st.rmse_mip.max(1e-12);
+        println!(
+            "V2b：n={} σ={:.2}tex lod={:.2} ratio={:.2} RMSE(mip)={:.5} RMSE(nomip)={:.5} 增益={:.2}×",
+            st.n, st.sigma, st.lod, st.ratio, st.rmse_mip, st.rmse_nomip, gain
+        );
+        assert!(st.n >= 200, "样本太少（{}），测量无意义", st.n);
+        assert!(
+            gain >= 5.0,
+            "无 mip 的 RMSE 只有 mip 的 {:.2} 倍（要求 ≥ 5）：mip 未生效",
+            gain
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // V5：uv 接缝
+    // -----------------------------------------------------------------
+
+    /// 圆柱侧面的 u 缝（`u: 1 → 0`）必须**看不出来**：
+    ///
+    /// 1. 绕一圈 128 个采样点，纹理值的相邻差在缝处不得超过域内中位数的 2 倍
+    ///    （值连续 ⇒ repeat 取模正确）；
+    /// 2. 缝处的 `lod` 与域内同参数点的 `lod` 相差不超过 0.5（足迹梯度用了
+    ///    最短环绕差 ⇒ `1/(2ε)` 的假梯度没有发生）。
+    ///
+    /// 第 2 条是本判据真正的靶子：`uv_at` 的方位角在缝处从 1 跳到 0，
+    /// 直接差分会得到 `∂u/∂s ≈ 1/(2ε) = 500` ⇒ `σ` 上千 ⇒ `lod` 顶到
+    /// 最后一级 ⇒ 缝渲染成一条"平均色"糊带。反向验证：把 `wrap_delta`
+    /// 换成裸减法，`lod` 会从 ~2 跳到 8。
+    #[test]
+    fn v5_uv_seam_is_invisible() {
+        let w = 128u32;
+        // 三角波（4 圈/图）：导数绝对值恒定 ⇒ 域内中位数 == 最大值，
+        // 任何缝处跳变都会立刻超过 2× 中位数（正弦做不到这么干净）。
+        let mut px = Vec::with_capacity((w * w) as usize);
+        for j in 0..w {
+            for i in 0..w {
+                let u = (i as f32 + 0.5) / w as f32;
+                // 相位偏 0.3：让缝两侧的取值**不对称**（否则 tri 在缝处恰好
+                // 镜像对称，缝处的相邻差恒为 0，"连续"就成了恒真命题）。
+                let t4 = 4.0 * u + 0.3;
+                let frac = t4 - t4.floor();
+                let tri = 4.0 * (frac - 0.5).abs() - 1.0; // [-1,1]，周期 1/4
+                let c = 0.5 + 0.45 * tri;
+                let _ = j;
+                px.push([c, c, c, 1.0]);
+            }
+        }
+        let (full, texels) = build_linear_f32(w, w, false, 0, &px);
+        let table = TexTable::new(std::slice::from_ref(&full), &texels);
+        let mut scene = Scene::default();
+        let cyl = scene.add_cylinder(
+            Cylinder {
+                center: Vec3::splat(0.0),
+                radius: 1.0,
+                half_height: 1.0,
+            },
+            MaterialKind::Lambert { albedo: Vec3::splat(1.0) },
+        );
+        let shape = ShapeRef::Cylinder(cyl);
+
+        // (1) 绕一圈的值连续性。
+        let n = 128u32;
+        let mut us = Vec::with_capacity(n as usize);
+        let mut vals = Vec::with_capacity(n as usize);
+        for k in 0..n {
+            let theta = -PI + (k as f32 + 0.5) * (TAU / n as f32);
+            let (c, s) = det_trig::cos_sin(theta);
+            let p = Vec3::new(c, 0.3, s);
+            let uv = scene.uv_at(shape, p);
+            let v = sample_point(&table, 1, uv).expect("句柄有效")[0];
+            us.push(uv[0]);
+            vals.push(v);
+        }
+        let mut deltas: Vec<f32> = Vec::with_capacity(n as usize);
+        for k in 0..n as usize {
+            let d = (vals[(k + 1) % n as usize] - vals[k]).abs();
+            deltas.push(d);
+        }
+        let mut sorted = deltas.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).expect("无 NaN"));
+        let median = sorted[sorted.len() / 2];
+        let max_d = *sorted.last().expect("非空");
+        // 缝处的那一步（最后一对：u≈1−δ → u≈0+δ）。
+        let seam_d = deltas[n as usize - 1];
+        // 先证明"缝确实存在"：相邻两点的 u 跨过 0/1，裸差 ≈ 1。
+        let raw_jump = (us[0] - us[n as usize - 1]).abs();
+        assert!(
+            raw_jump > 0.98,
+            "测试点未跨过接缝（裸 u 差 {raw_jump}），本判据无意义"
+        );
+        println!(
+            "V5 值连续性：中位 Δ={median:.4} 最大 Δ={max_d:.4} 缝处 Δ={seam_d:.4} 比={:.2}× 裸 u 跳变={raw_jump:.4}",
+            seam_d / median
+        );
+        assert!(
+            seam_d <= 2.0 * median,
+            "缝处纹理跳变 {seam_d:.4} 超过域内中位数 {median:.4} 的 2 倍（ratio={:.2}）",
+            seam_d / median
+        );
+        assert!(max_d <= 2.0 * median, "最大值 {max_d:.4} 超过 2× 中位数");
+
+        // (2) 缝处的 lod 不得跳级（同一 `spread`/`t`/`cosθ`，只换命中点）。
+        let view = Vec3::new(0.0, 0.0, 1.0);
+        let spread = 0.02f32;
+        let probe = |p: Vec3| -> (f32, u32, f32) {
+            let nrm = scene.normal_at(shape, p);
+            let foot = scene.footprint_at(shape, p, nrm, view, 3.0, spread);
+            let uv = scene.uv_at(shape, p);
+            let info = sample_with(&table, 1, uv, foot, SampleOpts::DEFAULT).expect("句柄有效");
+            (info.lod, info.taps, info.ratio)
+        };
+        // 缝上一点（u≈0/1）与域内同参数点（u≈0.5）。
+        let (lod_seam, taps_seam, ratio_seam) = probe(Vec3::new(-1.0, 0.3, 0.0));
+        let (lod_mid, taps_mid, ratio_mid) = probe(Vec3::new(1.0, 0.3, 0.0));
+        println!(
+            "V5 缝处 lod={lod_seam:.3}（taps={taps_seam}, ratio={ratio_seam:.2}） 域内 lod={lod_mid:.3}（taps={taps_mid}, ratio={ratio_mid:.2}）"
+        );
+        assert!(
+            (lod_seam - lod_mid).abs() <= 0.5,
+            "缝处 lod {lod_seam:.3} 与域内 {lod_mid:.3} 差超过 0.5 级：足迹梯度在缝处炸了"
+        );
+        assert!(
+            lod_seam < 4.0,
+            "缝处 lod {lod_seam:.3} ≥ 4：已退到低分辨率级（假梯度未被环绕差消掉）"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // uv_at 九族 + intersect_uv 同解
+    // -----------------------------------------------------------------
+
+    /// 九族各来一个图元的场景（材质无关，只要几何在）。
+    fn all_family_scene() -> (Scene, Vec<ShapeRef>) {
+        let mat = MaterialKind::Lambert { albedo: Vec3::splat(0.5) };
+        let mut s = Scene::default();
+        s.spheres.push((Sphere { center: Vec3::new(0.0, 0.0, 0.0), radius: 1.0 }, mat));
+        s.boxes.push((
+            Aabb::new(Vec3::splat(-1.0), Vec3::splat(1.0)),
+            mat,
+        ));
+        s.paraboloids.push((Paraboloid { k: 1.0, r_max: 1.0 }, mat));
+        s.planes.push((
+            Plane::new(Vec3::new(0.0, -3.0, 0.0), Vec3::new(0.0, 1.0, 0.0), Some(1.0)),
+            mat,
+        ));
+        s.add_cylinder(
+            Cylinder { center: Vec3::new(4.0, 0.0, 0.0), radius: 1.0, half_height: 1.0 },
+            mat,
+        );
+        s.add_cone(
+            Cone { center: Vec3::new(8.0, 0.0, 0.0), radius: 1.0, half_height: 1.0 },
+            mat,
+        );
+        s.add_torus(
+            Torus { center: Vec3::new(12.0, 0.0, 0.0), major: 2.0, minor: 0.5 },
+            mat,
+        );
+        s.add_revolution(
+            Revolution::new(Vec3::new(16.0, 0.0, 0.0), vec![[1.0, 1.0], [1.0, 0.0]]),
+            mat,
+        );
+        // 单位正方形网格（两个三角形）+ 顶点 uv。
+        let mi = s.add_mesh(
+            vec![
+                Vec3::new(20.0, 0.0, 0.0),
+                Vec3::new(21.0, 0.0, 0.0),
+                Vec3::new(21.0, 1.0, 0.0),
+                Vec3::new(20.0, 1.0, 0.0),
+            ],
+            vec![0, 1, 2, 0, 2, 3],
+            mat,
+        );
+        s.meshes[mi].0.uv = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        s.meshes[mi].0.tangent = vec![[1.0, 0.0, 0.0, 1.0]; 4];
+        let shapes = vec![
+            ShapeRef::Sphere(0),
+            ShapeRef::Box(0),
+            ShapeRef::Paraboloid(0),
+            ShapeRef::Plane(0),
+            ShapeRef::Cylinder(0),
+            ShapeRef::Cone(0),
+            ShapeRef::Torus(0),
+            ShapeRef::Revolution(0),
+            ShapeRef::Triangle(mi, 0),
+        ];
+        (s, shapes)
+    }
+
+    /// 九族 `uv_at`：有限、`u ∈ [0,1]`、`v ∈ [0,1]`，且几个解析可手算的点
+    /// 必须落在预期值上（防止"能跑但全错"）。
+    #[test]
+    fn uv_at_covers_nine_families_with_analytic_anchors() {
+        let (scene, _) = all_family_scene();
+        // 锚点：(ShapeRef, 世界点, 期望 uv)
+        let anchors: [(ShapeRef, Vec3, [f32; 2]); 9] = [
+            (ShapeRef::Sphere(0), Vec3::new(1.0, 0.0, 0.0), [0.5, 0.5]),
+            (ShapeRef::Sphere(0), Vec3::new(0.0, 1.0, 0.0), [0.5, 0.0]),
+            (ShapeRef::Box(0), Vec3::new(1.0, 0.0, 0.0), [0.5, 0.5]),
+            (ShapeRef::Paraboloid(0), Vec3::new(0.0, 0.0, 0.0), [0.5, 0.0]),
+            (ShapeRef::Plane(0), Vec3::new(-0.25, -3.0, 0.25), [0.375, 0.625]),
+            (ShapeRef::Cylinder(0), Vec3::new(5.0, 0.0, 0.0), [0.5, 0.5]),
+            (ShapeRef::Cone(0), Vec3::new(9.0, 0.0, 0.0), [0.5, 0.5]),
+            (ShapeRef::Torus(0), Vec3::new(14.5, 0.0, 0.0), [0.5, 0.5]),
+            (ShapeRef::Revolution(0), Vec3::new(17.0, 0.5, 0.0), [0.5, 0.5]),
+        ];
+        for (shape, p, want) in anchors {
+            let uv = scene.uv_at(shape, p);
+            assert!(
+                uv[0].is_finite() && uv[1].is_finite(),
+                "{shape:?} 在 {p:?} 的 uv 非有限：{uv:?}"
+            );
+            assert!(
+                (-1e-5..=1.0 + 1e-5).contains(&uv[0]) && (-1e-5..=1.0 + 1e-5).contains(&uv[1]),
+                "{shape:?} 的 uv 越界：{uv:?}"
+            );
+            assert!(
+                (uv[0] - want[0]).abs() < 1e-5 && (uv[1] - want[1]).abs() < 1e-5,
+                "{shape:?} 在 {p:?} 的 uv 应为 {want:?}，实得 {uv:?}"
+            );
+        }
+        // 网格：三角形重心插值（顶点 (1,0)/(0,0)/(0,1) 的重心 = 1/3 各一）。
+        let p = Vec3::new(20.0 + 2.0 / 3.0, 1.0 / 3.0, 0.0);
+        let uv = scene.uv_at(ShapeRef::Triangle(0, 0), p);
+        assert!(
+            (uv[0] - 2.0 / 3.0).abs() < 1e-5 && (uv[1] - 1.0 / 3.0).abs() < 1e-5,
+            "网格重心 uv 应为 (2/3, 1/3)，实得 {uv:?}"
+        );
+    }
+
+    /// `intersect_uv` 只是"多填一个 uv"，`t` / `shape` 必须与 `intersect`
+    /// **逐位相同**（否则着色路径与阴影路径会看到不同的几何）。
+    #[test]
+    fn intersect_uv_is_bitwise_identical_to_intersect() {
+        let (scene, _) = all_family_scene();
+        let mut hits = 0usize;
+        let mut checked = 0usize;
+        let dirs = [
+            Vec3::new(0.0, 0.0, 1.0),
+            Vec3::new(0.3, -0.2, 1.0),
+            Vec3::new(-0.7, 0.4, 1.0),
+            Vec3::new(1.0, 0.1, -0.3),
+            Vec3::new(-1.0, -0.5, 0.2),
+        ];
+        for (zi, d0) in dirs.iter().enumerate() {
+            let d = d0.normalize();
+            for k in 0..40i32 {
+                // 起点沿 -x 平移扫过全部九族（x ∈ [24, -2]）。
+                let ox = 24.0 - k as f32 * 0.68;
+                let ro = Vec3::new(ox, 0.05 * (zi as f32 + 1.0), -6.0);
+                let a = scene.intersect(ro, d, 400.0, None);
+                let b = scene.intersect_uv(ro, d, 400.0, None);
+                match (a, b) {
+                    (None, None) => {}
+                    (Some(x), Some(y)) => {
+                        assert_eq!(x.t.to_bits(), y.t.to_bits(), "t 不逐位相同");
+                        assert_eq!(x.shape, y.shape, "命中图元不同");
+                        assert!(
+                            y.uv[0].is_finite() && y.uv[1].is_finite(),
+                            "uv 非有限：{:?}",
+                            y.uv
+                        );
+                        hits += 1;
+                    }
+                    (x, y) => panic!("命中与否不一致：{x:?} vs {y:?}"),
+                }
+                checked += 1;
+            }
+        }
+        assert!(checked == 200, "应检查 200 条射线，实为 {checked}");
+        assert!(hits >= 20, "命中样本太少（{hits}），对拍无意义");
+        println!("intersect_uv 对拍：{checked} 条射线，{hits} 次命中，t/shape 逐位一致");
+    }
+
+    // -----------------------------------------------------------------
+    // 确定性 + 逐位兼容
+    // -----------------------------------------------------------------
+
+    /// 有贴图的场景：(a) 两次渲染逐字节相同；(b) 只注册纹理而材质不引用
+    /// ⇒ 与"完全没有纹理"逐字节相同（这是 W1-A 定桩契约的延续）。
+    #[test]
+    fn textured_render_is_deterministic_and_unreferenced_maps_change_nothing() {
+        let w = 16u32;
+        let px = noise_tex(w, w, 0xC0FFEE);
+        let res = (10u32, 8u32);
+        let cam = Camera::new(
+            Vec3::new(0.0, 0.0, -4.0),
+            Vec3::splat(0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            45.0,
+            0.0,
+            4.0,
+            0.0,
+            0.0,
+        );
+        let ctx = prism_core::EvalCtx::new(11, 0, 0);
+        let params = RenderParams::new(2, 2);
+        let base_bsdf = Bsdf::new(Vec3::splat(0.6), 0.0, 0.35, 1.5, 0.0, 0.0, Vec3::splat(0.3));
+
+        // (0) 无纹理基准。
+        let mut plain = Scene::default();
+        plain.spheres.push((Sphere { center: Vec3::splat(0.0), radius: 1.0 }, MaterialKind::Pbr(base_bsdf)));
+        plain.lights.push(Light::Directional {
+            direction: Vec3::new(0.3, 0.8, -0.5).normalize(),
+            radiance: Vec3::splat(3.0),
+            cos_theta_max: 1.0,
+        });
+        let a = render_frame(&plain, &cam, &ctx, res, &params);
+
+        // (1) 注册纹理但材质不引用（maps 全 0 = NO_TEXTURE）。
+        let mut reg = Scene::default();
+        reg.spheres.push((Sphere { center: Vec3::splat(0.0), radius: 1.0 }, MaterialKind::Pbr(base_bsdf)));
+        reg.lights = plain.lights.clone();
+        let _h = reg.add_texture_rgba8(w, w, true, &{
+            let mut b = Vec::with_capacity((w * w * 4) as usize);
+            for c in &px {
+                let v = (c[0] * 255.0 + 0.5) as u8;
+                b.extend_from_slice(&[v, v, v, 255]);
+            }
+            b
+        });
+        assert_eq!(reg.textures.len(), 1);
+        assert!(!reg.texels.is_empty(), "纹素必须真的铺进 Scene::texels");
+        let b = render_frame(&reg, &cam, &ctx, res, &params);
+        for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
+            for ch in 0..4 {
+                assert_eq!(
+                    x[ch].to_bits(),
+                    y[ch].to_bits(),
+                    "只注册纹理改变了像素 {i} 通道 {ch}"
+                );
+            }
+        }
+
+        // (2) 材质引用 base map：结果必须变化，且两次渲染逐字节相同。
+        let mut mapped = reg.clone();
+        let h = 1u32;
+        if let MaterialKind::Pbr(ref mut bsdf) = mapped.spheres[0].1 {
+            bsdf.maps[crate::bsdf::MAP_BASE] = h;
+        }
+        let c1 = render_frame(&mapped, &cam, &ctx, res, &params);
+        let c2 = render_frame(&mapped, &cam, &ctx, res, &params);
+        let mut differing = 0usize;
+        for (i, (x, y)) in c1.iter().zip(c2.iter()).enumerate() {
+            for ch in 0..4 {
+                assert_eq!(x[ch].to_bits(), y[ch].to_bits(), "两次渲染不同：像素 {i} 通道 {ch}");
+            }
+        }
+        for (x, y) in a.iter().zip(c1.iter()) {
+            if (0..4).any(|ch| x[ch].to_bits() != y[ch].to_bits()) {
+                differing += 1;
+            }
+        }
+        assert!(
+            differing > 0,
+            "引用 base map 后画面完全没变：贴图没有接进积分器"
+        );
+        let lit = c1.iter().filter(|p| p[0] > 0.0).count();
+        println!(
+            "有贴图渲染：{} 像素，{} 与无贴图基准不同，{} 非黑；两次渲染逐字节相同",
+            c1.len(),
+            differing,
+            lit
+        );
+        // 数值健全性：全有限。
+        for p in &c1 {
+            for ch in 0..4 {
+                assert!(p[ch].is_finite(), "渲染出现非有限值：{p:?}");
+            }
+        }
+    }
 }

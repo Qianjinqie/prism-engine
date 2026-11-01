@@ -2532,6 +2532,19 @@ static COVERAGE: &[(&str, &[(&str, &str, &str)])] = &[
         )],
     ),
     ("rt_bvh.wgsl", &[]),
+    (
+        "scene_frame_v3.wgsl",
+        &[(
+            "scene_main",
+            ST_SKIP,
+            "W1-B：V3 九绑定 + 纹理采样的 WGSL 已落地，但**没有 SPIR-V 发射器**\
+             （本仓零第三方依赖 ⇒ 无 WGSL→SPIR-V 编译器；手写 9 绑定 + 采样段的\
+             字节码在无判对手段时等于产出不可验证的代码）。故本项如实标 SKIP：\
+             绑定/参数块/纹素元素类型与 `scene_abi::V3_BINDINGS` 的逐格对账由\
+             `scene_abi::tests::v3_wgsl_bindings_and_types_match_abi` 在 CPU 侧完成。\
+             V6 的「三后端 differing_pixels = 0」因此**未验**（见报告 §16.4）",
+        )],
+    ),
     ("rt_shade.wgsl", &[]),
     ("rt_common.wgsl", &[]),
     ("sim_common.wgsl", &[]),

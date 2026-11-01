@@ -76,6 +76,110 @@ pub fn tan(x: f32) -> f32 {
     s / c
 }
 
+// ---------------------------------------------------------------------------
+// 反三角（W1-B：uv 参数化需要 atan2；D-29 同款纪律，禁 libm）
+// ---------------------------------------------------------------------------
+
+/// `[0, 1]` 上的 `atan`（固定系数 Maclaurin，Horner 排布）。
+///
+/// 调用方先把自变量归约到 `|z| ≤ tan(π/8) = 0.41421356`（见 [`atan_pos`]）。
+/// `z^17/17` 截断项在 `z = 0.41421` 处为 **1.8e-8**（绝对），相对 π 为 6e-9，
+/// 远低于 uv 参数化所需精度（uv 的分辨率是纹素，最细纹理也只需 ~1e-5）。
+#[inline]
+fn quarter_atan(z: f32) -> f32 {
+    let z2 = z * z;
+    z * (1.0
+        + z2 * (-1.0 / 3.0
+            + z2 * (1.0 / 5.0
+                + z2 * (-1.0 / 7.0
+                    + z2 * (1.0 / 9.0
+                        + z2 * (-1.0 / 11.0
+                            + z2 * (1.0 / 13.0 + z2 * (-1.0 / 15.0))))))))
+}
+
+/// `atan(x)`，`x >= 0`，返回 `[0, π/2]`。
+///
+/// 三段归约（每段只含 `± × ÷`，故跨平台逐位一致）：
+/// 1. `x > 1`：`atan(x) = π/2 − atan(1/x)`；
+/// 2. `x ∈ (tan(π/8), 1]`：`atan(x) = π/4 + atan((x−1)/(x+1))`（`|z| ≤ tan(π/8)`）；
+/// 3. `[0, tan(π/8)]`：直接级数。
+#[inline]
+fn atan_pos(x: f32) -> f32 {
+    const TAN_PI_8: f32 = 0.414_213_57;
+    if x > 1.0 {
+        return FRAC_PI_2 - atan_pos(1.0 / x);
+    }
+    if x > TAN_PI_8 {
+        return FRAC_PI_4 + quarter_atan((x - 1.0) / (x + 1.0));
+    }
+    quarter_atan(x)
+}
+
+/// 确定性 `atan2(y, x)`（弧度，值域 `(−π, π]`）。
+///
+/// # 为什么需要它
+///
+/// uv 参数化（球 / 柱 / 锥 / 环 / 旋转面）**必须**知道绕轴方位角，而
+/// `y.atan2(x)` 落平台 libm（C17 禁）。本实现只含 `± × ÷` 与比较，
+/// 同输入跨平台逐位一致。
+///
+/// # 特例（与 IEEE `atan2` 口径一致，且都不产生 NaN）
+///
+/// - `x == 0 && y == 0` → `0`（方向未定义；uv 参数化在极点处本就测度零）；
+/// - `x == 0` → `±π/2`；`y == 0` → `0` 或 `±π`；
+/// - 非有限输入 → `0`（防御：不让 NaN 渗进 uv，再由采样器钳制）。
+#[inline]
+pub fn atan2(y: f32, x: f32) -> f32 {
+    if !y.is_finite() || !x.is_finite() {
+        return 0.0;
+    }
+    if x == 0.0 {
+        if y == 0.0 {
+            return 0.0;
+        }
+        return if y > 0.0 { FRAC_PI_2 } else { -FRAC_PI_2 };
+    }
+    let ax = x.abs();
+    let ay = y.abs();
+    // r = atan(|y/x|) 的稳定形式（避免比值溢出）：大者作分母。
+    let r = if ay <= ax {
+        atan_pos(ay / ax)
+    } else {
+        FRAC_PI_2 - atan_pos(ax / ay)
+    };
+    if x > 0.0 {
+        if y >= 0.0 {
+            r
+        } else {
+            -r
+        }
+    } else if y >= 0.0 {
+        PI - r
+    } else {
+        r - PI
+    }
+}
+
+/// 确定性 `acos(x)`（值域 `[0, π]`；`|x| > 1` 时按端点钳制）。
+///
+/// `acos(x) = atan2(√(1−x²), x)`：`x` 靠近 ±1 时 `1−x²` 用 `(1−x)(1+x)`
+/// 展开求值（避免相消），仍是精确舍入的乘减 ⇒ 逐位可复现。
+#[inline]
+pub fn acos(x: f32) -> f32 {
+    if !x.is_finite() {
+        return 0.0;
+    }
+    let xc = if x > 1.0 {
+        1.0
+    } else if x < -1.0 {
+        -1.0
+    } else {
+        x
+    };
+    let s = ((1.0 - xc) * (1.0 + xc)).max(0.0).sqrt();
+    atan2(s, xc)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,4 +227,84 @@ mod tests {
         let (c, s) = cos_sin(0.7);
         assert!((tan(0.7) - s / c).abs() < 1e-6);
     }
+
+    // ---- W1-B：atan2 / acos（uv 参数化的依赖件）----
+
+    #[test]
+    fn atan2_matches_reference_quadrants() {
+        // 参考值来自解析角（与平台 libm 比对仅用于测试断言）。
+        let cases: [(f32, f32, f32); 8] = [
+            (0.0, 1.0, 0.0),
+            (1.0, 0.0, FRAC_PI_2),
+            (0.0, -1.0, PI),
+            (-1.0, 0.0, -FRAC_PI_2),
+            (1.0, 1.0, FRAC_PI_4),
+            (-1.0, 1.0, -FRAC_PI_4),
+            (1.0, -1.0, 3.0 * FRAC_PI_4),
+            (-1.0, -1.0, -3.0 * FRAC_PI_4),
+        ];
+        for (y, x, want) in cases {
+            let got = atan2(y, x);
+            assert!((got - want).abs() < 1e-5, "atan2({y},{x}) = {got}，期望 {want}");
+        }
+    }
+
+    #[test]
+    fn atan2_error_is_below_one_microradian_over_full_circle() {
+        // 全圆周扫掠：与解析角比对，最大误差须 < 1e-6（uv 精度需求 ~1e-5）。
+        let mut max_err = 0.0f32;
+        for k in 0..2048 {
+            let a = -PI + 2.0 * PI * (k as f32) / 2048.0;
+            let (c, s) = cos_sin(a);
+            let got = atan2(s, c);
+            // 角度差取环绕最短（±π 处符号跳变不算误差）。
+            let mut d = got - a;
+            while d > PI {
+                d -= 2.0 * PI;
+            }
+            while d < -PI {
+                d += 2.0 * PI;
+            }
+            max_err = max_err.max(d.abs());
+        }
+        assert!(max_err < 1e-6, "atan2 全圆周最大误差 {max_err} ≥ 1e-6");
+    }
+
+    #[test]
+    fn atan2_is_deterministic_and_handles_degenerate_inputs() {
+        assert_eq!(atan2(0.3, -0.7).to_bits(), atan2(0.3, -0.7).to_bits());
+        // 退化：原点 / 零轴 / 非有限 —— 一律不产生 NaN。
+        assert_eq!(atan2(0.0, 0.0), 0.0);
+        assert_eq!(atan2(0.0, -1.0), PI);
+        assert_eq!(atan2(f32::NAN, 1.0), 0.0);
+        assert_eq!(atan2(1.0, f32::INFINITY), 0.0);
+        // 奇对称（同一 x）：atan2(−y,x) == −atan2(y,x)，除 ±π 边界外。
+        for (y, x) in [(0.4f32, 0.9f32), (0.9, 0.4), (-0.2, -0.8)] {
+            assert_eq!(atan2(-y, x), -atan2(y, x));
+        }
+    }
+
+    #[test]
+    fn acos_matches_reference_points() {
+        assert!((acos(1.0) - 0.0).abs() < 1e-6);
+        assert!((acos(0.0) - FRAC_PI_2).abs() < 1e-6);
+        assert!((acos(-1.0) - PI).abs() < 1e-5);
+        assert!((acos(0.5) - 1.047_197_6).abs() < 1e-5);
+        // 域外钳制（不产生 NaN）。
+        assert_eq!(acos(1.5), 0.0);
+        assert!((acos(-1.5) - PI).abs() < 1e-5);
+        assert_eq!(acos(f32::NAN), 0.0);
+    }
+
+    #[test]
+    fn pythagorean_identity_survives_acos_roundtrip() {
+        // v = acos(y)/π 是球面 v 参数化的核心：反解 cos(v·π) 须回到原 y。
+        for k in 0..=64 {
+            let y = -1.0 + 2.0 * (k as f32) / 64.0;
+            let v = acos(y) / PI;
+            let (c, _s) = cos_sin(v * PI);
+            assert!((c - y).abs() < 2e-6, "acos/cos 往返 y={y} 得到 {c}");
+        }
+    }
 }
+

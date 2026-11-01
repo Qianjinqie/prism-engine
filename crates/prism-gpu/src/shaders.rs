@@ -58,6 +58,14 @@ pub static SHADERS: &[(&str, &str)] = &[
         "scene_frame.wgsl",
         include_str!("../shaders/scene_frame.wgsl"),
     ),
+    // V3 剖面（W1-B 纹理）：9 绑定 + `array<vec4<f32>>` 纹素 + 与
+    // `prism_rt::texsample` 逐式同构的双线性/三线性/4-tap 采样。
+    // 与 `scene_frame.wgsl` 共存（V2 不回归），绑定编号由
+    // `shaders::tests::v3_shader_bindings_match_abi` 对拍 `scene_abi::V3_BINDINGS`。
+    (
+        "scene_frame_v3.wgsl",
+        include_str!("../shaders/scene_frame_v3.wgsl"),
+    ),
 ];
 
 /// 库文件：只被 `//!include` 引用，**不**作为独立测试项上传 GPU。
