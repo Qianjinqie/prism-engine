@@ -93,6 +93,7 @@ pub fn build_render_request(
         albedo: scene.material.albedo,
         roughness: scene.material.roughness,
         metalness: scene.material.metalness,
+        maps: prism_gpu::NO_MAPS,
     }];
 
     let aesthetic: AestheticReq = AestheticReq {

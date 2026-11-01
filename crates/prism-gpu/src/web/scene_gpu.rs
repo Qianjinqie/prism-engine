@@ -813,6 +813,7 @@ mod tests {
                 albedo: Vec3::new(0.8, 0.2, 0.2),
                 roughness: 0.4,
                 metalness: 0.1,
+                maps: crate::NO_MAPS,
             }],
             aesthetic: crate::AestheticReq { teal_orange: false, contrast: 1.0, filmic: false },
             curves: Vec::new(),
@@ -841,6 +842,7 @@ mod tests {
                 albedo: Vec3::new(0.25, 0.55, 0.85),
                 roughness: 0.3,
                 metalness: 0.2,
+                maps: crate::NO_MAPS,
             }],
             curves: vec![crate::CurveReq::Cylinder {
                 center: Vec3::new(0.32, 0.0, 0.0),

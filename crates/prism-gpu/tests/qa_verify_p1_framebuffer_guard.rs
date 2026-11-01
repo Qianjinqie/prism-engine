@@ -40,6 +40,7 @@ fn scene_req(width: u32, height: u32) -> SceneRenderRequest {
             albedo: Vec3::new(0.75, 0.22, 0.17),
             roughness: 0.3,
             metalness: 0.05,
+            maps: prism_gpu::NO_MAPS,
         }],
         aesthetic: AestheticReq { teal_orange: false, contrast: 1.0, filmic: false },
     curves: Vec::new(),

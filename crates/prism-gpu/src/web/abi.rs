@@ -2537,12 +2537,15 @@ static COVERAGE: &[(&str, &[(&str, &str, &str)])] = &[
         &[(
             "scene_main",
             ST_SKIP,
-            "W1-B：V3 九绑定 + 纹理采样的 WGSL 已落地，但**没有 SPIR-V 发射器**\
-             （本仓零第三方依赖 ⇒ 无 WGSL→SPIR-V 编译器；手写 9 绑定 + 采样段的\
-             字节码在无判对手段时等于产出不可验证的代码）。故本项如实标 SKIP：\
+            "W1-C：V3 九绑定 kernel 的 WGSL 已落地且**已入库编译产物**\
+             `shaders/spv/scene_frame_v3.spv`（`tools/wgsl2spv`/naga 30.0.1，D-21）——\
+             编译器缺位这条理由已不存在。本项仍如实标 SKIP 的原因是**运行时**：\
+             WebGPU 宿主（`web/device.rs`）尚未接 V3 的纹理绑定与 dispatch，\
+             真机对拍只在 Vulkan 腿（lavapipe/llvmpipe）做过（报告 §18）。\
              绑定/参数块/纹素元素类型与 `scene_abi::V3_BINDINGS` 的逐格对账由\
-             `scene_abi::tests::v3_wgsl_bindings_and_types_match_abi` 在 CPU 侧完成。\
-             V6 的「三后端 differing_pixels = 0」因此**未验**（见报告 §16.4）",
+             `scene_abi::tests::v3_wgsl_bindings_and_types_match_abi` 在 CPU 侧完成；\
+             球块句柄槽序（8..11）与 WGSL/`Bsdf::maps` 的逐格对账见\
+             `scene_abi::tests::v3_map_slot_order_matches_bsdf_and_wgsl_cell_by_cell`",
         )],
     ),
     ("rt_shade.wgsl", &[]),
@@ -6785,6 +6788,7 @@ fn scene_request(scene: usize) -> SceneRenderRequest {
             albedo: Vec3::new(0.8, 0.2, 0.2),
             roughness: 0.4,
             metalness: 0.1,
+            maps: crate::NO_MAPS,
         }
     } else {
         crate::SphereReq {
@@ -6793,6 +6797,7 @@ fn scene_request(scene: usize) -> SceneRenderRequest {
             albedo: Vec3::new(0.25, 0.55, 0.85),
             roughness: 0.3,
             metalness: 0.2,
+            maps: crate::NO_MAPS,
         }
     };
     let curves = if scene == SCN_B {

@@ -62,10 +62,32 @@ pub const WORKGROUP: [u32; 3] = [8, 8, 1];
 
 /// 参数块的总字数（u32 个数）。
 pub const PARAMS_WORDS: usize = 22;
-/// 每球占用的 f32 槽数：`{center.xyz, radius, albedo.xyz, pad}`。
-pub const SPHERE_SLOTS: u32 = 8;
+/// **V2 剖面**每球占用的 f32 槽数：`{center.xyz, radius, albedo.xyz, pad}`（8 = 32 B）。
+///
+/// 手写 SPIR-V 发射器（`vulkan/spirv_rt.rs`）与 V2 场景 kernel **按此剖面**，
+/// 一个字节都不许动（V2 逐位兼容的机械保证）。
+pub const SPHERE_SLOTS_V2: u32 = 8;
+/// **V3 剖面**每球占用的 f32 槽数：V2 的 8 槽**前缀逐字节不变**，尾部追加
+/// `maps[0..4]`（槽 8..11，四个 u32 句柄）= 12 槽 = 48 B。
+///
+/// 48 B 必须是 4 B 的整数倍（`array<u32>` 的元素步长）——由编译期断言钉住。
+pub const SPHERE_SLOTS_V3: u32 = 12;
+/// 球块里四张贴图句柄的起始槽位（V3）：`SPHERE_SLOTS_V2`。
+///
+/// 写成派生式而不是字面量 8：改 V2 步长时 V3 的句柄区必须跟着挪，
+/// 否则 shader 会从 albedo 里读出"句柄"。
+pub const SPHERE_MAP_SLOT_BASE: u32 = SPHERE_SLOTS_V2;
+/// 球块里四张贴图句柄的槽数（= [`TEXMAP_SLOTS`]，`usize` 以便直接索引
+/// [`SphereReq::maps`]）。
+pub const SPHERE_MAP_SLOTS: usize = TEXMAP_SLOTS as usize;
 /// 每灯占用的 f32 槽数：`{dir.xyz（已归一化）, color.xyz, intensity, pad}`。
 pub const LIGHT_SLOTS: u32 = 8;
+
+/// 历史别名（= [`SPHERE_SLOTS_V2`]）。
+///
+/// 保留它是因为既有宿主（`web/scene_gpu.rs` 的缓冲规划、V2 发射器单测）按
+/// 「V2 步长」取数；语义**恒为 V2**。V3 宿主必须显式取 [`SPHERE_SLOTS_V3`]。
+pub const SPHERE_SLOTS: u32 = SPHERE_SLOTS_V2;
 
 /// 球体/光源数量的上限（防御性：避免调用方传入天文数字导致巨额缓冲分配）。
 ///
@@ -329,6 +351,19 @@ pub const V3_OUT: u32 = 8;
 /// 并由各自的断言钉在 4；真正的绑定关系在 W1-B 的编码器单测里对拍。
 pub const TEXMAP_SLOTS: u32 = 4;
 
+/// [`SphereReq::maps`] 槽 0：基础色贴图（= `prism_rt::bsdf::MAP_BASE`）。
+///
+/// 四张贴图里**只有这一个**在本版着色模型里有落点（命中点 uv 采样替换
+/// albedo）。其余三槽的常量照样定义，是为了让"槽序"这件事只有一个真源：
+/// 顺序错一位的图像症状（"颜色对、光照全歪"）在真机上极难定位。
+pub const MAP_BASE_SLOT: usize = 0;
+/// 槽 1：金属度-粗糙度（glTF：G = roughness、B = metalness）。**本版不读**。
+pub const MAP_METAL_ROUGH_SLOT: usize = 1;
+/// 槽 2：切线空间法线。**本版不读**。
+pub const MAP_NORMAL_SLOT: usize = 2;
+/// 槽 3：自发光。**本版不读**。
+pub const MAP_EMISSIVE_SLOT: usize = 3;
+
 /// `const fn`：取绑定的访问属性（供 `const _` 断言用；`PartialEq` 不是 const）。
 const fn access_is_read_write(a: BindingAccess) -> bool {
     match a {
@@ -400,6 +435,31 @@ const _: () = assert!(TEXMETA_STRIDE_BYTES == 32);
 const _: () = assert!(TEXMETA_STRIDE_BYTES % 16 == 0);
 /// 四张贴图句柄（`base / metal-rough / normal / emissive`）。
 const _: () = assert!(TEXMAP_SLOTS == 4);
+
+// ---- V3 球块剖面（W1-C 段 1）：V2 的 8 槽 + 四个句柄 ----
+
+/// V3 球块 = V2 球块 + 4 槽（**不是**"另一套布局"，只是尾部加长）。
+const _: () = assert!(SPHERE_SLOTS_V3 == SPHERE_SLOTS_V2 + 4);
+/// 句柄区起点**恒等于** V2 步长（改 V2 步长则句柄区必须跟着挪）。
+const _: () = assert!(SPHERE_MAP_SLOT_BASE == SPHERE_SLOTS_V2);
+/// 球块的句柄槽数 = `Bsdf::maps` 的槽数（两份常量各写一份，钉在同一个数上）。
+const _: () = assert!(SPHERE_MAP_SLOTS == TEXMAP_SLOTS as usize);
+/// V3 球块 48 B：**恰好**是 12 个 u32 的宽度，没有尾部 padding。
+///
+/// 这条防的是"改成 13 槽但缓冲仍按 12 槽分配"这类错——那会让最后一个球的
+/// `maps[3]` 读到下一个球的 `center.x`。
+const _: () = assert!(SPHERE_SLOTS_V3 as usize * core::mem::size_of::<u32>() == 48);
+const _: () = assert!(SPHERE_SLOTS_V2 as usize * core::mem::size_of::<u32>() == 32);
+/// V2 球块 32 B 的既有契约不许动（手写 SPIR-V 按此为步长）。
+const _: () = assert!(SPHERE_SLOTS == SPHERE_SLOTS_V2);
+
+// ---- 四个句柄槽的序号（槽序 = `Bsdf::maps` = WGSL `MAP_*`）----
+/// 四个槽必须**恰好**铺满 0..3（漏一个或重一个都是 ABI 错）。
+const _: () = assert!(MAP_BASE_SLOT == 0);
+const _: () = assert!(MAP_METAL_ROUGH_SLOT == 1);
+const _: () = assert!(MAP_NORMAL_SLOT == 2);
+const _: () = assert!(MAP_EMISSIVE_SLOT == 3);
+const _: () = assert!(MAP_EMISSIVE_SLOT + 1 == SPHERE_MAP_SLOTS);
 
 impl SceneAbi {
     /// 入口名（WGSL `fn scene_main` / SPIR-V `OpEntryPoint`）。
@@ -490,6 +550,13 @@ impl SceneAbi {
     /// 两计数为 0，且 `params[..24]` 与 [`SceneAbi::encode_v2`] 的返回值逐字节
     /// 相同。V3 只是"同一个场景 + 三块可选缓冲"，不是另一套语义。
     ///
+    /// # 球块（W1-C 段 1 起）
+    ///
+    /// `spheres` 走 [`encode_spheres_v3`]：每球 [`SPHERE_SLOTS_V3`] 槽 = 48 B，
+    /// 其中**前 32 B 与 [`encode_spheres`] 逐字节相同**，尾部 16 B 是四个贴图
+    /// 句柄。故 V3 的球块长度是 V2 的 1.5 倍——这是本剖面唯一的缓冲布局差异
+    /// （shader 侧的 `SPHERE_STRIDE` 同步为 12）。
+    ///
     /// # 为什么纹理在这里"展开"而不是让宿主自己拼
     ///
     /// `texmeta` 的 `offset` 是**纹理在扁平纹素流里的起点**，只有把所有纹理
@@ -516,7 +583,8 @@ impl SceneAbi {
         let basis = camera_basis(&req.camera);
         let v1 = encode_params(req, &basis);
         params[..v1.len()].copy_from_slice(&v1);
-        let spheres = encode_spheres(&req.spheres);
+        // V3 球块：V2 的 8 槽前缀逐字节不变 + 尾部 4 个贴图句柄。
+        let spheres = encode_spheres_v3(&req.spheres);
         let lights = encode_lights(&req.lights);
         let (tris, nodes) = encode_curve_buffers(&req.curves);
         put_u32(
@@ -862,13 +930,19 @@ pub fn encode_params(req: &SceneRenderRequest, basis: &CameraBasis) -> [u8; PARA
     out
 }
 
-/// 编码球体缓冲（每球 [`SPHERE_SLOTS`] 个 f32 = 32 字节）。
+/// 编码球体缓冲（每球 [`SPHERE_SLOTS_V2`] 个 f32 = 32 字节）。
 ///
 /// 槽内布局：`center.x/y/z`、`radius`、`albedo.r/g/b`、`pad`（恒 0）。
+///
+/// # 这是 **V2** 编码器（纹理句柄放不下）
+///
+/// V2 球块只有 8 槽，槽 7 是 pad ⇒ [`SphereReq::maps`] 在这里**不被写出**。
+/// 走 V3 剖面（要纹理）必须用 [`encode_spheres_v3`]；本函数的字节流与
+/// W1-B 之前**逐字节相同**（V2 通路不回归的机械保证）。
 pub fn encode_spheres(spheres: &[SphereReq]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(spheres.len() * SPHERE_SLOTS as usize * 4);
+    let mut out = Vec::with_capacity(spheres.len() * SPHERE_SLOTS_V2 as usize * 4);
     for s in spheres {
-        let mut block = [0u8; SPHERE_SLOTS as usize * 4];
+        let mut block = [0u8; SPHERE_SLOTS_V2 as usize * 4];
         put_f32(&mut block, 0, s.center.x);
         put_f32(&mut block, 1, s.center.y);
         put_f32(&mut block, 2, s.center.z);
@@ -877,6 +951,52 @@ pub fn encode_spheres(spheres: &[SphereReq]) -> Vec<u8> {
         put_f32(&mut block, 5, s.albedo.y);
         put_f32(&mut block, 6, s.albedo.z);
         // 槽 7 为 pad：恒 0（确定性；不留未初始化字节）。
+        out.extend_from_slice(&block);
+    }
+    out
+}
+
+/// **V3** 球体缓冲编码（每球 [`SPHERE_SLOTS_V3`] 个 u32 槽 = 48 字节）。
+///
+/// 槽内布局：
+///
+/// | 槽 | 内容 | 编码 |
+/// |---|---|---|
+/// | 0..3 | `center.xyz` / `radius` | f32 **位型**（与 [`encode_spheres`] 逐字节相同） |
+/// | 4..7 | `albedo.rgb` / `pad`（恒 0） | f32 **位型** / 0 |
+/// | 8..11 | `maps[0..4]`（base / metal-rough / normal / emissive） | **u32 句柄原值**（0 = 无贴图） |
+///
+/// # 两个不能含糊的点
+///
+/// 1. **槽 0..7 与 V2 逐字节相同**：句柄只是"尾部追加"，既有 8 槽的字节序、
+///    位型、pad 位置一律照旧。故同一场景的 V3 球块前 32 B 恒等于 V2 球块。
+/// 2. **句柄是 u32 原值，不是 f32 位型**：shader 侧读
+///    `spheres[i * SPHERE_SLOTS_V3 + 8 + slot]`（`array<u32>`）直接用，
+///    不做 `bitcast`。把句柄当 f32 写会产生 `1.4e-45` 这类指数下溢值。
+///
+/// 句柄**不做范围校验**（这一层不知道纹理表多长）：越界句柄由 shader 侧的
+/// `handle <= P_NUM_TEXTURES` 守卫降级为"无贴图"（见 `scene_frame_v3.wgsl`），
+/// CPU 参考走同一判据。
+pub fn encode_spheres_v3(spheres: &[SphereReq]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(spheres.len() * SPHERE_SLOTS_V3 as usize * 4);
+    for s in spheres {
+        let mut block = [0u8; SPHERE_SLOTS_V3 as usize * 4];
+        put_f32(&mut block, 0, s.center.x);
+        put_f32(&mut block, 1, s.center.y);
+        put_f32(&mut block, 2, s.center.z);
+        put_f32(&mut block, 3, s.radius);
+        put_f32(&mut block, 4, s.albedo.x);
+        put_f32(&mut block, 5, s.albedo.y);
+        put_f32(&mut block, 6, s.albedo.z);
+        // 槽 7：V2 的 pad，恒 0（保持 0..7 与 V2 逐字节相同的唯一做法）。
+        // 槽 8..11：四张贴图句柄，u32 原值。
+        for slot in 0..SPHERE_MAP_SLOTS {
+            put_u32(
+                &mut block,
+                SPHERE_MAP_SLOT_BASE as usize + slot,
+                s.maps[slot],
+            );
+        }
         out.extend_from_slice(&block);
     }
     out
@@ -992,6 +1112,7 @@ mod tests {
                 albedo: Vec3::new(0.8, 0.2, 0.2),
                 roughness: 0.4,
                 metalness: 0.1,
+                maps: crate::NO_MAPS,
             }],
             aesthetic: crate::AestheticReq {
                 teal_orange: false,
@@ -1245,7 +1366,22 @@ mod tests {
         let v3 = SceneAbi::encode_v3(&req, &[], None).expect("空纹理集必须合法");
         // 24 字前缀逐字节相同（V2 不回归）。
         assert_eq!(&v3.params[..PARAMS_WORDS_V2 * 4], &v2.0[..]);
-        assert_eq!(v3.spheres, v2.1);
+        // 球块：**每球前 32 B** 与 V2 逐字节相同（V3 只在尾部加 4 个句柄）。
+        // 逐球对拍而不是整块对拍——整块长度不同是设计使然（8 → 12 槽）。
+        assert_eq!(v3.spheres.len(), v2.1.len() / 8 * SPHERE_SLOTS_V3 as usize);
+        for (i, chunk) in v3.spheres.chunks(SPHERE_SLOTS_V3 as usize * 4).enumerate() {
+            let v2_chunk = &v2.1[i * SPHERE_SLOTS_V2 as usize * 4..(i + 1) * SPHERE_SLOTS_V2 as usize * 4];
+            assert_eq!(
+                &chunk[..SPHERE_SLOTS_V2 as usize * 4],
+                v2_chunk,
+                "第 {i} 个球的前 32 B 必须与 V2 球块逐字节相同"
+            );
+            assert_eq!(
+                &chunk[SPHERE_SLOTS_V2 as usize * 4..],
+                &[0u8; 16],
+                "无贴图球的四个句柄槽（8..11）必须恒为 0"
+            );
+        }
         assert_eq!(v3.lights, v2.2);
         assert_eq!(v3.triangles, v2.3);
         assert_eq!(v3.nodes, v2.4);
@@ -1255,6 +1391,91 @@ mod tests {
         assert_eq!(v3.cdf_rows(), 0);
         // 尾部两字必须显式写 0（否则是未初始化字节，跨后端读到垃圾）。
         assert_eq!(&v3.params[P_NUM_TEXTURES as usize * 4..], &[0u8; 8]);
+    }
+
+    /// **V3 球块 = V2 球块 + 四个句柄**（W1-C 段 1 的逐格对账）。
+    ///
+    /// 三件事一起钉：
+    /// 1. 步长 12 槽 / 48 B（不是 13、不是 8）；
+    /// 2. 槽 0..7 与 V2 **逐字节**相同（V2 前缀不回归）；
+    /// 3. 槽 8..11 = `maps[0..4]` 的 **u32 原值**，按下标逐格对应。
+    #[test]
+    fn v3_sphere_block_is_v2_prefix_plus_four_u32_handles() {
+        let mut req = sample_request();
+        req.spheres[0].maps = [1, 2, 3, 4];
+        let v3 = encode_spheres_v3(&req.spheres);
+        let v2 = encode_spheres(&req.spheres);
+        assert_eq!(v3.len(), SPHERE_SLOTS_V3 as usize * 4);
+        assert_eq!(v3.len(), 48);
+        assert_eq!(v2.len(), SPHERE_SLOTS_V2 as usize * 4);
+        assert_eq!(v2.len(), 32);
+        assert_eq!(&v3[..32], &v2[..], "前 32 B 必须与 V2 逐字节相同");
+        // 逐格：槽 8+k 是 maps[k] 的 u32 原值（不是 f32 位型）。
+        for k in 0..SPHERE_MAP_SLOTS {
+            let off = (SPHERE_MAP_SLOT_BASE as usize + k) * 4;
+            let got = u32::from_le_bytes([v3[off], v3[off + 1], v3[off + 2], v3[off + 3]]);
+            assert_eq!(got, req.spheres[0].maps[k], "槽 {} 必须是 maps[{k}]", SPHERE_MAP_SLOT_BASE + k as u32);
+        }
+        // 句柄当 f32 读会是指数下溢的垃圾值——顺带钉住"这里不能 bitcast"。
+        let off = SPHERE_MAP_SLOT_BASE as usize * 4;
+        let as_f32 = f32::from_le_bytes([v3[off], v3[off + 1], v3[off + 2], v3[off + 3]]);
+        assert_eq!(as_f32.to_bits(), 1, "句柄 1 的位型必须原样是 u32 1（不是 f32 1.0）");
+        // 两个球的块互不串位：第 2 个球的句柄落在 48 + 8 起。
+        req.spheres.push(SphereReq { maps: [5, 6, 7, 8], ..req.spheres[0].clone() });
+        let two = encode_spheres_v3(&req.spheres);
+        assert_eq!(two.len(), 2 * 48);
+        let off2 = 48 + SPHERE_MAP_SLOT_BASE as usize * 4;
+        let h5 = u32::from_le_bytes([two[off2], two[off2 + 1], two[off2 + 2], two[off2 + 3]]);
+        assert_eq!(h5, 5, "第 2 个球的 MAP_BASE 句柄不能读成第 1 个球的字段");
+    }
+
+    /// **句柄槽序 = `Bsdf::maps` 的槽序 = WGSL 的 `MAP_*`**（逐格对账）。
+    ///
+    /// 三份常量各有各的写法（`prism_rt::bsdf::MAP_*` 是 `usize` 且本 crate
+    /// 不能 import 它；WGSL 里是 `u32` 字面量），所以这条测试**从 WGSL 源里
+    /// 抠出四个数字**，再与 ABI 的槽位逐格比——不是"看起来一样就算"。
+    ///
+    /// 顺序错了的后果：球拿 base map 的句柄去做法线贴图，图像上表现为
+    /// "颜色对了但光照全歪"，最难在真机上定位的一类。
+    #[test]
+    fn v3_map_slot_order_matches_bsdf_and_wgsl_cell_by_cell() {
+        // ---- ABI 侧：句柄区起点 + 槽数 ----
+        assert_eq!(SPHERE_MAP_SLOT_BASE, 8);
+        assert_eq!(SPHERE_MAP_SLOTS, 4);
+        assert_eq!(SPHERE_SLOTS_V3, 12);
+        // ---- WGSL 侧：常量值逐个抠出来 ----
+        let src = crate::shaders::source("scene_frame_v3.wgsl").expect("V3 WGSL 必须已登记");
+        let want = [
+            ("MAP_BASE", 0u32),
+            ("MAP_ROUGH", 1),
+            ("MAP_NORMAL", 2),
+            ("MAP_EMISSIVE", 3),
+        ];
+        for (name, value) in want {
+            let needle = format!("const {name}: u32 = {value}u;");
+            assert!(
+                src.contains(&needle),
+                "WGSL 必须声明 `{needle}`（槽序即语义，改一个数字就与 Bsdf::maps 错位）"
+            );
+        }
+        // 槽序逐格：ABI 槽 8+k ↔ WGSL 的 MAP_* 第 k 个。
+        let map_names = ["MAP_BASE", "MAP_ROUGH", "MAP_NORMAL", "MAP_EMISSIVE"];
+        for (k, name) in map_names.iter().enumerate() {
+            assert_eq!(
+                SPHERE_MAP_SLOT_BASE as usize + k,
+                8 + k,
+                "{name} 的 ABI 槽位必须是 8+{k}"
+            );
+        }
+        // ---- shader 取数：`8 + slot`，且步长 12 ----
+        assert!(
+            src.contains("const SPHERE_STRIDE: u32 = 12u;"),
+            "WGSL 的 SPHERE_STRIDE 必须等于 SPHERE_SLOTS_V3 = 12"
+        );
+        assert!(
+            src.contains("spheres[i * SPHERE_STRIDE + 8u + slot]"),
+            "sphere_map 必须读槽 8+slot（读 7+slot 会读到 pad/albedo）"
+        );
     }
 
     #[test]

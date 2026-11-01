@@ -161,6 +161,7 @@ fn base_req(w: u32, h: u32) -> SceneRenderRequest {
             albedo: Vec3::splat(1.0),
             roughness: 0.5,
             metalness: 0.0,
+            maps: prism_gpu::NO_MAPS,
         }],
         aesthetic: prism_gpu::AestheticReq {
             teal_orange: false,

@@ -369,6 +369,7 @@ mod tests {
                     albedo: Vec3::new(0.85, 0.25, 0.2),
                     roughness: 0.35,
                     metalness: 0.1,
+                    maps: crate::NO_MAPS,
                 },
                 SphereReq {
                     center: Vec3::new(1.75, -0.25, 1.2),
@@ -376,6 +377,7 @@ mod tests {
                     albedo: Vec3::new(0.2, 0.75, 0.4),
                     roughness: 0.6,
                     metalness: 0.0,
+                    maps: crate::NO_MAPS,
                 },
                 SphereReq {
                     center: Vec3::new(0.0, 0.0, 6.0),
@@ -383,6 +385,7 @@ mod tests {
                     albedo: Vec3::new(0.7, 0.7, 0.7),
                     roughness: 0.5,
                     metalness: 0.0,
+                    maps: crate::NO_MAPS,
                 },
             ],
             aesthetic,

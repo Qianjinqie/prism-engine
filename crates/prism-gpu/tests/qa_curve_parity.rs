@@ -61,6 +61,7 @@ fn base_request(w: u32, h: u32) -> SceneRenderRequest {
             albedo: Vec3::new(0.8, 0.2, 0.2),
             roughness: 0.4,
             metalness: 0.1,
+            maps: prism_gpu::NO_MAPS,
         }],
         aesthetic: AestheticReq {
             teal_orange: false,
@@ -202,6 +203,7 @@ fn nearest_hit_prefers_nearer_primitive() {
         albedo: Vec3::new(1.0, 0.0, 0.0),
         roughness: 0.4,
         metalness: 0.0,
+        maps: prism_gpu::NO_MAPS,
     }];
     occluded.curves = vec![CurveReq::Cylinder {
         center: Vec3::new(0.0, 0.0, -1.5), // 更靠近相机（eye 在 -Z 侧）
@@ -488,6 +490,7 @@ fn vulkan_curve_and_spheres_share_the_nearest_hit_path() {
             albedo: Vec3::new(1.0, 0.0, 0.0),
             roughness: 0.4,
             metalness: 0.0,
+            maps: prism_gpu::NO_MAPS,
         },
         SphereReq {
             center: Vec3::new(-1.2, -1.0, -1.0),
@@ -495,6 +498,7 @@ fn vulkan_curve_and_spheres_share_the_nearest_hit_path() {
             albedo: Vec3::new(0.2, 0.9, 0.3),
             roughness: 0.5,
             metalness: 0.2,
+            maps: prism_gpu::NO_MAPS,
         },
     ];
     req.curves = vec![CurveReq::Cylinder {

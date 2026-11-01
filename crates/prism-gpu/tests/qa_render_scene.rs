@@ -209,6 +209,7 @@ fn scene_request(w: u32, h: u32, aesthetic: AestheticReq) -> SceneRenderRequest 
                 albedo: Vec3::new(0.85, 0.25, 0.2),
                 roughness: 0.35,
                 metalness: 0.1,
+                maps: prism_gpu::NO_MAPS,
             },
             SphereReq {
                 center: Vec3::new(1.75, -0.25, 1.2),
@@ -216,6 +217,7 @@ fn scene_request(w: u32, h: u32, aesthetic: AestheticReq) -> SceneRenderRequest 
                 albedo: Vec3::new(0.2, 0.75, 0.4),
                 roughness: 0.6,
                 metalness: 0.0,
+                maps: prism_gpu::NO_MAPS,
             },
             SphereReq {
                 center: Vec3::new(-1.6, 0.35, 1.8),
@@ -223,6 +225,7 @@ fn scene_request(w: u32, h: u32, aesthetic: AestheticReq) -> SceneRenderRequest 
                 albedo: Vec3::new(0.25, 0.35, 0.9),
                 roughness: 0.2,
                 metalness: 0.7,
+                maps: prism_gpu::NO_MAPS,
             },
             // 远球：验证「最近命中」而非「首个命中」。
             SphereReq {
@@ -231,6 +234,7 @@ fn scene_request(w: u32, h: u32, aesthetic: AestheticReq) -> SceneRenderRequest 
                 albedo: Vec3::new(0.7, 0.7, 0.7),
                 roughness: 0.5,
                 metalness: 0.0,
+                maps: prism_gpu::NO_MAPS,
             },
         ],
         aesthetic,

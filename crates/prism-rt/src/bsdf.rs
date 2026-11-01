@@ -1397,4 +1397,54 @@ mod tests {
             }
         }
     }
+
+    // -----------------------------------------------------------------
+    // W1-C：`Bsdf::maps` 的槽序 ⇄ GPU 球块的槽 8..11（跨 crate 逐格对账）
+    // -----------------------------------------------------------------
+    //
+    // 依赖方向是 `prism-rt → prism-gpu`（单向），所以这组"槽序是否一致"的
+    // 断言只能写在这一侧：`prism-gpu` 里那份 `MAP_*_SLOT` 与 `Bsdf::maps` 的
+    // `MAP_*` 是两个 crate 各写一遍的常量，靠本测试钉在同一个数上。
+    //
+    // 槽序错一位的症状（拿 base map 的句柄去当法线贴图）在真机上表现为
+    // "颜色对、光照全歪"，最难定位——故逐格对拍，而不是"看起来一样"。
+    #[test]
+    fn bsdf_map_slots_match_gpu_sphere_block_slots_cell_by_cell() {
+        use prism_gpu::scene_abi as abi;
+        // 1：四个槽的**序号**逐格相同。
+        assert_eq!(MAP_BASE, abi::MAP_BASE_SLOT, "槽 0（base color）");
+        assert_eq!(MAP_METAL_ROUGH, abi::MAP_METAL_ROUGH_SLOT, "槽 1（metal-rough）");
+        assert_eq!(MAP_NORMAL, abi::MAP_NORMAL_SLOT, "槽 2（normal）");
+        assert_eq!(MAP_EMISSIVE, abi::MAP_EMISSIVE_SLOT, "槽 3（emissive）");
+        // 2：槽数与句柄 0 的语义。
+        assert_eq!(MAP_SLOTS, abi::SPHERE_MAP_SLOTS, "槽数");
+        assert_eq!(MAP_SLOTS, prism_gpu::SPHERE_MAP_SLOTS);
+        assert_eq!(crate::texture::NO_TEXTURE, prism_gpu::NO_TEXTURE_MAP, "0 = 无贴图");
+        assert_eq!(prism_gpu::NO_MAPS, [crate::texture::NO_TEXTURE; MAP_SLOTS]);
+        // 3：ABI 槽位 = 句柄区起点 + 序号的**逐格**映射（8,9,10,11）。
+        assert_eq!(abi::SPHERE_MAP_SLOT_BASE, 8, "句柄区起点必须是 V2 步长");
+        for (slot, abi_slot) in [
+            (MAP_BASE, abi::MAP_BASE_SLOT),
+            (MAP_METAL_ROUGH, abi::MAP_METAL_ROUGH_SLOT),
+            (MAP_NORMAL, abi::MAP_NORMAL_SLOT),
+            (MAP_EMISSIVE, abi::MAP_EMISSIVE_SLOT),
+        ] {
+            assert_eq!(
+                abi::SPHERE_MAP_SLOT_BASE as usize + slot,
+                8 + abi_slot,
+                "`Bsdf::maps[{slot}]` 必须落在球块槽 {}",
+                8 + abi_slot
+            );
+        }
+        // 4：`Bsdf::map_handle` 越界按"无贴图"处理（与 shader 的兜底同口径）。
+        let mut b = Bsdf::new(Vec3::splat(0.5), 0.0, 0.5, 1.5, 0.0, 0.0, Vec3::splat(0.3));
+        assert_eq!(b.map_handle(MAP_BASE), crate::texture::NO_TEXTURE);
+        b = b.with_maps([1, 2, 3, 4]);
+        assert_eq!(b.map_handle(MAP_NORMAL), 3);
+        assert_eq!(
+            b.map_handle(MAP_SLOTS + 7),
+            crate::texture::NO_TEXTURE,
+            "越界槽按无贴图"
+        );
+    }
 }

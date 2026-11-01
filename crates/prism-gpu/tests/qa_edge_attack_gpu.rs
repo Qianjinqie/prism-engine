@@ -677,6 +677,7 @@ fn web_backend_native_never_ready_and_falls_back() {
             albedo: Vec3::new(0.8, 0.2, 0.2),
             roughness: 0.4,
             metalness: 0.1,
+            maps: prism_gpu::NO_MAPS,
         }],
         aesthetic: AestheticReq { teal_orange: false, contrast: 1.0, filmic: false },
     curves: Vec::new(),

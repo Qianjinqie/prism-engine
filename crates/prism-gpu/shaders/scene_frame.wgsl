@@ -77,9 +77,9 @@ fn vnormalize(v: vec3<f32>) -> vec3<f32> {
 
 // RGBA8 little-endian 打包：内存字节序 [r, g, b, a]（与 `background.wgsl` 同式）。
 fn pack_rgba(c: vec3<f32>) -> u32 {
-  let r = u32(clamp(c.x, 0.0, 1.0) * 255.0);
-  let g = u32(clamp(c.g, 0.0, 1.0) * 255.0);
-  let b = u32(clamp(c.b, 0.0, 1.0) * 255.0);
+  let r = u32(clamp(c.x, 0.0, 1.0) * 255.0 + 0.5);
+  let g = u32(clamp(c.g, 0.0, 1.0) * 255.0 + 0.5);
+  let b = u32(clamp(c.b, 0.0, 1.0) * 255.0 + 0.5);
   let a = 255u;
   return (a << 24u) | (b << 16u) | (g << 8u) | r;
 }

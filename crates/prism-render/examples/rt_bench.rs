@@ -51,6 +51,7 @@ fn baseline_request(w: u32, h: u32) -> SceneRenderRequest {
             albedo: Vec3::new(0.8, 0.2, 0.2),
             roughness: 0.35,
             metalness: 0.05,
+            maps: prism_gpu::NO_MAPS,
         }],
         aesthetic: AestheticReq {
             teal_orange: false,

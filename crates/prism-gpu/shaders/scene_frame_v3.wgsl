@@ -51,11 +51,18 @@
 //    每 tap 宽 `tap_w = max(σmin, σmax/taps)`、中心跨度 `σmax − tap_w`。
 //    并集恰好等于长轴（多一分就糊、少一分就锯齿）。
 //
-// **诚实边界（D-21 实测）**：`sphere_map` 读的是球块里的 pad 槽
-// （`SPHERE_SLOTS = 8`：center/radius/albedo/pad），而 `encode_spheres` 恒把
-// pad 写 0 ⇒ `base_map == NO_TEXTURE` 恒成立，上面这整段采样逻辑**目前不可达**。
-// 要真跑纹理必须先扩 `SPHERE_SLOTS`（改 ABI，V2 逐位兼容会破），故 D-21 不碰它；
-// 本文件的纹理段在 `.spv` 里是"已编译、未执行"。
+// **可达性（W1-C 实测）**：W1-B 时 `sphere_map` 读的是球块里的 pad 槽
+// （`SPHERE_SLOTS = 8`：center/radius/albedo/pad），而编码器恒把 pad 写 0
+// ⇒ `base_map == NO_TEXTURE` 恒成立，上面这整段采样逻辑**一次也走不到**。
+// W1-C 把球块步长升到 `SPHERE_SLOTS_V3 = 12`（V2 的 8 槽前缀逐字节不变，
+// 尾部槽 8..11 放四个句柄），`sphere_map` 改读 `8u + slot`，`encode_spheres_v3`
+// 写句柄 ⇒ MAP_BASE 这条路现在**真的可达**，并由
+// `vulkan/v3_frame.rs` 的真机对拍钉住（llvmpipe 上 `differing_pixels == 0`）。
+//
+// 仍未验的部分（**不要当成已支持**）：
+//   * 各向异性 / 三线性（`tex_sample` 的非零足迹分支）：本帧取零足迹点采样；
+//   * `MAP_ROUGH` / `MAP_NORMAL` / `MAP_EMISSIVE`：本 kernel 不读（见入口处注释）；
+//   * 真机（非软件 ICD）上的逐位一致：只在 llvmpipe 上验过。
 //
 // 禁 `array<vec3<f32>>`：`textures` 的元素是 `vec4<f32>`（16 B，无歧义）。
 // 禁超越函数（D-29）：球面 uv 需要的 `atan2`/`acos` 用本文件的 det 级数
@@ -63,7 +70,7 @@
 
 // ---- 参数块 / 槽位（= `crate::scene_abi` 的副本） ----
 const PARAMS_WORDS_: u32 = 26u;   // == scene_abi::PARAMS_WORDS_V3
-const SPHERE_STRIDE: u32 = 8u;    // == scene_abi::SPHERE_SLOTS
+const SPHERE_STRIDE: u32 = 12u;    // == scene_abi::SPHERE_SLOTS_V3（V2 的 8 槽 + 4 句柄）
 const LIGHT_STRIDE: u32 = 8u;     // == scene_abi::LIGHT_SLOTS
 const TRI_STRIDE: u32 = 12u;      // == scene_abi::TRIANGLE_SLOTS
 const NODE_STRIDE: u32 = 12u;     // == scene_abi::NODE_SLOTS
@@ -430,11 +437,12 @@ fn sphere_albedo(i: u32) -> vec3<f32> {
 
 // 球材质的贴图句柄。
 //
-// ABI 只给球留了一个 pad 槽（`SPHERE_SLOTS = 8`），故 `slot` 恒为 `MAP_BASE`
-// （槽 7 = pad）。`encode_spheres` 把 pad 恒写 0 ⇒ 本函数恒返回 `NO_TEXTURE`
-// （见文件头「诚实边界」）。接 `MAP_ROUGH/NORMAL/EMISSIVE` 需要扩步长，属 ABI
-// 变更，不在 D-21 范围。
-fn sphere_map(i: u32, slot: u32) -> u32 { return spheres[i * SPHERE_STRIDE + 7u + slot]; }
+// V3 的球块步长是 12（`SPHERE_SLOTS_V3`）：槽 0..7 是 V2 的
+// `center/radius/albedo/pad`（**逐字节不变**），槽 8..11 是四个句柄。
+// 该函数**必须**用 `8u + slot` 而不是 `7u + slot`：7 号槽是 V2 的 pad，
+// 读它会得到恒 0（= NO_TEXTURE）——W1-B 之前那版纹理段"编译通过、
+// 一次也走不到"就是这个下标错位。
+fn sphere_map(i: u32, slot: u32) -> u32 { return spheres[i * SPHERE_STRIDE + 8u + slot]; }
 
 fn light_dir(i: u32) -> vec3<f32> {
   let b = i * LIGHT_STRIDE;
@@ -693,29 +701,34 @@ fn scene_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let n = normalize(p - center);           // 球面法线恒朝外（与 CPU 同式）
     var albedo = sphere_albedo(si);
 
-    // 纹理：base map 在命中点 uv 处取样（无贴图则保持球自带 albedo）。
+    // ---- 纹理（W1-C）：MAP_BASE 在命中点 uv 处取样，**替换** albedo ----
+    //
+    // 语义权威在 CPU 侧（`prism_rt::integrator::material_bsdf_at` 的 MAP_BASE
+    // 臂：`base_color = 采样值`，是**替换**而非"在因子上再乘"）。本 kernel 只
+    // 做同一件事——这是三端对拍能逐字节对齐的唯一口径。
+    //
+    // # 为什么句柄守卫在调用点、而不是只靠 `tex_sample` 内部那条
+    //
+    // 越界句柄必须**按 NO_TEXTURE 处理**（退化到球自带 albedo）。若只靠
+    // `tex_sample` 内部的 `handle > P_NUM_TEXTURES ⇒ 返回白`，越界球会变成
+    // "albedo = 白"——那不是"没有贴图"，负向对照就无法用"与无纹理基线逐字节
+    // 相等"来判。故守卫提前到此处，CPU 参考走**同一判据**。
     let base_map = sphere_map(si, MAP_BASE);
-    if (base_map != NO_TEXTURE) {
+    if (base_map != NO_TEXTURE && base_map <= params[P_NUM_TEXTURES]) {
       let uv = uv_sphere(p, center, radius);
-      // 足迹 = 像素锥（全宽 `spread`）× 1/cosθ × uv 雅可比。锥宽与 CPU 侧
-      // `trace_one` 的 `spread0 = 2·tan_half/H` 同式。
-      let cos_i = clamp(abs(dot(dir, n)), 0.02, 1.0);
-      let spread = 2.0 * tan_f / f32(h);
-      let r = closest_t * spread;
-      // 切平面上的两轴：T1 = view 在切平面上的投影（退化取任意切向）。
-      let vt = dir - n * dot(dir, n);
-      var t1 = vnormalize(vt);
-      if (dot(t1, t1) <= 0.0) {
-        t1 = vnormalize(cross(n, vec3<f32>(0.0, 0.0, 1.0)));
-      }
-      let t2 = cross(n, t1);
-      let ja = uv_jacobian_sphere(radius, t1, t2);
-      let a = r / cos_i;
-      let c0 = vec2<f32>(ja[0][0] * a, ja[0][1] * a);
-      let c1 = vec2<f32>(ja[1][0] * r, ja[1][1] * r);
-      let s = tex_sample(base_map, uv, c0, c1);
-      albedo = vec3<f32>(albedo.x * s.x, albedo.y * s.y, albedo.z * s.z);
+      // 本版口径：**零足迹点采样**（lod 0、1 tap），与 `CpuRefBackend` 的纹理
+      // 参考实现逐式相同。各向异性/三线性（`tex_sample` 的非零足迹分支）
+      // 在此 ABI 上**未验**，故本帧不取——不是"已支持"。
+      let s = tex_sample(base_map, uv, vec2<f32>(0.0, 0.0), vec2<f32>(0.0, 0.0));
+      albedo = vec3<f32>(s.x, s.y, s.z);
     }
+    // `MAP_ROUGH` / `MAP_NORMAL` / `MAP_EMISSIVE`：**本 kernel 不读**。
+    //
+    // 理由不是"没接线"，而是当前着色模型里没有落点：投影着色只有
+    // `albedo·(ambient + Σ color·diff·intensity)`，既没有 roughness/metalness
+    // 项（GGX 在 `prism_rt::bsdf`，尚未移植进本 kernel），也没有切线空间法线
+    // 与自发光通道。硬接进来会得到"有代码、无效果"的假支持，故四个句柄里
+    // 只有 MAP_BASE 参与着色；其余三个保持 ABI 槽位可读，行为与句柄 0 逐一相同。
 
     // 逐灯累加：`acc += albedo·(ambient + color·diff·intensity)`——**与 CPU 参考
     // 的循环体逐字同序**（先算 term，再乘 albedo，再累加）。

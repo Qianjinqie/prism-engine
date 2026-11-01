@@ -274,6 +274,7 @@ mod tests {
                 albedo: Vec3::new(0.8, 0.2, 0.2),
                 roughness: 0.4,
                 metalness: 0.1,
+                maps: crate::NO_MAPS,
             }],
             aesthetic: AestheticReq {
                 teal_orange: false,

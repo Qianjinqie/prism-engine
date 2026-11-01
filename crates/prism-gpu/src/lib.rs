@@ -43,6 +43,7 @@ pub use prism_geometry::curve_tess::CurveReq;
 
 pub mod shaders;
 pub mod scene_abi;
+pub mod cpu_tex;
 
 // ----------------------------------------------------------------------------
 // 背景渲染（GPU 管线兜底）：CPU 参考 + 引擎入口
@@ -347,7 +348,33 @@ pub struct LightReq {
     pub intensity: f32,
 }
 
+/// 球材质四张贴图句柄的槽数（= [`scene_abi::TEXMAP_SLOTS`]）。
+///
+/// 与 `prism_rt::bsdf::MAP_SLOTS` 同值；两份常量不能互相 import
+/// （`prism-gpu` 不得反引 `prism-rt`），逐格对拍在 `prism-rt` 侧的测试里做。
+pub const SPHERE_MAP_SLOTS: usize = 4;
+
+/// 「没有贴图」句柄（与 `prism_rt::texture::NO_TEXTURE` 同值）。
+///
+/// **0 不是"第 0 张贴图"**：句柄 = 纹理下标 + 1，故 1 才是第一张。
+pub const NO_TEXTURE_MAP: u32 = 0;
+
+/// 四槽全无贴图的默认句柄组（每个构造点的显式初值）。
+///
+/// 存在的理由：`SphereReq` 有 20+ 处构造点，全写 `[0; 4]` 看不出"这是有意的
+/// 无贴图"还是"随手填的 0"；具名常量让每处都是**一次显式声明**。
+pub const NO_MAPS: [u32; SPHERE_MAP_SLOTS] = [NO_TEXTURE_MAP; SPHERE_MAP_SLOTS];
+
 /// A ray-traced sphere with physically-inspired shading parameters.
+///
+/// # 材质贴图（V3 剖面）
+///
+/// [`SphereReq::maps`] 的四个槽与 `prism_rt::bsdf::Bsdf::maps` **逐格同义**：
+/// 槽序 `0 = base color` / `1 = metal-rough` / `2 = normal` / `3 = emissive`，
+/// `0 = NO_TEXTURE`，句柄 `k` 指向 `textures[k-1]`。V2 剖面的球块只有 8 槽
+/// （[`scene_abi::SPHERE_SLOTS_V2`]）放不下它们，故 V2 编码器**不写**
+/// （[`scene_abi::encode_spheres`]）；V3 编码器写进槽 8..11
+/// （[`scene_abi::encode_spheres_v3`]）。
 #[derive(Debug, Clone)]
 pub struct SphereReq {
     pub center: Vec3,
@@ -355,6 +382,26 @@ pub struct SphereReq {
     pub albedo: Vec3,
     pub roughness: f32,
     pub metalness: f32,
+    /// 四张贴图句柄（槽序同 `Bsdf::maps`；`0` = 无贴图）。
+    ///
+    /// 缺省 [`NO_MAPS`] ⇒ 与 W1-B 之前的渲染输出**逐位相同**（没有贴图时
+    /// CPU 参考与 GPU 都不进纹理分支）。
+    pub maps: [u32; SPHERE_MAP_SLOTS],
+}
+
+impl Default for SphereReq {
+    /// 全零球（`maps` = [`NO_MAPS`]）。只为让"新增字段"不改变既有语义；
+    /// **构造点仍须逐字段显式写出**（不许用 `..Default::default()` 蒙过）。
+    fn default() -> Self {
+        SphereReq {
+            center: Vec3::new(0.0, 0.0, 0.0),
+            radius: 0.0,
+            albedo: Vec3::new(0.0, 0.0, 0.0),
+            roughness: 0.0,
+            metalness: 0.0,
+            maps: NO_MAPS,
+        }
+    }
 }
 
 /// Post-processing / look-development flags applied per pixel.
@@ -492,8 +539,33 @@ pub fn apply_aesthetic(color: Vec3, aesthetic: &AestheticReq) -> Vec3 {
 /// testable ground-truth implementation and as a fallback renderer.
 pub struct CpuRefBackend;
 
-impl GpuDevice for CpuRefBackend {
-    fn render_scene(&mut self, req: &SceneRenderRequest) -> Framebuffer {
+impl CpuRefBackend {
+    /// 带纹理的 CPU 参考渲染（W1-C 段 3）：**V3 对拍的基准帧**。
+    ///
+    /// # 为什么是"新增方法"而不是给 `SceneRenderRequest` 加字段
+    ///
+    /// 请求结构体是**三后端共用的 ABI 载体**，给它加一个 `Vec<TextureUpload>`
+    /// 会让 20+ 处 `render_scene` 调用点全部要动（并且把 `'a` 生命周期传染到
+    /// `GpuDevice::render_scene` 的签名上，连带 trait object 也不再成立）。
+    /// 纹理是**设备侧资源**、不是"这一帧要画什么"，把它按次传入更贴近真实
+    /// 后端（GPU 侧同样是 `encode_v3(req, textures, env)` 分开收）。
+    ///
+    /// # 不回归
+    ///
+    /// `textures` 为空 ⇒ 与 [`GpuDevice::render_scene`] **逐字节相同**（同一条
+    /// 代码路径，纹理分支整段跳过：`sphere.maps` 全 0 时不进采样）。
+    ///
+    /// # 语义（与 `scene_frame_v3.wgsl` 逐式相同）
+    ///
+    /// * 只读 `maps[MAP_BASE]`（槽 0）：命中点 uv 处的双线性采样**替换** albedo；
+    /// * 句柄 `0` 或越界 ⇒ 按"无贴图"处理（保持球自带 albedo）；
+    /// * 足迹恒 0（lod 0、1 tap）——各向异性未支持，见 [`cpu_tex`]；
+    /// * 其余三个槽（metal-rough / normal / emissive）不读：着色模型里没有落点。
+    pub fn render_scene_with_textures(
+        &mut self,
+        req: &SceneRenderRequest,
+        textures: &[scene_abi::TextureUpload<'_>],
+    ) -> Framebuffer {
         let mut fb = Framebuffer::new(req.width, req.height);
         // 尺寸被拒（见 Framebuffer 的size contract）⇒ 没有任何像素可写，
         // 且继续按 req.width/height 循环会在超大请求上空转（u32::MAX² 迭代），
@@ -502,6 +574,10 @@ impl GpuDevice for CpuRefBackend {
             return fb;
         }
         let cam = &req.camera;
+        // 纹理表：offset 按纹素前缀累加，与 `encode_v3` 同口径（[`cpu_tex`]）。
+        let tex_table = cpu_tex::RefTextureTable::new(textures);
+        // 无纹理 ⇒ 与 `render_scene` 完全同路径（下面所有纹理判断都短路）。
+        let has_textures = !tex_table.is_empty();
 
         // --- A-2 曲线：三角化 → SAH-BVH（一次性，逐帧复用）-----------------
         // 权威在 `prism-geometry`（叶子 crate）：本 crate 只接线，不重写。
@@ -580,13 +656,28 @@ impl GpuDevice for CpuRefBackend {
                     let p = origin + dir * closest_t;
                     let n = (p - s.center).normalize();
 
+                    // ---- 纹理（W1-C）：`maps[MAP_BASE]` 在命中点 uv 处**替换** albedo ----
+                    // 判据与 `scene_frame_v3.wgsl` 逐字相同：句柄非 0 **且**在表内，
+                    // 否则按"无贴图"处理（越界句柄不 panic、不采样成白）。
+                    // 无纹理集时 `has_textures == false` ⇒ 整段短路（V2 行为不回归）。
+                    let mut albedo = s.albedo;
+                    if has_textures {
+                        let base_map = s.maps[scene_abi::MAP_BASE_SLOT];
+                        if tex_table.has(base_map) {
+                            let uv = cpu_tex::sphere_uv(p, s.center, s.radius);
+                            if let Some(t) = tex_table.sample_base(base_map, uv) {
+                                albedo = Vec3::new(t[0], t[1], t[2]);
+                            }
+                        }
+                    }
+
                     let ambient = Vec3::splat(0.08);
                     let mut acc = Vec3::splat(0.0);
                     for light in &req.lights {
                         let diff = dot(n, light.direction.normalize()).max(0.0);
                         // albedo * (ambient + diff * intensity * color)
                         let term = ambient + light.color * (diff * light.intensity);
-                        acc = acc + vmul(s.albedo, term);
+                        acc = acc + vmul(albedo, term);
                     }
                     color = acc;
                 } else if let Some(n) = curve_hit {
@@ -609,6 +700,17 @@ impl GpuDevice for CpuRefBackend {
         }
 
         fb
+    }
+}
+
+impl GpuDevice for CpuRefBackend {
+    /// 无纹理请求（V2 及以前的所有调用点）：委托给
+    /// [`CpuRefBackend::render_scene_with_textures`] 并传空纹理集。
+    ///
+    /// 传空集 ⇒ `RefTextureTable` 为空 ⇒ 纹理分支整段短路 ⇒ 与 W1-B 之前的
+    /// 输出**逐字节相同**（既有调用点与既有断言都不动）。
+    fn render_scene(&mut self, req: &SceneRenderRequest) -> Framebuffer {
+        self.render_scene_with_textures(req, &[])
     }
 
     /// CPU reference渲染恒可用（纯软件，无外部依赖）。
@@ -712,6 +814,7 @@ mod tests {
                 albedo: Vec3::new(0.8, 0.2, 0.2),
                 roughness: 0.4,
                 metalness: 0.1,
+                maps: NO_MAPS,
             }],
             aesthetic: AestheticReq {
                 teal_orange: false,
@@ -829,6 +932,7 @@ mod framebuffer_bounds {
                 albedo: Vec3::new(0.8, 0.2, 0.2),
                 roughness: 0.4,
                 metalness: 0.1,
+                maps: NO_MAPS,
             }],
             aesthetic: AestheticReq {
                 teal_orange: false,

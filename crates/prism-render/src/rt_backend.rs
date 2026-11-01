@@ -400,6 +400,7 @@ mod tests {
                 albedo: Vec3::new(0.8, 0.2, 0.2),
                 roughness: 0.35,
                 metalness: 0.05,
+                maps: prism_gpu::NO_MAPS,
             }],
             aesthetic: AestheticReq {
                 teal_orange: false,
@@ -528,6 +529,7 @@ mod tests {
                     albedo: Vec3::splat(0.8),
                     roughness: 0.6,
                     metalness: 0.0,
+                    maps: prism_gpu::NO_MAPS,
                 },
                 // 受影球（靠下）。
                 SphereReq {
@@ -536,6 +538,7 @@ mod tests {
                     albedo: Vec3::splat(0.8),
                     roughness: 0.6,
                     metalness: 0.0,
+                    maps: prism_gpu::NO_MAPS,
                 },
             ],
             aesthetic: AestheticReq {
