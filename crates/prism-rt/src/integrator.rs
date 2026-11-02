@@ -494,7 +494,7 @@ impl Mesh {
     }
 }
 
-/// 材质（基线三型 + Disney PBR 全族）。
+/// 材质（基线三型 + Disney PBR 全族 + 毛发）。
 #[derive(Debug, Clone, Copy)]
 pub enum MaterialKind {
     /// Lambert 漫反射（反照率）。
@@ -506,6 +506,33 @@ pub enum MaterialKind {
     Emissive { radiance: Vec3 },
     /// Disney PBR（BSDF 三瓣 + 可选 SSS；[`Bsdf`] 参数域断言在构造期生效）。
     Pbr(Bsdf),
+    /// 毛发纤维（W5 / A7 定稿 C1）：Marschner R/TT/TRT 三分量 + 纤维标架。
+    ///
+    /// # 为什么两个字段按值放（而不是 `Arc` / 引用）
+    ///
+    /// `MaterialKind` 必须是 `Copy`：`Scene` 以 `(几何, 材质)` 值对存材质
+    /// （19 处结构体字面量），命中结果也按值带出材质。而
+    /// [`crate::hair_scatter::HairScatter`]（9×f32）与
+    /// [`crate::hair_scatter::HairGeometry`]（2×Vec3）**本来就都派生了 `Copy`**
+    /// —— 它们是无堆分配的纯参数包。故按值放进枚举：不引入 `Arc`、
+    /// 不引入生命周期、`MaterialKind` 保持 `Copy`。
+    ///
+    /// 代价：`size_of::<MaterialKind>()` 从 `Pbr` 的 72 B 档位增到本变体的
+    /// 64 B 档位（两个 `Copy` 小程序相加不超过 `Bsdf`），**没有 ABI 影响**：
+    /// 材质枚举从不上 GPU（GPU 只见三角形/球/光/纹理，见 `scene_abi`）。
+    Hair {
+        /// 散射参数（三瓣权重、纵向/方位粗糙度、纤维折射率与吸收）。
+        scatter: crate::hair_scatter::HairScatter,
+        /// 纤维局部标架：切向 + 法平面参考方向。
+        ///
+        /// # 一材质一标架的边界（如实标注）
+        ///
+        /// 本变体给的是**每个 `Mesh` 一个**标架，因此"一个 Mesh 内多股不同朝向"
+        /// 时只有一股的切向是精确的。精确做法是每股一个 `Mesh`（也就每股一个
+        /// 材质）——毛股几何本身就按股三角化，故按股注册是自然的；把**同向**
+        /// 股束合并成一个 Mesh 也仍然精确。这一限制在报告 §21 里记为已知边界。
+        geometry: crate::hair_scatter::HairGeometry,
+    },
 }
 
 /// 材质取 Disney [`Bsdf`]（Pbr 直取；Lambert/Mirror 无 Disney 等价——其
@@ -522,7 +549,48 @@ pub(crate) fn material_bsdf(m: &MaterialKind) -> Option<Bsdf> {
             Some(Bsdf::new(Vec3::splat(1.0), 1.0, 0.0, 1.5, 0.0, 0.0, Vec3::splat(0.3)))
         }
         MaterialKind::Emissive { .. } => None,
+        // 毛发：Marschner 模型**没有解析抽样器**（`hair_scatter.rs` 本轮一行不改），
+        // 故这里返回一个 Disney 等价形充当**方向提案分布**：采样方向、pdf、
+        // 续弹吞吐都由它给出，而 BRDF **取值**由 [`surface_brdf`] 用
+        // `HairScatter::eval_full` 覆盖（见 [`hair_proposal_bsdf`] 的推导）。
+        MaterialKind::Hair { scatter, .. } => Some(hair_proposal_bsdf(&scatter)),
     }
+}
+
+/// 毛发材质的**方向提案** `Bsdf`（Disney 等价形）。
+///
+/// # 为什么需要它，以及它会带来什么
+///
+/// 路径追踪的续弹要"抽一个方向 + 算 pdf"。Marschner 三分量模型没有解析抽样器
+/// （它的方位分量是 I₀ 形状，纵向是高斯，联合逆变换不闭式），而
+/// `hair_scatter.rs` 是 R-5 已对齐的资产，**本轮不许改**（任务红线）。
+/// 所以续弹方向从 Disney 瓣抽、pdf 用 Disney 的 pdf、BRDF 取值用 Marschner 的
+/// ——这是一个**有效**（无偏）的重要性采样：`f/p` 的期望仍是 `∫f`，只是方差
+/// 比"按 Marschner 形状抽样"大。MIS 的两侧（NEE 的 `surface_pdf` 与续弹的
+/// `prev_pdf_dir`）都用同一个提案 pdf，故权重仍自洽（不会双重计数/漏计）。
+///
+/// # 参数映射（固定，不随场景变）
+///
+/// * `base_color = splat(absorption_transmit(radius))`：纤维的 Beer 透过率，
+///   落在 (0,1]，是"这根纤维能反多少光"的标量代理；
+/// * `metalness = 0`（纤维是电介质）；
+/// * `roughness = clamp(beta_m, 0.02, 1)`：纵向粗糙度直接当感知粗糙度用
+///   （`beta_m` 的语义就是"多散"，与 roughness 同向）；下界 0.02 是为了不落
+///   进 δ 瓣分支（那会让续弹退化成镜面，毛发立刻变成塑料丝）；
+/// * `ior = eta`（纤维折射率，TT/TRT 的物理量）；
+/// * 无透射/无 SSS（毛发不是玻璃，`transmission` 置 0 让 Disney 走不透明瓣；
+///   TT/TRT 的能量已经由 `eval_full` 的取值承担）。
+fn hair_proposal_bsdf(scatter: &crate::hair_scatter::HairScatter) -> Bsdf {
+    let tint = scatter.absorption_transmit(scatter.radius);
+    Bsdf::new(
+        Vec3::splat(tint),
+        0.0,
+        scatter.beta_m.clamp(0.02, 1.0),
+        scatter.eta.max(1.0),
+        0.0,
+        0.0,
+        Vec3::splat(0.3),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -663,7 +731,9 @@ pub(crate) fn material_normal_at(
 }
 
 /// 反射域 BRDF 求值（解析）：Lambert 用 albedo/π（基线精确）；Mirror 用
-/// δ（NEE 下不参与，续弹反射方向无 §f 因子）；Pbr 用 Disney [`Bsdf::eval`]。
+/// δ（NEE 下不参与，续弹反射方向无 §f 因子）；Pbr 用 Disney [`Bsdf::eval`]；
+/// 毛发用 `HairScatter::eval_full`（R/TT/TRT 三瓣完整版）。
+///
 /// 返回 f·cosθ 之外的纯 BRDF f（调用方补 cosθ）。
 pub(crate) fn surface_brdf(mat: &MaterialKind, bsdf: &Bsdf, wo: Vec3, wi: Vec3, nv: Vec3) -> Vec3 {
     match *mat {
@@ -675,6 +745,21 @@ pub(crate) fn surface_brdf(mat: &MaterialKind, bsdf: &Bsdf, wo: Vec3, wi: Vec3, 
             }
         }
         MaterialKind::Mirror => Vec3::splat(0.0), // δ：反射域 NEE 不贡献
+        // 毛发：把两个世界方向投影到纤维局部系，交给 Marschner 三分量核。
+        //
+        // 方向约定：`wi` 指向光源（入射）、`wo` 指向视点（出射），与
+        // `HairScatter::eval_full(theta_i, phi_i, theta_o, phi_o)` 的
+        // (i = 入射, o = 出射) 一一对应。`HairGeometry::longitudinal` 给的是
+        // "相对法平面的仰角"（= `asin(d·u)`），正是 Marschner 的 θ；
+        // `azimuth` 给的是绕纤维轴的方位 φ。整个转换只走
+        // `sampler::{cos_sin, sqrt, atan}` 的确定性件（D-29），无 libm。
+        MaterialKind::Hair { scatter, geometry } => {
+            let theta_i = geometry.longitudinal(wi);
+            let phi_i = geometry.azimuth(wi);
+            let theta_o = geometry.longitudinal(wo);
+            let phi_o = geometry.azimuth(wo);
+            Vec3::splat(scatter.eval_full(theta_i, phi_i, theta_o, phi_o))
+        }
         _ => bsdf.eval(wo, wi, nv),
     }
 }

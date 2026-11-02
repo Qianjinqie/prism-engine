@@ -8,7 +8,11 @@
 //! - [`sdf`] — SDF 域算子（并/交/差/平滑变体）、displace（接 prism-noise）与 sphere tracing。
 //! - [`csg`] — CSG 树：组合方式直接复用 [`sdf`] 域算子函数（D-16 避免双实现）。
 //! - [`bvh`] — SAH-BVH：射线求交 + 最近点 + 广义 winding number（一树两用）。
-//! - [`curve_tess`] — 曲线图元三角化（V2.2-A-2 方案乙）：圆柱/圆锥/圆环/旋转曲面 → 网格。
+//! - [`curve_tess`] — 曲线图元三角化（V2.2-A-2 方案乙）：圆柱/圆锥/圆环/旋转曲面 → 网格；
+//!   W5 起含毛股（[`curve_tess::CurveReq::Strand`]：折线 + 变半径圆管 + 平行传输标架）。
+//! - [`subdiv`] — Loop 细分（三角笼，W4 定稿 C2）：均匀 1→4 + **极限位置直接求值**
+//!   （1-ring stencil，不迭代）+ 边界/角点规则 + 顶点域 uv。产物是裸数组，
+//!   由 `prism-rt` 侧转 `Mesh`（依赖方向：`prism-rt → prism-geometry` 单向）。
 //! - [`mesh_sdf`] — mesh→SDF 烘焙：brick 8³ 稀疏化 + winding number 符号。
 //! - [`det_math`] — D-29 确定性数学件（det_atan2/det_asin/det_cos_sin；禁 libm）。
 //! - [`gltf`] — glTF 精简导入（手写 JSON 子集解析，禁 serde）。
@@ -35,6 +39,7 @@ pub mod obj;
 pub mod primitive;
 pub mod quartic;
 pub mod sdf;
+pub mod subdiv;
 
 use prism_math::Vec3;
 

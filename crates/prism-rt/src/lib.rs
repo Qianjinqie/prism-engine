@@ -41,6 +41,7 @@ pub mod bsdf;
 pub mod caustics;
 pub mod camera;
 pub mod depth;
+pub mod displace;
 /// HDR 环境光照 / IBL（A2 / W2）：等距柱状立体角 2D CDF + 亮斑列表 + MIS。
 pub mod env;
 pub mod gi;

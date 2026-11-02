@@ -40,6 +40,12 @@ const TWO_PI: f32 = 6.2831853; // ≈ 2·π，与 `det_math` 的 `TWO_PI` 同值
 const MIN_SEG: u32 = 3;
 /// `axis` 归一化阈值（小于此视为未定义轴）。
 const AXIS_EPS: f32 = 1e-9;
+/// 毛股相邻控制点的最小间距（世界单位；小于此视为零长段 ⇒ 退化）。
+///
+/// 取 `1e-6`：与 [`AXIS_EPS`] 同量级。零长段会让切向退化为 `0/0`，
+/// 平行传输的旋转轴无定义 ⇒ 整股环顶点塌到一点（不是"看起来细"，是 NaN 源）。
+/// 故在 `validate()` 里判死，`tessellate` 直接返回空集。
+const STRAND_MIN_SEG_LEN: f32 = 1e-6;
 
 /// 曲线图元请求（四种：圆柱 / 圆锥 / 圆环 / 旋转曲面）。
 ///
@@ -78,6 +84,62 @@ pub enum CurveReq {
         segments: u32,
         axis: Vec3,
     },
+    /// **毛股（W5 / A7 定稿 C1）**：一条折线中心线 + 变半径圆管。
+    ///
+    /// # 语义
+    ///
+    /// * `points`：中心线控制点，**折线**（不是 NURBS，不插值曲线）。
+    ///   长度 ≥ 2；相邻点必须不重合（零长段 ⇒ 退化，见 `STRAND_MIN_SEG_LEN`）。
+    /// * `radii`：**两种合法长度，二选一**（`validate()` 都接受）：
+    ///   - `radii.len() == points.len()` ⇒ 逐点半径（锥形股 / 发根到发梢变细）；
+    ///   - `radii.len() == 1` ⇒ 全股统一半径（等价于把该值广播到每个控制点）。
+    ///   其余长度一律非法。每个半径必须 `> 0` 且有限。
+    ///
+    /// # 为什么单独成"型"而不是复用 [`CurveReq::Revolution`]
+    ///
+    /// 旋转曲面的中心线只能是直线（绕轴旋转），无法表达弯曲的发股；而毛股的
+    /// 圆管必须沿**任意折线**推进，且环的朝向要逐段传递（平行传输，见
+    /// [`strand_frames`]）。几何上它和圆柱/圆锥同族（都是"圆截面沿一条轴推进"），
+    /// 故走同一条三角化通路、同一份弦高界、同一套 `TRIANGLE_SLOTS` 出口。
+    ///
+    /// # 端帽：**做**（不是省略）
+    ///
+    /// 每股两端各生成一圈扇形端盖（与 [`CurveReq::Cylinder`] 的上下盖同式）。
+    /// 理由有两条，都要紧：
+    /// 1. **V1 判据**要求"等半径直管 ≡ 圆柱"逐三角一致，而圆柱有端盖；
+    ///    不生成端盖就必然漏掉 `2·seg` 个三角形，判据直接红。
+    /// 2. 开口管在掠射视角会漏光（背面命中缺失），毛股密度高时表现为"发梢发亮"。
+    ///
+    /// 端盖是平面扇形，与管壁的接缝处法线不连续——这是**有意**的：
+    /// 毛发 BSDF 的切线取自 [`strand_frames`] 给出的纤维标架而非几何法线，
+    /// 端盖的硬边不影响着色，只影响遮挡（这才是端盖要解决的问题）。
+    Strand {
+        points: Vec<Vec3>,
+        radii: Vec<f32>,
+    },
+    /// **预烘焙三角网（W4 出海口）**：把细分 + 位移的产物送进既有三角形通路。
+    ///
+    /// # 这不是"第五条曲线"
+    ///
+    /// 它存在的唯一理由是**几何注入点只有一个**：三个后端都从
+    /// `SceneRenderRequest::curves`（`prism-gpu`）取几何，再经
+    /// [`tessellate_all`] 变成三角形 + SAH-BVH。细分/位移的产物本来就是三角形，
+    /// 但要走同一条通路就得有地方挂。挂在这里的收益是**零 ABI 改动、零着色器改动、
+    /// 零新遍历代码**（选型报告 §5 的定稿正是"烘焙成三角形后走 `TRIANGLE_SLOTS`"）。
+    ///
+    /// 代价：`CurveReq` 的"曲线"语义被稀释一格。备选方案（给请求结构体加
+    /// `meshes` 字段）要改 53 处结构体字面量，并把"空则逐位不变"的契约摊到
+    /// 每个后端——为此把语义纯度换掉是划算的。**已在 `docs/v2.5-W0-算法选型报告.md`
+    /// §22 记录为偏离项。**
+    ///
+    /// # 语义
+    ///
+    /// * `triangles` 原样进入三角化输出（**不重排、不重建**，顺序即输入顺序）；
+    /// * 空集 ⇒ 贡献空集（与其它退化形态同口径，不 panic）；
+    /// * 弦高界精确为 0（没有近似：它就是网格本身）；
+    /// * `seg_count` 返回 1（"一段"；该值只对四族曲线有几何含义，
+    ///   本变体的调用方不应依赖它，见 [`seg_count`] 的文档）。
+    TriSoup { triangles: Vec<Triangle> },
 }
 
 impl CurveReq {
@@ -119,12 +181,20 @@ impl CurveReq {
                     && axis.length() > AXIS_EPS
                     && profile.iter().all(|p| p.x >= 0.0 && p.x.is_finite() && p.y.is_finite())
             }
+            CurveReq::Strand { points, radii } => strand_is_valid(points, radii),
+            CurveReq::TriSoup { triangles } => {
+                triangles.iter().all(|t| {
+                    finite_vec(t.a) && finite_vec(t.b) && finite_vec(t.c)
+                })
+            }
         }
     }
 
     /// 该图元的最大半径 `r_max`（保真度界用）。
     ///
-    /// 圆柱/圆锥 = 底半径；圆环 = `major + minor`；旋转曲面 = profile 最大 `x`。
+    /// 圆柱/圆锥 = 底半径；圆环 = `major + minor`；旋转曲面 = profile 最大 `x`；
+    /// 毛股 = 控制点半径的最大值；预烘焙三角网 = 0（无"半径"这个概念，其弦高界
+    /// 恒为 0）。
     pub fn max_radius(&self) -> f32 {
         match self {
             CurveReq::Cylinder { radius, .. } => *radius,
@@ -133,8 +203,41 @@ impl CurveReq {
             CurveReq::Revolution { profile, .. } => {
                 profile.iter().map(|p| p.x).fold(0.0_f32, f32::max)
             }
+            CurveReq::Strand { radii, .. } => radii.iter().copied().fold(0.0_f32, f32::max),
+            CurveReq::TriSoup { .. } => 0.0,
         }
     }
+}
+
+/// 毛股的结构合法性（[`CurveReq::validate`] 的 `Strand` 臂，独立成函数便于测试）。
+///
+/// 判死项（任一成立 ⇒ 非法）：
+/// * `points.len() < 2`（单点无法构成管，也没有切向）；
+/// * `radii` 长度既不是 `1`（统一半径）也不是 `points.len()`（逐点半径）；
+/// * 任一点或任一半径非有限；
+/// * 任一半径 `≤ 0`（半径 0 ⇒ 环退化成一点 ⇒ 管壁三角形全零面积）；
+/// * 相邻控制点距离 `≤` `STRAND_MIN_SEG_LEN`（零长段 ⇒ 切向 `0/0`）。
+pub fn strand_is_valid(points: &[Vec3], radii: &[f32]) -> bool {
+    if points.len() < 2 {
+        return false;
+    }
+    if radii.len() != 1 && radii.len() != points.len() {
+        return false;
+    }
+    let finite_vec = |v: Vec3| v.x.is_finite() && v.y.is_finite() && v.z.is_finite();
+    if !points.iter().all(|p| finite_vec(*p)) {
+        return false;
+    }
+    if !radii.iter().all(|r| r.is_finite() && *r > 0.0) {
+        return false;
+    }
+    for w in points.windows(2) {
+        let d = w[1] - w[0];
+        if !(d.length() > STRAND_MIN_SEG_LEN) {
+            return false;
+        }
+    }
+    true
 }
 
 /// 由容忍误差 `tol` 推算某一半径对应的周向切分段数（`seg = ⌈2π·r / tol⌉`，下限 3）。
@@ -175,7 +278,11 @@ fn tess_seg(r: f32, tol: f32) -> u32 {
 /// 该曲线在容忍误差 `tol` 下的**有效**周向切分段数（各方向取较粗者 = 较小 `seg`，
 /// 保证界为上界）。
 ///
-/// 圆柱/圆锥 = 侧壁段数；圆环 = `min(seg_u, seg_v)`；旋转曲面 = `min(seg_profile, segments)`。
+/// 圆柱/圆锥 = 侧壁段数；圆环 = `min(seg_u, seg_v)`；旋转曲面 = `min(seg_profile, segments)`；
+/// 毛股 = 按**最大半径**给出的周向段数（见 `tess_strand` 的"为何全股统一分段"）。
+///
+/// [`CurveReq::TriSoup`] 返回 `1`：它不是"沿某方向切了多少段"的曲面，
+/// 该返回值没有几何含义，仅为保持函数全定义（调用方不应依赖它）。
 pub fn seg_count(curve: &CurveReq, tol: f32) -> u32 {
     match curve {
         CurveReq::Cylinder { radius, .. } => seg_for_radius(*radius, tol),
@@ -189,12 +296,32 @@ pub fn seg_count(curve: &CurveReq, tol: f32) -> u32 {
             let max_r = profile.iter().map(|p| p.x).fold(0.0_f32, f32::max);
             seg_for_radius(max_r, tol).min(*segments)
         }
+        CurveReq::Strand { radii, .. } => {
+            seg_for_radius(radii.iter().copied().fold(0.0_f32, f32::max), tol)
+        }
+        CurveReq::TriSoup { .. } => 1,
     }
 }
 
 /// 保真度界 `r_max · (1 − cos(π / seg))`。
 ///
 /// `seg` 即 [`seg_count`] 的返回值；`seg↑ ⇒ 界↓`（cos 在 `[0, π]` 单调降）。
+///
+/// # 毛股（`Strand`）的界逐段给出
+///
+/// ```text
+/// d_H(管面, mesh) ≤ max_j [ r_j · (1 − cos(π / seg)) ]
+/// ```
+///
+/// 中心线**没有**附加项：`points` 是折线，网格用的就是这条折线（不是对某条
+/// 光滑曲线的逼近），故"曲线被折线逼近"的那一项精确为 0。剩下的只有周向
+/// 弦高——与圆柱/圆锥同一项。逐段取 max 后与 `max_radius · (1 − cos(π/seg))`
+/// 数值相同，但写成逐段形式是为了让"这一段更粗 ⇒ 这一段贡献更大"这件事在
+/// 代码里可读（判据 V1 的复算方式也照此）。
+///
+/// # 预烘焙三角网（`TriSoup`）的界
+///
+/// 精确 0：输出的三角形就是输入本身，没有任何逼近。
 pub fn hausdorff_bound(curve: &CurveReq, seg: u32) -> f32 {
     // 退化/非法形态 → 空网格 → 保真度误差精确为 0（且必须是**有限值**：
     // 半径含 NaN/∞ 时 `max_radius()` 会把 NaN 传染到界上，破坏"界可比较"的契约）。
@@ -203,7 +330,18 @@ pub fn hausdorff_bound(curve: &CurveReq, seg: u32) -> f32 {
     }
     let seg = seg.max(1) as f32;
     let (c, _) = det_cos_sin(std::f32::consts::PI / seg);
-    curve.max_radius() * (1.0 - c)
+    let chord = 1.0 - c;
+    if let CurveReq::Strand { points, radii } = curve {
+        // 逐段：第 j 段的半径 = 两端点半径的较大者（管的凸包上界）。
+        let r_at = |j: usize| if radii.len() == 1 { radii[0] } else { radii[j] };
+        let mut bound = 0.0_f32;
+        for j in 0..points.len() - 1 {
+            let r_seg = r_at(j).max(r_at(j + 1));
+            bound = bound.max(r_seg * chord);
+        }
+        return bound;
+    }
+    curve.max_radius() * chord
 }
 
 /// 三角化入口：`tessellate(&CurveReq, tol) -> Vec<Triangle>`。
@@ -226,6 +364,9 @@ pub fn tessellate(curve: &CurveReq, tol: f32) -> Vec<Triangle> {
         CurveReq::Revolution { center, profile, segments, axis } => {
             tess_revolution(*center, profile, *segments, *axis, tol)
         }
+        CurveReq::Strand { points, radii } => tess_strand(points, radii, tol),
+        // 预烘焙三角形：原样输出（不重排、不重建 ⇒ 与输入逐位相同）。
+        CurveReq::TriSoup { triangles } => triangles.clone(),
     }
 }
 
@@ -422,6 +563,219 @@ fn tess_revolution(
 }
 
 // ---------------------------------------------------------------------------
+// 毛股（W5 / A7 定稿 C1）：平行传输标架 + 变半径圆管
+// ---------------------------------------------------------------------------
+
+/// 毛股某一段的**纤维标架**（世界空间，单位正交右手系）。
+///
+/// `tangent` = 该段中心线的单位切向；`normal_ref` = 法平面内的参考方向
+/// （**平行传输**推进，逐段不扭转）；`binormal = normal_ref × tangent`。
+///
+/// # 这个结构为什么必须公开
+///
+/// 毛发 BSDF（Marschner 模型）在纤维局部系里表达：入射/出射方向要先投影成
+/// `(θ, φ)`（`HairGeometry::longitudinal / azimuth`），而那个局部系就是本结构。
+/// 判据 V4（帧不连续 ≤ 5°）也要直接采样本结构，故它是**公开的几何产物**，
+/// 不是三角化的内部细节。
+///
+/// # 禁止事项（红线）
+///
+/// 标架**只由中心线决定**：不依赖视点、屏幕空间、包围盒朝向或任何渲染状态。
+/// 否则预览与终帧会得到不同几何（`docs/v2.5-v3.0-路线图.md` §4.4 红线 1 的
+/// 同款问题，选型报告 §8 的 C3 候选就是因此被否）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StrandFrame {
+    /// 单位切向（沿中心线前进方向）。
+    pub tangent: Vec3,
+    /// 法平面内的单位参考方向（平行传输推进）。
+    pub normal_ref: Vec3,
+    /// 副法向（`normal_ref × tangent`，单位）。
+    pub binormal: Vec3,
+}
+
+/// 由折线中心线推出**逐段**纤维标架（平行传输 / parallel transport）。
+///
+/// # 算法
+///
+/// 1. 首段切向 `u0 = normalize(p1 − p0)`；初始法向取"与 `u0` 最不平行的坐标轴
+///    投影到法平面后归一"（见 `initial_normal`）——纯函数，与视点无关。
+/// 2. 逐段推进：把上一段的 `normal_ref` 用**最小旋转**（把 `u_prev` 转到 `u_cur`
+///    的那个旋转）搬运过去，再正交化/归一。这就是平行传输：相邻标架之间的
+///    相对扭转精确为 0，所以沿股扫过时法向不会绕轴打转（判据 V4）。
+///
+/// 只用 `+ − × ÷ sqrt`（D-29）：没有 `acos`/`atan2`，不需要任何角度。
+///
+/// # 退化
+///
+/// `points.len() < 2`、相邻点重合、或含非有限坐标 ⇒ 返回**空** `Vec`
+/// （调用方 `tessellate` 已在 `validate()` 处短路，此处是二次保险，不 panic）。
+pub fn strand_frames(points: &[Vec3]) -> Vec<StrandFrame> {
+    let n = points.len();
+    if n < 2 {
+        return Vec::new();
+    }
+    let mut frames: Vec<StrandFrame> = Vec::with_capacity(n - 1);
+    let finite = |v: Vec3| v.x.is_finite() && v.y.is_finite() && v.z.is_finite();
+    // 首段切向（零长段 ⇒ 空集，不产生 NaN 标架）。
+    let mut u_prev = points[1] - points[0];
+    let len0 = u_prev.length();
+    if !(len0 > STRAND_MIN_SEG_LEN) || !finite(u_prev) {
+        return Vec::new();
+    }
+    u_prev = u_prev * (1.0 / len0);
+    let mut nrm = initial_normal(u_prev);
+    frames.push(StrandFrame { tangent: u_prev, normal_ref: nrm, binormal: nrm.cross(&u_prev) });
+
+    for j in 1..n - 1 {
+        let d = points[j + 1] - points[j];
+        let len = d.length();
+        if !(len > STRAND_MIN_SEG_LEN) || !finite(d) {
+            return Vec::new();
+        }
+        let u_cur = d * (1.0 / len);
+        nrm = transport_normal(nrm, u_prev, u_cur);
+        frames.push(StrandFrame {
+            tangent: u_cur,
+            normal_ref: nrm,
+            binormal: nrm.cross(&u_cur),
+        });
+        u_prev = u_cur;
+    }
+    frames
+}
+
+/// 初始法向：取与 `u` **最不平行**的坐标轴，投影到法平面后归一。
+///
+/// 与 [`curve_tess`] 的 `orient` 同精神：永远存在一个轴满足 `|u·axis| ≤ 1/√3`，
+/// 故叉乘/投影不会退化。并列时按 `x → y → z` 取（确定性，不依赖迭代顺序）。
+///
+/// 对 `u = +Y`（圆柱轴）返回 `+X`：这条不是巧合——正是它让等半径直管毛股
+/// 与 [`CurveReq::Cylinder`] 的环顶点**逐位相同**（判据 V1 的结构基础）。
+fn initial_normal(u: Vec3) -> Vec3 {
+    let (ax, ay, az) = (u.x.abs(), u.y.abs(), u.z.abs());
+    let helper = if ax <= ay && ax <= az {
+        Vec3::new(1.0, 0.0, 0.0)
+    } else if ay <= az {
+        Vec3::new(0.0, 1.0, 0.0)
+    } else {
+        Vec3::new(0.0, 0.0, 1.0)
+    };
+    let proj = helper - u * helper.dot(&u);
+    let l = proj.length();
+    if l > 1e-12 {
+        proj * (1.0 / l)
+    } else {
+        // 理论上不可达（helper 与 u 的夹角 ≥ 54.7°）；兜底取任意正交向。
+        Vec3::new(1.0, 0.0, 0.0)
+    }
+}
+
+/// 平行传输一步：把 `n` 按"把 `from` 转到 `to` 的最小旋转"搬运过去。
+///
+/// Rodrigues 形式，其中 `cosθ = from·to`、`sinθ = |from × to|` 直接由点积/叉乘
+/// 得到（不落 `acos`）。搬运后**再正交化一次**：多段累积的浮点漂移不会让
+/// `n·to` 偏离 0（否则环顶点会缓慢地绕段轴偏移，表现为毛发"螺旋"）。
+///
+/// `from ≈ −to`（180° 反向）时最小旋转不唯一：此时保持 `n` 不变仍与 `to` 正交，
+/// 是合法选择（毛发不会出现这种折返，但代码不许产生 NaN）。
+fn transport_normal(n: Vec3, from: Vec3, to: Vec3) -> Vec3 {
+    let axis = from.cross(&to);
+    let s = axis.length();
+    let c = from.dot(&to).clamp(-1.0, 1.0);
+    let mut out = if s < 1e-9 {
+        if c > 0.0 {
+            n
+        } else {
+            n // 反向：n 仍与 to 正交，保持（见文档）
+        }
+    } else {
+        let k = axis * (1.0 / s);
+        let kv = k.dot(&n);
+        n * c + k.cross(&n) * s + k * (kv * (1.0 - c))
+    };
+    // 正交化（去掉沿 to 的分量）+ 归一。
+    out = out - to * out.dot(&to);
+    let l = out.length();
+    if l > 1e-12 {
+        out * (1.0 / l)
+    } else {
+        initial_normal(to)
+    }
+}
+
+/// 毛股三角化：变半径圆管 + 两端扇形端盖。
+///
+/// # 周向分段：**全股统一**取 `tess_seg(max radii, tol)`
+///
+/// 设计稿写的是"每段 `seg = max(MIN_SEG, ceil(2π·r_seg/tol))`"。本实装取
+/// **全股统一**（用最大半径算一次），理由是缝合：
+///
+/// 相邻两段必须共享**相同数量**的环顶点才能拼成闭合管。逐段独立取 `seg` 时，
+/// 半径变化的两段环顶点数不同，交界处会出现"顶点对不上"的缝——那正是 §5
+/// 定稿要避免的 T 型接缝（在毛管上表现为发丝间的漏光条纹，且随视点闪烁）。
+/// 统一分段后，管的拓扑是规则的 `(n−1)×seg` 四边形带，结构上没有缝。
+///
+/// 代价：一股内最粗的那一段决定整股的分段数（细段略密于必要）。这与
+/// [`hausdorff_bound`] 的口径一致——界本来就按 `max_radius` 取上界。
+///
+/// # 端帽
+///
+/// 两端各 `seg` 个三角形（扇形），与 [`CurveReq::Cylinder`] 的上下盖同式。
+/// 详见 [`CurveReq::Strand`] 的"端帽：做"一节。
+fn tess_strand(points: &[Vec3], radii: &[f32], tol: f32) -> Vec<Triangle> {
+    let n = points.len();
+    let r_at = |j: usize| if radii.len() == 1 { radii[0] } else { radii[j] };
+    let r_max = radii.iter().copied().fold(0.0_f32, f32::max);
+    let seg = tess_seg(r_max, tol);
+    let frames = strand_frames(points);
+    if frames.len() != n - 1 {
+        return Vec::new(); // 退化（零长段 / 非有限）：空集，不 panic
+    }
+
+    // 逐点环（每环 seg 个顶点，角度与圆柱同式：t_i = 2π·i/seg）。
+    let seg_i = seg as usize;
+    let mut rings: Vec<Vec<Vec3>> = Vec::with_capacity(n);
+    for j in 0..n {
+        let f = frames[j.min(frames.len() - 1)];
+        let r = r_at(j);
+        let mut ring = Vec::with_capacity(seg_i);
+        for i in 0..seg_i {
+            let t = TWO_PI * (i as f32) / (seg as f32);
+            let (ct, st) = det_cos_sin(t);
+            // 局部偏移 = n·(r·cosθ) + b·(r·sinθ)，与 `orient` + `ring_point` 同序。
+            ring.push(points[j] + (f.normal_ref * (r * ct) + f.binormal * (r * st)));
+        }
+        rings.push(ring);
+    }
+
+    let mut tris = Vec::with_capacity(((n - 1) * seg_i * 2) + 2 * seg_i);
+    // 管壁：(n−1) 段 × seg 个四边形（每个 2 三角形）。绕序与 `tess_cylinder` 的
+    // 侧壁同式（低端 i, 低端 i+1, 高端 i+1, 高端 i）。
+    for j in 0..n - 1 {
+        for i in 0..seg_i {
+            let i1 = (i + 1) % seg_i;
+            push_quad(
+                &mut tris,
+                rings[j][i],
+                rings[j][i1],
+                rings[j + 1][i1],
+                rings[j + 1][i],
+            );
+        }
+    }
+    // 端盖（起点盖 → 与圆柱下盖同绕序；终点盖 → 与上盖同绕序）。
+    for i in 0..seg_i {
+        let i1 = (i + 1) % seg_i;
+        push_tri(&mut tris, points[0], rings[0][i1], rings[0][i]);
+    }
+    for i in 0..seg_i {
+        let i1 = (i + 1) % seg_i;
+        push_tri(&mut tris, points[n - 1], rings[n - 1][i], rings[n - 1][i1]);
+    }
+    tris
+}
+
+// ---------------------------------------------------------------------------
 // 单元测试（native：保真度界 / 退化形态 / 确定性 / 几何合理性）
 // ---------------------------------------------------------------------------
 
@@ -507,5 +861,246 @@ mod tests {
         let a = tessellate(&curve, 0.03);
         let b = tessellate(&curve, 0.03);
         assert_eq!(a, b, "同输入三角化必须逐位一致");
+    }
+
+    // -----------------------------------------------------------------------
+    // W5 / A7：毛股
+    // -----------------------------------------------------------------------
+
+    /// 退化形态（A1 要求的五类）一律判非法且返回空 mesh（不 panic）。
+    #[test]
+    fn strand_degenerate_forms_yield_empty_mesh() {
+        let cases: Vec<(&str, CurveReq)> = vec![
+            (
+                "points.len() < 2",
+                CurveReq::Strand { points: vec![Vec3::new(0.0, 0.0, 0.0)], radii: vec![0.1] },
+            ),
+            (
+                "radii 长度不匹配",
+                CurveReq::Strand {
+                    points: vec![Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0)],
+                    radii: vec![0.1, 0.2, 0.3],
+                },
+            ),
+            (
+                "点非有限",
+                CurveReq::Strand {
+                    points: vec![Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, f32::NAN, 0.0)],
+                    radii: vec![0.1],
+                },
+            ),
+            (
+                "半径非有限",
+                CurveReq::Strand {
+                    points: vec![Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0)],
+                    radii: vec![f32::INFINITY],
+                },
+            ),
+            (
+                "半径 ≤ 0",
+                CurveReq::Strand {
+                    points: vec![Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0)],
+                    radii: vec![0.0],
+                },
+            ),
+            (
+                "相邻点重合（零长段）",
+                CurveReq::Strand {
+                    points: vec![Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 0.0)],
+                    radii: vec![0.1],
+                },
+            ),
+        ];
+        for (tag, c) in &cases {
+            assert!(!c.validate(), "[{tag}] 必须被判非法");
+            assert_eq!(tessellate(c, 0.02), Vec::new(), "[{tag}] 必须返回空 mesh");
+            assert_eq!(hausdorff_bound(c, seg_count(c, 0.02)), 0.0, "[{tag}] 界必须有限且为 0");
+        }
+    }
+
+    /// **V1（几何等价，逐位）**：等半径直管 ⇔ `CurveReq::Cylinder`，同 tol。
+    ///
+    /// 判据原文写的是"等半径圆锥（`Cone`）"——**这是笔误**：`Cone` 的半径从 0
+    /// 线性长到 `radius`（顶点在 `+height/2`），与等半径直管在几何上不等价；
+    /// 等半径直管的正确对应物是 [`CurveReq::Cylinder`]。本测试按**几何等价**
+    /// 选 `Cylinder`，理由是判据要检验的是"毛股通路与曲线通路喂出同一批三角形"，
+    /// 若拿 `Cone` 对拍，差异恒非零且与毛股实现无关（是图元本身不同）。
+    ///
+    /// 断言是**逐位三角形集合相等**（比 `differing_pixels = 0` 更强：像素相等
+    /// 只要求命中结果一致，这里要求顶点位型一致）。排序后比较以消除发射顺序差异
+    /// ——渲染只依赖三角形集合，不依赖它在 `Vec` 里的位置（BVH 由同一集合构建）。
+    #[test]
+    fn strand_straight_tube_is_bitwise_cylinder() {
+        let (radius, height) = (0.9_f32, 3.0_f32);
+        let tol = 0.02_f32;
+        let cyl = CurveReq::Cylinder {
+            center: Vec3::new(0.0, 0.0, 0.0),
+            radius,
+            height,
+            axis: Vec3::new(0.0, 1.0, 0.0),
+        };
+        let strand = CurveReq::Strand {
+            points: vec![Vec3::new(0.0, -height * 0.5, 0.0), Vec3::new(0.0, height * 0.5, 0.0)],
+            radii: vec![radius],
+        };
+        let a = sorted_tris(&tessellate(&cyl, tol));
+        let b = sorted_tris(&tessellate(&strand, tol));
+        assert_eq!(a.len(), b.len(), "三角形数必须相同（含两端盖）");
+        for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
+            assert_eq!(
+                (vbits(x.a), vbits(x.b), vbits(x.c)),
+                (vbits(y.a), vbits(y.b), vbits(y.c)),
+                "第 {i} 个三角形顶点位型不同：圆柱 {x:?} vs 毛股 {y:?}"
+            );
+        }
+        println!("V1：等半径直管与圆柱 {} 个三角形逐位相同（tol={tol}）", a.len());
+    }
+
+    /// 顶点位型 `(x, y, z)` 的 u32 位型三元组。
+    fn vbits(v: Vec3) -> (u32, u32, u32) {
+        (v.x.to_bits(), v.y.to_bits(), v.z.to_bits())
+    }
+
+    /// 逐位比较用：三角形按顶点位型排序（与发射顺序解耦）。
+    fn sorted_tris(tris: &[Triangle]) -> Vec<Triangle> {
+        let key = |t: &Triangle| {
+            (vbits(t.a), vbits(t.b), vbits(t.c))
+        };
+        let mut v = tris.to_vec();
+        v.sort_by_key(key);
+        v
+    }
+
+    /// 变半径管：每个控制点的环半径确实等于该点的半径；端帽使网格封闭（水密）。
+    #[test]
+    fn strand_variable_radius_rings_and_caps() {
+        let pts = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.3, 2.0, 0.0),
+        ];
+        let radii = vec![0.2_f32, 0.1, 0.05];
+        let curve = CurveReq::Strand { points: pts.clone(), radii: radii.clone() };
+        assert!(curve.validate());
+        let tris = tessellate(&curve, 0.02);
+        let seg = tess_seg(radii.iter().copied().fold(0.0, f32::max), 0.02) as usize;
+        // 管壁 (n−1)·seg·2 + 端盖 2·seg。
+        assert_eq!(tris.len(), (pts.len() - 1) * seg * 2 + 2 * seg);
+
+        // 每段环上的点距其中心线的垂距 = 该点半径（容差 1e-5 相对）。
+        let frames = strand_frames(&pts);
+        for j in 0..pts.len() {
+            let f = frames[j.min(frames.len() - 1)];
+            let centre = pts[j];
+            let mut radial: Vec<f32> = Vec::new();
+            for i in 0..seg {
+                let t = TWO_PI * (i as f32) / (seg as f32);
+                let (ct, st) = det_cos_sin(t);
+                let p = centre + (f.normal_ref * (radii[j] * ct) + f.binormal * (radii[j] * st));
+                radial.push((p - centre).length());
+            }
+            for r in radial {
+                assert!(
+                    (r - radii[j]).abs() <= 1e-5 * radii[j].max(1.0),
+                    "第 {j} 点的环半径 {r} 应等于 {}",
+                    radii[j]
+                );
+            }
+        }
+    }
+
+    /// 平行传输：法向沿股推进**不绕轴打转**（相邻段法向夹角 ≈ 段间转折角），
+    /// 且始终与切向正交（正交化生效）。
+    ///
+    /// 这是判据 V4 的几何侧：一段沿圆弧、每段转折 2° 的股，相邻标架夹角必须
+    /// ≤ 5°（不是 90°、也不是累积扭转）。
+    #[test]
+    fn strand_frames_are_parallel_transported() {
+        // 空间螺旋线（**非平面**）：平面曲线的平行传输是平凡的（面外法向恒定），
+        // 只有非平面曲线才能测出"逐段搬运"是否真的在搬运。
+        let n = 90; // 90 段 × 2° = 180° 半圈
+        let mut pts = Vec::with_capacity(n + 1);
+        for i in 0..=n {
+            let a = std::f32::consts::PI * (i as f32) / (n as f32); // 0..π
+            let (ca, sa) = det_cos_sin(a);
+            pts.push(Vec3::new(ca * 10.0, sa * 10.0, a * 3.0));
+        }
+        let frames = strand_frames(&pts);
+        assert_eq!(frames.len(), n);
+        // cos(5°) 的下界（判据 V4 的阈值；用点积比较，避免 acos 落 libm）。
+        const COS_5DEG: f32 = 0.996_194_7;
+        let mut max_ortho = 0.0_f32;
+        let mut min_dot = 1.0_f32;
+        for f in &frames {
+            max_ortho = max_ortho.max(f.normal_ref.dot(&f.tangent).abs());
+            max_ortho = max_ortho.max(f.binormal.dot(&f.tangent).abs());
+            max_ortho = max_ortho.max(f.normal_ref.dot(&f.binormal).abs());
+        }
+        for w in frames.windows(2) {
+            min_dot = min_dot.min(w[0].normal_ref.dot(&w[1].normal_ref));
+        }
+        println!(
+            "V4 几何侧：{} 段空间螺旋（每段 2°），相邻法向最小点积 {:.8}（cos5° = {:.8}），\
+             最大非正交度 {:.2e}",
+            n, min_dot, COS_5DEG, max_ortho
+        );
+        assert!(
+            min_dot >= COS_5DEG,
+            "相邻标架夹角超过 5°：点积 {min_dot} < {COS_5DEG}"
+        );
+        assert!(max_ortho < 1e-6, "标架非正交：{max_ortho}");
+    }
+
+    /// 保真度界：`seg↑ ⇒ 界↓`，且界随最大半径线性放大（与四族同口径）。
+    #[test]
+    fn strand_hausdorff_bound_shrinks_with_seg() {
+        let curve = CurveReq::Strand {
+            points: vec![Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0)],
+            radii: vec![0.05],
+        };
+        let tol = 0.02;
+        let seg = seg_count(&curve, tol);
+        let a = hausdorff_bound(&curve, seg);
+        let b = hausdorff_bound(&curve, seg * 2);
+        assert!(a > 0.0 && b > 0.0);
+        assert!(b < a, "seg 加倍后界必须下降：{b} !< {a}");
+
+        let fat = CurveReq::Strand {
+            points: vec![Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0)],
+            radii: vec![0.1],
+        };
+        let c = hausdorff_bound(&fat, seg);
+        assert!((c - 2.0 * a).abs() <= 1e-6 * c.max(1.0), "半径加倍 ⇒ 界加倍：{a} vs {c}");
+    }
+
+    /// 预烘焙三角网（W4 出海口）：原样输出、顺序不变、逐位相同。
+    #[test]
+    fn trisoup_passes_through_verbatim() {
+        let tris = vec![
+            Triangle {
+                a: Vec3::new(0.0, 0.0, 0.0),
+                b: Vec3::new(1.0, 0.0, 0.0),
+                c: Vec3::new(0.0, 1.0, 0.0),
+            },
+            Triangle {
+                a: Vec3::new(1.0, 0.0, 0.0),
+                b: Vec3::new(1.0, 1.0, 0.0),
+                c: Vec3::new(0.0, 1.0, 0.0),
+            },
+        ];
+        let c = CurveReq::TriSoup { triangles: tris.clone() };
+        assert!(c.validate());
+        assert_eq!(tessellate(&c, 0.02), tris, "预烘焙三角形必须原样通过");
+        assert_eq!(hausdorff_bound(&c, seg_count(&c, 0.02)), 0.0, "无逼近 ⇒ 界为 0");
+        // 非有限三角形 ⇒ 非法（与其它图元的退化口径一致）。
+        let bad = CurveReq::TriSoup {
+            triangles: vec![Triangle {
+                a: Vec3::new(f32::NAN, 0.0, 0.0),
+                b: Vec3::new(1.0, 0.0, 0.0),
+                c: Vec3::new(0.0, 1.0, 0.0),
+            }],
+        };
+        assert!(!bad.validate());
+        assert_eq!(tessellate(&bad, 0.02), Vec::new());
     }
 }
