@@ -116,7 +116,7 @@ pub mod background;
 /// 逐位一致是硬判据，跨后端视觉等价走统计阈值——见 `tests/qa_render_scene.rs`）。
 pub mod scene;
 
-/// **V3 九绑定场景 kernel 的真机派发 harness**（D-21 / V6 第三条腿）。
+/// **V3 十一绑定场景 kernel 的真机派发 harness**（D-21 / V6 第三条腿）。
 ///
 /// 只在**native 的测试构建**里存在：它读的是**入库产物**
 /// `shaders/spv/scene_frame_v3.spv`（由 `tools/wgsl2spv` 用 naga 生成），

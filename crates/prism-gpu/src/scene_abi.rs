@@ -150,9 +150,16 @@ pub const P_NUM_TEXTURES: u32 = 24;
 /// 放一个 `H` 把这条依赖压成常量，且让"没有 CDF"时取 0 即可整段跳过。
 pub const P_CFD_ROWS: u32 = 25;
 
+/// （V3 / W3）实例个数（= `Scene::instances.len()`）。
+pub const P_NUM_INSTANCES: u32 = 26;
+
+/// （V3 / W3）实例 TLAS 的节点个数（`NODE_SLOTS` 步长，与曲线 BVH 同一编码）。
+pub const P_NUM_INST_NODES: u32 = 27;
+
 /// **V3** 参数块字数：V2 的 24 字前缀逐字节不变，尾部追加
-/// `P_NUM_TEXTURES` / `P_CFD_ROWS` 两字。
-pub const PARAMS_WORDS_V3: usize = 26;
+/// `P_NUM_TEXTURES` / `P_CFD_ROWS`（W1-B）与 `P_NUM_INSTANCES` /
+/// `P_NUM_INST_NODES`（W3）四字。
+pub const PARAMS_WORDS_V3: usize = 28;
 
 /// 环境 CDF 的字节数口径：`(W+1)·H·4`。
 ///
@@ -312,9 +319,22 @@ impl SceneAbiProfile {
 
 /// V3 剖面的绑定表：**顺序即 binding 编号**，末位恒为输出。
 ///
-/// 选型报告 §11 的槽位顺序逐字落地：
-/// `{params, spheres, lights, triangles, nodes, textures, texmeta, cdf, out}`。
-pub const V3_BINDINGS: [SceneBinding; 9] = [
+/// 选型报告 §11 的槽位顺序逐字落地（W3 在尾部追加两块，输出后移一位）：
+/// `{params, spheres, lights, triangles, nodes, textures, texmeta, cdf,
+///   instances, instance_nodes, out}`。
+///
+/// # 为什么实例两块**追加在 cdf 之后**（而不是插在 nodes 后面）
+///
+/// 追加 = 既有 8 个绑定的编号**一个都没动**（0..7 逐格不变），于是 W1-B/W2 的
+/// 编码器、`.spv` 声明与宿主代码只改"输出绑定号 + 尾部两块"，不改既有语义。
+/// 插在中间会让 `textures/texmeta/cdf` 三块整体后移，等于把 W1/W2 的判据全部
+/// 重新对一遍——没有收益。
+///
+/// # 输出恒为最后一个绑定
+///
+/// 这是三份源（ABI / WGSL / 宿主）共用的硬约束。W3 把它从 8 挪到 10，
+/// 所有消费者都从 [`SceneAbiProfile::out_binding`] 派生，**不许写字面量**。
+pub const V3_BINDINGS: [SceneBinding; 11] = [
     SceneBinding { binding: 0, name: "params", access: BindingAccess::ReadOnly },
     SceneBinding { binding: 1, name: "spheres", access: BindingAccess::ReadOnly },
     SceneBinding { binding: 2, name: "lights", access: BindingAccess::ReadOnly },
@@ -323,8 +343,18 @@ pub const V3_BINDINGS: [SceneBinding; 9] = [
     SceneBinding { binding: 5, name: "textures", access: BindingAccess::ReadOnly },
     SceneBinding { binding: 6, name: "texmeta", access: BindingAccess::ReadOnly },
     SceneBinding { binding: 7, name: "cdf", access: BindingAccess::ReadOnly },
-    SceneBinding { binding: 8, name: "out", access: BindingAccess::ReadWrite },
+    SceneBinding { binding: 8, name: "instances", access: BindingAccess::ReadOnly },
+    SceneBinding { binding: 9, name: "instance_nodes", access: BindingAccess::ReadOnly },
+    SceneBinding { binding: 10, name: "out", access: BindingAccess::ReadWrite },
 ];
+
+/// 实例记录的 ABI 常量从 [`crate::instance`] 再导出：`scene_abi` 是宿主查 ABI 的
+/// 唯一入口，宿主不该为了 `INSTANCE_BYTES` 再 import 一个模块。
+pub use crate::instance::{
+    InstanceReq, INSTANCE_AFFINE_WORDS, INSTANCE_BYTES, INSTANCE_FLAG_IDENTITY,
+    INSTANCE_FLAG_MIRRORED, INSTANCE_GEOM_SHARED, INSTANCE_INVERSE_WORDS, INSTANCE_MAT_FROM_GEOM,
+    INSTANCE_SLOTS,
+};
 
 /// V3 各绑定的编号（宿主据此声明 `@binding(k)`，禁止写字面量）。
 pub const V3_PARAMS: u32 = 0;
@@ -342,8 +372,12 @@ pub const V3_TEXTURES: u32 = 5;
 pub const V3_TEXMETA: u32 = 6;
 /// 环境 CDF（`array<u32>`，`(W+1)·H·4` 字节）。
 pub const V3_CDF: u32 = 7;
+/// 实例记录（`array<u32>`，[`INSTANCE_BYTES`] 字节/条 = 28 槽）。
+pub const V3_INSTANCES: u32 = 8;
+/// 实例 TLAS 节点（`array<u32>`，[`NODE_SLOTS`] 槽/节点 = 48 B）。
+pub const V3_INSTANCE_NODES: u32 = 9;
 /// 输出（**恒为最后一个绑定**）。
-pub const V3_OUT: u32 = 8;
+pub const V3_OUT: u32 = 10;
 
 /// `Bsdf::maps` 的槽数（与 `prism_rt::bsdf::MAP_SLOTS` 同值）。
 ///
@@ -394,7 +428,7 @@ const fn str_eq(a: &str, b: &str) -> bool {
 /// W2 接线后 shader 从 CDF 里读出纹理元数据、表现出"环境光照成了一张贴图"。
 const _: () = {
     let bs = V3_BINDINGS;
-    assert!(bs.len() == 9);
+    assert!(bs.len() == 11);
     let mut i = 0;
     while i < bs.len() {
         // 连续前缀：binding 编号必须等于下标（宿主据此派生 bind group）。
@@ -410,24 +444,30 @@ const _: () = {
     assert!(str_eq(bs[5].name, "textures"));
     assert!(str_eq(bs[6].name, "texmeta"));
     assert!(str_eq(bs[7].name, "cdf"));
-    assert!(str_eq(bs[8].name, "out"));
+    assert!(str_eq(bs[8].name, "instances"));
+    assert!(str_eq(bs[9].name, "instance_nodes"));
+    assert!(str_eq(bs[10].name, "out"));
     // **输出恒为最后一个绑定**（这是三份源共用的硬约束）。
-    assert!(str_eq(bs[8].name, "out"));
-    assert!(access_is_read_write(bs[8].access));
+    assert!(str_eq(bs[10].name, "out"));
+    assert!(access_is_read_write(bs[10].access));
     // 除输出外全部只读（写错的后果是驱动直接拒绝创建 bind group layout）。
     let mut j = 0;
-    while j < 8 {
+    while j < 10 {
         assert!(!access_is_read_write(bs[j].access));
         j += 1;
     }
 };
 
 /// 参数块尾部追加两字：V3 = V2 + 2，且两字的编号紧接 V2 末字。
-const _: () = assert!(PARAMS_WORDS_V3 == PARAMS_WORDS_V2 + 2);
+const _: () = assert!(PARAMS_WORDS_V3 == PARAMS_WORDS_V2 + 4);
 const _: () = assert!(P_NUM_TEXTURES == PARAMS_WORDS_V2 as u32);
 const _: () = assert!(P_CFD_ROWS == P_NUM_TEXTURES + 1);
 /// 参数块末字编号 + 1 == 字数（不多不少，`encode_v3` 才可能写满）。
-const _: () = assert!(PARAMS_WORDS_V3 == P_CFD_ROWS as usize + 1);
+const _: () = assert!(PARAMS_WORDS_V3 == P_NUM_INST_NODES as usize + 1);
+/// 四个 V3 追加字**紧挨且有序**（乱序会让 shader 与编码器读到对方的计数）。
+const _: () = assert!(P_NUM_TEXTURES + 1 == P_CFD_ROWS);
+const _: () = assert!(P_CFD_ROWS + 1 == P_NUM_INSTANCES);
+const _: () = assert!(P_NUM_INSTANCES + 1 == P_NUM_INST_NODES);
 /// CDF 长度口径：2048×1024 → 8,392,704 B（选型报告 §3.1 第 2 条）。
 const _: () = assert!(cdf_len_bytes(2048, 1024) == 8_392_704);
 /// `texmeta` 步长：`array<vec4<u32>>` 的 2 格 = 32 B（必须是 16 的倍数）。
@@ -573,6 +613,48 @@ impl SceneAbi {
         textures: &[TextureUpload<'_>],
         env: Option<EnvCdf<'_>>,
     ) -> Result<V3Buffers, String> {
+        Self::encode_v3_with_instances(req, textures, env, &[])
+    }
+
+    /// **V3 + W3 实例**：同 [`SceneAbi::encode_v3`]，另外编码实例表与实例 TLAS。
+    ///
+    /// # 语义（与 `prism-rt` 的 `ShapeRef::Instance` 对齐）
+    ///
+    /// * `triangles` / `nodes` 两块 = **共享几何那一个 BLAS**（原型，局部坐标）；
+    /// * `instances` / `instance_nodes` = 1 万级实例 + TLAS（世界坐标 AABB）；
+    /// * `P_NUM_INSTANCES > 0` 时原型**不再作为世界几何绘制**（它只能经实例
+    ///   到达）——这是 `prism-rt` 把 `instance_geoms` 与 `meshes` 分开的同一条
+    ///   纪律（选型报告 §17.3）：否则"沿 x 摆 10 份"会变成"10 份正确 + 1 份
+    ///   莫名钉在原点"。
+    ///
+    /// # 逆矩阵不在后端算
+    ///
+    /// 调用方传进来的 [`InstanceReq`] 必须已由 [`InstanceReq::from_affine`]
+    /// 算好逆（CPU 一次）；本函数**不做求逆**，只编码。
+    ///
+    /// # 错误（不 panic）
+    ///
+    /// `geom_id != 0`（单 BLAS 剖面）/ 实例表非空但原型几何为空 / 退化实例
+    /// ⇒ `Err`（带可定位说明）。
+    pub fn encode_v3_instanced(
+        req: &SceneRenderRequest,
+        textures: &[TextureUpload<'_>],
+        env: Option<EnvCdf<'_>>,
+        instances: &[InstanceReq],
+    ) -> Result<V3Buffers, String> {
+        Self::encode_v3_with_instances(req, textures, env, instances)
+    }
+
+    /// [`SceneAbi::encode_v3`] / [`SceneAbi::encode_v3_instanced`] 的共同实现。
+    ///
+    /// `instances` 为空 ⇒ 实例两块缓冲为空、两计数为 0，WGSL 的实例遍历段整段
+    /// 跳过 ⇒ 与 W1-C/W2 的 V3 输出**逐位相同**（W3 的不回归机械保证）。
+    fn encode_v3_with_instances(
+        req: &SceneRenderRequest,
+        textures: &[TextureUpload<'_>],
+        env: Option<EnvCdf<'_>>,
+        instances: &[InstanceReq],
+    ) -> Result<V3Buffers, String> {
         if textures.len() > MAX_V3_TEXTURES {
             return Err(format!(
                 "纹理条数 {} 超过上限 {MAX_V3_TEXTURES}；建议：合并图集，或分批提交",
@@ -661,6 +743,38 @@ impl SceneAbi {
         put_u32(&mut params, P_NUM_TEXTURES as usize, textures.len() as u32);
         put_u32(&mut params, P_CFD_ROWS as usize, cdf_rows);
 
+        // ---- W3：实例 + TLAS ----
+        let (instances_bytes, instance_nodes, num_instances, num_inst_nodes) =
+            if instances.is_empty() {
+                (Vec::new(), Vec::new(), 0u32, 0u32)
+            } else {
+                for (i, inst) in instances.iter().enumerate() {
+                    if inst.geom_id != INSTANCE_GEOM_SHARED {
+                        return Err(format!(
+                            "实例 {i} 的 geom_id = {} ≠ {INSTANCE_GEOM_SHARED}：\
+                             V3 剖面只有**一个** BLAS（`triangles`/`nodes` 就是它）；\
+                             多原型需要再开两块缓冲，W3 未做（不是漏：判据只要一个共享原型）",
+                            inst.geom_id
+                        ));
+                    }
+                }
+                let (pmin, pmax) = prototype_bounds(&tris).ok_or_else(|| {
+                    "实例表非空但原型几何为空：实例需要有东西可实例化\
+                     （V3 剖面用 `triangles`/`nodes` 承载那一个 BLAS）"
+                        .to_string()
+                })?;
+                let set = crate::instance::build_instance_set(instances, pmin, pmax);
+                let nodes_len = (set.nodes.len() / (NODE_SLOTS as usize * 4)) as u32;
+                (
+                    crate::instance::encode_instances(&set.instances),
+                    set.nodes,
+                    set.instances.len() as u32,
+                    nodes_len,
+                )
+            };
+        put_u32(&mut params, P_NUM_INSTANCES as usize, num_instances);
+        put_u32(&mut params, P_NUM_INST_NODES as usize, num_inst_nodes);
+
         Ok(V3Buffers {
             params,
             spheres,
@@ -670,7 +784,54 @@ impl SceneAbi {
             textures: texel_bytes,
             texmeta,
             cdf,
+            instances: instances_bytes,
+            instance_nodes,
         })
+    }
+}
+
+/// 从已编码的三角形槽位里取原型几何的局部 AABB（`None` = 空）。
+///
+/// 直接读 `triangles` 字节而不是重新三角化：`encode_curve_buffers` 已经把
+/// 曲线烘成三角形（并建了 BVH），再算一遍既慢又可能与 BVH 里的顶点不同源。
+///
+/// 公开的理由：宿主要建 TLAS 就得知道原型的世界包围盒，而"原型是谁"这个
+/// 判断的权威在本函数（`INSTANCE_GEOM_SHARED` 指向的就是 `triangles` 那一块）。
+pub fn prototype_bounds(tris: &[u8]) -> Option<(Vec3, Vec3)> {
+    let stride = TRIANGLE_SLOTS as usize * 4;
+    if tris.is_empty() || tris.len() < stride {
+        return None;
+    }
+    let mut min = Vec3::splat(f32::INFINITY);
+    let mut max = Vec3::splat(f32::NEG_INFINITY);
+    for block in tris.chunks_exact(stride) {
+        for base in [0usize, 4, 8] {
+            let x = f32::from_le_bytes([
+                block[base * 4],
+                block[base * 4 + 1],
+                block[base * 4 + 2],
+                block[base * 4 + 3],
+            ]);
+            let y = f32::from_le_bytes([
+                block[base * 4 + 4],
+                block[base * 4 + 5],
+                block[base * 4 + 6],
+                block[base * 4 + 7],
+            ]);
+            let z = f32::from_le_bytes([
+                block[base * 4 + 8],
+                block[base * 4 + 9],
+                block[base * 4 + 10],
+                block[base * 4 + 11],
+            ]);
+            min = Vec3::new(min.x.min(x), min.y.min(y), min.z.min(z));
+            max = Vec3::new(max.x.max(x), max.y.max(y), max.z.max(z));
+        }
+    }
+    if min.x.is_finite() && min.x <= max.x {
+        Some((min, max))
+    } else {
+        None
     }
 }
 
@@ -824,9 +985,9 @@ pub struct EnvCdf<'a> {
     pub bytes: &'a [u8],
 }
 
-/// V3 编码产物：**8 块输入缓冲**，下标即 `@binding` 编号（0..8，`out` 除外）。
+/// V3 编码产物：**10 块输入缓冲**，下标即 `@binding` 编号（0..10，`out` 除外）。
 ///
-/// 用结构体而不是 8 元组：V3 的绑定顺序是 ABI（`V3_BINDINGS`），元组下标
+/// 用结构体而不是 10 元组：V3 的绑定顺序是 ABI（`V3_BINDINGS`），元组下标
 /// 会让"第 5 个是哪块"变成阅读理解题。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct V3Buffers {
@@ -846,13 +1007,17 @@ pub struct V3Buffers {
     pub texmeta: Vec<u8>,
     /// 绑定 7：环境 CDF（`array<u32>`）。
     pub cdf: Vec<u8>,
+    /// 绑定 8：实例记录（`array<u32>`，[`INSTANCE_BYTES`] 字节/条；已按 TLAS 叶子序重排）。
+    pub instances: Vec<u8>,
+    /// 绑定 9：实例 TLAS 节点（`array<u32>`，[`NODE_SLOTS`] 槽/条）。
+    pub instance_nodes: Vec<u8>,
 }
 
 impl V3Buffers {
     /// 按 `@binding` 顺序返回的输入缓冲（长度 = `V3_BINDINGS.len() - 1`）。
     ///
     /// 宿主建 bind group 时按下标取用，杜绝"手写 5/6 号绑定搞反"。
-    pub fn inputs(&self) -> [&[u8]; 8] {
+    pub fn inputs(&self) -> [&[u8]; 10] {
         [
             &self.params,
             &self.spheres,
@@ -862,6 +1027,8 @@ impl V3Buffers {
             &self.textures,
             &self.texmeta,
             &self.cdf,
+            &self.instances,
+            &self.instance_nodes,
         ]
     }
 
@@ -882,6 +1049,26 @@ impl V3Buffers {
             self.params[P_CFD_ROWS as usize * 4 + 1],
             self.params[P_CFD_ROWS as usize * 4 + 2],
             self.params[P_CFD_ROWS as usize * 4 + 3],
+        ])
+    }
+
+    /// 实例个数（= `params[P_NUM_INSTANCES]`）。
+    pub fn num_instances(&self) -> u32 {
+        u32::from_le_bytes([
+            self.params[P_NUM_INSTANCES as usize * 4],
+            self.params[P_NUM_INSTANCES as usize * 4 + 1],
+            self.params[P_NUM_INSTANCES as usize * 4 + 2],
+            self.params[P_NUM_INSTANCES as usize * 4 + 3],
+        ])
+    }
+
+    /// 实例 TLAS 节点数（= `params[P_NUM_INST_NODES]`）。
+    pub fn num_instance_nodes(&self) -> u32 {
+        u32::from_le_bytes([
+            self.params[P_NUM_INST_NODES as usize * 4],
+            self.params[P_NUM_INST_NODES as usize * 4 + 1],
+            self.params[P_NUM_INST_NODES as usize * 4 + 2],
+            self.params[P_NUM_INST_NODES as usize * 4 + 3],
         ])
     }
 }
@@ -1279,15 +1466,15 @@ mod tests {
     #[test]
     fn bindings_v3_profile_matches_spec_slot_order() {
         let bs = SceneAbi::bindings_for(SceneAbiProfile::V3);
-        assert_eq!(bs.len(), 9, "V3 剖面恒为 9 绑定");
+        assert_eq!(bs.len(), 11, "V3 剖面恒为 11 绑定（W3 在 cdf 之后追加实例两块）");
         let names: Vec<&str> = bs.iter().map(|b| b.name).collect();
         assert_eq!(
             names,
             vec![
                 "params", "spheres", "lights", "triangles", "nodes", "textures", "texmeta",
-                "cdf", "out"
+                "cdf", "instances", "instance_nodes", "out"
             ],
-            "V3 绑定顺序必须与选型报告 §11 的槽位表逐字一致"
+            "V3 绑定顺序必须与选型报告 §11 的槽位表逐字一致（W3 只往后追加）"
         );
         for (i, b) in bs.iter().enumerate() {
             assert_eq!(b.binding, i as u32, "绑定必须从 0 起连续（连续前缀约束）");
@@ -1298,7 +1485,7 @@ mod tests {
         assert_eq!(last.access, BindingAccess::ReadWrite);
         assert_eq!(SceneAbiProfile::V3.out_binding(), last.binding);
         assert_eq!(SceneAbiProfile::V3.out_binding(), V3_OUT);
-        assert_eq!(SceneAbiProfile::V3.out_binding(), 8);
+        assert_eq!(SceneAbiProfile::V3.out_binding(), 10);
         // 除输出外全部只读。
         for b in &bs[..bs.len() - 1] {
             assert_eq!(b.access, BindingAccess::ReadOnly, "{} 必须只读", b.name);
@@ -1307,19 +1494,21 @@ mod tests {
         assert_eq!(
             [
                 V3_PARAMS, V3_SPHERES, V3_LIGHTS, V3_TRIANGLES, V3_NODES, V3_TEXTURES, V3_TEXMETA,
-                V3_CDF, V3_OUT
+                V3_CDF, V3_INSTANCES, V3_INSTANCE_NODES, V3_OUT
             ],
-            [0, 1, 2, 3, 4, 5, 6, 7, 8]
+            [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
         );
     }
 
-    /// V3 参数块：`V2 前缀逐字节不变`，尾部只多两字。
+    /// V3 参数块：`V2 前缀逐字节不变`，尾部只多四字。
     ///
-    /// `encode_v3` 在 W1-B 落地；本段先钉死"前缀不许动、字数算得出来"。
+    /// 追加顺序固定：W1-B 加 `P_NUM_TEXTURES` / `P_CFD_ROWS`（+2），W3 加
+    /// `P_NUM_INSTANCES` / `P_NUM_INST_NODES`（+2）——**只往后加**，既有下标一个
+    /// 不动，故 V2 的 24 字前缀搬过来逐字节相同。
     #[test]
     fn v3_params_words_and_cdf_len() {
         assert_eq!(SceneAbiProfile::V3.params_words(), PARAMS_WORDS_V3);
-        assert_eq!(PARAMS_WORDS_V3, PARAMS_WORDS_V2 + 2);
+        assert_eq!(PARAMS_WORDS_V3, PARAMS_WORDS_V2 + 4);
         assert_eq!(P_NUM_TEXTURES, PARAMS_WORDS_V2 as u32);
         assert_eq!(P_CFD_ROWS, P_NUM_TEXTURES + 1);
         assert_eq!(SceneAbiProfile::V3.name(), "V3");
@@ -1438,8 +1627,11 @@ mod tests {
         assert!(v3.textures.is_empty() && v3.texmeta.is_empty() && v3.cdf.is_empty());
         assert_eq!(v3.num_textures(), 0);
         assert_eq!(v3.cdf_rows(), 0);
-        // 尾部两字必须显式写 0（否则是未初始化字节，跨后端读到垃圾）。
-        assert_eq!(&v3.params[P_NUM_TEXTURES as usize * 4..], &[0u8; 8]);
+        // 尾部四字（W1-B 的两字 + W3 的两字）必须显式写 0
+        // （否则是未初始化字节，跨后端读到垃圾）。
+        assert_eq!(&v3.params[P_NUM_TEXTURES as usize * 4..], &[0u8; 16]);
+        assert_eq!(v3.num_instances(), 0);
+        assert_eq!(v3.num_instance_nodes(), 0);
     }
 
     /// **V3 球块 = V2 球块 + 四个句柄**（W1-C 段 1 的逐格对账）。
@@ -1633,10 +1825,10 @@ mod tests {
                 if want_rw { "read_write" } else { "read" }
             );
         }
-        // 参数块字数必须是 V3 的 26（写 24 会让 P_NUM_TEXTURES 读越界）。
+        // 参数块字数必须是 V3 的 `PARAMS_WORDS_V3`（写小了会让尾部计数读越界）。
         assert!(
-            src.contains("const PARAMS_WORDS_: u32 = 26u;"),
-            "V3 WGSL 的参数块字数必须是 26（= PARAMS_WORDS_V3）"
+            src.contains(&format!("const PARAMS_WORDS_: u32 = {}u;", PARAMS_WORDS_V3)),
+            "V3 WGSL 的参数块字数必须是 {PARAMS_WORDS_V3}（= PARAMS_WORDS_V3）"
         );
         // 纹素元素类型：`array<vec4<f32>>`，且**禁** `array<vec3<f32>>`。
         // 判据扫**去注释后的代码**：注释里写"禁 array<vec3<f32>>"是说明文字，

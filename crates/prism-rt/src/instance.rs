@@ -680,4 +680,103 @@ mod tests {
         assert!(b.min.x.is_infinite() && b.min.x > 0.0, "应为 Aabb::empty()");
         assert!(b.max.x.is_infinite() && b.max.x < 0.0);
     }
+
+    // -----------------------------------------------------------------------
+    // W3 跨 crate：GPU 侧的实例编码必须与 CPU 权威**逐字节**相同
+    // -----------------------------------------------------------------------
+    //
+    // 用户红线："逆矩阵在 CPU 算一次存盘，三后端读同一份，**禁止各后端各自求逆**"。
+    // 本 crate 是 CPU 权威（[`Instance`]），`prism-gpu` 的 `InstanceReq` 是宿主侧
+    // 的编码器。两者若各算各的逆，就会出现"同一个仿射在 Vulkan 上是一回事、在
+    // WebGPU 上是另一回事"——而且在单后端测试里永远看不出来。故这里把同一个
+    // 仿射同时喂给两边，比 112 B **逐字节**。
+    //
+    // `Instance` 的字段偏移由本文件的 `offset_of!` 编译期断言钉死（0/48/96/
+    // 100/104/108），故"按偏移拼字节"与"读内存"等价，且不引 `unsafe`。
+
+    /// 把 [`Instance`] 按它的**内存布局**拼成 112 B（小端）。
+    fn instance_bytes(inst: &Instance) -> [u8; INSTANCE_BYTES] {
+        let mut out = [0u8; INSTANCE_BYTES];
+        let mut put = |off: usize, word: u32| {
+            out[off..off + 4].copy_from_slice(&word.to_le_bytes());
+        };
+        for (k, v) in inst.affine.iter().enumerate() {
+            put(k * 4, v.to_bits());
+        }
+        for (k, v) in inst.inverse.iter().enumerate() {
+            put(48 + k * 4, v.to_bits());
+        }
+        put(96, inst.geom_id);
+        put(100, inst.mat_id);
+        put(104, inst.flags);
+        // 108..112 = pad（恒 0，`out` 已零初始化）
+        out
+    }
+
+    /// **112 B 逐字节对拍**：`prism_rt::instance::Instance` ≡ `prism_gpu::instance::InstanceReq`。
+    ///
+    /// 覆盖四类仿射：identity / 均匀缩放+平移 / 旋转+非均匀缩放+平移 / 镜像
+    /// （`det < 0`）。镜像那条尤其重要——`flags` 的 `MIRRORED` 位若两边判法不同，
+    /// 整个实例的法线会反向（整片背光），而 `t` 完全正确，最难查。
+    #[test]
+    fn w3_gpu_instance_bytes_match_cpu_authority() {
+        // 有理数构造（不碰 libm，跨机可复现）：cos30°/sin30° 用 0.6/0.8 更精确，
+        // 这里用 (0.6, 0.8) 作为"近似旋转"（0.6² + 0.8² = 1，精确可行）。
+        let (c, s) = (0.6f32, 0.8f32);
+        let cases: [(&str, [f32; 12]); 4] = [
+            ("identity", [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]),
+            (
+                "均匀缩放+平移",
+                [2.5, 0.0, 0.0, 0.3, 0.0, 2.5, 0.0, -0.2, 0.0, 0.0, 2.5, 1.1],
+            ),
+            (
+                "旋转+非均匀缩放+平移",
+                [
+                    1.7 * c, -0.8 * s, 0.0, 0.3, //
+                    1.7 * s, 0.8 * c, 0.0, -0.2, //
+                    0.0, 0.25, 1.3, 0.5,
+                ],
+            ),
+            (
+                "镜像（det<0）",
+                [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0],
+            ),
+        ];
+        for (tag, affine) in cases {
+            let cpu = Instance::from_affine(affine, 3, 7).expect("仿射应可逆");
+            let gpu = prism_gpu::instance::InstanceReq::from_affine(
+                affine,
+                3,
+                7,
+            )
+            .expect("同一仿射在 GPU 侧也必须可逆");
+            assert_eq!(cpu.geom_id, gpu.geom_id);
+            assert_eq!(cpu.mat_id, gpu.mat_id);
+            assert_eq!(cpu.flags, gpu.flags, "[{tag}] flags 不一致（镜像位判法不同？）");
+            assert_eq!(
+                instance_bytes(&cpu),
+                gpu.to_bytes(),
+                "[{tag}] 112 B 实例记录必须逐字节相同（逆矩阵只许 CPU 算一次）"
+            );
+            // 局部射线也一并钉住：`t` 参数化是本 ABI 的核心约定。
+            let (ro, rd) = (Vec3::new(0.4, -1.2, 2.0), Vec3::new(-0.6, 0.8, -0.9));
+            let (cpu_o, cpu_d) = cpu.local_ray(ro, rd);
+            let (gpu_o, gpu_d) = gpu.local_ray(ro, rd);
+            assert_eq!(cpu_o.x.to_bits(), gpu_o.x.to_bits(), "[{tag}] local_ray.o.x");
+            assert_eq!(cpu_o.y.to_bits(), gpu_o.y.to_bits(), "[{tag}] local_ray.o.y");
+            assert_eq!(cpu_o.z.to_bits(), gpu_o.z.to_bits(), "[{tag}] local_ray.o.z");
+            assert_eq!(cpu_d.x.to_bits(), gpu_d.x.to_bits(), "[{tag}] local_ray.d.x");
+            assert_eq!(cpu_d.y.to_bits(), gpu_d.y.to_bits(), "[{tag}] local_ray.d.y");
+            assert_eq!(cpu_d.z.to_bits(), gpu_d.z.to_bits(), "[{tag}] local_ray.d.z");
+            // 逆转置法线（含镜像反号）也必须逐位相同。
+            let n = Vec3::new(0.3, -0.5, 0.81);
+            let a = cpu.inv_transpose_normal(n);
+            let b = gpu.inv_transpose_normal(n);
+            assert_eq!(
+                (a.x.to_bits(), a.y.to_bits(), a.z.to_bits()),
+                (b.x.to_bits(), b.y.to_bits(), b.z.to_bits()),
+                "[{tag}] inv_transpose_normal 必须逐位相同"
+            );
+        }
+    }
 }

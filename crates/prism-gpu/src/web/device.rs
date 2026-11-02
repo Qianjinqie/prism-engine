@@ -397,22 +397,22 @@ fn histogram(@builtin(global_invocation_id) gid: vec3<u32>) {
 /// 全部以 `crate::scene_abi` 为唯一真源（WGSL 内的 `const` 字面量只是其镜像）。
 pub static WGSL_SCENE_FRAME: &str = include_str!("../../shaders/scene_frame.wgsl");
 
-/// V3 光追场景整帧 kernel 的 WGSL 源（W1-C 九绑定 `scene_frame_v3.wgsl`）。
+/// V3 光追场景整帧 kernel 的 WGSL 源（W1-C 九绑定 → W3 十一绑定 `scene_frame_v3.wgsl`）。
 ///
 /// 与 `crates/prism-gpu/shaders/scene_frame_v3.wgsl` 是**同一份**源（经
 /// `include_str!` 引入，避免与 `SHADERS` 表里的登记副本漂移）。入口 `scene_main`、
-/// 工作组 `[8,8,1]`、9 绑定连续前缀 `{0..8}` = params/spheres/lights/triangles/nodes/
-/// textures/texmeta/cdf/out，全部以 `crate::scene_abi::V3_BINDINGS` 为唯一真源
-/// （WGSL 内的 `const` 字面量只是其镜像）。`scene_dispatch_plan_v3` 据此派生
-/// bind group 的 9 个 entry。
+/// 工作组 `[8,8,1]`、11 绑定连续前缀 `{0..10}` = params/spheres/lights/triangles/
+/// nodes/textures/texmeta/cdf/instances/instance_nodes/out，全部以
+/// `crate::scene_abi::V3_BINDINGS` 为唯一真源（WGSL 内的 `const` 字面量只是其镜像）。
+/// `scene_dispatch_plan_v3` 据此派生 bind group 的 11 个 entry。
 pub static WGSL_SCENE_FRAME_V3: &str = include_str!("../../shaders/scene_frame_v3.wgsl");
 
 /// 由场景请求派生 **V3 剖面** dispatch 规划（纯函数；native/wasm 同口径）。
 ///
-/// 与 [`scene_dispatch_plan`]（V2 默认剖面）唯一差别是剖面：V3 用 9 绑定
-/// {params,spheres,lights,triangles,nodes,textures,texmeta,cdf,out}，绑定数取
-/// `SceneAbi::bindings_for(V3).binding_count()`。其余（入口、工作组、工作组数
-/// 推算、WGSL 源登记）与 V2 同源锚定。
+/// 与 [`scene_dispatch_plan`]（V2 默认剖面）唯一差别是剖面：V3 用 11 绑定
+/// {params,spheres,lights,triangles,nodes,textures,texmeta,cdf,instances,
+/// instance_nodes,out}，绑定数取 `SceneAbi::bindings_for(V3).binding_count()`。
+/// 其余（入口、工作组、工作组数推算、WGSL 源登记）与 V2 同源锚定。
 pub fn scene_dispatch_plan_v3(req: &SceneRenderRequest) -> SceneDispatchPlan {
     let profile = SceneAbiProfile::V3;
     let wg = SceneAbi::WORKGROUP;

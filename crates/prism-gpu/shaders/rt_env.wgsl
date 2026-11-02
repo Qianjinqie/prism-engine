@@ -54,7 +54,22 @@ const ENV_TAN_PI_8: f32 = 0.41421357;
 const ENV_FRAC_PI_2: f32 = 1.5707963267948966;
 const ENV_FRAC_PI_4: f32 = 0.7853981633974483;
 
-@group(0) @binding(0) var<storage, read> env_blob: array<f32>;
+// # blob 绑定由**引用方**声明（W2 剩余 / wavefront 接线时改）
+//
+// 本文件**不再**自带 `@group/@binding`：`rt_env_probe.wgsl` 把它挂在
+// `@group(0) @binding(0)`，而 `rt_wavefront.wgsl` 的 group(0) 已被
+// {slots, params, accum} 占满（宿主把句柄数组第 i 个硬绑到 `binding: i`，
+// 且每个 entry 的绑定集必须是**连续前缀**），只能把 env blob 挂到
+// `@group(2) @binding(5)`（rt_scene 的场景组尾部）。
+//
+// 于是"同一份 CDF 语义"靠的是**函数体**共享（本文件），而不是绑定号共享：
+// 每个引用方各自声明 `var<storage, read> env_blob: array<f32>;`（名字必须
+// 叫 `env_blob`，本文件的取数函数按此符号解析），采样/pdf/双线性一律走
+// 下面这一份实现。**禁止**为某个 kernel 另写一套近似。
+//
+// # 布局（同上，唯一权威在 CPU 打包侧）
+//
+// 见文件头与 `crates/prism-rt/tests/qa_w2_env_gpu_parity.rs` 的打包函数。
 
 // ---------------------------------------------------------------------------
 // 确定性反三角（`det_trig` 的逐式镜像；WGSL 禁递归故把一层归约展开）

@@ -43,6 +43,7 @@ pub use prism_geometry::curve_tess::CurveReq;
 
 pub mod shaders;
 pub mod scene_abi;
+pub mod instance;
 pub mod cpu_tex;
 
 // ----------------------------------------------------------------------------
@@ -539,6 +540,18 @@ pub fn apply_aesthetic(color: Vec3, aesthetic: &AestheticReq) -> Vec3 {
 /// testable ground-truth implementation and as a fallback renderer.
 pub struct CpuRefBackend;
 
+/// CPU 参考侧的实例场景（已解码的实例记录 + TLAS 节点）。
+///
+/// 字段私有：唯一构造入口是 [`CpuRefBackend::render_scene_instanced`]（它从
+/// `encode_v3_instanced` 的字节流解码），`Default` = 空实例（= 无实例路径）。
+#[derive(Debug, Clone, Default)]
+struct InstanceScene {
+    /// 实例记录（已按 TLAS 叶子序重排）。
+    records: Vec<scene_abi::InstanceReq>,
+    /// TLAS 扁平节点（**与 GPU 读同一份字节**解码而来）。
+    nodes: Vec<crate::instance::TlasNode>,
+}
+
 impl CpuRefBackend {
     /// 带纹理的 CPU 参考渲染（W1-C 段 3）：**V3 对拍的基准帧**。
     ///
@@ -568,6 +581,59 @@ impl CpuRefBackend {
         &mut self,
         req: &SceneRenderRequest,
         textures: &[scene_abi::TextureUpload<'_>],
+    ) -> Framebuffer {
+        self.render_scene_impl(req, textures, &InstanceScene::default())
+    }
+
+    /// **W3：带实例的 CPU 参考渲染**（GPU 侧 V3 实例通路的判据基准）。
+    ///
+    /// # 三个后端读同一份字节（这里是"CPU 也读那份字节"）
+    ///
+    /// 本函数**先编码再解码**：`SceneAbi::encode_v3_instanced(...)` 产出实例 +
+    /// TLAS 的字节流，随后用 [`crate::instance::decode_instances`] /
+    /// [`crate::instance::decode_nodes`] 读回来做遍历。这样 CPU 参考与 GPU
+    /// 消费的是**同一份字节**（而不是"两边各自从 `InstanceReq` 算一遍"）——
+    /// 布局错一位，两边会一起错，但**判据会红**（因为参考帧与 GPU 帧来自同一
+    /// 份错误字节时，`differing_pixels` 反而为 0）。故字节布局本身另有单测
+    /// （`instance::tests` 的逐槽断言与 prism-rt 的跨 crate 逐字节对拍）。
+    ///
+    /// # 语义
+    ///
+    /// * `instances` 为空 ⇒ 与 [`CpuRefBackend::render_scene_with_textures`]
+    ///   **逐字节相同**（同一代码路径，实例段整段跳过）；
+    /// * 非空 ⇒ `triangles`/`nodes`（来自 `req.curves`）是**共享 BLAS**，
+    ///   不再作为世界几何绘制（与 `scene_frame_v3.wgsl` 同一条判断）。
+    ///
+    /// # 错误（不 panic）
+    ///
+    /// 实例编码失败（`geom_id != 0` / 原型几何为空）⇒ `Err`。
+    pub fn render_scene_instanced(
+        &mut self,
+        req: &SceneRenderRequest,
+        textures: &[scene_abi::TextureUpload<'_>],
+        instances: &[scene_abi::InstanceReq],
+    ) -> Result<Framebuffer, String> {
+        if instances.is_empty() {
+            return Ok(self.render_scene_with_textures(req, textures));
+        }
+        let buffers = scene_abi::SceneAbi::encode_v3_instanced(req, textures, None, instances)?;
+        let scene = InstanceScene {
+            records: crate::instance::decode_instances(&buffers.instances),
+            nodes: crate::instance::decode_nodes(&buffers.instance_nodes),
+        };
+        Ok(self.render_scene_impl(req, textures, &scene))
+    }
+
+    /// [`CpuRefBackend::render_scene_with_textures`] 与
+    /// [`CpuRefBackend::render_scene_instanced`] 的共同实现。
+    ///
+    /// `inst` 为空 ⇒ 与 W1-C 的渲染逐字节相同（实例段整段跳过，零额外分支
+    /// 成本以外的行为变化）。
+    fn render_scene_impl(
+        &mut self,
+        req: &SceneRenderRequest,
+        textures: &[scene_abi::TextureUpload<'_>],
+        inst: &InstanceScene,
     ) -> Framebuffer {
         let mut fb = Framebuffer::new(req.width, req.height);
         // 尺寸被拒（见 Framebuffer 的size contract）⇒ 没有任何像素可写，
@@ -638,7 +704,10 @@ impl CpuRefBackend {
                 // （Möller–Trumbore + 近子先入栈 + `(t, tri)` 字典序 tie-break），
                 // 故 CPU 参考 ≡ BVH 权威件，GPU 侧照抄同式即可对齐。
                 let mut curve_hit: Option<Vec3> = None;
-                if let Some(bvh) = &curve_bvh {
+                // W3：实例表非空时 `triangles`/`nodes` 是共享 BLAS（局部坐标），
+                // 只能经实例到达 ⇒ 不作为世界几何绘制（与 shader 同判据）。
+                let inst_active = !inst.records.is_empty() && !inst.nodes.is_empty();
+                if let (false, Some(bvh)) = (inst_active, &curve_bvh) {
                     if let Some(h) = bvh.ray_intersect(origin, dir, CURVE_T_MIN, closest_t) {
                         closest_t = h.t;
                         let tri = &curve_tris[h.tri as usize];
@@ -650,6 +719,31 @@ impl CpuRefBackend {
                         }
                         curve_hit = Some(n);
                         hit = None;
+                    }
+                }
+
+                // --- W3 实例：TLAS 剪枝 + 共享 BLAS 局部求交（最近命中覆盖球/曲线）---
+                //
+                // 与 `scene_frame_v3.wgsl` 的实例段逐句对应：同一份字节（编码后
+                // 解码）、同一 `CURVE_T_MIN`、同一 1e30 空界、同一 world t。
+                let mut inst_hit: Option<crate::instance::InstanceHit> = None;
+                if inst_active {
+                    if let Some(bvh) = &curve_bvh {
+                        let t_max_inst = if hit.is_some() { closest_t } else { 1e30 };
+                        if let Some(h) = crate::instance::instance_nearest(
+                            &inst.nodes,
+                            &inst.records,
+                            bvh,
+                            origin,
+                            dir,
+                            CURVE_T_MIN,
+                            t_max_inst,
+                        ) {
+                            closest_t = h.t;
+                            inst_hit = Some(h);
+                            hit = None;
+                            curve_hit = None;
+                        }
                     }
                 }
 
@@ -749,6 +843,27 @@ impl CpuRefBackend {
                             contrib = diff_contrib + spec_contrib;
                         }
                         acc = acc + contrib;
+                    }
+                    color = acc;
+                } else if let Some(h) = inst_hit {
+                    // 实例命中：世界法线（`det(A)·A⁻ᵀ·n`，identity 走展平版同一条
+                    // 归一化）+ 反照率（`mat_id` 覆盖 → 球表 albedo，哨兵 →
+                    // [`CURVE_ALBEDO`]）。直接光项与曲线/球分支**逐式相同**。
+                    let n = h.normal;
+                    let mat = inst.records[h.inst as usize].mat_id;
+                    let albedo = if mat != scene_abi::INSTANCE_MAT_FROM_GEOM
+                        && (mat as usize) < req.spheres.len()
+                    {
+                        req.spheres[mat as usize].albedo
+                    } else {
+                        Vec3::new(CURVE_ALBEDO[0], CURVE_ALBEDO[1], CURVE_ALBEDO[2])
+                    };
+                    let ambient = Vec3::splat(0.08);
+                    let mut acc = Vec3::splat(0.0);
+                    for light in &req.lights {
+                        let diff = dot(n, light.direction.normalize()).max(0.0);
+                        let term = ambient + light.color * (diff * light.intensity);
+                        acc = acc + vmul(albedo, term);
                     }
                     color = acc;
                 } else if let Some(n) = curve_hit {

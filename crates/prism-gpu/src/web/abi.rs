@@ -273,6 +273,26 @@ pub const WF2_PRIM_MAT_BYTES: u32 = U32_BYTES * WF2_PRIM_COUNT;
 pub const WF2_CAMERA_OFF: usize = 240;
 /// `SceneParams` uniform 在参数区内的偏移。
 pub const WF2_SCENE_OFF: usize = 336;
+/// wavefront `shade` 的 `group(2) @binding(5)`：A2/W2 环境 CDF blob 的占位字节数。
+///
+/// # 为什么是 1 元占位（而不是一份真 CDF）
+///
+/// CDF blob 的**唯一打包权威**是 `crates/prism-rt/tests/qa_w2_env_gpu_parity.rs`
+/// 的打包函数（它读 `prism_rt::env::EnvCdf` 的七段缓冲）。那份代码依赖
+/// `prism-rt`，而 `prism-gpu` **不得反引** `prism-rt`（依赖方向），也进不了
+/// wasm 包。故浏览器宿主这里给 1 个元素的占位 buffer：
+///
+/// * 绑定**必须存在**——`shade` 静态引用它，这正是"env blob 已有独立绑定、
+///   不再与 group(0) 的 {0,1,2} 抢槽位"的机械证明；
+/// * shader 侧 `env_present()` 按 `arrayLength(&env_blob) < ENV_HDR` 判假 ⇒
+///   走 `Light::Ambient` 分支，与 W2 之前的输出逐位相同（不引入未验证的
+///   环境光贡献）。
+///
+/// # 未测（如实）
+///
+/// WebGPU 腿本环境无设备，**未跑**；真值 blob 的运行时判对在 llvmpipe 侧
+/// （探针 + CPU 波前仿真），见 `docs/v2.5-W2-光照报告.md` 的 4 vs 8 弹射实录。
+pub const WF2_ENV_BYTES: u32 = 4;
 
 // ---- GI 的 GPU compute 路径（`gpu.gi_compute`）----
 //
@@ -511,6 +531,8 @@ struct Scratch {
     wf2_lights: [u8; WF2_LIGHT_BYTES as usize],
     /// 多 group prim→material 映射。
     wf2_prim_mat: [u8; WF2_PRIM_MAT_BYTES as usize],
+    /// wavefront `shade` 的 group(2)@binding(5) 环境 CDF 占位（1 元；见 [`WF2_ENV_BYTES`]）。
+    wf2_env: [u8; WF2_ENV_BYTES as usize],
     /// D3/D2 的 uniform 参数区（5 份参数共用，按 `*_PARAMS_OFF` 切分）。
     params2: [u8; PARAMS_ARENA_BYTES],
     // ---- GI GPU 路径的输入/输出工作区 ----
@@ -567,6 +589,7 @@ impl Scratch {
             wf2_mats: [0; WF2_MAT_BYTES as usize],
             wf2_lights: [0; WF2_LIGHT_BYTES as usize],
             wf2_prim_mat: [0; WF2_PRIM_MAT_BYTES as usize],
+            wf2_env: [0; WF2_ENV_BYTES as usize],
             params2: [0; PARAMS_ARENA_BYTES],
             gi_probes: [0; GI_PROBES_BYTES as usize],
             gi_points: [0; GI_POINTS_BYTES as usize],
@@ -1026,7 +1049,7 @@ static TESTS: &[TestItem] = &[
     },
     TestItem {
         id: "gpu.scene_frame_v3",
-        name: "真 WebGPU：scene_frame_v3 九绑定 dispatch（带纹理集/金属度-粗糙度/法线），与 CPU 参考（render_scene_with_textures）统计对拍 + 双跑一致",
+        name: "真 WebGPU：scene_frame_v3 十一绑定 dispatch（带纹理集/金属度-粗糙度/法线 + W3 实例两块），与 CPU 参考（render_scene_with_textures）统计对拍 + 双跑一致",
         needs_gpu: true,
         run: t_gpu_scene_frame_v3,
         collect: Some(c_gpu_scene_frame_v3),
@@ -2514,8 +2537,9 @@ static COVERAGE: &[(&str, &[(&str, &str, &str)])] = &[
             (
                 "shade",
                 ST_COVERED,
-                "由 `gpu.rt_wavefront_multi` 真 dispatch：g2 加载 5 绑定 \
-                 {scene_params,materials,prim_mat,tris,lights}（本场景 light_count=0，NEE 运行期循环为空，可复现）",
+                "由 `gpu.rt_wavefront_multi` 真 dispatch：g2 加载 6 绑定 \
+                 {scene_params,materials,prim_mat,tris,lights,env_blob}（本场景 light_count=0，NEE 运行期循环为空，可复现；\
+                 env_blob 是本波新增的第 6 个绑定，1 元占位 ⇒ `env_present()` 假 ⇒ 走 Ambient 分支，与 W2 之前逐位相同）",
             ),
             ("connect", ST_COVERED, ""),
             (
@@ -2544,16 +2568,19 @@ static COVERAGE: &[(&str, &[(&str, &str, &str)])] = &[
         &[(
             "scene_main",
             ST_COVERED,
-            "W1-C 收口：V3 九绑定 kernel 的 WGSL 已落地、已入库编译产物\
+            "W1-C 收口 → W3 扩到十一绑定：V3 kernel 的 WGSL 已落地、已入库编译产物\
              `shaders/spv/scene_frame_v3.spv`（naga 30.0.1，D-21），且**真 dispatch 链路已接**：\
-             `web/scene_gpu.rs::submit_scene_frame_v3` 按 `scene_abi::V3_BINDINGS`（9 绑定\
-             {params,spheres,lights,triangles,nodes,textures,texmeta,cdf,out}）建 buffer + \
-             bind group + dispatch，`encode_v3` 单一真源编码，pipeline 走独立缓存 `PIPE_V3`。\
+             `web/scene_gpu.rs::submit_scene_frame_v3` 按 `scene_abi::V3_BINDINGS`（11 绑定\
+             {params,spheres,lights,triangles,nodes,textures,texmeta,cdf,instances,instance_nodes,out}）\
+             建 buffer + bind group + dispatch，`encode_v3` 单一真源编码，pipeline 走独立缓存 `PIPE_V3`。\
+             实例腿的入口是 `submit_scene_frame_v3_instanced`（空实例表 ⇒ 与前九绑定路径逐字节相同），\
+             实例缓冲的 112 B/条布局与逆矩阵由 `crate::instance` 独家决定、宿主只搬运。\
              真机对拍由 `gpu.scene_frame_v3` 项完成（无 device 时如实 SKIP，不伪绿）；\
-             Vulkan 腿（lavapipe/llvmpipe）的逐位对拍见 `vulkan::v3_frame` 系列测试（报告 §18）。\
+             Vulkan 腿（lavapipe/llvmpipe）的逐位对拍见 `vulkan::v3_frame` 系列测试（报告 §18/§20）。\
              三后端同场景 `differing_pixels=0` 的判据在 Vulkan 腿已实测达成（llvmpipe 上\
              max_channel_delta=0 && differing_pixels=0）。WebGPU 腿的实测数字待有 device 的\
-             浏览器环境跑 `gpu.scene_frame_v3` 后回填，本行仅标 COVERED 表示 dispatch 链路已真接。",
+             浏览器环境跑 `gpu.scene_frame_v3` 后回填，本行仅标 COVERED 表示 dispatch 链路已真接；\
+             **W3 实例段在 WebGPU 上的运行时结果本环境未测**（无 device），不许读作'已对齐'。",
         )],
     ),
     ("rt_shade.wgsl", &[]),
@@ -4803,6 +4830,10 @@ fn wf2_cpu_shade(slots: &mut [WfSlot], scene: &WfScene) {
             // nee_surface：light_count=0 ⇒ 循环不执行，无贡献。
             // mnee：nee_only=1 ⇒ 跳过。
         } else {
+            // 逃逸：本 harness 绑定的 env blob 是 1 元占位（`WF2_ENV_BYTES`），
+            // shader 的 `env_present()` 判假 ⇒ 只走 Ambient 分支。这一支与
+            // `rt_wavefront.wgsl::shade` 的 else 分支逐句对应（含 env 缺席时
+            // 环境项恒为 0 的短路）。
             let bg = wf_ambient_background(scene);
             let contrib = wf_mul3(s.throughput, bg);
             s.radiance = wf_add3(s.radiance, wf_clamp_indirect(contrib, ev));
@@ -5078,14 +5109,25 @@ fn t_gpu_rt_wavefront_multi() -> Status {
         Ok(h) => h,
         Err(s) => return s,
     };
+    // group(2)@binding(5)：环境 CDF 占位（1 元；见 [`WF2_ENV_BYTES`] 的三条理由）。
+    let env_buf = match make_buffer("gpu.rt_wavefront_multi", dev, WF2_ENV_BYTES, usage::STORAGE, || {
+        (addr_of_slice(|s| &s.wf2_env[..]), WF2_ENV_BYTES)
+    }) {
+        Ok(h) => h,
+        Err(s) => return s,
+    };
     // ---- 三个入口的 bind group 前缀（每 group 内为连续前缀 {0..n-1}）----
     // generate：group0=[slots,params] group1=[sobol] group2=[scene_params] group3=[camera]
     let gen_g0 = [slot_buf, par_buf];
     let gen_g1 = [sobol_buf];
     let gen_g2 = [scn_buf];
     let gen_g3 = [cam_buf];
-    // shade：group0=[slots,params] group1=[sobol] group2=[scene_params,materials,prim_mat,tris,lights]
-    let sh_g2 = [scn_buf, mat_buf, pm_buf, tri_buf, light_buf];
+    // shade：group0=[slots,params] group1=[sobol]
+    //        group2=[scene_params,materials,prim_mat,tris,lights,env_blob]（6 绑定，仍是连续前缀）
+    // A2/W2：env_blob 是这一波新增的第 6 个；它**只能**挂在这里——group(3) 已给
+    // camera、WebGPU 的 maxBindGroups=4 不允许再开第 5 组（见 rt_wavefront.wgsl 的
+    // 绑定段注释）。
+    let sh_g2 = [scn_buf, mat_buf, pm_buf, tri_buf, light_buf, env_buf];
     // extend：group0/group1 同；group2=[scene_params,materials,prim_mat,tris]（不引用 lights）
     let ex_g2 = [scn_buf, mat_buf, pm_buf, tri_buf];
     let gen_groups = [
@@ -5117,7 +5159,7 @@ fn t_gpu_rt_wavefront_multi() -> Status {
          params={par_buf} camera={cam_buf}（{CAMERA_PARAMS_BYTES}B）\
          sobol_dir={sobol_buf}（{SOBOL_DIR_BYTES}B，{WF2_PATHS} 之外的方向数表）\
          scene={{params={scn_buf}({SCENE_PARAMS_BYTES}B) materials={mat_buf} prim_mat={pm_buf} tris={tri_buf} lights={light_buf}}}\n\
-         group 前缀：generate=g0{{0,1}} g1{{0}} g2{{0}} g3{{0}}；shadow/extend g2 分别 5/4 绑定\n\
+         group 前缀：generate=g0{{0,1}} g1{{0}} g2{{0}} g3{{0}}；shade/extend g2 分别 6/4 绑定（shade 第 6 个 = env CDF 占位）\n\
          构型：{WF2_WIDTH}×{WF2_HEIGHT} 像素 × spp={WF2_SPP} = {WF2_PATHS} 条路径（dispatch 2 组验边界守卫）\n\
          读回 {WF2_SLOTS_BYTES} 字节 → 线性内存 {out_slots}，待 settle 后与 CPU 参考（prism-rt 同式）逐字段判对"
     ));
@@ -6674,7 +6716,7 @@ thread_local! {
         const { RefCell::new([None; SCENE_SUBMISSIONS]) };
     /// run 阶段登记的 GPU 错误 scope 数（collect 阶段成对 pop）。
     static SCENE_ERR_SCOPES: Cell<u32> = const { Cell::new(0) };
-    /// `gpu.scene_frame_v3` 在 run 阶段登记的帧句柄（V3 九绑定，带纹理集）。
+    /// `gpu.scene_frame_v3` 在 run 阶段登记的帧句柄（V3 十一绑定，带纹理集 + 实例两块）。
     static SCENE_V3_FRAMES: RefCell<[Option<SceneFrame>; SCENE_SUBMISSIONS]> =
         const { RefCell::new([None; SCENE_SUBMISSIONS]) };
     /// V3 run 阶段登记的 GPU 错误 scope 数（collect 阶段成对 pop）。
@@ -7280,7 +7322,7 @@ fn c_gpu_scene_frame() -> Status {
 }
 
 // ---------------------------------------------------------------------------
-// V3 整帧真 WebGPU dispatch（九绑定：V2 六绑定 + textures/texmeta/cdf）
+// V3 整帧真 WebGPU dispatch（十一绑定：V2 六绑定 + textures/texmeta/cdf + instances/instance_nodes）
 // ---------------------------------------------------------------------------
 
 /// 单帧的判据 0～3（尺寸 / 字节数 / 非全零非纯色 / vs CPU 参考），带纹理集版本。
@@ -7389,11 +7431,11 @@ fn t_gpu_scene_frame_v3() -> Status {
     SCENE_V3_ERR_SCOPES.with(|c| c.set(scene_gpu::take_err_scopes()));
     SCENE_V3_FRAMES.with(|f| *f.borrow_mut() = frames);
     set_result(&format!(
-        "已提交 {SCENE_SUBMISSIONS} 次真 WebGPU 场景整帧 dispatch（scene_frame_v3.wgsl 的 scene_main，九绑定）：\n\
+        "已提交 {SCENE_SUBMISSIONS} 次真 WebGPU 场景整帧 dispatch（scene_frame_v3.wgsl 的 scene_main，十一绑定）：\n\
          A {SCENE_A_W}×{SCENE_A_H}（带贴图球+灯）连跑 {SCENE_RUNS} 次、\
          B {SCENE_B_W}×{SCENE_B_H}（带贴图球+圆柱+灯）连跑 {SCENE_RUNS} 次、\
          对照（B 去掉曲线）跑 1 次\n\
-         绑定剖面：V3 九绑定 {{params,spheres,lights,triangles,nodes,textures,texmeta,cdf,out}}，\
+         绑定剖面：V3 十一绑定 {{params,spheres,lights,triangles,nodes,textures,texmeta,cdf,instances,instance_nodes,out}}，\
          dispatch 工作组数由 scene_dispatch_plan_v3 从 scene_abi 派生\n\
          已登记读回 {read_bytes} 字节，待宿主 settle 后与 CPU 参考（CpuRefBackend::render_scene_with_textures，同式）\
          统计对拍（门限 PSNR ≥ 40 dB）"
@@ -7416,7 +7458,7 @@ fn c_gpu_scene_frame_v3() -> Status {
     }
     let frames = SCENE_V3_FRAMES.with(|f| *f.borrow());
     let mut report = String::from(
-        "真 WebGPU 场景整帧 dispatch（scene_frame_v3.wgsl 的 scene_main，V3 九绑定）\
+        "真 WebGPU 场景整帧 dispatch（scene_frame_v3.wgsl 的 scene_main，V3 十一绑定）\
          与 CPU 参考统计对拍 ✓\n",
     );
     let mut min_db10 = PSNR_DB10_CAP;

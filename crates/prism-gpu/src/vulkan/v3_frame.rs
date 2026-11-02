@@ -36,8 +36,8 @@ use super::compute::{self as compute_mod, ByteRunReport};
 use super::VulkanContext;
 use crate::compute::{BindingAccess, BufferSpec, ElementType, KernelDesc, WorkgroupSize};
 use crate::scene_abi::{
-    self, EnvCdf, SceneAbi, TextureUpload, V3Buffers, LIGHT_SLOTS, NODE_SLOTS, PARAMS_WORDS_V3,
-    SPHERE_SLOTS_V3, TRIANGLE_SLOTS, V3_BINDINGS,
+    self, EnvCdf, InstanceReq, SceneAbi, TextureUpload, V3Buffers, INSTANCE_SLOTS, LIGHT_SLOTS,
+    NODE_SLOTS, PARAMS_WORDS_V3, SPHERE_SLOTS_V3, TRIANGLE_SLOTS, V3_BINDINGS,
 };
 use crate::SceneRenderRequest;
 
@@ -95,6 +95,8 @@ pub fn v3_kernel(
     texel_bytes: usize,
     texmeta_bytes: usize,
     cdf_bytes: usize,
+    num_instances: usize,
+    num_instance_nodes: usize,
 ) -> Option<KernelDesc> {
     if w == 0 || h == 0 || w > crate::MAX_FRAMEBUFFER_DIM || h > crate::MAX_FRAMEBUFFER_DIM {
         return None;
@@ -115,7 +117,9 @@ pub fn v3_kernel(
         .checked_add(num_nodes as u64 * NODE_SLOTS as u64 * 4)?
         .checked_add(texel_bytes as u64)?
         .checked_add(texmeta_bytes as u64)?
-        .checked_add(cdf_bytes as u64)?;
+        .checked_add(cdf_bytes as u64)?
+        .checked_add(num_instances as u64 * INSTANCE_SLOTS as u64 * 4)?
+        .checked_add(num_instance_nodes as u64 * NODE_SLOTS as u64 * 4)?;
     if total > crate::MAX_FRAMEBUFFER_BYTES as u64 {
         return None;
     }
@@ -169,8 +173,22 @@ pub fn v3_kernel(
             BufferSpec::new(6, ElementType::U32, elements(texmeta_bytes), BindingAccess::ReadOnly),
             // b7 环境 CDF（array<u32>）
             BufferSpec::new(7, ElementType::U32, elements(cdf_bytes), BindingAccess::ReadOnly),
-            // b8 输出（每像素一个打包 RGBA8 u32）——**恒为最后一个绑定**
-            BufferSpec::new(8, ElementType::U32, pixels as u32, BindingAccess::WriteOnly),
+            // b8 实例记录（28 槽/条 = 112 B；`array<u32>`）
+            BufferSpec::new(
+                8,
+                ElementType::U32,
+                (num_instances.max(1) as u64 * INSTANCE_SLOTS as u64).min(u32::MAX as u64) as u32,
+                BindingAccess::ReadOnly,
+            ),
+            // b9 实例 TLAS 节点（12 槽/条 = 48 B，与 b4 同一编码）
+            BufferSpec::new(
+                9,
+                ElementType::U32,
+                (num_instance_nodes.max(1) as u64 * NODE_SLOTS as u64).min(u32::MAX as u64) as u32,
+                BindingAccess::ReadOnly,
+            ),
+            // b10 输出（每像素一个打包 RGBA8 u32）——**恒为最后一个绑定**
+            BufferSpec::new(10, ElementType::U32, pixels as u32, BindingAccess::WriteOnly),
         ],
         // 不入 `spirv::MODULES`：字流由 `dispatch_v3` 显式传入（见 `load_committed_spv`）。
         "spv_scene_v3_committed",
@@ -190,7 +208,19 @@ pub(crate) fn dispatch_v3(
     env: Option<EnvCdf<'_>>,
     words: &[u32],
 ) -> Result<ByteRunReport, String> {
-    let buffers: V3Buffers = SceneAbi::encode_v3(req, textures, env)?;
+    dispatch_v3_instanced(ctx, req, textures, env, &[], words)
+}
+
+/// 同 [`dispatch_v3`]，但带 **W3 实例表**（`instances` 为空 ⇒ 与旧路径逐字节相同）。
+pub(crate) fn dispatch_v3_instanced(
+    ctx: Option<&VulkanContext>,
+    req: &SceneRenderRequest,
+    textures: &[TextureUpload<'_>],
+    env: Option<EnvCdf<'_>>,
+    instances: &[InstanceReq],
+    words: &[u32],
+) -> Result<ByteRunReport, String> {
+    let buffers: V3Buffers = SceneAbi::encode_v3_instanced(req, textures, env, instances)?;
     let inputs = buffers.inputs();
     let counts = V3Counts {
         spheres: req.spheres.len(),
@@ -200,6 +230,8 @@ pub(crate) fn dispatch_v3(
         texel_bytes: buffers.textures.len(),
         texmeta_bytes: buffers.texmeta.len(),
         cdf_bytes: buffers.cdf.len(),
+        instances: buffers.instances.len() / (INSTANCE_SLOTS as usize * 4),
+        instance_nodes: buffers.instance_nodes.len() / (NODE_SLOTS as usize * 4),
     };
     let kernel = v3_kernel(
         req.width,
@@ -211,6 +243,8 @@ pub(crate) fn dispatch_v3(
         counts.texel_bytes,
         counts.texmeta_bytes,
         counts.cdf_bytes,
+        counts.instances,
+        counts.instance_nodes,
     )
     .ok_or_else(|| {
         format!(
@@ -227,7 +261,7 @@ pub(crate) fn dispatch_v3(
             counts.cdf_bytes
         )
     })?;
-    debug_assert!(kernel.validate().is_ok(), "V3 绑定表必须自洽（9 连续前缀）");
+    debug_assert!(kernel.validate().is_ok(), "V3 绑定表必须自洽（11 连续前缀）");
     debug_assert_eq!(
         kernel.buffers.len(),
         V3_BINDINGS.len(),
@@ -251,6 +285,8 @@ struct V3Counts {
     texel_bytes: usize,
     texmeta_bytes: usize,
     cdf_bytes: usize,
+    instances: usize,
+    instance_nodes: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -602,11 +638,148 @@ mod tests {
         );
     }
 
-    /// kernel 描述的结构自洽（**无设备也能跑**）：9 绑定连续前缀、输出在最后、
+    // -----------------------------------------------------------------------
+    // W3：GPU 侧实例判据（选型报告 §4.1 的 GPU 落点）
+    // -----------------------------------------------------------------------
+
+    /// 造一个"位移 + 均匀缩放"的实例（W3 最常见的用法）。
+    fn placed_instance(scale: f32, at: Vec3) -> InstanceReq {
+        InstanceReq::scale_translate(
+            Vec3::splat(scale),
+            at,
+            crate::instance::INSTANCE_GEOM_SHARED,
+            crate::instance::INSTANCE_MAT_FROM_GEOM,
+        )
+        .expect("均匀缩放必然可逆")
+    }
+
+    /// **identity 实例 ≡ 展平版：GPU 上逐位一致（`differing_pixels = 0`）。**
+    ///
+    /// # 这条判据同时排掉三种假绿
+    ///
+    /// 1. 实例段**整段没跑**（`num_instances` 没进参数块）⇒ 圆环消失 ⇒ 与展平版
+    ///    差异巨大；
+    /// 2. 实例段**与曲线段同时跑**（`num_instances > 0` 的守卫失效）⇒ 圆环画
+    ///    两遍（一份经实例、一份直接绘制），重叠处会变亮 ⇒ 也有差异；
+    /// 3. **逆矩阵算错**（identity 的逆不是精确 I）⇒ 局部射线偏移 ⇒ 边界像素
+    ///    先错。
+    ///
+    /// 判据本身是仓库既有的硬口径：软件 ICD 上 `max_channel_delta == 0 &&
+    /// differing_pixels == 0`（`assert_parity`）。
+    #[test]
+    fn real_device_identity_instance_matches_flattened_curve_bytewise() {
+        let backend = VulkanBackend::new();
+        if !device_ready(&backend) {
+            return;
+        }
+        let words = load_committed_spv().expect("入库 .spv 必须可读（D-21 S1 产物）");
+        let ctx = backend.context();
+        let req = scene_with_curve();
+
+        // ---- (a) 展平版：圆环走曲线 BVH 直接绘制（无实例）----
+        let flat = dispatch_v3(ctx, &req, &[], None, &words).expect("展平版编码必须成功");
+        assert_eq!(flat.status, DispatchStatus::Ok, "展平派发失败：{}", flat.detail);
+
+        // ---- (b) 实例版：同一份圆环，经 1 个 identity 实例到达 ----
+        let inst = InstanceReq::identity(
+            crate::instance::INSTANCE_GEOM_SHARED,
+            crate::instance::INSTANCE_MAT_FROM_GEOM,
+        );
+        let instd = dispatch_v3_instanced(ctx, &req, &[], None, &[inst], &words)
+            .expect("实例版编码必须成功");
+        assert_eq!(instd.status, DispatchStatus::Ok, "实例派发失败：{}", instd.detail);
+
+        // ---- (c) 逐字节：两份输出必须完全一样 ----
+        assert_eq!(
+            flat.output.len(),
+            instd.output.len(),
+            "两份输出字节数必须相同"
+        );
+        let d = diff(&fb_of(req.width, req.height, &flat.output), &instd.output);
+        println!(
+            "[W3 identity/GPU] 展平版 vs 实例版：max_channel_delta={} differing_pixels={}/{}",
+            d.max_channel_delta, d.differing_pixels, d.total_pixels
+        );
+        assert_eq!(
+            d.max_channel_delta, 0,
+            "identity 实例必须与展平版**逐位**相同；实测最大通道差 {}（首个 {:?}）",
+            d.max_channel_delta, d.first
+        );
+        assert_eq!(d.differing_pixels, 0, "差异像素必须为 0");
+
+        // ---- (d) 再各对一次 CPU 参考（两条路径都要与 CPU 一致）----
+        let mut cpu = CpuRefBackend;
+        let cpu_flat = cpu.render_scene(&req);
+        assert!(cpu_flat.is_valid());
+        assert_parity("W3 identity(展平) vs CPU", &instd.device, &cpu_flat, &instd.output);
+        let cpu_inst = cpu
+            .render_scene_instanced(&req, &[], &[inst])
+            .expect("CPU 参考的实例编码必须成功");
+        assert_parity("W3 identity(实例) vs CPU", &instd.device, &cpu_inst, &instd.output);
+        println!(
+            "[W3 identity/GPU] CPU 参考两条路径：展平 {} B / 实例 {} B，均与 GPU 一致 ✓",
+            cpu_flat.pixels.len(),
+            cpu_inst.pixels.len()
+        );
+    }
+
+    /// **非 identity 实例：GPU 与 CPU 参考按 §4.1 容差判据对拍。**
+    ///
+    /// 场景是 3 个不同缩放/位移的圆环副本（TLAS 有 3 个叶子 ⇒ 真走遍历的
+    /// 分支与近子排序）。CPU 参考走 `render_scene_instanced`——它**先 encode
+    /// 再 decode**，与 GPU 读同一份字节，故两边不存在"布局各自理解一遍"的
+    /// 假绿空间。
+    ///
+    /// 判据（照抄 §4.1，一个数字都没改）：
+    /// * 软件 ICD：`max_channel_delta == 0 && differing_pixels == 0`（硬判据）；
+    /// * 其它设备：`max_channel_delta ≤ 1` 且 `differing_pixels ≤ 0.5%`。
+    #[test]
+    fn real_device_non_identity_instances_match_cpu_reference() {
+        let backend = VulkanBackend::new();
+        if !device_ready(&backend) {
+            return;
+        }
+        let words = load_committed_spv().expect("入库 .spv 必须可读（D-21 S1 产物）");
+        let ctx = backend.context();
+        let req = scene_with_curve();
+
+        let instances = [
+            placed_instance(0.45, Vec3::new(-1.15, 0.10, 0.0)),
+            placed_instance(0.30, Vec3::new(0.00, -0.35, 0.35)),
+            placed_instance(0.38, Vec3::new(1.10, 0.25, -0.15)),
+        ];
+        let gpu = dispatch_v3_instanced(ctx, &req, &[], None, &instances, &words)
+            .expect("三实例编码必须成功");
+        assert_eq!(gpu.status, DispatchStatus::Ok, "三实例派发失败：{}", gpu.detail);
+        assert!(
+            gpu.output.iter().any(|&b| b != 0),
+            "读回全 0 —— 三实例一个都没画出来（假绿）"
+        );
+
+        let mut cpu = CpuRefBackend;
+        let cpu_ref = cpu
+            .render_scene_instanced(&req, &[], &instances)
+            .expect("CPU 参考的实例编码必须成功");
+        assert!(cpu_ref.is_valid());
+        assert_parity("W3 三实例 vs CPU", &gpu.device, &cpu_ref, &gpu.output);
+
+        // 确定性：同设备连跑两次逐字节相同（G3）。
+        let again = dispatch_v3_instanced(ctx, &req, &[], None, &instances, &words)
+            .expect("二次编码必须成功");
+        assert_eq!(again.status, DispatchStatus::Ok);
+        assert_eq!(again.output, gpu.output, "连跑两次读回不一致 —— 违反确定性铁律");
+        println!(
+            "[W3 三实例] 双跑逐位一致 ✓ 实例 {} 条，读回 {} B",
+            instances.len(),
+            gpu.output.len()
+        );
+    }
+
+    /// kernel 描述的结构自洽（**无设备也能跑**）：11 绑定连续前缀、输出在最后、
     /// 元素容量与 `V3_BINDINGS` 对齐。这条防的是"改绑定表忘了改 kernel 描述"。
     #[test]
     fn v3_kernel_layout_matches_abi() {
-        let k = v3_kernel(16, 9, 2, 1, 3, 5, 21 * 16, 2 * 32, 36).expect("合法尺寸");
+        let k = v3_kernel(16, 9, 2, 1, 3, 5, 21 * 16, 2 * 32, 36, 0, 0).expect("合法尺寸");
         assert_eq!(k.buffers.len(), V3_BINDINGS.len());
         for (i, b) in k.buffers.iter().enumerate() {
             assert_eq!(
@@ -630,7 +803,7 @@ mod tests {
         // 空集合退化为 1 个占位**实体**（不是 1 个元素）：球/灯 = 各自步长，
         // 三角形/节点 = 各自步长，纹素/元数据/CDF 本来就是按元素计 = 1。
         // `BufferSpec` 不接受 0 元素，而循环上界由参数块里的计数决定，占位槽永不被读。
-        let empty = v3_kernel(4, 4, 0, 0, 0, 0, 0, 0, 0).expect("空场景也合法");
+        let empty = v3_kernel(4, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0).expect("空场景也合法");
         let want = [
             scene_abi::V3_SPHERES,
             scene_abi::V3_LIGHTS,
@@ -639,6 +812,8 @@ mod tests {
             scene_abi::V3_TEXTURES,
             scene_abi::V3_TEXMETA,
             scene_abi::V3_CDF,
+            scene_abi::V3_INSTANCES,
+            scene_abi::V3_INSTANCE_NODES,
         ];
         let slots = [
             SPHERE_SLOTS_V3,
@@ -648,6 +823,8 @@ mod tests {
             1,
             1,
             1,
+            INSTANCE_SLOTS,
+            NODE_SLOTS,
         ];
         for (i, b) in empty.buffers[1..empty.buffers.len() - 1].iter().enumerate() {
             assert_eq!(b.binding, want[i]);
@@ -659,8 +836,8 @@ mod tests {
         }
         assert!(empty.validate().is_ok());
         // 零轴/超限 ⇒ None（不上机、不 panic）。
-        assert!(v3_kernel(0, 8, 1, 1, 0, 0, 0, 0, 0).is_none());
-        assert!(v3_kernel(crate::MAX_FRAMEBUFFER_DIM + 1, 8, 1, 1, 0, 0, 0, 0, 0).is_none());
+        assert!(v3_kernel(0, 8, 1, 1, 0, 0, 0, 0, 0, 0, 0).is_none());
+        assert!(v3_kernel(crate::MAX_FRAMEBUFFER_DIM + 1, 8, 1, 1, 0, 0, 0, 0, 0, 0, 0).is_none());
     }
 
     /// `encode_v3` → `v3_kernel` 的计数对齐：曲线场景必须真的产出三角形与节点
@@ -692,9 +869,22 @@ mod tests {
             buffers.textures.len(),
             buffers.texmeta.len(),
             buffers.cdf.len(),
+            buffers.instances.len() / (INSTANCE_SLOTS as usize * 4),
+            buffers.instance_nodes.len() / (NODE_SLOTS as usize * 4),
         )
         .expect("曲线场景的 kernel 描述必须合法");
         assert_eq!(k.buffers[3].elements as usize, num_tris * TRIANGLE_SLOTS as usize);
+        // 曲线场景没有实例：两块实例缓冲必须是"1 个占位实体"（与空场景同口径，
+        // 即 `INSTANCE_SLOTS` / `NODE_SLOTS` 个元素），`BufferSpec` 不接受 0 元素。
+        // 占位槽由参数块里的 `num_instances = 0` 关死，永不进循环。
+        assert_eq!(
+            k.buffers[8].elements, INSTANCE_SLOTS,
+            "无实例时 instances 只剩 1 个占位实体"
+        );
+        assert_eq!(
+            k.buffers[9].elements, NODE_SLOTS,
+            "无实例时 instance_nodes 只剩 1 个占位实体"
+        );
     }
 
     // -----------------------------------------------------------------------

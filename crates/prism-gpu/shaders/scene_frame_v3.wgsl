@@ -78,12 +78,24 @@
 // （与 `prism_math::det_trig` 同一套系数与归约），不调 WGSL 内建。
 
 // ---- 参数块 / 槽位（= `crate::scene_abi` 的副本） ----
-const PARAMS_WORDS_: u32 = 26u;   // == scene_abi::PARAMS_WORDS_V3
+const PARAMS_WORDS_: u32 = 28u;   // == scene_abi::PARAMS_WORDS_V3
 const SPHERE_STRIDE: u32 = 12u;    // == scene_abi::SPHERE_SLOTS_V3（V2 的 8 槽 + 4 句柄）
 const LIGHT_STRIDE: u32 = 8u;     // == scene_abi::LIGHT_SLOTS
 const TRI_STRIDE: u32 = 12u;      // == scene_abi::TRIANGLE_SLOTS
 const NODE_STRIDE: u32 = 12u;     // == scene_abi::NODE_SLOTS
 const TEXMETA_STRIDE: u32 = 8u;   // 32 B / 4 = 8 个 u32 槽（两个 vec4<u32>）
+// 实例记录：112 B = 28 槽，**稠密无填充**（3×4 仿射 12 + 3×4 逆 12 + 4 个 u32）。
+// 与 TRI_STRIDE/NODE_STRIDE 的"每 vec3 补 pad"不同：补成 vec4 会变 128 B/条，
+// 违背选型报告 §4 的 112 B 定稿。故下面一律**逐标量**读，不用 vec3/mat3x3。
+const INSTANCE_STRIDE: u32 = 28u; // == scene_abi::INSTANCE_SLOTS
+const INST_AFFINE: u32 = 0u;      // 3×4 仿射（行主序）
+const INST_INVERSE: u32 = 12u;    // 3×4 逆（行主序）
+const INST_GEOM: u32 = 24u;       // geom_id
+const INST_MAT: u32 = 25u;        // mat_id（0xFFFFFFFF = 取共享几何默认）
+const INST_FLAGS: u32 = 26u;      // bit0 = identity，bit1 = mirrored
+const INST_FLAG_IDENTITY: u32 = 1u;
+const INST_FLAG_MIRRORED: u32 = 2u;
+const INST_MAT_FROM_GEOM: u32 = 0xFFFFFFFFu;
 const MAX_ANISO_TAPS: u32 = 4u;   // == prism_rt::texsample::MAX_ANISO_TAPS
 
 const P_WIDTH: u32 = 0u;
@@ -104,6 +116,8 @@ const P_NUM_TRIS: u32 = 22u;      // == scene_abi::P_NUM_TRIS（V2 前缀）
 const P_NUM_NODES: u32 = 23u;     // == scene_abi::P_NUM_NODES（V2 前缀）
 const P_NUM_TEXTURES: u32 = 24u;  // == scene_abi::P_NUM_TEXTURES
 const P_CFD_ROWS: u32 = 25u;      // == scene_abi::P_CFD_ROWS
+const P_NUM_INSTANCES: u32 = 26u;     // == scene_abi::P_NUM_INSTANCES（W3）
+const P_NUM_INST_NODES: u32 = 27u;    // == scene_abi::P_NUM_INST_NODES（W3）
 
 // 球材质的贴图槽（== `prism_rt::bsdf` 的 MAP_*）。
 const MAP_BASE: u32 = 0u;
@@ -123,7 +137,7 @@ const FRAC_1_PI: f32 = 0.3183098861837907;
 const FRAC_1_TAU: f32 = 0.15915494309189535;  // = 0.5 * FRAC_1_PI
 const NO_TEXTURE: u32 = 0u;
 
-// ---- 绑定（V3 连续前缀 0..8；输出恒为最后一个） ----
+// ---- 绑定（V3 连续前缀 0..10；输出恒为最后一个） ----
 @group(0) @binding(0) var<storage, read>       params: array<u32>;
 @group(0) @binding(1) var<storage, read>       spheres: array<u32>;
 @group(0) @binding(2) var<storage, read>       lights: array<u32>;
@@ -139,7 +153,17 @@ const NO_TEXTURE: u32 = 0u;
 // （见 `spv_manifest.txt` 旁的说明）。宿主仍按 `V3_BINDINGS` 建 9 个描述符
 // 绑定——Vulkan 允许布局里存在 shader 未消费的绑定，行为与"用不到"一致。
 @group(0) @binding(7) var<storage, read>       cdf: array<u32>;
-@group(0) @binding(8) var<storage, read_write> outbuf: array<u32>;
+// 实例记录（W3）：`array<u32>`，28 槽/条。已按 TLAS 叶子序**重排**（宿主侧做），
+// 故叶子的 `start..start+count` 可以直接当实例下标用。
+@group(0) @binding(8) var<storage, read>       instances: array<u32>;
+// 实例 TLAS（W3）：与曲线 BVH 同一节点编码（12 槽：bmin/pad/bmax/pad/start/count/right/pad）。
+//
+// **两块都追加在 cdf 之后**（既有 0..7 的绑定号一个都没动），输出因此从 8
+// 后移到 10——这是 V3 剖面唯一一处"既有绑定号变化"，且变化的是输出，
+// 所有消费者都从 `SceneAbiProfile::out_binding()` 派生，没有字面量。
+@group(0) @binding(9) var<storage, read>       instance_nodes: array<u32>;
+// 输出（**恒为最后一个绑定** = `V3_BINDINGS.len() - 1`）。
+@group(0) @binding(10) var<storage, read_write> outbuf: array<u32>;
 
 // ---------------------------------------------------------------------------
 // 基础算子（与 V2 / CPU 参考同式）
@@ -710,6 +734,225 @@ fn bvh_intersect(node_count: u32, tri_count: u32,
 }
 
 // ---------------------------------------------------------------------------
+// W3：几何实例化（两级 BVH：TLAS 节点 + 共享 BLAS）
+// ---------------------------------------------------------------------------
+//
+// # 三条与 CPU 侧必须逐式相同的纪律
+//
+// 1. **`t` 不换算**（选型报告 §4「`t` 要按缩放换算」的实现选择）：局部射线取
+//    `o_l = M⁻¹o`、`d_l = A⁻¹d`（**不归一化**），于是
+//    `o_l + t·d_l ≡ M⁻¹(o + t·d)` 对**同一个 `t`** 成立 ⇒ `CURVE_T_MIN`
+//    与 `t_max` 都是世界量，直接当局部界用。归一化才会需要 `t_l = t·|A⁻¹d|`。
+//    这也把"薄实例自交/漏光"从结构上排除：命中推进量始终是世界 `t`。
+// 2. **identity 一次乘法都不做**：`local_ray` 原样返回、法线走 `tri_normal`
+//    同一条代码 ⇒「identity 实例 vs 展平版逐位一致」是构造性的。
+// 3. **法线用 `det(A)·A⁻ᵀ·n`**：`A⁻ᵀ` 就是 `inverse` 的 3×3 转置（不再求逆），
+//    `det<0`（镜像）由 `flags` 的 bit1 决定是否反号（det 在 CPU 侧算过一次）。
+
+struct InstHit {
+  t: f32,       // 世界 t（未命中为 1e30）
+  inst: u32,    // 实例下标（TLAS 重排后的下标）
+  prim: u32,    // BLAS 三角形槽
+  hit: u32,     // 0 = 未命中，1 = 命中
+  normal: vec3<f32>, // 世界法线（已归一化、已翻到来光侧）
+}
+
+fn inst_word(i: u32, slot: u32) -> u32 {
+  return instances[i * INSTANCE_STRIDE + slot];
+}
+
+fn inst_f(i: u32, slot: u32) -> f32 {
+  return bitcast<f32>(inst_word(i, slot));
+}
+
+fn inst_is_identity(i: u32) -> bool {
+  return (inst_word(i, INST_FLAGS) & INST_FLAG_IDENTITY) != 0u;
+}
+
+fn inst_is_mirrored(i: u32) -> bool {
+  return (inst_word(i, INST_FLAGS) & INST_FLAG_MIRRORED) != 0u;
+}
+
+/// 世界点 → 局部点（`A⁻¹p + t⁻¹`）。identity **不进这个函数**（调用点先判）。
+fn inst_world_to_local_point(i: u32, p: vec3<f32>) -> vec3<f32> {
+  let a = i * INSTANCE_STRIDE + INST_INVERSE;
+  return vec3<f32>(
+    inst_f(i, INST_INVERSE) * p.x + inst_f(i, INST_INVERSE + 1u) * p.y + inst_f(i, INST_INVERSE + 2u) * p.z + inst_f(i, INST_INVERSE + 3u),
+    inst_f(i, INST_INVERSE + 4u) * p.x + inst_f(i, INST_INVERSE + 5u) * p.y + inst_f(i, INST_INVERSE + 6u) * p.z + inst_f(i, INST_INVERSE + 7u),
+    inst_f(i, INST_INVERSE + 8u) * p.x + inst_f(i, INST_INVERSE + 9u) * p.y + inst_f(i, INST_INVERSE + 10u) * p.z + inst_f(i, INST_INVERSE + 11u));
+}
+
+/// 世界方向 → 局部方向（只乘线性块，**不归一化**）。
+fn inst_world_to_local_dir(i: u32, d: vec3<f32>) -> vec3<f32> {
+  return vec3<f32>(
+    inst_f(i, INST_INVERSE) * d.x + inst_f(i, INST_INVERSE + 1u) * d.y + inst_f(i, INST_INVERSE + 2u) * d.z,
+    inst_f(i, INST_INVERSE + 4u) * d.x + inst_f(i, INST_INVERSE + 5u) * d.y + inst_f(i, INST_INVERSE + 6u) * d.z,
+    inst_f(i, INST_INVERSE + 8u) * d.x + inst_f(i, INST_INVERSE + 9u) * d.y + inst_f(i, INST_INVERSE + 10u) * d.z);
+}
+
+/// 局部法线 → 世界法线（`A⁻ᵀ`，镜像反号），未归一化。
+fn inst_local_to_world_normal(i: u32, n: vec3<f32>) -> vec3<f32> {
+  let out = vec3<f32>(
+    inst_f(i, INST_INVERSE) * n.x + inst_f(i, INST_INVERSE + 4u) * n.y + inst_f(i, INST_INVERSE + 8u) * n.z,
+    inst_f(i, INST_INVERSE + 1u) * n.x + inst_f(i, INST_INVERSE + 5u) * n.y + inst_f(i, INST_INVERSE + 9u) * n.z,
+    inst_f(i, INST_INVERSE + 2u) * n.x + inst_f(i, INST_INVERSE + 6u) * n.y + inst_f(i, INST_INVERSE + 10u) * n.z);
+  if (inst_is_mirrored(i)) {
+    return -out;
+  }
+  return out;
+}
+
+/// TLAS 节点包围盒（与曲线 BVH 同一 12 槽编码，只是数组换成本组的 `instance_nodes`）。
+fn inode_bmin(k: u32) -> vec3<f32> {
+  let b = k * NODE_STRIDE;
+  return vec3<f32>(
+    bitcast<f32>(instance_nodes[b]),
+    bitcast<f32>(instance_nodes[b + 1u]),
+    bitcast<f32>(instance_nodes[b + 2u]));
+}
+
+fn inode_bmax(k: u32) -> vec3<f32> {
+  let b = k * NODE_STRIDE + 4u;
+  return vec3<f32>(
+    bitcast<f32>(instance_nodes[b]),
+    bitcast<f32>(instance_nodes[b + 1u]),
+    bitcast<f32>(instance_nodes[b + 2u]));
+}
+
+/// 单个实例的最近命中（局部求交 + 世界 t / 世界法线换算）。
+fn instance_one(i: u32, ro: vec3<f32>, rd: vec3<f32>, t_min: f32, t_max: f32) -> InstHit {
+  var out: InstHit;
+  out.t = t_max;
+  out.inst = i;
+  out.prim = 0xFFFFFFFFu;
+  out.hit = 0u;
+  out.normal = vec3<f32>(0.0);
+  // identity：世界射线原样进 BLAS（零乘法 ⇒ 与展平版逐位同一组 t）。
+  var ro_l = ro;
+  var rd_l = rd;
+  if (!inst_is_identity(i)) {
+    ro_l = inst_world_to_local_point(i, ro);
+    rd_l = inst_world_to_local_dir(i, rd);
+  }
+  let h = bvh_intersect(params[P_NUM_NODES], params[P_NUM_TRIS], ro_l, rd_l, t_min, t_max);
+  if (h.y == f32(0xFFFFFFFFu)) {
+    return out;
+  }
+  let slot = u32(h.y);
+  out.t = h.x;
+  out.prim = slot;
+  out.hit = 1u;
+  if (inst_is_identity(i)) {
+    // 与展平版**同一个函数**（不是"等价公式"）：归一化一次的口径必须一致。
+    out.normal = tri_normal(slot, rd);
+  } else {
+    // 局部绕序法线（未归一化）→ 逆转置 → 归一化 → 按射线侧翻转（同 `tri_normal`）。
+    let va = tri_vertex(slot, 0u);
+    let vb = tri_vertex(slot, 4u);
+    let vc = tri_vertex(slot, 8u);
+    let nl = cross(vb - va, vc - va);
+    let nw = inst_local_to_world_normal(i, nl);
+    let len2 = dot(nw, nw);
+    if (len2 > 1e-24) {
+      var n = nw * (1.0 / sqrt(len2));
+      if (dot(n, rd) > 0.0) {
+        n = n * -1.0;
+      }
+      out.normal = n;
+    }
+  }
+  return out;
+}
+
+/// TLAS 遍历（最近命中）：与 `bvh_intersect` 同构（栈式、近子先处理、
+/// 进入 t 相等先左），叶子换成"对实例做局部求交"。
+fn instance_nearest(ro: vec3<f32>, rd: vec3<f32>, t_min: f32, t_max: f32) -> InstHit {
+  var best: InstHit;
+  best.t = t_max;
+  best.inst = 0xFFFFFFFFu;
+  best.prim = 0xFFFFFFFFu;
+  best.hit = 0u;
+  best.normal = vec3<f32>(0.0);
+  let node_count = params[P_NUM_INST_NODES];
+  let inst_count = params[P_NUM_INSTANCES];
+  if (node_count == 0u || inst_count == 0u) {
+    return best;
+  }
+  let inv = vec3<f32>(1.0 / rd.x, 1.0 / rd.y, 1.0 / rd.z);
+  var stack: array<u32, 64>;
+  var tlo: array<f32, 64>;
+  stack[0] = 0u;
+  tlo[0] = t_min;
+  var sp: i32 = 1;
+  loop {
+    if (sp <= 0) {
+      break;
+    }
+    sp = sp - 1;
+    let id = stack[sp];
+    let t_lo = tlo[sp];
+    if (best.hit != 0u && t_lo > best.t) {
+      continue;
+    }
+    let nb = id * NODE_STRIDE;
+    let count = instance_nodes[nb + 9u];
+    if (count > 0u) {
+      let start = instance_nodes[nb + 8u];
+      var i: u32 = 0u;
+      loop {
+        if (i >= count) {
+          break;
+        }
+        let slot = start + i;
+        // 越界守卫：叶子里存的下标必须落在实例表内（宿主保证，这里只做
+        // 结构防护，绝不让越界读变成"读到邻居的逆矩阵"）。
+        if (slot < inst_count) {
+          let cur = select(t_max, best.t, best.hit != 0u);
+          let one = instance_one(slot, ro, rd, t_min, cur);
+          if (one.hit != 0u && one.t < cur) {
+            best = one;
+          }
+        }
+        i = i + 1u;
+      }
+    } else {
+      let l = id + 1u;
+      let r = instance_nodes[nb + 10u];
+      let hl = aabb_ray(inode_bmin(l), inode_bmax(l), ro, inv, t_min, t_max);
+      let hr = aabb_ray(inode_bmin(r), inode_bmax(r), ro, inv, t_min, t_max);
+      let ok_l = hl.x <= hl.y;
+      let ok_r = hr.x <= hr.y;
+      if (ok_l && ok_r) {
+        if (hl.x <= hr.x) {
+          stack[sp] = r;
+          tlo[sp] = min(hr.x, hr.y);
+          sp = sp + 1;
+          stack[sp] = l;
+          tlo[sp] = min(hl.x, hl.y);
+          sp = sp + 1;
+        } else {
+          stack[sp] = l;
+          tlo[sp] = min(hl.x, hl.y);
+          sp = sp + 1;
+          stack[sp] = r;
+          tlo[sp] = min(hr.x, hr.y);
+          sp = sp + 1;
+        }
+      } else if (ok_l) {
+        stack[sp] = l;
+        tlo[sp] = min(hl.x, hl.y);
+        sp = sp + 1;
+      } else if (ok_r) {
+        stack[sp] = r;
+        tlo[sp] = min(hr.x, hr.y);
+        sp = sp + 1;
+      }
+    }
+  }
+  return best;
+}
+
+// ---------------------------------------------------------------------------
 // 入口（与 `CpuRefBackend::render_scene` 逐句对应；纹理只改 albedo 一项）
 // ---------------------------------------------------------------------------
 
@@ -777,14 +1020,34 @@ fn scene_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   // ---- A-2 曲线：栈式 BVH 遍历（覆盖球命中若更近；曲线为空 ⇒ 整段跳过） ----
   let num_tris = params[P_NUM_TRIS];
   let num_nodes = params[P_NUM_NODES];
+  let num_inst = params[P_NUM_INSTANCES];
+  let num_inst_nodes = params[P_NUM_INST_NODES];
   var curve_slot: i32 = -1;
-  if (num_tris > 0u && num_nodes > 0u) {
+  // W3：实例表非空时，`triangles`/`nodes` 是**共享几何那一个 BLAS**（局部坐标），
+  // 只能经实例到达 ⇒ 不再作为世界几何绘制（与 `prism-rt` 把 `instance_geoms`
+  // 与 `meshes` 分开同一条纪律，见 `scene_abi::encode_v3_instanced`）。
+  if (num_inst == 0u && num_tris > 0u && num_nodes > 0u) {
     let t_max_curve = select(1e30, closest_t, hit_idx >= 0);
     let hitc = bvh_intersect(num_nodes, num_tris, origin, dir, CURVE_T_MIN, t_max_curve);
     if (hitc.y != f32(0xFFFFFFFFu)) {
       closest_t = hitc.x;
       curve_slot = i32(hitc.y);
       hit_idx = -1;
+    }
+  }
+
+  // ---- W3 实例：TLAS 剪枝 + 共享 BLAS 局部求交（覆盖更近的球/曲线命中）----
+  var inst_slot: i32 = -1;
+  var inst_normal = vec3<f32>(0.0);
+  if (num_inst > 0u && num_inst_nodes > 0u) {
+    let t_max_inst = select(1e30, closest_t, hit_idx >= 0);
+    let hi = instance_nearest(origin, dir, CURVE_T_MIN, t_max_inst);
+    if (hi.hit != 0u) {
+      closest_t = hi.t;
+      inst_slot = i32(hi.inst);
+      inst_normal = hi.normal;
+      hit_idx = -1;
+      curve_slot = -1;
     }
   }
 
@@ -892,9 +1155,27 @@ fn scene_main(@builtin(global_invocation_id) gid: vec3<u32>) {
       l = l + 1u;
     }
     color = acc;
-  } else if (curve_slot >= 0) {
-    // 曲线命中：几何法线 + 固定中性反照率（与 CPU 参考逐式相同）。
-    let n = tri_normal(u32(curve_slot), dir);
+  } else if (curve_slot >= 0 || inst_slot >= 0) {
+    // 曲线命中 / 实例命中：几何法线 + 反照率，直接光项与球分支**逐式相同**
+    // （同 ambient、同 light 循环、同 `vmul`）。
+    //
+    // 两条来源的差别只有两项，且都在**着色之前**算好：
+    // * 法线：曲线走 `tri_normal`；实例走 `instance_one` 里的世界法线
+    //   （identity 实例在那边也是**同一个** `tri_normal`，故逐位一致）；
+    // * 反照率：曲线 = `CURVE_ALBEDO`；实例 = `mat_id` 覆盖（索引进球表——
+    //   GPU 剖面里唯一带 albedo 的材质表），`0xFFFFFFFF` ⇒ 取 `CURVE_ALBEDO`。
+    var n = vec3<f32>(0.0);
+    var albedo = CURVE_ALBEDO;
+    if (inst_slot >= 0) {
+      let si = u32(inst_slot);
+      n = inst_normal;
+      let mat = inst_word(si, INST_MAT);
+      if (mat != INST_MAT_FROM_GEOM && mat < params[P_NUM_SPHERES]) {
+        albedo = sphere_albedo(mat);
+      }
+    } else {
+      n = tri_normal(u32(curve_slot), dir);
+    }
     var acc = vec3<f32>(0.0, 0.0, 0.0);
     var l: u32 = 0u;
     let num_lights = params[P_NUM_LIGHTS];
@@ -907,7 +1188,7 @@ fn scene_main(@builtin(global_invocation_id) gid: vec3<u32>) {
       let lint = light_intensity(l);
       let diff = max(dot(n, ldir), 0.0);
       let term = ambient + lcolor * (diff * lint);
-      acc = acc + vmul(CURVE_ALBEDO, term);
+      acc = acc + vmul(albedo, term);
       l = l + 1u;
     }
     color = acc;

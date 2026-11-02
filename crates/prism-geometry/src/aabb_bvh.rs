@@ -89,6 +89,24 @@ impl AabbBvh {
         self.nodes.len()
     }
 
+    /// 叶子索引表（构建插入序）：第 `i` 个元素是**全局图元下标**。
+    ///
+    /// 宿主把本树编码成扁平槽位时要用它把"叶子区间 `start..start+count`"
+    /// 映射回图元（W3 的 TLAS：图元 = 实例，叶子里存的是实例下标）。
+    /// 返回只读切片 ⇒ 调用方不能改写入序（构建确定性的一部分）。
+    pub fn order(&self) -> &[u32] {
+        &self.order
+    }
+
+    /// 第 `i` 个节点的 `(包围盒, start, count, right)`；越界返回 `None`。
+    ///
+    /// 与 [`Self::order`] 配合即可把本树**逐字节**编码成扁平槽位数组：
+    /// 叶子 `count > 0` 时 `start` 索引进 `order()`，内部节点 `right` 是右子
+    /// 节点下标（左子恒为 `i + 1`，构建序保证）。
+    pub fn node(&self, i: usize) -> Option<(Aabb, u32, u32, u32)> {
+        self.nodes.get(i).map(|n| (n.bounds, n.start, n.count, n.right))
+    }
+
     /// 本树自身的字节数（节点数组 + 叶子索引表；**不含**被引用的几何）。
     ///
     /// 用于"实例化内存与实例数解耦"的核算：1 万实例的 TLAS 只有这一坨，

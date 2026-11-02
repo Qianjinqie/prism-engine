@@ -15,6 +15,7 @@
 //!include rt_common.wgsl
 //!include rt_shade.wgsl
 //!include rt_scene.wgsl
+//!include rt_env.wgsl
 struct PathSlot {
   origin: vec3<f32>,
   dir: vec3<f32>,
@@ -76,6 +77,34 @@ struct Camera {
 // 独立 group(3)：只被 `generate`（经 cast_ray）引用，单绑定前缀 {0}。
 @group(3) @binding(0) var<uniform> camera: Camera;
 
+// ---- 环境 CDF（A2 / W2）：挂在场景组 rt_scene 的尾部 ----
+//
+// # 为什么不是新开一个 group
+//
+// WebGPU 的 `maxBindGroups` 默认 4 ⇒ group 索引只能是 0..3，而 shade 已经用到
+// {0 slots/params, 1 sobol+scene_buf, 2 场景资源} 三组；再开 group(4) 直接越界。
+// 挂在 **group(2) binding 5** 满足宿主 ABI 的唯一硬约束——"每个 entry 的绑定集
+// 必须是连续前缀 {0..n-1}"：`shade` 引用 {0,1,2}（原）+ 本绑定 = {0..5} 仍是前缀；
+// `extend`/`generate` 引用 {0,1,2} 与 {0,1} ⇒ 各自仍是更短的前缀。
+//
+// # 语义（与 CPU 权威同一份）
+//
+// 函数体来自 `rt_env.wgsl`（`env_radiance` / `env_pdf` / 反演 / 双线性 / pdf
+// 全部那一条实现），本文件不另写采样。绑定号不同不影响"同源"——同源指的是
+// 函数体与 CDF 语义，而不是槽位号。
+@group(2) @binding(5) var<storage, read> env_blob: array<f32>;
+
+/// 环境图是否可用：blob 至少装得下头部 **且** 宽高非 0。
+///
+/// 空环境（宿主给 1 元占位 buffer）⇒ 头部都读不到 ⇒ 一律走 `Light::Ambient`
+/// 分支（与 CPU 的 `scene.env() == None` 同判据，不是"读到垃圾再兜"）。
+fn env_present() -> bool {
+  if (arrayLength(&env_blob) < ENV_HDR) {
+    return false;
+  }
+  return env_w() > 0u && env_h() > 0u;
+}
+
 fn cast_ray(pixel: vec2<u32>, sample: u32, si: u32) -> array<vec3<f32>, 2> {
   // 像素抖动（槽 3,4）→ 焦平面 → 光圈圆盘（槽 0,1）→ 快门（槽 2）。
   let jx = sample_1d(si, DIM_PIXEL);
@@ -131,6 +160,37 @@ fn generate(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 
 // ---- 着色 stage：NEE + 发光命中 + MNEE（对齐 integrator 主循环）----
+
+/// 逃逸射线看到的环境贡献（**BSDF 策略 + MIS**，逐句移植 `integrator.rs`
+/// 逃逸段；`rt_wavefront` 与 CPU 权威的唯一差别是"谁来推进队列"）。
+///
+/// * `prev_specular`（相机段 / 镜面链）⇒ 权重 1（镜面方向是 δ 分布，
+///   CDF 策略对它测度为零）；
+/// * 否则 `w = 1 − power_heuristic(pdf_env, pdf_bsdf)`，与 `rt_scene::
+///   nee_mis_weight` 的 Environment 臂逐位互补（`w_nee + w_bsdf ≡ 1`）；
+/// * `nee_only && ev > 1` ⇒ `w = 0`（能量对照口径，CPU 侧同一条）。
+fn env_escape(throughput: vec3<f32>, dir: vec3<f32>, prev_pdf_dir: f32,
+              prev_specular: bool, nee_only: bool, ev: u32) -> vec3<f32> {
+  if (!env_present()) {
+    return vec3<f32>(0.0, 0.0, 0.0);
+  }
+  let r = env_radiance(dir);
+  // 与 CPU 同判据（正值判据，不是"非零"：负辐亮度不进累加）。
+  if (!(r.x > 0.0 || r.y > 0.0 || r.z > 0.0)) {
+    return vec3<f32>(0.0, 0.0, 0.0);
+  }
+  var w = 0.0;
+  if (nee_only && ev > 1u) {
+    w = 0.0;
+  } else if (prev_specular) {
+    w = 1.0;
+  } else {
+    let p_env = env_pdf(dir);
+    w = 1.0 - power_heuristic(p_env, prev_pdf_dir);
+  }
+  return clamp_indirect(hadamard(throughput, r) * w, ev);
+}
+
 @compute @workgroup_size(64)
 fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
   let idx = gid.x;
@@ -159,6 +219,18 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
   } else {
     // 逃逸：环境背景。
+    //
+    // A2 / W2 起走**环境图**（CDF 同源，见 `env_escape`）；`Light::Ambient`
+    // 与 `Light::Environment` 在 CPU 侧互斥（`validate_layout` 拦），故两条
+    // 分支不会双计——此处照抄同一互斥语义：有环境图时 ambient 恒为 0。
+    s.radiance = s.radiance + env_escape(
+      s.throughput,
+      s.dir,
+      s.prev_pdf_dir,
+      (s.flags & 1u) != 0u,
+      params.nee_only != 0u,
+      ev,
+    );
     s.radiance = s.radiance + clamp_indirect(hadamard(s.throughput, ambient_background()), ev);
     s.state = ST_TERMINATED;
   }

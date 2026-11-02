@@ -485,6 +485,51 @@ impl Bvh {
     /// `Aabb::ray` 的 slab 算术与 Möller–Trumbore 都与 `|rd|` 无关，唯一被
     /// 放松的就是入口那条"归一化"断言。
     pub fn ray_intersect_raw(&self, ro: Vec3, rd: Vec3, t_min: f32, t_max: f32) -> Option<RayHit> {
+        self.ray_intersect_impl(ro, rd, t_min, t_max, false)
+    }
+
+    /// 同 [`Bvh::ray_intersect_raw`]，但 `RayHit::tri` 是**重排后**（slot）下标。
+    ///
+    /// # 为什么要有这个入口（W3 的第二个下标体系）
+    ///
+    /// 本结构里有两套三角形下标：
+    ///
+    /// * **原始**下标（`RayHit::tri` / [`Bvh::order`] 的值）= 构建输入数组的下标。
+    ///   CPU 侧持有那份数组（`curve_tess::tessellate_all` 的输出），故展平路径
+    ///   用 `ray_intersect_raw` + 原始下标取顶点；
+    /// * **slot** 下标（`RayHit::tri` 的这里）= [`Bvh::tris`] 的下标。三后端上传
+    ///   的三角形缓冲就是 `tris` 这一份（`encode_curve_buffers` 按 `bvh.tris` 逐条
+    ///   写），**原始数组在 GPU 侧根本不存在**。
+    ///
+    /// 实例化路径因此必须按 slot 取三角形：它上传的是 `tris`、遍历的是同一棵树。
+    /// 用 `ray_intersect_raw` 的原始下标去索引 `tris` 会**取到另一个三角形**——
+    /// 顶点错了、法线跟着错，而 `t` 是对的，于是"命中位置对、着色错"，最难查。
+    ///
+    /// 除 `tri` 的口径外，遍历、剪枝、`t` 的算术与 [`Bvh::ray_intersect_raw`]
+    /// **逐句相同**（同一个 `impl`，只差一个布尔）。
+    pub fn ray_intersect_slot(
+        &self,
+        ro: Vec3,
+        rd: Vec3,
+        t_min: f32,
+        t_max: f32,
+    ) -> Option<RayHit> {
+        self.ray_intersect_impl(ro, rd, t_min, t_max, true)
+    }
+
+    /// [`Bvh::ray_intersect_raw`] / [`Bvh::ray_intersect_slot`] 的共同实现。
+    ///
+    /// `by_slot == false` ⇒ `RayHit::tri` 是原始下标（tie-break 按原始索引升序）；
+    /// `by_slot == true`  ⇒ 是 slot 下标（tie-break 按 slot 升序）。
+    /// 两种口径都**确定性**（同一棵树 + 同一射线 ⇒ 同一结果）。
+    fn ray_intersect_impl(
+        &self,
+        ro: Vec3,
+        rd: Vec3,
+        t_min: f32,
+        t_max: f32,
+        by_slot: bool,
+    ) -> Option<RayHit> {
         if self.tris.is_empty() {
             // 空树：安全返回空语义（bvh.rs:282 契约；与 closest_point/winding_number 对齐）。
             return None;
@@ -506,13 +551,17 @@ impl Bvh {
                 for i in 0..node.count as usize {
                     let slot = node.start as usize + i;
                     if let Some(t) = tri_ray_hit(&self.tris[slot], ro, rd, t_min, hi) {
-                        let orig = self.order[slot];
+                        let key = if by_slot {
+                            slot as u32
+                        } else {
+                            self.order[slot]
+                        };
                         let better = match best {
                             None => true,
-                            Some(b) => t < b.t || (t == b.t && orig < b.tri),
+                            Some(b) => t < b.t || (t == b.t && key < b.tri),
                         };
                         if better {
-                            best = Some(RayHit { t, tri: orig });
+                            best = Some(RayHit { t, tri: key });
                         }
                     }
                 }
@@ -911,6 +960,66 @@ mod tests {
             let got = bvh.ray_intersect(ro, rd, 0.0, f32::INFINITY);
             assert_eq!(got, want, "射线 {r} 求交与暴力不一致");
         }
+    }
+
+    /// 关卡 3b-bis：两套 `tri` 口径必须指向**同一个三角形**、给**同一个 `t`**。
+    ///
+    /// `ray_intersect_raw` 的 `tri` 是构建输入数组的下标，`ray_intersect_slot` 的
+    /// 是 [`Bvh::tris`] 的下标，二者只差一个 [`Bvh::order`] 映射。这条判据防的是
+    /// W3 里踩过的那个坑：**拿原始下标去索引 `tris`**——`t` 对、顶点与法线全错，
+    /// 表现为"命中位置对、着色错"。
+    #[test]
+    fn ray_intersect_slot_and_raw_agree_on_t_and_resolve_to_same_triangle() {
+        let tris = random_scene(64);
+        let bvh = Bvh::build(&tris);
+        // 先确认这棵树**真的重排了**（否则本判据退化成"比 0..n 恒等"）。
+        assert!(
+            bvh.order.iter().enumerate().any(|(i, &o)| i as u32 != o),
+            "SAH 必须真的重排过，否则本条判据没有鉴别力"
+        );
+        let mut hits = 0u32;
+        for r in 0..300_u64 {
+            let ro = Vec3::new(
+                pcg::hash2_f32(SEED, r + 31, 0) * 8.0 - 4.0,
+                pcg::hash2_f32(SEED, r + 31, 1) * 8.0 - 4.0,
+                pcg::hash2_f32(SEED, r + 31, 2) * 8.0 - 4.0,
+            );
+            let rd = Vec3::new(
+                pcg::hash2_f32(SEED, r + 31, 3) - 0.5,
+                pcg::hash2_f32(SEED, r + 31, 4) - 0.5,
+                pcg::hash2_f32(SEED, r + 31, 5) - 0.5,
+            )
+            .normalize();
+            let raw = bvh.ray_intersect_raw(ro, rd, 1e-4, 1e4);
+            let slot = bvh.ray_intersect_slot(ro, rd, 1e-4, 1e4);
+            match (raw, slot) {
+                (None, None) => {}
+                (Some(a), Some(b)) => {
+                    hits += 1;
+                    assert_eq!(a.t.to_bits(), b.t.to_bits(), "两套口径的 `t` 必须逐位相同");
+                    // 口径换算后必须是同一个三角形：`order[slot] == 原始下标`。
+                    let orig_of_slot = bvh.order[b.tri as usize];
+                    assert_eq!(
+                        orig_of_slot, a.tri,
+                        "`order[slot]` 必须等于原始下标（否则顶点/法线取错三角形）"
+                    );
+                    // 再验一层：两个下标取到的三角形**几何相同**。
+                    let ta = &tris[a.tri as usize];
+                    let tb = &bvh.tris[b.tri as usize];
+                    assert_eq!(
+                        (ta.a.x.to_bits(), ta.a.y.to_bits(), ta.a.z.to_bits()),
+                        (tb.a.x.to_bits(), tb.a.y.to_bits(), tb.a.z.to_bits()),
+                        "两个下标必须指向同一个三角形"
+                    );
+                }
+                (a, b) => panic!(
+                    "两套口径的命中性不一致：raw={:?} slot={:?}",
+                    a.map(|h| h.t),
+                    b.map(|h| h.t)
+                ),
+            }
+        }
+        assert!(hits > 50, "命中数太少（{hits}），判据没有鉴别力");
     }
 
     /// 关卡 3c：最近点查询 vs 暴力 O(n) 全查一致（120 点）。

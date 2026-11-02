@@ -11,6 +11,12 @@
 // 探针覆盖的是**判据真正关心的东西**：CDF 反演 → 方向 → 双线性辐亮度 →
 // 同源 pdf，四条链路逐值与 CPU `env.rs` 对拍。
 
+// env blob 的**绑定声明由引用方持有**（`rt_env.wgsl` 只提供函数体；见该文件
+// 顶部"blob 绑定由引用方声明"）。探针是单 group 形状，故沿用 group(0) 的
+// binding 0（与 W2 落地时相同的 ABI）。声明必须在 include 之前——WGSL 的
+// "先声明后使用"按文本序，`rt_env.wgsl` 的取数函数在展开处就会引用它。
+@group(0) @binding(0) var<storage, read> env_blob: array<f32>;
+
 //!include rt_env.wgsl
 
 @group(0) @binding(1) var<storage, read_write> env_out: array<f32>;
