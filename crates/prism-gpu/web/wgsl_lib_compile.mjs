@@ -428,6 +428,43 @@ fn lib_compile_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 `,
     buffers: [{ group: 0, binding: 0, kind: "out" }],
   },
+
+  // ---- rt_env.wgsl：自带 @group(0) @binding(0) 的 CDF blob（只读 storage）----
+  //
+  // 合成入口必须在**真 CDF 表**上跑一遍采样 / 双线性 / pdf，否则 `env_u(5u) == 0`
+  // 会让 `env_sample` 早退成全零，这条链路就变成"编译过但语义没跑"。
+  // 故 `envBlob` 种的是一个 2×2 的**最小合法 blob**（头部 + 边际 + 条件 + texels）。
+  "rt_env.wgsl": {
+    outBinding: 1,
+    extraWgsl: `
+@group(0) @binding(1) var<storage, read_write> lib_out: array<f32>;
+
+@compute @workgroup_size(1)
+fn lib_compile_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let u1 = 0.05 + f32(gid.x) * 0.1;
+  let u2 = 0.3 + f32(gid.x) * 0.05;
+  let s = env_sample(u1, u2);
+  let r = env_radiance(s.wi);
+  let p = env_pdf(s.wi);
+  let uv = env_dir_to_uv(s.wi);
+  let back = env_uv_to_dir(uv.x, uv.y);
+  var acc = s.pdf + p + r.x + r.y + r.z + uv.x + uv.y;
+  acc = acc + back.x + back.y + back.z;
+  acc = acc + env_row_omega(0u) + env_acos(0.5) + env_atan2(1.0, 1.0);
+  acc = acc + env_quarter_atan(0.25) + env_atan_pos(0.3);
+  acc = acc + f32(env_w() + env_h()) * 1e-6 + f32(s.texel) * 1e-6;
+  acc = acc + f32(env_u(0u) + env_u(5u) + env_u(6u)) * 1e-9 + env_f(4u) * 1e-9;
+  // 未命中亮斑的哨兵是 u32::MAX（f32 上 4.29e9），乘 1e-9 后仍是有限数。
+  acc = acc + f32(env_spot_index(0u)) * 1e-9;
+  acc = acc + f32(env_spot_index(1u)) * 1e-9;
+  lib_out[gid.x] = acc;
+}
+`,
+    buffers: [
+      { group: 0, binding: 0, kind: "envBlob" },
+      { group: 0, binding: 1, kind: "out" },
+    ],
+  },
 };
 
 /**
@@ -478,6 +515,15 @@ const INJECTIONS = {
       "fn power_heuristic(a: f32, b: f32) -> f32 {",
       "fn power_heuristic(a: f32, b: f32, extra: f32) -> f32 {"),
     expect: /power_heuristic/,
+  },
+  "rt_env.wgsl": {
+    mustApply: true,
+    // 形参/实参个数不匹配（与上一波事故同形态）：`env_acos` 多声明一个形参，
+    // 而 `env_dir_to_uv` 里仍按 1 个实参调用 → 真编译器必拒。
+    apply: (s) => s.replace(
+      "fn env_acos(x: f32) -> f32 {",
+      "fn env_acos(x: f32, extra: f32) -> f32 {"),
+    expect: /env_acos/,
   },
   "hair_scatter.wgsl": {
     mustApply: true,
@@ -650,6 +696,50 @@ function buildBuffer(kind) {
         for (let i = 0; i < n; i += 1) vals[i] = (Math.imul(i + 1, 2654435761) >>> 8) >>> 0;
         return u32buf(vals);
       }
+    // env_blob（布局权威 = `crates/prism-rt/tests/qa_w2_env_gpu_parity.rs::build_blob`
+    // 与 `rt_env.wgsl` 文件头那张表）：2×2 的最小合法 blob。
+    //
+    //   [0]=w=2 [1]=h=2 [2]=spot_count=0 [3]=p_spot=0.0 [4]=Ω_total [5]=has_energy=1
+    //   [6]=has_residual=1 [7]=cond_len=(w+1)·h=6 [8]=marg_len=h+1=3 [9]=res_cond_len=0
+    //   [10]=res_row_off_len=2 [11]=spot_prefix_len=1 [12]=spot_texels_len=0
+    //   [13]=texel_words=4·w·h=16 [14..20]=各段偏移
+    //
+    // 条件/边际表按"每行每列等权"填（`[0, 2^31, MAX]`），texels 给 4 个不同亮度
+    // 的 RGBA —— 这样采样、双线性、pdf 三条路径都会产出**非零且有限**的数。
+    case "envBlob": {
+      const cond = [0, 0x80000000, 0xFFFFFFFF, 0, 0x80000000, 0xFFFFFFFF];
+      const marg = [0, 0x80000000, 0xFFFFFFFF];
+      const rowOff = [0xFFFFFFFF, 0xFFFFFFFF]; // 无亮斑 ⇒ 两行都读主表
+      const spotPrefix = [0xFFFFFFFF];          // 空亮斑列表（den 不被读）
+      const texels = [
+        4.0, 3.0, 2.0, 1.0,
+        0.5, 0.5, 0.5, 1.0,
+        0.25, 0.25, 0.25, 1.0,
+        0.125, 0.125, 0.125, 1.0,
+      ];
+      const total = 24 + cond.length + marg.length + rowOff.length + spotPrefix.length + texels.length;
+      const ab = new ArrayBuffer(total * 4);
+      const dv = new DataView(ab);
+      const u = (i, v) => dv.setUint32(i * 4, v >>> 0, true);
+      // f32 位模式写进同一个字槽（blob 在 WGSL 侧是 `array<f32>` 承载 u32 位模式）。
+      const f = (i, v) => {
+        const t = new DataView(new ArrayBuffer(4));
+        t.setFloat32(0, v, true);
+        dv.setUint32(i * 4, t.getUint32(0, true), true);
+      };
+      u(0, 2); u(1, 2); u(2, 0); f(3, 0.0); f(4, 4.0 * Math.PI); u(5, 1); u(6, 1);
+      u(7, cond.length); u(8, marg.length); u(9, 0);
+      u(10, rowOff.length); u(11, spotPrefix.length); u(12, 0); u(13, texels.length);
+      let at = 24;
+      u(14, at); for (const v of cond) u(at++, v);
+      u(15, at); for (const v of marg) u(at++, v);
+      u(16, at); // res_cond_len = 0 ⇒ 同址（不读）
+      u(17, at); for (const v of rowOff) u(at++, v);
+      u(18, at); for (const v of spotPrefix) u(at++, v);
+      u(19, at); // spot_texels_len = 0 ⇒ 同址
+      u(20, at); for (const v of texels) f(at++, v);
+      return ab;
+    }
     case "sceneBuf":
       return u32buf([7, 0, 0, 0]);
     case "primMat":

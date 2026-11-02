@@ -47,6 +47,13 @@ pub static SHADERS: &[(&str, &str)] = &[
         "rt_wavefront_intersect.wgsl",
         include_str!("../shaders/rt_wavefront_intersect.wgsl"),
     ),
+    // A2 / W2：环境采样语义探针（`rt_env.wgsl` 的可执行外壳，见
+    // `crates/prism-rt/tests/qa_w2_env_gpu_parity.rs`）。含 `@compute env_probe`
+    // ⇒ 入 SHADERS 而非 LIBRARIES。
+    (
+        "rt_env_probe.wgsl",
+        include_str!("../shaders/rt_env_probe.wgsl"),
+    ),
     (
         "spv_mul2_probe.wgsl",
         include_str!("../shaders/spv_mul2_probe.wgsl"),
@@ -83,6 +90,10 @@ pub static SHADERS: &[(&str, &str)] = &[
 pub static LIBRARIES: &[(&str, &str)] = &[
     ("rt_scene.wgsl", include_str!("../shaders/rt_scene.wgsl")),
     ("hair_scatter.wgsl", include_str!("../shaders/hair_scatter.wgsl")),
+    // A2 / W2：环境贴图采样（等距柱状映射 + u32 定点 CDF 反演 + 同源 pdf）。
+    // **唯一一份** WGSL 实现：探针 `rt_env_probe.wgsl` 用 `//!include` 引它，
+    // 后续 wavefront 接线同样引它，不复制粘贴。本身无入口 → 入 LIBRARIES。
+    ("rt_env.wgsl", include_str!("../shaders/rt_env.wgsl")),
 ];
 
 /// include 指令前缀（D-14 真机实测确立）。
@@ -878,7 +889,13 @@ pub fn check_targets() -> Vec<TargetCheck> {
             local_size: [desc.workgroup.x, desc.workgroup.y, desc.workgroup.z],
             bindings: module_bindings(module),
         };
-        let result = crate::vulkan::spirv::validate(words, &expect);
+        // 工具链产物（naga 不内联 ⇒ 多函数）走放宽"恰好一个函数"的同一条
+        // 校验路径；其余静态门禁一条不少。清单在这里，新增须同步理由。
+        let result = if TOOLCHAIN_MODULES.contains(&module) {
+            crate::vulkan::spirv::validate_multi_function(words, &expect)
+        } else {
+            crate::vulkan::spirv::validate(words, &expect)
+        };
         let (ok, note) = match result {
             Ok(sum) => (
                 sum.bindings == bindings,
@@ -910,12 +927,27 @@ pub fn check_targets() -> Vec<TargetCheck> {
 fn module_bindings(module: &'static str) -> &'static [u32] {
     match module {
         "spv_mul2_probe" => &SPV_MUL2_BINDINGS,
+        // A2 / W2：blob（b0，只读）+ 读数（b1，只写）。
+        "spv_env_probe" => &SPV_ENV_PROBE_BINDINGS,
         _ => &[],
     }
 }
 
+/// 由**工具链**（naga 30.0.1）生成、而非自研发射器生成的模块。
+///
+/// 唯一差别：这些模块里允许出现多个 `OpFunction`（naga 不做内联，且会带上
+/// `//!include` 进来的库函数），故走
+/// [`crate::vulkan::spirv::validate_multi_function`]；入口名 / local_size /
+/// 绑定集 / 索引链 / 结构化控制流 / 支配者序 一条不少。
+///
+/// 官方 `spirv-val` 由 `tools/wgsl2spv --check`（= `spv_freshness`）在生成期跑过。
+static TOOLCHAIN_MODULES: &[&str] = &["spv_env_probe"];
+
 /// `spv_mul2_probe` 的绑定号（与 `compute::spirv_probe_kernel` 布局一致）。
 static SPV_MUL2_BINDINGS: [u32; 2] = [0, 1];
+
+/// `spv_env_probe` 的绑定号（与 `compute::env_probe_kernel` 布局一致）。
+static SPV_ENV_PROBE_BINDINGS: [u32; 2] = [0, 1];
 
 #[cfg(test)]
 mod tests {

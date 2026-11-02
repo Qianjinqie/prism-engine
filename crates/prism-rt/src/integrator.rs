@@ -848,6 +848,24 @@ pub struct Scene {
     /// 新的 ABI 形态**，只是把 GPU 绑定的 CPU 侧 backing store 显式化。
     /// 见 `docs/v2.5-W0-算法选型报告.md` §16.1。
     pub texels: Vec<[f32; 4]>,
+    /// 环境贴图的立体角 2D CDF（A2 / W2）——`Light::Environment` 的**只读缓存**。
+    ///
+    /// # 为什么放在 `Scene` 上而不是每次渲染重建
+    ///
+    /// 构建一次要扫全图（2048×1024 = 2M texel，量化为 u64 整数前缀和），
+    /// 单线程 3~8 ms。逐像素 [`render_pixel`](crate::integrator::render_pixel)
+    /// 重建会让一张 512×512 的图从"几秒"变成"几小时"。
+    ///
+    /// # 为什么是公开字段（而非私有缓存）
+    ///
+    /// 与 [`Scene::curve_bvh`] / [`Scene::instance_bvh`] 同一口径：`Scene` 的
+    /// 既有构造模式是跨 crate 结构体字面量，私有字段会让字面量构造直接
+    /// E0451。**只读**：由 [`Scene::add_environment`] /
+    /// [`Scene::rebuild_env_cdf`] 维护，其余地方不得写。
+    ///
+    /// `None` 且存在 [`Light::Environment`] ⇒ 场景装配漏了一步，
+    /// [`Scene::validate_layout`] 报错（不会静默变黑）。
+    pub env_cdf: Option<crate::env::EnvCdf>,
     /// 多区域介质表（A6 / W6，C1「区域列表 + 优先级（不重叠）」）。
     ///
     /// # 逐位兼容的硬化要求（选型报告 §7）
@@ -921,6 +939,7 @@ const _: () = assert!(
             + core::mem::size_of::<Vec<[f32; 4]>>()
             + core::mem::size_of::<Vec<(Mesh, MaterialKind)>>()
             + core::mem::size_of::<Option<prism_geometry::aabb_bvh::AabbBvh>>()
+            + core::mem::size_of::<Option<crate::env::EnvCdf>>()
 );
 
 
@@ -977,6 +996,44 @@ impl Scene {
                  二选一：要方向结构用 Environment，要平光用 Ambient"
                     .to_string(),
             );
+        }
+        // ---- 1b：Environment 灯必须带上已构建的 CDF ----
+        //
+        // 漏建的表现是"背景全黑、IBL 完全没生效"——不会报错、不会 panic，
+        // 只会让人以为是场景没配好。故在构造期把它变成一条可读的错误。
+        // 句柄 0（[`crate::texture::NO_TEXTURE`]）= 未配置贴图 ⇒ 惰性环境灯，
+        // 不要求 CDF（与 W1-A 定桩期的"本变体不参与计算"口径兼容）。
+        if has_env {
+            let env_map = self
+                .lights
+                .iter()
+                .find_map(|l| match l {
+                    Light::Environment { map } => Some(*map),
+                    _ => None,
+                })
+                .unwrap_or(crate::texture::NO_TEXTURE);
+            if env_map != crate::texture::NO_TEXTURE {
+                match &self.env_cdf {
+                    None => {
+                        return Err(
+                            "Light::Environment 存在但 Scene::env_cdf 为空：CDF 未构建。\
+                             用 Scene::add_environment(...)（一步到位）或 \
+                             Scene::rebuild_env_cdf()（手工装配场景后补建）"
+                                .to_string(),
+                        );
+                    }
+                    Some(c) => {
+                        if c.handle() != env_map {
+                            return Err(format!(
+                                "Scene::env_cdf 的句柄 {} 与 Light::Environment{{map: {env_map}}} \
+                                 不一致（CDF 与灯光指向了不同的贴图）；\
+                                 改灯后须重跑 Scene::rebuild_env_cdf()",
+                                c.handle()
+                            ));
+                        }
+                    }
+                }
+            }
         }
         // ---- 3：uv / tangent 与 positions 同长 ----
         for (i, (m, _)) in self.meshes.iter().enumerate() {
@@ -2106,6 +2163,61 @@ impl Scene {
         self.textures.len() as u32
     }
 
+    /// **A2 的唯一推荐入口**：注册 HDR 等距柱状环境图 + 装灯 + 建 CDF（一步到位）。
+    ///
+    /// 三步必须原子完成，否则会出现三种"看起来能跑"的错误配置：
+    /// 有灯无图（黑背景）、有图无灯（IBL 不生效）、灯图句柄错位（采到别的贴图）。
+    /// 本函数把三者绑成一次调用，并顺手调 [`Scene::validate_layout`] 自检。
+    ///
+    /// `pixels` 为行主序 `W×H` 的线性域 `[r,g,b,a]`（`v = 0` 在 +Y 北极）。
+    /// 返回环境图句柄（≥ 1）。
+    ///
+    /// # Panics
+    ///
+    /// `pixels.len() != w·h`（形状不符是编程错误，同 [`crate::texture::build_linear_f32`]）。
+    pub fn add_environment(&mut self, w: u32, h: u32, pixels: &[[f32; 4]]) -> u32 {
+        let handle = self.add_texture_linear(w, h, pixels);
+        self.lights.push(Light::Environment { map: handle });
+        // 构建失败只可能是"刚注册的贴图取不到"——那是内部一致性错误，
+        // 用 assert 早炸（validate_layout 也会兜住）。
+        self.rebuild_env_cdf()
+            .unwrap_or_else(|e| panic!("刚注册的环境图无法建 CDF：{e}"));
+        handle
+    }
+
+    /// 重建环境图 CDF（手工装配 `Scene::lights` / `textures` 之后补调）。
+    ///
+    /// * 没有 [`Light::Environment`] ⇒ 清空缓存并返回 `Ok(())`（幂等）；
+    /// * 有灯但句柄取不到贴图 ⇒ `Err`（不静默变黑）。
+    pub fn rebuild_env_cdf(&mut self) -> Result<(), String> {
+        let Some(handle) = self.lights.iter().find_map(|l| match l {
+            Light::Environment { map } => Some(*map),
+            _ => None,
+        }) else {
+            self.env_cdf = None;
+            return Ok(());
+        };
+        let table = TexTable::new(&self.textures, &self.texels);
+        match crate::env::EnvCdf::build(handle, table) {
+            Some(c) => {
+                self.env_cdf = Some(c);
+                Ok(())
+            }
+            None => Err(format!(
+                "Light::Environment 的句柄 {handle} 取不到可用的等距柱状贴图\
+                 （textures 有 {} 条、texels 有 {} 个纹素）",
+                self.textures.len(),
+                self.texels.len()
+            )),
+        }
+    }
+
+    /// 环境 CDF 视图（`None` = 场景没有环境灯）。
+    #[inline]
+    pub fn env(&self) -> Option<&crate::env::EnvCdf> {
+        self.env_cdf.as_ref()
+    }
+
     fn sphere_t(&self, i: usize, ro: Vec3, rd: Vec3, t_max: f32) -> Option<f32> {
         let s = &self.spheres[i].0;
         let oc = ro - s.center;
@@ -3090,6 +3202,103 @@ pub(crate) fn visibility(
 }
 
 // ---------------------------------------------------------------------------
+// A2 / W2：环境贴图的 NEE（CDF 策略）与逃逸权重
+// ---------------------------------------------------------------------------
+
+/// 环境灯的表面 NEE：按 CDF 采一个方向 → 阴影射线 → MIS 加权贡献。
+///
+/// # 与球光/矩形光 NEE 的同构关系
+///
+/// `sample_nee` 对 `Light::Environment` 返回 `None`（它拿不到 CDF），
+/// 故环境这一臂由本函数承担：**采样**换成 CDF 反演，**pdf** 换成
+/// `EnvCdf::pdf_w`，其余（BSDF 求值、备择 pdf、可见性、MIS 权重）逐项同构。
+///
+/// `w = nee_mis_weight(light, pdf_env, pdf_bsdf)` —— 与 [`Light::Sphere`]
+/// **同臂**（power heuristic）：环境是"BSDF 采样可达的几何"。
+///
+/// 返回**未钳制**的贡献（调用方按 `clamp_indirect` 口径处理）。
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn nee_env_surface(
+    scene: &Scene,
+    env: &crate::env::EnvCdf,
+    table: TexTable<'_>,
+    light: &Light,
+    p: Vec3,
+    nv: Vec3,
+    wo: Vec3,
+    mat: &MaterialKind,
+    bsdf: &Bsdf,
+    throughput: Vec3,
+    u1: f32,
+    u2: f32,
+    stream: &SampleStream<'_>,
+    aux_dim: u16,
+    aux_steps: &mut u32,
+) -> Vec3 {
+    let Some(s) = env.sample(u1, u2) else {
+        return Vec3::splat(0.0); // 全黑环境
+    };
+    let cos_l = nv.dot(&s.wi);
+    if cos_l <= 0.0 || !(s.pdf_w > 0.0) {
+        return Vec3::splat(0.0);
+    }
+    let f = surface_brdf(mat, bsdf, wo, s.wi, nv);
+    let f_cos = hadamard(f, Vec3::splat(cos_l));
+    let alt_pdf = surface_pdf(mat, bsdf, wo, s.wi, nv);
+    let radiance = env.radiance(table, s.wi);
+    if !(radiance.x > 0.0 || radiance.y > 0.0 || radiance.z > 0.0) {
+        return Vec3::splat(0.0);
+    }
+    let ro = p + nv * SURFACE_EPS;
+    let vis = visibility(scene, ro, s.wi, f32::INFINITY, None, stream, aux_dim, aux_steps);
+    if vis <= 0.0 {
+        return Vec3::splat(0.0);
+    }
+    let w = nee_mis_weight(light, s.pdf_w, alt_pdf);
+    hadamard(hadamard(throughput, f_cos), radiance) * (vis * w / s.pdf_w)
+}
+
+/// 环境灯的体积 NEE（相函数版）：介质内散射点的直接照明。
+///
+/// 语义与表面版同构，只把 `f·cosθ` 换成相函数 `ph`、备择 pdf 换成 `ph`。
+/// 不接这一臂会让"介质 + 环境"的 MIS 权重永远拿不到 NEE 那一半 ⇒ 系统性欠估。
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn nee_env_volume(
+    scene: &Scene,
+    env: &crate::env::EnvCdf,
+    table: TexTable<'_>,
+    light: &Light,
+    p: Vec3,
+    w_in: Vec3,
+    throughput: Vec3,
+    region: &MediumRegion,
+    u1: f32,
+    u2: f32,
+    stream: &SampleStream<'_>,
+    aux_dim: u16,
+    aux_steps: &mut u32,
+) -> Vec3 {
+    let Some(s) = env.sample(u1, u2) else {
+        return Vec3::splat(0.0);
+    };
+    if !(s.pdf_w > 0.0) {
+        return Vec3::splat(0.0);
+    }
+    let cos_l = w_in.dot(&s.wi);
+    let ph = region.medium.phase(cos_l);
+    let radiance = env.radiance(table, s.wi);
+    if !(radiance.x > 0.0 || radiance.y > 0.0 || radiance.z > 0.0) {
+        return Vec3::splat(0.0);
+    }
+    let vis = visibility(scene, p, s.wi, f32::INFINITY, None, stream, aux_dim, aux_steps);
+    if vis <= 0.0 {
+        return Vec3::splat(0.0);
+    }
+    let w = nee_mis_weight(light, s.pdf_w, ph);
+    hadamard(throughput, radiance) * (ph * vis * w / s.pdf_w)
+}
+
+// ---------------------------------------------------------------------------
 // 路径追踪主循环
 // ---------------------------------------------------------------------------
 
@@ -3164,6 +3373,21 @@ fn trace_one(
                 let (u_l1, u_l2) = stream.sample_2d(bounce_dim(ev, SLOT_LIGHT));
                 let w_in = -ray.dir; // 相函数轴向（散射前传播方向）
                 for light in &scene.lights {
+                    // ---- A2：环境贴图（CDF 策略）----
+                    // 与表面同构。少了这一臂，介质内的 MIS 权重只有 BSDF 那一半，
+                    // 会系统性欠估（不报错、只是偏暗）。
+                    if let Light::Environment { .. } = light {
+                        if let Some(env) = scene.env() {
+                            let tex_v = TexTable::new(&scene.textures, &scene.texels);
+                            let c = nee_env_volume(
+                                scene, env, tex_v, light, p, w_in, st.throughput, region,
+                                u_l1, u_l2, stream, aux_dim, &mut aux_steps,
+                            );
+                            st.radiance =
+                                st.radiance + clamp_indirect(c, ev, params.clamp_indirect);
+                        }
+                        continue;
+                    }
                     let skip = light_skip(scene, light);
                     let ls = match sample_nee(light, p, u_l1, u_l2) {
                         Some(ls) => ls,
@@ -3199,7 +3423,35 @@ fn trace_one(
         // ---- 表面事件（或逃逸）----
         let h = match hit {
             None => {
+                // ---- A2：环境**贴图**（BSDF 策略命中环境）----
+                //
+                // 逃逸射线看到的辐亮度由环境图给出，权重与 NEE 侧的 CDF 策略
+                // 配对（选型报告 §3.1 第 4 条）：
+                //   * `prev_specular`（相机段 / 镜面链）⇒ 权重 1，延续镜面语义
+                //     （镜面方向是 δ 分布，CDF 策略对它测度为零）；
+                //   * 否则 `w = 1 − power_heuristic(pdf_env, pdf_bsdf)`，
+                //     与 `nee_mis_weight` 的 `Environment` 臂**逐位互补**
+                //     （V1 的 `w_nee + w_bsdf ≡ 1` 由此结构性成立）。
+                if let Some(env) = scene.env() {
+                    let tex_bg = TexTable::new(&scene.textures, &scene.texels);
+                    let r = env.radiance(tex_bg, ray.dir);
+                    if r.x > 0.0 || r.y > 0.0 || r.z > 0.0 {
+                        let w = if params.nee_only && ev > 1 {
+                            0.0 // 能量对照：BSDF 策略整体关掉
+                        } else if st.prev_specular {
+                            1.0
+                        } else {
+                            let p_env = env.pdf_w(ray.dir);
+                            1.0 - crate::light::power_heuristic(p_env, st.prev_pdf_dir)
+                        };
+                        let c = hadamard(st.throughput, r) * w;
+                        st.radiance =
+                            st.radiance + clamp_indirect(c, ev, params.clamp_indirect);
+                    }
+                }
                 // 逃逸：环境光背景全额贡献（B2；无 Ambient 时为黑 → 保持 B1 语义）。
+                // `Light::Ambient` 与 `Light::Environment` 互斥（validate_layout 拦），
+                // 故这一段不会与上面的环境图双计。
                 let bg = ambient_background(&scene.lights);
                 if bg.x > 0.0 || bg.y > 0.0 || bg.z > 0.0 {
                     let c = hadamard(st.throughput, bg);
@@ -3273,6 +3525,18 @@ fn trace_one(
         {
             let (u_l1, u_l2) = stream.sample_2d(bounce_dim(ev, SLOT_LIGHT));
             for light in &scene.lights {
+                // ---- A2：环境贴图走 CDF 策略（`sample_nee` 拿不到 CDF）----
+                if let Light::Environment { .. } = light {
+                    if let Some(env) = scene.env() {
+                        let c = nee_env_surface(
+                            scene, env, tex, light, p, nv, wo, mat, &bsdf, st.throughput,
+                            u_l1, u_l2, stream, aux_dim, &mut aux_steps,
+                        );
+                        st.radiance =
+                            st.radiance + clamp_indirect(c, ev, params.clamp_indirect);
+                    }
+                    continue;
+                }
                 let skip = light_skip(scene, light);
                 let ls = match sample_nee(light, p, u_l1, u_l2) {
                     Some(ls) => ls,
@@ -3563,6 +3827,25 @@ fn trace_one_spectral(
         // 直接走表面事件——与退化一致性的简单场景口径一致，不引入回归。
         let h = match hit {
             None => {
+                // A2：环境贴图（光谱切片与 RGB 路径同权重口径；辐亮度经
+                // `flat_spectral_value` 降维——退化配置下与 RGB 单通道逐位一致）。
+                if let Some(env) = scene.env() {
+                    let tex_bg = TexTable::new(&scene.textures, &scene.texels);
+                    let r = flat_spectral_value(env.radiance(tex_bg, ray.dir));
+                    if r > 0.0 {
+                        let w = if params.nee_only && ev > 1 {
+                            0.0
+                        } else if st.prev_specular {
+                            1.0
+                        } else {
+                            let p_env = env.pdf_w(ray.dir);
+                            1.0 - crate::light::power_heuristic(p_env, st.prev_pdf_dir)
+                        };
+                        let c = st.throughput * r * w;
+                        st.radiance =
+                            st.radiance + clamp_indirect_scalar(c, ev, params.clamp_indirect);
+                    }
+                }
                 let bg = ambient_background(&scene.lights);
                 let bg_s = flat_spectral_value(bg);
                 if bg_s > 0.0 {
@@ -3611,6 +3894,22 @@ fn trace_one_spectral(
         {
             let (u_l1, u_l2) = stream.sample_2d(bounce_dim(ev, SLOT_LIGHT));
             for light in &scene.lights {
+                // A2：环境贴图走 CDF 策略（标量版，与 RGB 路径同构）。
+                if let Light::Environment { .. } = light {
+                    if let Some(env) = scene.env() {
+                        let tex_v = TexTable::new(&scene.textures, &scene.texels);
+                        let c = nee_env_surface(
+                            scene, env, tex_v, light, p, nv, wo, mat, &bsdf, Vec3::splat(1.0),
+                            u_l1, u_l2, stream, aux_dim, &mut aux_steps,
+                        );
+                        // 标量口径：RGB 贡献经 `flat_spectral_value` 降维后再乘吞吐
+                        // （`nee_env_surface` 传吞吐 1 是为了拿到未乘吞吐的辐亮度）。
+                        let c_s = flat_spectral_value(c) * st.throughput;
+                        st.radiance =
+                            st.radiance + clamp_indirect_scalar(c_s, ev, params.clamp_indirect);
+                    }
+                    continue;
+                }
                 let skip = light_skip(scene, light);
                 let ls = match sample_nee(light, p, u_l1, u_l2) {
                     Some(ls) => ls,
@@ -5671,15 +5970,20 @@ mod w1a_layout_tests {
         let err = s.validate_layout().expect_err("越界句柄必须被拒");
         assert!(err.contains("越界"), "实际：{err}");
         // 补一张纹理后，句柄 1（= textures[0]）合法；句柄 2 仍越界。
+        //
+        // W2 起"合法"还多一条：非 0 句柄必须带上已构建的 CDF（否则 IBL
+        // 静默失效）。`rebuild_env_cdf` 是该缓存的唯一维护入口。
         s.textures.push(crate::texture::TextureRef::new(
-            1024,
-            512,
+            8,
+            4,
             1,
             0,
             TEX_FMT_RGBA16F,
             SRGB_LINEAR,
         ));
+        s.texels = vec![[1.0, 1.0, 1.0, 1.0]; 8 * 4];
         s.lights[0] = Light::Environment { map: 1 };
+        s.rebuild_env_cdf().expect("8×4 常数环境图应可建 CDF");
         assert_eq!(s.validate_layout(), Ok(()));
         s.lights[0] = Light::Environment { map: 2 };
         assert!(s.validate_layout().is_err(), "句柄 2 超出 1 条纹理");

@@ -183,6 +183,42 @@ pub const OP_BRANCH_CONDITIONAL: u32 = 250;
 pub const OP_LABEL: u32 = 248;
 pub const OP_RETURN: u32 = 253;
 
+// ---------------------------------------------------------------------------
+// naga（工具链）产物的补充指令（A2 / W2 起 `spv_env_probe` 走这条口径）
+// ---------------------------------------------------------------------------
+//
+// 背景：自研发射器（`spirv_rt` / `spirv_bg`）只发上面那一小撮指令，白名单就是
+// 照着它校准的。`spv_env_probe` 是 **naga 30.0.1** 的产物，且它 `//!include`
+// 了 `rt_common.wgsl`（确定性三角件必须单源，不许复制粘贴）——naga 不内联
+// 函数，于是模块里出现"函数调用机制 + 各函数的算术"这一整片通用指令。
+//
+// 这些指令逐条都**只做无副作用的取值/算术**（没有内存模型放宽、没有原子、
+// 没有 barrier、没有 kill/unreachable），与白名单的初衷（拦"字节被改动"与
+// "未审指令"）不冲突。编号全部经 `spirv-dis`（官方工具链）在本仓产物上逐条
+// 复核，不是抄来的。
+pub const OP_EXTENSION: u32 = 10;
+pub const OP_TYPE_MATRIX: u32 = 24;
+pub const OP_CONSTANT_TRUE: u32 = 41;
+pub const OP_CONSTANT_FALSE: u32 = 42;
+pub const OP_CONSTANT_COMPOSITE: u32 = 44;
+pub const OP_CONSTANT_NULL: u32 = 46;
+pub const OP_FUNCTION_PARAMETER: u32 = 55;
+pub const OP_FUNCTION_CALL: u32 = 57;
+pub const OP_ARRAY_LENGTH: u32 = 68;
+pub const OP_COMPOSITE_CONSTRUCT: u32 = 80;
+pub const OP_CONVERT_F_TO_S: u32 = 110;
+pub const OP_U_DIV: u32 = 134;
+pub const OP_S_DIV: u32 = 135;
+pub const OP_U_MOD: u32 = 137;
+pub const OP_VECTOR_TIMES_SCALAR: u32 = 142;
+pub const OP_ALL: u32 = 155;
+pub const OP_I_EQUAL: u32 = 170;
+pub const OP_U_GREATER_THAN: u32 = 172;
+pub const OP_U_LESS_THAN_EQUAL: u32 = 178;
+pub const OP_F_ORD_EQUAL: u32 = 180;
+pub const OP_BITWISE_AND: u32 = 199;
+pub const OP_RETURN_VALUE: u32 = 254;
+
 /// OpCode 白名单（本模块产出的子集；出现表外 OpCode ⇒ 字节被改动）。
 const ALLOWED_OPCODES: &[u32] = &[
     OP_CAPABILITY,
@@ -243,6 +279,29 @@ const ALLOWED_OPCODES: &[u32] = &[
     OP_BRANCH,
     OP_BRANCH_CONDITIONAL,
     OP_RETURN,
+    // naga 产物（`spv_env_probe`）用到的通用指令，见上方注释块。
+    OP_EXTENSION,
+    OP_TYPE_MATRIX,
+    OP_CONSTANT_TRUE,
+    OP_CONSTANT_FALSE,
+    OP_CONSTANT_COMPOSITE,
+    OP_CONSTANT_NULL,
+    OP_FUNCTION_PARAMETER,
+    OP_FUNCTION_CALL,
+    OP_ARRAY_LENGTH,
+    OP_COMPOSITE_CONSTRUCT,
+    OP_CONVERT_F_TO_S,
+    OP_U_DIV,
+    OP_S_DIV,
+    OP_U_MOD,
+    OP_VECTOR_TIMES_SCALAR,
+    OP_ALL,
+    OP_I_EQUAL,
+    OP_U_GREATER_THAN,
+    OP_U_LESS_THAN_EQUAL,
+    OP_F_ORD_EQUAL,
+    OP_BITWISE_AND,
+    OP_RETURN_VALUE,
 ];
 
 /// OpCode 稳定短名（诊断/反汇编摘要用）。
@@ -616,7 +675,15 @@ static MUL2: &[u32] = &[
 ///
 /// 本表只放**静态字面字流**；由发射器生成的模块（[`super::spirv_bg`] 的
 /// 背景 kernel）走 [`generated_modules`]，两表由 [`module`] 统一寻址。
-pub static MODULES: &[(&str, &[u32])] = &[("spv_mul2_probe", MUL2)];
+pub static MODULES: &[(&str, &[u32])] = &[
+    ("spv_mul2_probe", MUL2),
+    // A2 / W2 环境采样探针（QA 用，与 `spv_mul2_probe` 同口径：只有验证路径会跑）。
+    // 产物字节数/sha 以 `shaders/spv/spv_manifest.txt` 为准（naga 30.0.1 生成，
+    // `spirv-val` 校验通过）；漂移由 `spv_freshness` + `env_probe_words_match_disk`
+    // 双保险盯住。wasm32 上无 Vulkan compute 路径，故不入表（省 wasm 体积）。
+    #[cfg(not(target_arch = "wasm32"))]
+    ("spv_env_probe", super::spirv_env_probe::ENV_PROBE),
+];
 
 /// 由自研发射器**在运行期生成一次**的模块表（`OnceLock` 缓存，全程序唯一）。
 ///
@@ -1065,6 +1132,9 @@ fn check_control_flow(words: &[u32]) -> Result<(), SpvError> {
                 terminated = true;
             }
             OP_RETURN => terminated = true,
+            // `OpReturnValue` 同样是块的终结指令（naga 把它用于有返回值的函数；
+            // 自研发射器的单入口 kernel 只发 `OpReturn`，故此前没覆盖到）。
+            OP_RETURN_VALUE => terminated = true,
             _ => {
                 // 终结指令之后不得再有普通指令（块已结束）。
                 if in_block && terminated {
@@ -1223,6 +1293,34 @@ fn check_block_order(words: &[u32]) -> Result<(), SpvError> {
 /// `OpAccessChain` 的索引链形状（见私有函数 `check_access_chains`）与
 /// 结构化控制流的块终结性（见私有函数 `check_control_flow`）。
 pub fn validate(words: &[u32], expect: &SpvExpect) -> Result<SpvSummary, SpvError> {
+    validate_inner(words, expect, true)
+}
+
+/// 同上，但**允许模块里有多个函数**（工具链产物口径：naga 不内联）。
+///
+/// # 为什么需要第二个入口
+///
+/// [`validate`] 里 `functions != 1` 是**自研发射器**的不变式：`spirv_rt` /
+/// `spirv_bg` 把所有逻辑内联进唯一入口，出现第二个 `OpFunction` 就说明发射器
+/// 坏了。`spv_env_probe` 是 **naga 30.0.1** 的产物（它不内联，模块里有 37 个
+/// 函数），拿同一条不变式去卡它只会得到假红。
+///
+/// 除"函数数"外，其余静态门禁（头/入口名/local_size/绑定集/索引链形状/
+/// 结构化控制流/支配者序/前向引用）**全部照旧执行**——工具链产物一样要过。
+/// 官方校验由 `tools/wgsl2spv --check` 里的 `spirv-val` 承担（生成期已跑）。
+pub fn validate_multi_function(
+    words: &[u32],
+    expect: &SpvExpect,
+) -> Result<SpvSummary, SpvError> {
+    validate_inner(words, expect, false)
+}
+
+/// [`validate`] 的实现体；`single_function` = 是否要求"恰好一个函数"。
+fn validate_inner(
+    words: &[u32],
+    expect: &SpvExpect,
+    single_function: bool,
+) -> Result<SpvSummary, SpvError> {
     if words.len() < 5 {
         return Err(SpvError::TooShort);
     }
@@ -1322,7 +1420,10 @@ pub fn validate(words: &[u32], expect: &SpvExpect) -> Result<SpvSummary, SpvErro
             got: bindings,
         });
     }
-    if functions != 1 {
+    if single_function && functions != 1 {
+        return Err(SpvError::BadFunctionSection { functions });
+    }
+    if functions == 0 {
         return Err(SpvError::BadFunctionSection { functions });
     }
     // 索引链形状：最后一道（也是最像驱动的一道）静态门禁。
@@ -1851,12 +1952,18 @@ mod tests {
     fn module_lookup_contract() {
         assert!(module("spv_mul2_probe").is_some());
         assert!(module("no_such_module").is_none());
-        assert_eq!(
-            module_names(),
-            vec!["spv_mul2_probe", "spv_background", "spv_scene"],
-            "静态模块 + 发射器模块，顺序固定"
-        );
-        // 手写字流只有一个；两个发射器产物（背景帧 / 光追场景）——两张表口径不混。
+        // 名字表随 cfg 变：`spv_env_probe` 只在**有 Vulkan compute 的目标**上入表
+        // （wasm32 无该路径，见 [`MODULES`] 的注释），故期望值分两支，不写死。
+        #[cfg(not(target_arch = "wasm32"))]
+        let want_names = vec!["spv_mul2_probe", "spv_env_probe", "spv_background", "spv_scene"];
+        #[cfg(target_arch = "wasm32")]
+        let want_names = vec!["spv_mul2_probe", "spv_background", "spv_scene"];
+        assert_eq!(module_names(), want_names, "静态模块 + 发射器模块，顺序固定");
+        // 静态表：手写 mul2（+ 入库的 env 探针，naga 产物）；两个发射器产物
+        // （背景帧 / 光追场景）在另一张表——两张表口径不混。
+        #[cfg(not(target_arch = "wasm32"))]
+        assert_eq!(MODULES.len(), 2);
+        #[cfg(target_arch = "wasm32")]
         assert_eq!(MODULES.len(), 1);
         assert_eq!(generated_modules().len(), 2);
         // 生成表指向 `OnceLock` 中的同一实例（指针稳定，FFI 传得出去）。
@@ -1867,5 +1974,43 @@ mod tests {
         let d = module("spv_scene").expect("场景模块已注册");
         assert_eq!(c.as_ptr(), d.as_ptr(), "同一模块须全程序唯一实例");
         assert_ne!(a.as_ptr(), c.as_ptr(), "两个模块不得共享同一字流");
+    }
+
+    /// **`.spv` ↦ Rust 字流**：入库产物与编译期字流必须逐字一致。
+    ///
+    /// `spv_freshness` 只盯 `WGSL ↦ .spv`；本测试补上另一半。缺任一半，
+    /// "GPU 上跑的就是当前 WGSL 的语义"这句话就不成立（会静默跑旧代码）。
+    ///
+    /// 只在有 Vulkan compute 的目标上编译：wasm32 无 `spirv_env_probe` 模块
+    /// （见 [`MODULES`]），而本测试的存在意义就是判那一份字流。
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn env_probe_words_match_disk() {
+        let bytes = include_bytes!("../../shaders/spv/rt_env_probe.spv");
+        assert_eq!(bytes.len() % 4, 0, "SPIR-V 必须是 4 字节对齐的字流");
+        let words: Vec<u32> = bytes
+            .chunks_exact(4)
+            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        assert_eq!(
+            words.len(),
+            crate::vulkan::spirv_env_probe::ENV_PROBE.len(),
+            ".spv 字数与 Rust 字流长度不一致（重新生成：见 tools/wgsl2spv）"
+        );
+        for (i, (a, b)) in words
+            .iter()
+            .zip(crate::vulkan::spirv_env_probe::ENV_PROBE.iter())
+            .enumerate()
+        {
+            assert_eq!(
+                a, b,
+                "第 {i} 个字不一致：.spv=0x{a:08x} vs Rust=0x{b:08x}                 （重新生成：cargo run --manifest-path tools/wgsl2spv/Cargo.toml -- --all）"
+            );
+        }
+        println!(
+            "env_probe：.spv {} B = {} 字，与 Rust 字流逐字一致",
+            bytes.len(),
+            words.len()
+        );
     }
 }

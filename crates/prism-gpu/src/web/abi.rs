@@ -2558,6 +2558,20 @@ static COVERAGE: &[(&str, &[(&str, &str, &str)])] = &[
     ),
     ("rt_shade.wgsl", &[]),
     ("rt_common.wgsl", &[]),
+    // A2 / W2：环境采样探针。浏览器宿主不跑它（宿主只按 `KernelDesc` 的连续
+    // 前缀建 bind group，本探针是 **Vulkan compute** 路径上的 QA 件，真机
+    // dispatch 在 `crates/prism-rt/tests/qa_w2_env_gpu_parity.rs`，lavapipe 上
+    // 两跑逐位一致 + 与 CPU `env.rs` 逐值对拍）。此处如实登记为 SKIP + 原因，
+    // 不标 COVERED（否则就是"WebGPU 上跑过"的假账）。
+    (
+        "rt_env_probe.wgsl",
+        &[(
+            "env_probe",
+            ST_SKIP,
+            "仅 Vulkan compute 腿（prism-rt 的 `qa_w2_env_gpu_parity`，lavapipe 实测）；\
+             浏览器宿主无 blob ABI 组，未在此 dispatch",
+        )],
+    ),
     ("sim_common.wgsl", &[]),
     ("text.wgsl", &[]),
     (

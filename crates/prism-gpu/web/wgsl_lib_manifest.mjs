@@ -96,6 +96,12 @@ export const LIB_MANIFEST = Object.freeze([
     note: "BSDF/NEE/采样流；自带 @group(1) @binding(0..1)（sobol_dir/scene_buf），并经 //!include rt_scene 带入 @group(2) @binding(0..4)。",
   }),
   Object.freeze({
+    file: "rt_env.wgsl",
+    entry: "lib_compile_main",
+    groups: Object.freeze([0]),
+    note: "A2 / W2 环境贴图采样（等距柱状 + u32 定点 CDF + 同源 pdf）；自带 @group(0) @binding(0) 的 blob（只读 storage），合成输出另占 group 0 binding 1，故仍在 group 0 的连续前缀内。",
+  }),
+  Object.freeze({
     file: "hair_scatter.wgsl",
     entry: "lib_compile_main",
     groups: Object.freeze([0]),

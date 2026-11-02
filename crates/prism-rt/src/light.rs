@@ -139,7 +139,8 @@ pub fn power_heuristic(a: f32, b: f32) -> f32 {
 
 /// NEE 样本的 MIS 权重（按灯光种类的契约见模块文档）：
 /// 球光（几何发光体）= power heuristic(pdf_light, pdf_bsdf)；
-/// 方向光 / 矩形光 / 环境光（非几何，BSDF 路径不可命中）= 恒 1。
+/// 环境**贴图**（`Environment`，BSDF 逃逸射线可命中）= 与球光同臂；
+/// 方向光 / 矩形光 / 常数环境光 `Ambient`（非几何，BSDF 路径不可命中）= 恒 1。
 #[inline]
 pub fn nee_mis_weight(light: &Light, pdf_light: f32, pdf_bsdf: f32) -> f32 {
     match light {
@@ -147,10 +148,12 @@ pub fn nee_mis_weight(light: &Light, pdf_light: f32, pdf_bsdf: f32) -> f32 {
         // 环境**贴图**与球光同臂（选型报告 §3.1 第 4 条）：它是"BSDF 采样
         // 可达的几何"（逃逸射线命中它），故两策略要配对。
         //
-        // **本段该臂不可达**：`sample_nee` 对 `Environment` 恒返回 None，
-        // 没有任何调用方会拿着 Environment 的样本走到这里。定桩先把臂写对，
-        // 免得 W2 接线时忘掉——忘掉的表现是背景偏亮 ~2×（权重 1 而非 0.5），
-        // 且只在"同一方向既能被 BSDF 采到又能被 CDF 采到"时才显形。
+        // W2 起该臂**已可达**：`integrator::nee_env_surface` / `nee_env_volume`
+        // 拿着 Environment 的 CDF 样本走到这里，与逃逸分支的
+        // `1 − power_heuristic(pdf_env, pdf_bsdf)` 逐位互补。臂本身是 W0 定的
+        // 桩，W2 未改一个字节——接线的风险正在注释里写的那条：忘掉本臂的表现
+        // 是背景偏亮 ~2×（权重 1 而非 0.5），且只在"同一方向既能被 BSDF 采到
+        // 又能被 CDF 采到"时才显形（V1 白炉的 MIS 互补断言就是拦这个的）。
         Light::Environment { .. } => power_heuristic(pdf_light, pdf_bsdf),
         // 非几何灯：BSDF 采样路径取不到该灯的贡献，NEE 全额、无配对。
         _ => 1.0,

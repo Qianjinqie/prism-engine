@@ -48,11 +48,21 @@ struct Target {
 }
 
 /// 批量清单。新增 shader 只需在这里加一行（**代码内清单**，不引入 TOML 解析依赖）。
-const TARGETS: &[Target] = &[Target {
-    wgsl: "crates/prism-gpu/shaders/scene_frame_v3.wgsl",
-    entry: "scene_main",
-    spv: "crates/prism-gpu/shaders/spv/scene_frame_v3.spv",
-}];
+const TARGETS: &[Target] = &[
+    Target {
+        wgsl: "crates/prism-gpu/shaders/scene_frame_v3.wgsl",
+        entry: "scene_main",
+        spv: "crates/prism-gpu/shaders/spv/scene_frame_v3.spv",
+    },
+    // A2 / W2：环境采样语义探针。源文件用 `//!include rt_env.wgsl` 复用
+    // **唯一一份** env 实现（不复制粘贴），故本工具需按 `//!include` 展开
+    // （见 `expand_includes`）。
+    Target {
+        wgsl: "crates/prism-gpu/shaders/rt_env_probe.wgsl",
+        entry: "env_probe",
+        spv: "crates/prism-gpu/shaders/spv/rt_env_probe.spv",
+    },
+];
 
 /// 清单文件（相对仓库根）。
 const MANIFEST: &str = "crates/prism-gpu/shaders/spv/spv_manifest.txt";
@@ -73,6 +83,34 @@ fn repo_root() -> PathBuf {
 // ---------------------------------------------------------------------------
 // 编译核心
 // ---------------------------------------------------------------------------
+
+/// 递归展开 `//!include <name>.wgsl`（相对 `crates/prism-gpu/shaders/`）。
+///
+/// 与 `crates/prism-gpu/src/shaders.rs` 的展开器**同一指令**（`//!include`），
+/// 保证"浏览器宿主看到的源"与"naga 编译的源"是同一份组合。深度上限 8，
+/// 缺文件即报错（不静默跳过——跳过会让 SPIR-V 少一段实现却仍然编译通过）。
+fn expand_includes(src: &str, dir: &Path, depth: u32) -> Result<String, String> {
+    if depth == 0 {
+        return Err("//!include 嵌套超过 8 层（疑似循环包含）".to_string());
+    }
+    let mut out = String::with_capacity(src.len());
+    for line in src.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("//!include ") {
+            let name = rest.trim();
+            let path = dir.join(name);
+            let text = fs::read_to_string(&path)
+                .map_err(|e| format!("//!include {} 读取失败：{e}", path.display()))?;
+            out.push_str(&format!("// ---- include {name} ----\n"));
+            out.push_str(&expand_includes(&text, dir, depth - 1)?);
+            out.push('\n');
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    Ok(out)
+}
 
 /// WGSL 源 → SPIR-V 字流（parse → validate → SPIR-V backend）。
 ///
@@ -335,8 +373,9 @@ fn parse_manifest(text: &str) -> Result<Vec<ManifestRow>, String> {
 
 /// `--in/--entry/--out`：单文件。
 fn run_single(input: &Path, entry: &str, output: &Path) -> Result<(), String> {
-    let src = fs::read_to_string(input)
+    let raw = fs::read_to_string(input)
         .map_err(|e| format!("读不到 {}：{e}", input.display()))?;
+    let src = expand_includes(&raw, input.parent().unwrap_or(Path::new(".")), 8)?;
     let words = compile(&src, entry)?;
     let bytes = words_to_bytes(&words);
     let val = spirv_val(&bytes, &input.display().to_string())?;
@@ -371,8 +410,9 @@ fn run_all(root: &Path) -> Result<(), String> {
     let mut built: Vec<(&'static Target, Vec<u8>, usize)> = Vec::new();
     for t in TARGETS {
         let src_path = root.join(t.wgsl);
-        let src = fs::read_to_string(&src_path)
+        let raw = fs::read_to_string(&src_path)
             .map_err(|e| format!("读不到 {}：{e}", src_path.display()))?;
+        let src = expand_includes(&raw, src_path.parent().unwrap_or(Path::new(".")), 8)?;
         let words = compile(&src, t.entry)?;
         let bytes = words_to_bytes(&words);
         match spirv_val(&bytes, t.spv)? {
@@ -420,8 +460,9 @@ fn run_check(root: &Path) -> Result<(), String> {
 
     for t in TARGETS {
         let src_path = root.join(t.wgsl);
-        let src = fs::read_to_string(&src_path)
+        let raw = fs::read_to_string(&src_path)
             .map_err(|e| format!("读不到 {}：{e}", src_path.display()))?;
+        let src = expand_includes(&raw, src_path.parent().unwrap_or(Path::new(".")), 8)?;
         let fresh = words_to_bytes(&compile(&src, t.entry)?);
         let disk = match fs::read(root.join(t.spv)) {
             Ok(b) => b,

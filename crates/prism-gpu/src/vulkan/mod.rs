@@ -80,6 +80,9 @@ pub mod loader;
 
 /// 手写 / 嵌入的 SPIR-V 模块表与结构校验。
 pub mod spirv;
+/// A2 / W2：`rt_env_probe.spv` 的编译期字流（生成物，见文件头）。
+#[cfg(not(target_arch = "wasm32"))]
+pub mod spirv_env_probe;
 
 /// 背景渲染 kernel 的 **SPIR-V 生成**（自研发射器：同式、禁收缩、无 libm）。
 ///

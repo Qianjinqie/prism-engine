@@ -37,11 +37,12 @@ use crate::accum::mean_samples;
 use crate::bsdf::{hadamard, SampleCtx};
 use crate::camera::{Camera, Ray};
 use crate::integrator::{
-    light_skip, material_bsdf, surface_brdf, surface_pdf, visibility, MaterialKind, RenderParams,
-    Scene, FRAC_1_PI_F32, T_MIN_SENTINEL,
+    light_skip, material_bsdf, nee_env_surface, nee_env_volume, surface_brdf, surface_pdf,
+    visibility, MaterialKind, RenderParams, Scene, FRAC_1_PI_F32, T_MIN_SENTINEL,
 };
 use crate::light::{ambient_background, nee_mis_weight, sample_nee, Light};
 use crate::sampler::{onb, SampleStream};
+use crate::texsample::TexTable;
 
 // ---------------------------------------------------------------------------
 // 维度预算（与 integrator 逐槽对齐）
@@ -233,6 +234,20 @@ fn advance_one(
             let (u_l1, u_l2) = stream.sample_2d(bounce_dim(ev, SLOT_LIGHT));
             let w_in = -st.ray.dir;
             for light in &scene.lights {
+                // A2：环境贴图（CDF 策略；与 integrator 共用同一份实现，
+                // 逐位 parity 靠这一点结构性成立）。
+                if let Light::Environment { .. } = light {
+                    if let Some(env) = scene.env() {
+                        let tex_v = TexTable::new(&scene.textures, &scene.texels);
+                        let c = nee_env_volume(
+                            scene, env, tex_v, light, p, w_in, st.throughput, region,
+                            u_l1, u_l2, stream, aux_dim, &mut st.aux_steps,
+                        );
+                        st.radiance =
+                            st.radiance + clamp_indirect(c, ev, params.clamp_indirect);
+                    }
+                    continue;
+                }
                 let skip = light_skip(scene, light);
                 let ls = match sample_nee(light, p, u_l1, u_l2) {
                     Some(ls) => ls,
@@ -278,6 +293,23 @@ fn advance_one(
     // ---- 表面事件（或逃逸）----
     let h = match hit {
         None => {
+            // A2：环境贴图（BSDF 策略命中）——与 NEE 侧逐位互补的 MIS 权重。
+            if let Some(env) = scene.env() {
+                let tex_bg = TexTable::new(&scene.textures, &scene.texels);
+                let r = env.radiance(tex_bg, st.ray.dir);
+                if r.x > 0.0 || r.y > 0.0 || r.z > 0.0 {
+                    let w = if params.nee_only && ev > 1 {
+                        0.0
+                    } else if st.prev_specular {
+                        1.0
+                    } else {
+                        let p_env = env.pdf_w(st.ray.dir);
+                        1.0 - crate::light::power_heuristic(p_env, st.prev_pdf_dir)
+                    };
+                    let c = hadamard(st.throughput, r) * w;
+                    st.radiance = st.radiance + clamp_indirect(c, ev, params.clamp_indirect);
+                }
+            }
             let bg = ambient_background(&scene.lights);
             if bg.x > 0.0 || bg.y > 0.0 || bg.z > 0.0 {
                 let c = hadamard(st.throughput, bg);
@@ -323,6 +355,18 @@ fn advance_one(
     {
         let (u_l1, u_l2) = stream.sample_2d(bounce_dim(ev, SLOT_LIGHT));
         for light in &scene.lights {
+            // A2：环境贴图走 CDF 策略（与 integrator 同一份实现）。
+            if let Light::Environment { .. } = light {
+                if let Some(env) = scene.env() {
+                    let tex_t = TexTable::new(&scene.textures, &scene.texels);
+                    let c = nee_env_surface(
+                        scene, env, tex_t, light, p, nv, wo, mat, &bsdf, st.throughput,
+                        u_l1, u_l2, stream, aux_dim, &mut st.aux_steps,
+                    );
+                    st.radiance = st.radiance + clamp_indirect(c, ev, params.clamp_indirect);
+                }
+                continue;
+            }
             let skip = light_skip(scene, light);
             let ls = match sample_nee(light, p, u_l1, u_l2) {
                 Some(ls) => ls,
@@ -1653,13 +1697,21 @@ mod v2g_parity_tests {
             assert_eq!(shape.groups(), slot.groups([1920, 1080, 1]));
             assert_eq!(shape.useful_invocations(), 1920 * 1080);
         }
-        // 唯一的 Embedded 插槽是 SPIR-V 探针；RT 插槽如实标 PendingToolchain。
+        // Embedded 插槽有两个：SPIR-V 装配探针（手写字节码）与 A2 / W2 的环境
+        // 采样探针（naga 产物，`spv_env_probe`，真机 dispatch 在
+        // `tests/qa_w2_env_gpu_parity.rs`）；RT 插槽如实标 PendingToolchain。
         let dispatchable: Vec<&str> = slots
             .iter()
             .filter(|s| s.is_dispatchable())
             .map(|s| s.name)
             .collect();
-        assert_eq!(dispatchable, vec![prism_gpu::compute::KERNEL_SPV_MUL2_PROBE]);
+        assert_eq!(
+            dispatchable,
+            vec![
+                prism_gpu::compute::KERNEL_SPV_MUL2_PROBE,
+                prism_gpu::compute::KERNEL_ENV_PROBE,
+            ]
+        );
         let prg = gpu_kernel_slot(prism_gpu::compute::KERNEL_PRIMARY_RAY_GEN)
             .expect("主射线插槽存在");
         assert!(!prg.is_dispatchable(), "无 glslang ⇒ 主射线 SPIR-V 待生成（如实）");

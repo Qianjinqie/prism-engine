@@ -56,6 +56,8 @@ pub const KERNEL_WAVEFRONT_INTERSECT: &str = "rt_wavefront_intersect";
 /// kernel 名：SPIR-V 装配探针（`out[i] = in[i] * 2`，手写字节码，见
 /// [`crate::vulkan::spirv`]）。
 pub const KERNEL_SPV_MUL2_PROBE: &str = "spv_mul2_probe";
+/// kernel 名：A2 / W2 环境采样探针（`rt_env_probe.wgsl`，naga 生成的 `.spv`）。
+pub const KERNEL_ENV_PROBE: &str = "env_probe";
 
 /// 入口函数名（三个 kernel 各自的 `OpEntryPoint` / WGSL `fn` / MSL kernel）。
 pub const ENTRY_PRIMARY_RAY_GEN: &str = "primary_ray_gen";
@@ -63,6 +65,8 @@ pub const ENTRY_PRIMARY_RAY_GEN: &str = "primary_ray_gen";
 pub const ENTRY_WAVEFRONT_INTERSECT: &str = "wavefront_intersect";
 /// SPIR-V 探针入口名。
 pub const ENTRY_SPV_MUL2: &str = "mul2";
+/// 环境采样探针入口名。
+pub const ENTRY_ENV_PROBE: &str = "env_probe";
 
 // ---------------------------------------------------------------------------
 // kernel 1：RT 主射线发射（相机 → 逐像素射线）
@@ -286,7 +290,14 @@ pub fn wavefront_intersect_dispatch(ray_count: u32) -> DispatchShape {
 /// [`crate::vulkan::spirv`]）。这一区分由 [`kernel_spv_status`] 如实暴露，
 /// **不假装** RT kernel 已有二进制。
 pub fn kernel_registry() -> Vec<KernelDesc> {
-    vec![
+    // 工具链产物（naga 不内联 ⇒ 多函数）的探针只在有 Vulkan compute 的目标上入表：
+    // 它的 `.spv` 在 wasm32 下不存在（见 `vulkan::spirv::MODULES`），登记了就是
+    // "有描述无二进制"。用 `extend` 而不是 cfg 掉 `push`，避免 wasm 上的 unused_mut。
+    #[cfg(not(target_arch = "wasm32"))]
+    let extra = vec![env_probe_kernel(ENV_PROBE_MIN_BLOB_WORDS, 1)];
+    #[cfg(target_arch = "wasm32")]
+    let extra: Vec<KernelDesc> = Vec::new();
+    let mut out = vec![
         KernelDesc::new(
             KERNEL_PRIMARY_RAY_GEN,
             ENTRY_PRIMARY_RAY_GEN,
@@ -318,8 +329,38 @@ pub fn kernel_registry() -> Vec<KernelDesc> {
             "rt_wavefront_intersect.wgsl",
         ),
         spirv_probe_kernel(),
-    ]
+    ];
+    out.extend(extra);
+    out
 }
+
+/// 环境采样探针的 blob 最小字数（= 24 字头部；真跑由调用方按环境图尺寸重算）。
+pub const ENV_PROBE_MIN_BLOB_WORDS: u32 = 24;
+
+/// A2 / W2 环境采样探针 kernel：`out = env_probe(blob)`（每线程一个查询）。
+///
+/// 两个缓冲的容量随环境图尺寸变，故做成函数而不是常量描述；注册表里放
+/// `(ENV_PROBE_MIN_BLOB_WORDS, 1)` 的**最小形状**，只为让三目标校验
+/// （`shaders::check_targets` 的 SPIR-V 分支）有 KernelDesc 可对账，
+/// 真跑由 `qa_w2_env_gpu_parity.rs` 传入实际字数。
+pub fn env_probe_kernel(blob_words: u32, queries: u32) -> KernelDesc {
+    KernelDesc::new(
+        KERNEL_ENV_PROBE,
+        ENTRY_ENV_PROBE,
+        WorkgroupSize::new(64, 1, 1),
+        vec![
+            // b0: CDF blob（头部 + 表 + texels，f32 承载 u32 位模式）
+            BufferSpec::new(0, ElementType::F32, blob_words, BindingAccess::ReadOnly),
+            // b1: 每查询 12 个 f32 的读数
+            BufferSpec::new(1, ElementType::F32, queries * ENV_PROBE_STRIDE, BindingAccess::WriteOnly),
+        ],
+        "spv_env_probe",
+        "rt_env_probe.wgsl",
+    )
+}
+
+/// 探针每查询写出的 f32 个数（与 `rt_env_probe.wgsl` 的 `idx * 12u` 同源）。
+pub const ENV_PROBE_STRIDE: u32 = 12;
 
 /// 按名取 kernel 描述。
 pub fn kernel_by_name(name: &str) -> Option<KernelDesc> {

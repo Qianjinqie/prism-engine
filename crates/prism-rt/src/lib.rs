@@ -41,6 +41,8 @@ pub mod bsdf;
 pub mod caustics;
 pub mod camera;
 pub mod depth;
+/// HDR 环境光照 / IBL（A2 / W2）：等距柱状立体角 2D CDF + 亮斑列表 + MIS。
+pub mod env;
 pub mod gi;
 /// glTF 场景（保实例）→ [`integrator::Scene`] 的桥（W3 / A3）。
 pub mod gltf_import;
