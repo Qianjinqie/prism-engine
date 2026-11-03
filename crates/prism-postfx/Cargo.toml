@@ -9,9 +9,14 @@ prism-io = { path = "../prism-io" }
 prism-render = { path = "../prism-render" }
 prism-noise = { path = "../prism-noise" }
 prism-raster = { path = "../prism-raster" }
+# A5 逐像素自适应采样（`src/adaptive.rs`）：需要 rt 的逐样本入口
+# `integrator::trace_sample` 与固定形状归约 `accum::mean_samples`。
+# 依赖方向合法：`prism-render` 已**正常**依赖 `prism-rt`，本 crate 依赖 render
+# ⇒ rt 本就在传递闭包里；这里只是把它提成直连（无环，rt 不反向依赖 postfx）。
+prism-rt = { path = "../prism-rt" }
+prism-core = { path = "../prism-core" }
 
 [dev-dependencies]
-prism-core = { path = "../prism-core" }
 prism-aesthetic = { path = "../prism-aesthetic" }
 prism-texture = { path = "../prism-texture" }
 prism-rt = { path = "../prism-rt" }

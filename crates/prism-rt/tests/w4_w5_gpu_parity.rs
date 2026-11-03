@@ -283,3 +283,75 @@ fn w4_subdivided_displaced_bake_matches_on_three_backends() {
         );
     }
 }
+
+/// **W4 补完：Catmull-Clark 四边笼 → `CurveReq::TriSoup` → 三后端逐位一致。**
+///
+/// 与 Loop 那条（`w4_subdivided_displaced_bake_matches_on_three_backends`）同一条
+/// 通路：CC 的产物是三角形流，进 `TRIANGLE_SLOTS`，**没有新绑定、没有新遍历代码、
+/// 没有着色器改动**。两条通路各测一次，才能说"按输入拓扑分派"的两支都成立。
+#[test]
+fn w4_cc_bake_matches_on_three_backends() {
+    // 单位立方体四边笼 → CC k=3 → 位移（幅值 0.12）→ 三角形 soup。
+    let pos = vec![
+        Vec3::new(-1.0, -1.0, -1.0),
+        Vec3::new(1.0, -1.0, -1.0),
+        Vec3::new(1.0, 1.0, -1.0),
+        Vec3::new(-1.0, 1.0, -1.0),
+        Vec3::new(-1.0, -1.0, 1.0),
+        Vec3::new(1.0, -1.0, 1.0),
+        Vec3::new(1.0, 1.0, 1.0),
+        Vec3::new(-1.0, 1.0, 1.0),
+    ];
+    let quads = vec![
+        0, 3, 2, 1, 4, 5, 6, 7, 0, 1, 5, 4, 2, 3, 7, 6, 1, 2, 6, 5, 0, 4, 7, 3,
+    ];
+    let uv: Vec<[f32; 2]> = pos
+        .iter()
+        .map(|v| [0.5 + 0.5 * v.z.atan2(v.x) / std::f32::consts::PI, 0.5 + 0.5 * v.y])
+        .collect();
+    let mut scene = Scene::default();
+    let handle = make_texture(&mut scene);
+    let table = TexTable { refs: &scene.textures, texels: &scene.texels };
+    let sub = prism_geometry::subdiv::catmull_clark(&pos, &quads, &uv, 3);
+    let amp = DisplaceParams::new(0.12);
+    let disp = displace_positions(&sub.positions, &sub.normals, &sub.uv, table, handle, amp);
+    let tris = bake_triangles(&disp, &sub.indices);
+    assert_eq!(tris.len(), sub.tri_count());
+    assert_eq!(tris.len(), 6 * 4usize.pow(3) * 2, "CC k=3 应为 4^k×6×2 三角");
+
+    let mut req = base_request(32, 24);
+    req.spheres.clear();
+    req.curves = vec![CurveReq::TriSoup { triangles: tris.clone() }];
+
+    let mut cpu = CpuRefBackend;
+    let cpu_fb = cpu.render_scene(&req);
+    assert!(cpu_fb.is_valid());
+    let lit = (0..(32 * 24))
+        .filter(|i| !is_background(cpu_fb.get_pixel(i % 32, i / 32).unwrap()))
+        .count();
+    assert!(lit >= 40, "CC 烘焙帧应覆盖画面，实测 {lit} 个非背景像素");
+    println!("W4（CC）烘焙帧：{} 三角，{lit} / {} 个非背景像素", tris.len(), 32 * 24);
+
+    let Some(mut backend) = gpu_backend() else {
+        return;
+    };
+    let software = is_software_icd(backend.device_name().unwrap_or(""));
+    let gpu_fb = backend.render_scene(&req);
+    assert!(gpu_fb.is_valid(), "GPU 必须产出有效帧");
+    let p = parity(&cpu_fb, &gpu_fb);
+    println!(
+        "[w4-cc] pixels={} max_channel_delta={} differing_pixels={} software_icd={} first_diff={:?}",
+        p.total_pixels, p.max_channel_delta, p.differing_pixels, software, p.first
+    );
+    if software {
+        assert_eq!(p.max_channel_delta, 0, "软件 ICD 上必须逐字节一致（首个差异 {:?}）", p.first);
+        assert_eq!(p.differing_pixels, 0, "软件 ICD 上必须逐字节一致（首个差异 {:?}）", p.first);
+    } else {
+        assert!(
+            p.max_channel_delta <= 1 && p.differing_pixels * 200 <= p.total_pixels,
+            "真机档位不达标：max={} diff={}",
+            p.max_channel_delta,
+            p.differing_pixels
+        );
+    }
+}

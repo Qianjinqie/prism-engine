@@ -32,6 +32,13 @@
 //!   plasma/Mandelbrot_bg）的空间图案锚在窗口局部坐标——见 `effects::mod`
 //!   的"位置键控与 tile 协议"说明与缺口记录。
 
+/// A5 逐像素自适应采样（选型报告 §6 定稿 C1）。
+///
+/// 放在本 crate 而不是 `prism-rt`：它要两个东西——`prism-rt` 的逐样本入口
+/// （`integrator::trace_sample`）与 `allocate_spp`（`denoise.rs` 的归一化层）。
+/// 依赖方向是 `postfx → render → rt`，故 A5 只能在 **postfx 及以上**落地；
+/// 放进 rt 会形成 `rt → postfx → render → rt` 的环（Cargo 直接拒绝）。
+pub mod adaptive;
 pub mod denoise;
 pub mod effects;
 pub mod registry;

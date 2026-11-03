@@ -3812,10 +3812,27 @@ pub fn render_pixel(
 ) -> [f32; 4] {
     let mut samples = Vec::with_capacity(params.spp as usize);
     for s in 0..params.spp {
-        let stream = SampleStream::new(ctx, pixel, s);
-        samples.push(trace_one(scene, cam, ctx, resolution, &stream, params));
+        samples.push(trace_sample(scene, cam, ctx, resolution, pixel, s, params));
     }
     mean_samples(&samples)
+}
+
+/// 单样本求值（`render_pixel` 的**逐样本形式**，两条通路共用同一个入口）。
+///
+/// A5 自适应采样按这个入口取样本：`s` 连续地从 `0` 走到 `n_p − 1` ⇒ 与
+/// `render_pixel(p, spp = n_p)` 喂给归约的是**同一串**值（逐位相同）。
+#[inline]
+pub fn trace_sample(
+    scene: &Scene,
+    cam: &Camera,
+    ctx: &EvalCtx,
+    resolution: (u32, u32),
+    pixel: (u32, u32),
+    s: u32,
+    params: &RenderParams,
+) -> [f32; 4] {
+    let stream = SampleStream::new(ctx, pixel, s);
+    trace_one(scene, cam, ctx, resolution, &stream, params)
 }
 
 /// 自由函数形式的相机射线投射（任务接口字面形式；实现委托 [`Camera::cast_ray`]）。
