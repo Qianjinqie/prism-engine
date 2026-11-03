@@ -578,3 +578,108 @@ fn attach_type_is_reachable_from_crate_root() {
     assert!(a.is_empty());
 }
 
+
+// ---------------------------------------------------------------------------
+// P4 —— T1 / G-9 折痕标记从 DSL 一路走到像素
+// ---------------------------------------------------------------------------
+
+/// 立方体网格（8 顶点 12 三角，带顶点域 uv），供 P4 用。
+///
+/// 为什么用**立方体**而不是平面：位移沿法线推、平面被推后画面只改深度，
+/// 折痕在平面上也无处可折（光滑与锐利的极限都是同一张平面）。立方体的棱是
+/// 真折痕：`w = 1` 时棱保持锐利、`w = 0` 时被抹圆，轮廓与明暗都会变。
+fn cube_mesh(slot: Option<DisplacementSlot>) -> MeshDesc {
+    let h: f32 = 0.85;
+    let mut pos: Vec<Vec3> = Vec::with_capacity(8);
+    for &z in &[-h, h] {
+        for &y in &[-h, h] {
+            for &x in &[-h, h] {
+                pos.push(Vec3::new(x, y, z));
+            }
+        }
+    }
+    let idx: Vec<u32> = vec![
+        0, 1, 3, 0, 3, 2, // z = −h
+        4, 6, 7, 4, 7, 5, // z = +h
+        0, 4, 5, 0, 5, 1, // y = −h
+        2, 3, 7, 2, 7, 6, // y = +h
+        1, 5, 7, 1, 7, 3, // x = +h
+        0, 2, 6, 0, 6, 4, // x = −h
+    ];
+    let mut uv: Vec<[f32; 2]> = Vec::with_capacity(8);
+    for &z in &[0.0f32, 1.0] {
+        for &y in &[0.0f32, 1.0] {
+            for &x in &[0.0f32, 1.0] {
+                uv.push([x, 0.5 * y + 0.5 * z]);
+            }
+        }
+    }
+    let mut m: MeshDesc = MeshDesc::with_uv(pos, idx, uv);
+    m.displacement = slot;
+    m
+}
+
+/// 立方体的全部唯一边（`(min, max)` 升序）。
+fn cube_edges() -> Vec<(u32, u32)> {
+    let idx: Vec<u32> = (0..12u32).collect();
+    let _ = idx;
+    let m: MeshDesc = cube_mesh(None);
+    let mut e: Vec<(u32, u32)> = Vec::new();
+    for c in m.indices.chunks_exact(3) {
+        for k in 0..3 {
+            let (a, b) = (c[k], c[(k + 1) % 3]);
+            e.push((a.min(b), a.max(b)));
+        }
+    }
+    e.sort_unstable();
+    e.dedup();
+    e
+}
+
+/// **P4（T1 / G-9）：`MeshDesc::crease` 从产品路径一路影响到了像素。**
+///
+/// 判据：同一份网格、同一个位移槽，只有折痕标记不同 ⇒ 帧**必须不同**
+/// （且差异像素数 ≥ 1% 的画面，防止"只差几个像素"的偶然通过）。
+///
+/// 这条同时锁住三段：core 的 `MeshDesc.crease` → 请求的 `MeshReq.crease` →
+/// `translate_scene` 里建 `SubdivMarks` 并传给 `tessellate_displace`。
+/// 任何一段漏接，两帧就会**逐字节相同**。
+#[test]
+fn p4_crease_marks_reach_pixels() {
+    let slot: DisplacementSlot = DisplacementSlot::new(1, 0.12, 1.0, 2);
+
+    let mut smooth_scene: prism_core::Scene = base_scene();
+    smooth_scene.attach.textures.push(height_map());
+    smooth_scene.attach.meshes.push(cube_mesh(Some(slot)));
+
+    let mut sharp_scene: prism_core::Scene = base_scene();
+    sharp_scene.attach.textures.push(height_map());
+    let mut sharp_mesh: MeshDesc = cube_mesh(Some(slot));
+    let edges: Vec<(u32, u32)> = cube_edges();
+    for (a, b) in &edges {
+        sharp_mesh = sharp_mesh.with_crease(*a, *b, 1.0);
+    }
+    sharp_scene.attach.meshes.push(sharp_mesh);
+
+    let fa: Framebuffer = render_product(&smooth_scene);
+    let fb: Framebuffer = render_product(&sharp_scene);
+    assert!(fa.is_valid() && fb.is_valid(), "P4 失败：两帧都必须有效");
+
+    let mut differing: usize = 0;
+    let total: usize = (W * H) as usize;
+    for (pa, pb) in fa.pixels.chunks_exact(4).zip(fb.pixels.chunks_exact(4)) {
+        if pa != pb {
+            differing += 1;
+        }
+    }
+    println!(
+        "[t1-p4] 折痕标记：differing_pixels = {differing} / {total}（{:.2}%）",
+        100.0 * differing as f32 / total as f32
+    );
+    assert!(
+        differing * 100 >= total,
+        "P4 失败：折痕标记没有影响画面（{differing}/{total} 像素不同）—— \
+         说明 MeshDesc.crease 在某一段被丢了"
+    );
+    assert_eq!(edges.len(), 18, "立方体网格应有 18 条唯一边");
+}

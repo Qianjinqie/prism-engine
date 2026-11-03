@@ -85,6 +85,275 @@ impl SubdivResult {
     }
 }
 
+// ---------------------------------------------------------------------------
+// G-9 / T1：crease（折痕）与 corner（角点）标记
+// ---------------------------------------------------------------------------
+//
+// # 缺口原文
+//
+// `subdivide` 与 `catmull_clark` 的入参没有「哪些边是硬边」的载体，内部边
+// 一律按光滑处理 —— 补丁的角点被曲线规则抹圆（路线图 §2 G-9 记 2.36e-1；
+// 本轮在立方体笼上实测更狠：CC k=2 的角点误差 **8.66e-1**、体积
+// **2.451** 而非 8；Loop k=3 是 **8.72e-1 / 2.919**）。这不是"静默当内部点"，
+// 是**调用方无法表达**。
+//
+// # 语义（DeRose 半锐利 crease 规则）
+//
+// | 位置 | 规则 |
+// |---|---|
+// | crease 边（`w == 1`）的边点 | 端点**中点**（1D 线性） |
+// | crease 边（`0 < w < 1`）的边点 | `(1−w)·光滑边点 + w·中点` |
+// | crease 顶点（恰 2 条 crease 边） | 1D 三次 B 样条曲线规则 `(b₀ + 6v + b₁)/8`（与边界顶点同式），按 `w_v = max(入射 crease 权重)` 混合 |
+// | crease 交汇（≥ 3 条 crease 边）/ corner 标记 | **corner**：`v` 不动（极限也是 `v`） |
+// | dart（恰 1 条 crease 边） | 走光滑规则（DeRose 口径：单条锐边不成折痕） |
+// | 边界顶点 | 与加标记前**同一条**规则（边界本来就是 crease，不重复计） |
+//
+// # 为什么 `1` 是"无限锐"而不是"锐 1 级"
+//
+// 任务的取值域是 `0..=1`。若 `1` 只锐化一级，全 crease 的立方体笼在第二级
+// 就重新变圆 —— 判据 V2（角点误差 ≤ 1e-6）不可能达成。故本模块定义：
+// **`w == 1` 是"永不衰减"**，`0 < w < 1` 是"只影响本级"（子边权重降为 0，
+// 这就是半锐利的分数部分语义）。这条写进判据，也写进 `CHANGELOG`。
+//
+// # 逐位退化（判据 V1）
+//
+// `marks` 为 `None` **或** 全部权重为 0 且无 corner ⇒ 走的是与加标记前
+// **同一个函数、同一串表达式**（`MarkIndex` 为 `None`，每个规则里的
+// crease 分支都是 `if let Some(..)`，不命中就执行原表达式）⇒ 逐位相同。
+
+/// 细分曲面的折痕标记（crease 边权重 + corner 顶点标记）。
+///
+/// # 构造
+///
+/// ```
+/// use prism_geometry::subdiv::SubdivMarks;
+///
+/// let m: SubdivMarks = SubdivMarks::new()
+///     .with_crease(0, 1, 1.0)   // 0→1 这条边完全锐利
+///     .with_corner(4);          // 顶点 4 是角点
+/// assert_eq!(m.edge_count(), 1);
+/// assert_eq!(m.corner_count(), 1);
+/// assert!(!m.is_empty());
+/// ```
+///
+/// 边用**无序顶点对**指定（内部按 `(min, max)` 规范化并排序），重复指定
+/// 同一条边以**最后一次**为准（不累加、不取最大值 —— 后者会让"先设 0.3 再设
+/// 0.0"变成 0.3，违反最小惊讶）。
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SubdivMarks {
+    /// 边权重：`(min, max, w)`，按 `(min, max)` 升序、无重复。
+    edges: Vec<(u32, u32, f32)>,
+    /// corner 顶点（升序、无重复）。
+    corners: Vec<u32>,
+}
+
+impl SubdivMarks {
+    /// 空标记（= 完全光滑）。
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 追加/覆盖一条边的 crease 权重（钳到 `[0, 1]`；非有限 ⇒ `0`，不 panic）。
+    pub fn with_crease(mut self, a: u32, b: u32, w: f32) -> Self {
+        if a == b {
+            return self; // 自环：拓扑上无意义，静默忽略（不制造伪边）
+        }
+        let w: f32 = if w.is_finite() { w.clamp(0.0, 1.0) } else { 0.0 };
+        let key: (u32, u32) = (a.min(b), a.max(b));
+        match self.edges.binary_search_by(|e| (e.0, e.1).cmp(&key)) {
+            Ok(i) => self.edges[i].2 = w,
+            Err(i) => self.edges.insert(i, (key.0, key.1, w)),
+        }
+        self
+    }
+
+    /// 标记一个 corner 顶点（升序插入；重复幂等）。
+    pub fn with_corner(mut self, v: u32) -> Self {
+        match self.corners.binary_search(&v) {
+            Ok(_) => {}
+            Err(i) => self.corners.insert(i, v),
+        }
+        self
+    }
+
+    /// 是否**没有生效的标记**（无 corner 且所有边权重恰为 0）。
+    ///
+    /// `true` ⇒ 调用方走与加标记前**完全相同**的路径（判据 V1 的结构前提）。
+    pub fn is_empty(&self) -> bool {
+        self.corners.is_empty() && self.edges.iter().all(|e| e.2 == 0.0)
+    }
+
+    /// 边权重条数（含 `w == 0` 的显式声明）。
+    pub fn edge_count(&self) -> usize {
+        self.edges.len()
+    }
+
+    /// corner 个数。
+    pub fn corner_count(&self) -> usize {
+        self.corners.len()
+    }
+
+    /// 逐级传播：把本级的标记推到细分一级后的网格上。
+    ///
+    /// * `w == 1` 的边裂成两半后**仍然是 1**（折痕线自身继续是折痕）；
+    /// * `0 < w < 1` 的子边降为 0（分数部分只作用于本级，DeRose 的半锐利口径）；
+    /// * corner 标记随顶点下标平移（细分后老顶点保持在前，下标不变）。
+    fn child_marks(
+        &self,
+        edge_index_of: impl Fn(u32, u32) -> Option<usize>,
+        n_old: usize,
+    ) -> SubdivMarks {
+        let mut out: SubdivMarks = SubdivMarks::new();
+        out.corners = self.corners.clone();
+        for &(a, b, w) in &self.edges {
+            if w != 1.0 {
+                continue; // 分数锐利不跨级
+            }
+            let Some(e) = edge_index_of(a, b) else {
+                continue; // 该边已不存在（被净化剔除）：标记自然消失
+            };
+            let m: u32 = (n_old + e) as u32;
+            out = out.with_crease(a, m, 1.0);
+            out = out.with_crease(m, b, 1.0);
+        }
+        out
+    }
+}
+
+/// 某一级网格上的标记视图（与 `Topology` / `QuadTopology` 的边表**同序**）。
+///
+/// # 为什么要这一层
+///
+/// 边权重在 `SubdivMarks` 里按 `(min,max)` 排序，而每个细分级的边表是**重建**
+/// 的（顺序不同）。把"按当前边表的平行数组"算一次，规则里就只剩 O(1) 下标
+/// 访问 —— 每级一次二分、每顶点一次邻接扫描，不进浮点热循环。
+///
+/// # 为什么还要 CSR 入射表
+///
+/// 顶点规则要回答"这个顶点有几条 crease 边、权重多大"（DeRose 的
+/// dart/crease/corner 三分类）。若现查，每个顶点要对每个邻居各做一次二分
+/// （k=6 的 4 万顶点上是 24 万次 `binary_search`，且是**逐级**的）。改成建表
+/// 一次 + O(1) 切片，与 `Topology` 的 CSR 同一口径，求和顺序也顺带固定
+/// （按键 `(min,max)` 升序 ⇒ 邻居升序）。
+struct MarkIndex {
+    /// 与当前边表同序的权重（`0.0` = 光滑）。
+    edge_w: Vec<f32>,
+    /// 逐顶点的 corner 标记。
+    corner: Vec<bool>,
+    /// 入射 crease 边的 CSR 偏移（长度 `V + 1`）。
+    inc_off: Vec<u32>,
+    /// 入射 crease 边的**另一端顶点**（每段**升序**）。
+    inc_nb: Vec<u32>,
+    /// 与 `inc_nb` 同序的权重。
+    inc_w: Vec<f32>,
+}
+
+impl MarkIndex {
+    /// 在当前边表上建视图（`lookup` 把顶点对映射到当前边表下标）。
+    fn build(
+        n_edges: usize,
+        n_vert: usize,
+        marks: &SubdivMarks,
+        lookup: impl Fn(u32, u32) -> Option<usize>,
+    ) -> Self {
+        let mut edge_w: Vec<f32> = vec![0.0; n_edges];
+        // 第一趟：落到边表上（标记可能指向已被剔除的边 ⇒ `None`，静默跳过）。
+        let mut live: Vec<(u32, u32, f32)> = Vec::with_capacity(marks.edges.len());
+        for &(a, b, w) in &marks.edges {
+            if let Some(i) = lookup(a, b) {
+                edge_w[i] = w;
+                if w > 0.0 {
+                    live.push((a, b, w));
+                }
+            }
+        }
+        let mut corner: Vec<bool> = vec![false; n_vert];
+        for &v in &marks.corners {
+            if let Some(c) = corner.get_mut(v as usize) {
+                *c = true;
+            }
+        }
+        // 第二趟：计数 → 前缀和 → 填充（两趟式 CSR，无逐顶点 `Vec`）。
+        let mut inc_off: Vec<u32> = vec![0; n_vert + 1];
+        for &(a, b, _) in &live {
+            if (a as usize) < n_vert {
+                inc_off[a as usize + 1] += 1;
+            }
+            if (b as usize) < n_vert {
+                inc_off[b as usize + 1] += 1;
+            }
+        }
+        for i in 0..n_vert {
+            inc_off[i + 1] += inc_off[i];
+        }
+        let total = inc_off[n_vert] as usize;
+        let mut inc_nb: Vec<u32> = vec![0; total];
+        let mut inc_w: Vec<f32> = vec![0.0; total];
+        // 游标式填充。`live` 已按 `(min,max)` 升序（`marks.edges` 本身的顺序），
+        // 故每个顶点收到的是**升序**邻居序列 —— 求和顺序固定。
+        let mut cur: Vec<u32> = inc_off[..n_vert].to_vec();
+        for &(a, b, w) in &live {
+            if (a as usize) < n_vert {
+                let p = cur[a as usize] as usize;
+                inc_nb[p] = b;
+                inc_w[p] = w;
+                cur[a as usize] += 1;
+            }
+            if (b as usize) < n_vert {
+                let p = cur[b as usize] as usize;
+                inc_nb[p] = a;
+                inc_w[p] = w;
+                cur[b as usize] += 1;
+            }
+        }
+        Self { edge_w, corner, inc_off, inc_nb, inc_w }
+    }
+
+    /// 顶点 `i` 是否 corner。
+    #[inline]
+    fn is_corner(&self, i: usize) -> bool {
+        self.corner.get(i).copied().unwrap_or(false)
+    }
+
+    /// 顶点 `i` 的入射 crease 边切片 `(另一端顶点, 权重)`（按邻居升序）。
+    #[inline]
+    fn inc_crease(&self, i: usize) -> &[u32] {
+        let lo = self.inc_off.get(i).copied().unwrap_or(0) as usize;
+        let hi = self.inc_off.get(i + 1).copied().unwrap_or(0) as usize;
+        &self.inc_nb[lo..hi]
+    }
+
+    /// 顶点 `i` 的入射 crease 边权重（与 [`Self::inc_crease`] 同序）。
+    #[inline]
+    fn inc_weights(&self, i: usize) -> &[f32] {
+        let lo = self.inc_off.get(i).copied().unwrap_or(0) as usize;
+        let hi = self.inc_off.get(i + 1).copied().unwrap_or(0) as usize;
+        &self.inc_w[lo..hi]
+    }
+
+    /// 顶点 `i` 的 crease 度数（入射 crease 边条数）。
+    #[inline]
+    fn crease_degree(&self, i: usize) -> usize {
+        self.inc_crease(i).len()
+    }
+
+    /// 把光滑结果与 crease 结果按权重 `w` 混合。
+    ///
+    /// `w == 1` 时**直接返回 `sharp`**（不执行 `smooth*(0) + sharp*1`：
+    /// 后者在 `smooth` 含 `∞`/`NaN` 时会把 `sharp` 也毒化，而 corner 顶点
+    /// 的 `sharp` 是干净的 `v`）。
+    #[inline]
+    fn blend(smooth: Vec3, sharp: Vec3, w: f32) -> Vec3 {
+        if w >= 1.0 {
+            return sharp;
+        }
+        if w <= 0.0 {
+            return smooth;
+        }
+        smooth * (1.0 - w) + sharp * w
+    }
+}
+
 /// Loop 内部顶点的 β(n)。
 ///
 /// `β(n) = (1/n) · (5/8 − (3/8 + ¼·cos(2π/n))²)`（Loop 的原始 β，1987 硕士论文
@@ -144,11 +413,41 @@ pub fn subdivide(
     uv: &[[f32; 2]],
     levels: u32,
 ) -> SubdivResult {
+    subdivide_marked(positions, indices, uv, levels, None)
+}
+
+/// 入口（带 crease / corner 标记）：均匀 Loop 细分 `levels` 级 + 极限位置求值。
+///
+/// # 与 [`subdivide`] 的关系
+///
+/// [`subdivide`] 就是 `subdivide_marked(.., None)`。`marks` 为 `None` **或**
+/// `marks.is_empty()`（全 0 权重、无 corner）时，走的是与本文件加标记前
+/// **同一个函数、同一串表达式**（`MarkIndex` 根本没建）⇒ 逐位相同（判据 V1）。
+///
+/// # 规则（DeRose 半锐利，逐条见本文件 §G-9 的表格）
+///
+/// * corner 标记 / crease 度 ≥ 3 ⇒ 顶点**不动**（按 `w_v` 混合）；
+/// * crease 度 == 2 ⇒ 1D 三次 B 样条 `(b₀ + 6v + b₁)/8`（按 `w_v` 混合）；
+/// * crease 度 == 1（dart）⇒ **光滑**规则（DeRose：单条锐边不成折痕）；
+/// * crease 边（`w > 0`）的边点 ⇒ `(1−w)·光滑 + w·中点`；
+/// * `w_v = max(入射 crease 权重)`；
+/// * 边界顶点走**原规则**（边界本来就是 crease，不重复计）。
+///
+/// `w == 1` 表示"永不衰减"（子边仍为 1）；`0 < w < 1` 只影响本级（子边降 0）。
+pub fn subdivide_marked(
+    positions: &[Vec3],
+    indices: &[u32],
+    uv: &[[f32; 2]],
+    levels: u32,
+    marks: Option<&SubdivMarks>,
+) -> SubdivResult {
     let levels = levels.min(MAX_LEVELS);
     let mut pos: Vec<Vec3> = positions.to_vec();
     let mut tri: Vec<u32> = indices.to_vec();
     // uv 长度不符 ⇒ 按"无 uv"处理（与 `Mesh::uv` 的契约一致，不 panic）。
     let mut tex: Vec<[f32; 2]> = if uv.len() == positions.len() { uv.to_vec() } else { Vec::new() };
+    // 空标记与"没有标记"等价（结构性逐位退化，判据 V1）。
+    let mut cur: Option<SubdivMarks> = marks.filter(|m| !m.is_empty()).cloned();
 
     // 初始净化：越界 / 非有限 ⇒ 剔除该三角形（与 `Mesh::new` 同口径）。
     tri = sanitize(&pos, &tri);
@@ -157,15 +456,19 @@ pub fn subdivide(
     }
 
     for _ in 0..levels {
-        let (p, t, u) = refine_once(&pos, &tri, &tex);
+        let (p, t, u, child) = refine_once(&pos, &tri, &tex, cur.as_ref());
         pos = p;
         tri = t;
         tex = u;
+        cur = child;
     }
 
     // 极限位置（不迭代）。
     let topo = Topology::build(&pos, &tri);
-    let lim = limit_positions(&pos, &topo);
+    let mi: Option<MarkIndex> = cur.as_ref().map(|m| {
+        MarkIndex::build(topo.edges.len(), pos.len(), m, |a, b| topo.lookup_edge(a, b))
+    });
+    let lim = limit_positions(&pos, &topo, mi.as_ref());
     let normals = vertex_normals(&lim, &tri);
     SubdivResult { positions: lim, indices: tri, uv: tex, normals, levels }
 }
@@ -174,7 +477,7 @@ pub fn subdivide(
 pub fn limit_of(positions: &[Vec3], indices: &[u32]) -> Vec<Vec3> {
     let tri = sanitize(positions, indices);
     let topo = Topology::build(positions, &tri);
-    limit_positions(positions, &topo)
+    limit_positions(positions, &topo, None)
 }
 
 /// 剔除越界 / 非有限三角形的索引流。
@@ -342,31 +645,55 @@ impl Topology {
             .binary_search_by(|e| (e.a, e.b).cmp(&key))
             .expect("边必须存在（键来自本网格的三角形）")
     }
+
+    /// `(min, max)` → 边序号（**不 panic**：标记可能指向已被剔除的边）。
+    #[inline]
+    fn lookup_edge(&self, a: u32, b: u32) -> Option<usize> {
+        let key = (a.min(b), a.max(b));
+        self.edges.binary_search_by(|e| (e.a, e.b).cmp(&key)).ok()
+    }
 }
 
-/// 细分一级（1→4），返回新的 `(positions, indices, uv)`。
-fn refine_once(pos: &[Vec3], tri: &[u32], uv: &[[f32; 2]]) -> (Vec<Vec3>, Vec<u32>, Vec<[f32; 2]>) {
+/// 细分一级（1→4），返回新的 `(positions, indices, uv, 子级标记)`。
+///
+/// `marks` 为 `None` ⇒ 每个规则里都不进 crease 分支（`if let Some(..)` 不命中
+/// ⇒ 执行原表达式），返回值第 4 项为 `None` —— 这与加标记前**逐位相同**。
+fn refine_once(
+    pos: &[Vec3],
+    tri: &[u32],
+    uv: &[[f32; 2]],
+    marks: Option<&SubdivMarks>,
+) -> (Vec<Vec3>, Vec<u32>, Vec<[f32; 2]>, Option<SubdivMarks>) {
     let topo = Topology::build(pos, tri);
     let n_old = pos.len();
     let n_edge = topo.edges.len();
+    let mi: Option<MarkIndex> = marks
+        .map(|m| MarkIndex::build(n_edge, n_old, m, |a, b| topo.lookup_edge(a, b)));
 
     let mut out_pos: Vec<Vec3> = Vec::with_capacity(n_old + n_edge);
     // 顶点规则。
     for i in 0..n_old {
-        out_pos.push(moved_vertex(pos, &topo, i));
+        out_pos.push(moved_vertex(pos, &topo, i, mi.as_ref()));
     }
     // 边顶点（边表按 `(a, b)` 升序 ⇒ 顶点索引确定）。
-    for e in topo.edges.iter() {
+    for (e_i, e) in topo.edges.iter().enumerate() {
         let (a, b) = (e.a, e.b);
         let pa = pos[a as usize];
         let pb = pos[b as usize];
-        let p = if e.count == 1 || e.count > 2 {
+        let p_smooth = if e.count == 1 || e.count > 2 {
             // 边界边 / 非流形边：中点。
             (pa + pb) * 0.5
         } else {
             let c = pos[e.opp[0] as usize];
             let d = pos[e.opp[1] as usize];
             (pa + pb) * 0.375 + (c + d) * 0.125
+        };
+        // crease：按边权重把边点拉向中点（`w == 1` ⇒ 纯中点）。
+        let p = match &mi {
+            Some(m) if m.edge_w[e_i] > 0.0 => {
+                MarkIndex::blend(p_smooth, (pa + pb) * 0.5, m.edge_w[e_i])
+            }
+            _ => p_smooth,
         };
         out_pos.push(p);
     }
@@ -393,12 +720,25 @@ fn refine_once(pos: &[Vec3], tri: &[u32], uv: &[[f32; 2]]) -> (Vec<Vec3>, Vec<u3
         out_tri.extend_from_slice(&[ca, bc, cc]);
         out_tri.extend_from_slice(&[ab, bc, ca]);
     }
-    (out_pos, out_tri, out_uv)
+    // 子级标记：`w == 1` 的两半仍是 1，分数权重降 0（DeRose 半锐利）。
+    let child = marks
+        .map(|m| m.child_marks(|a, b| topo.lookup_edge(a, b), n_old))
+        .filter(|m| !m.is_empty());
+    (out_pos, out_tri, out_uv, child)
 }
 
-/// 顶点规则（内部 / 边界 / 角点三档）。
-fn moved_vertex(pos: &[Vec3], topo: &Topology, i: usize) -> Vec3 {
+/// 顶点规则（corner / 边界 / crease / 内部 / dart）。
+///
+/// 顺序即优先级：corner 标记 > 边界 > crease > 光滑。边界排在 crease 之前
+/// 是本模块的定稿口径 —— 边界**本来就是** crease，重复计会让边界顶点被
+/// 两次锐化（表现为边缘收缩）。
+fn moved_vertex(pos: &[Vec3], topo: &Topology, i: usize, mi: Option<&MarkIndex>) -> Vec3 {
     let v = pos[i];
+    if let Some(m) = mi {
+        if m.is_corner(i) {
+            return v; // corner 标记：极限也不动
+        }
+    }
     let bn = topo.boundary_nbrs(i);
     if !bn.is_empty() || topo.has_nonmanifold_edge(i) {
         // 边界顶点：恰两条边界边 ⇒ 三次 B 样条曲线规则；否则（角点/非流形）不动。
@@ -409,6 +749,41 @@ fn moved_vertex(pos: &[Vec3], topo: &Topology, i: usize) -> Vec3 {
         }
         return v;
     }
+    // --- crease / corner（内部顶点）---
+    if let Some(m) = mi {
+        let k = m.crease_degree(i);
+        if k == 2 {
+            let nb = m.inc_crease(i);
+            let w = m.inc_weights(i);
+            let (b0, b1) = (pos[nb[0] as usize], pos[nb[1] as usize]);
+            let wv = if w[0] > w[1] { w[0] } else { w[1] };
+            let sharp = (b0 + b1 + v * 6.0) * 0.125; // 1D 三次 B 样条：与边界同式
+            if wv >= 1.0 {
+                return sharp;
+            }
+            return MarkIndex::blend(smooth_inner(pos, topo, i, v), sharp, wv);
+        }
+        if k >= 3 {
+            let w = m.inc_weights(i);
+            let mut wv = 0.0f32;
+            for &x in w {
+                if x > wv {
+                    wv = x;
+                }
+            }
+            if wv >= 1.0 {
+                return v; // crease 交汇 = corner：不动
+            }
+            return MarkIndex::blend(smooth_inner(pos, topo, i, v), v, wv);
+        }
+        // k == 0（光滑）/ k == 1（dart）⇒ 落到下面的光滑规则。
+    }
+    smooth_inner(pos, topo, i, v)
+}
+
+/// Loop 内部顶点的光滑规则（`(1 − nβ)·v + β·Σnb`）。**一行未改**，
+/// 加标记前后共用同一串表达式（判据 V1 的逐位前提）。
+fn smooth_inner(pos: &[Vec3], topo: &Topology, i: usize, v: Vec3) -> Vec3 {
     let nb = topo.neighbors(i);
     let n = nb.len();
     if n == 0 {
@@ -422,11 +797,17 @@ fn moved_vertex(pos: &[Vec3], topo: &Topology, i: usize) -> Vec3 {
     v * (1.0 - (n as f32) * beta) + sum * beta
 }
 
-/// 极限位置：内部 1-ring stencil / 边界曲线 stencil / 角点不动。
-fn limit_positions(pos: &[Vec3], topo: &Topology) -> Vec<Vec3> {
+/// 极限位置：corner / 边界曲线 stencil / crease 曲线 stencil / 内部 1-ring stencil。
+fn limit_positions(pos: &[Vec3], topo: &Topology, mi: Option<&MarkIndex>) -> Vec<Vec3> {
     let mut out = Vec::with_capacity(pos.len());
     for i in 0..pos.len() {
         let v = pos[i];
+        if let Some(m) = mi {
+            if m.is_corner(i) {
+                out.push(v); // corner 标记：极限 = 自身
+                continue;
+            }
+        }
         let bn = topo.boundary_nbrs(i);
         if !bn.is_empty() || topo.has_nonmanifold_edge(i) {
             if bn.len() == 2 {
@@ -439,19 +820,49 @@ fn limit_positions(pos: &[Vec3], topo: &Topology) -> Vec<Vec3> {
             }
             continue;
         }
-        let nb = topo.neighbors(i);
-        if nb.is_empty() {
-            out.push(v);
-            continue;
+        // --- crease 极限（内部顶点）---
+        if let Some(m) = mi {
+            let k = m.crease_degree(i);
+            if k == 2 || k >= 3 {
+                let sharp: Vec3 = if k == 2 {
+                    let nb = m.inc_crease(i);
+                    let (a, b) = BOUNDARY_LIMIT; // (4/6, 1/6)：与边界曲线同一支
+                    v * a + (pos[nb[0] as usize] + pos[nb[1] as usize]) * b
+                } else {
+                    v
+                };
+                let w = m.inc_weights(i);
+                let mut wv = 0.0f32;
+                for &x in w {
+                    if x > wv {
+                        wv = x;
+                    }
+                }
+                if wv >= 1.0 {
+                    out.push(sharp);
+                    continue;
+                }
+                out.push(MarkIndex::blend(smooth_limit(pos, topo, i, v), sharp, wv));
+                continue;
+            }
         }
-        let (a, b) = loop_limit_weights(nb.len());
-        let mut sum = Vec3::splat(0.0);
-        for &j in nb {
-            sum = sum + pos[j as usize];
-        }
-        out.push(v * a + sum * b);
+        out.push(smooth_limit(pos, topo, i, v));
     }
     out
+}
+
+/// Loop 内部顶点的极限 stencil（`a·v + b·Σnb`，`a + n·b = 1`）。**一行未改**。
+fn smooth_limit(pos: &[Vec3], topo: &Topology, i: usize, v: Vec3) -> Vec3 {
+    let nb = topo.neighbors(i);
+    if nb.is_empty() {
+        return v;
+    }
+    let (a, b) = loop_limit_weights(nb.len());
+    let mut sum = Vec3::splat(0.0);
+    for &j in nb {
+        sum = sum + pos[j as usize];
+    }
+    v * a + sum * b
 }
 
 /// 顶点法线：相邻三角形（按**极限位置**）的面积加权法线之和，归一。
@@ -1019,11 +1430,36 @@ impl QuadTopology {
             .binary_search_by(|e| (e.a, e.b).cmp(&key))
             .expect("边必须存在（键来自本网格的四边形）")
     }
+
+    /// `(min, max)` → 边序号（**不 panic**：标记可能指向已被剔除的边）。
+    #[inline]
+    fn lookup_edge(&self, a: u32, b: u32) -> Option<usize> {
+        let key = (a.min(b), a.max(b));
+        self.edges.binary_search_by(|e| (e.a, e.b).cmp(&key)).ok()
+    }
 }
 
 /// 面形心（4 角点算术平均；`0.25` 是二进制精确常数）。
 fn quad_centroid(pos: &[Vec3], q: &[u32]) -> Vec3 {
     (pos[q[0] as usize] + pos[q[1] as usize] + pos[q[2] as usize] + pos[q[3] as usize]) * 0.25
+}
+
+/// 四边笼的边键表（`(min,max)` 升序、去重）。
+///
+/// 与 `QuadTopology::build` 产出的 `edges` **同序**（同一套排序键），但只保留
+/// 键、不建邻接。末级只需要"顶点对 → 边序号"这一张查找表（crease 极限用），
+/// 建完整拓扑等于多算一遍 CSR 邻接。
+fn quad_edge_keys(quads: &[u32]) -> Vec<(u32, u32)> {
+    let mut keys: Vec<(u32, u32)> = Vec::with_capacity(quads.len());
+    for q in quads.chunks_exact(4) {
+        for k in 0..4 {
+            let (a, b) = (q[k], q[(k + 1) % 4]);
+            keys.push((a.min(b), a.max(b)));
+        }
+    }
+    keys.sort_unstable();
+    keys.dedup();
+    keys
 }
 
 /// 剔除越界 / 非有限 / 含重复角点的四边形。
@@ -1059,15 +1495,20 @@ fn sanitize_quads(pos: &[Vec3], quads: &[u32]) -> Vec<u32> {
 ///
 /// 输出四边形序：每个老四边形 → 4 个，
 /// `(a, ab, F, da)`、`(ab, b, bc, F)`、`(F, bc, c, cd)`、`(da, F, cd, d)`。
+///
+/// `marks` 为 `None` ⇒ 与加标记前**逐位相同**（返回值第 4 项为 `None`）。
 fn refine_once_quad(
     pos: &[Vec3],
     quads: &[u32],
     uv: &[[f32; 2]],
-) -> (Vec<Vec3>, Vec<u32>, Vec<[f32; 2]>) {
+    marks: Option<&SubdivMarks>,
+) -> (Vec<Vec3>, Vec<u32>, Vec<[f32; 2]>, Option<SubdivMarks>) {
     let topo = QuadTopology::build(pos, quads);
     let n_old = pos.len();
     let n_edge = topo.edges.len();
     let n_face = quads.len() / 4;
+    let mi: Option<MarkIndex> = marks
+        .map(|m| MarkIndex::build(n_edge, n_old, m, |a, b| topo.lookup_edge(a, b)));
 
     // 面点（后两个输出块都要用，先算一次）。
     let mut face_pos: Vec<Vec3> = Vec::with_capacity(n_face);
@@ -1078,19 +1519,26 @@ fn refine_once_quad(
     let mut out_pos: Vec<Vec3> = Vec::with_capacity(n_old + n_edge + n_face);
     // --- 顶点规则 ---
     for i in 0..n_old {
-        out_pos.push(cc_vertex_point(pos, &face_pos, &topo.adj, i));
+        out_pos.push(cc_vertex_point(pos, &face_pos, &topo.adj, i, mi.as_ref()));
     }
     // --- 边点（边表按 `(a, b)` 升序 ⇒ 顶点索引确定） ---
-    for e in topo.edges.iter() {
+    for (e_i, e) in topo.edges.iter().enumerate() {
         let pa = pos[e.a as usize];
         let pb = pos[e.b as usize];
-        let p = if e.count == 2 {
+        let p_smooth = if e.count == 2 {
             let f0 = face_pos[e.face[0] as usize];
             let f1 = face_pos[e.face[1] as usize];
             (pa + pb + f0 + f1) * 0.25
         } else {
             // 边界边 / 非流形边：中点。
             (pa + pb) * 0.5
+        };
+        // crease：按边权重把边点拉向中点（`w == 1` ⇒ 纯中点）。
+        let p = match &mi {
+            Some(m) if m.edge_w[e_i] > 0.0 => {
+                MarkIndex::blend(p_smooth, (pa + pb) * 0.5, m.edge_w[e_i])
+            }
+            _ => p_smooth,
         };
         out_pos.push(p);
     }
@@ -1132,12 +1580,27 @@ fn refine_once_quad(
         out_quad.extend_from_slice(&[f, bc, c, cd]);
         out_quad.extend_from_slice(&[da, f, cd, d]);
     }
-    (out_pos, out_quad, out_uv)
+    // 子级标记：`w == 1` 的两半仍是 1，分数权重降 0（DeRose 半锐利）。
+    let child = marks
+        .map(|m| m.child_marks(|a, b| topo.lookup_edge(a, b), n_old))
+        .filter(|m| !m.is_empty());
+    (out_pos, out_quad, out_uv, child)
 }
 
-/// 顶点规则（内部 / 边界 / 角点三档；折痕**未做**，见模块文档）。
-fn cc_vertex_point(pos: &[Vec3], face_pos: &[Vec3], adj: &QuadAdjacency, i: usize) -> Vec3 {
+/// 顶点规则（corner / 边界 / crease / 内部 / dart；优先级与 Loop 侧一致）。
+fn cc_vertex_point(
+    pos: &[Vec3],
+    face_pos: &[Vec3],
+    adj: &QuadAdjacency,
+    i: usize,
+    mi: Option<&MarkIndex>,
+) -> Vec3 {
     let v = pos[i];
+    if let Some(m) = mi {
+        if m.is_corner(i) {
+            return v;
+        }
+    }
     let bn = adj.boundary_nbrs(i);
     if !bn.is_empty() || adj.has_nonmanifold_edge(i) {
         if bn.len() == 2 {
@@ -1147,6 +1610,35 @@ fn cc_vertex_point(pos: &[Vec3], face_pos: &[Vec3], adj: &QuadAdjacency, i: usiz
         }
         return v; // 角点 / 非流形：不动
     }
+    // --- crease / corner（内部顶点）---
+    if let Some(m) = mi {
+        let k = m.crease_degree(i);
+        if k == 2 || k >= 3 {
+            let w = m.inc_weights(i);
+            let mut wv = 0.0f32;
+            for &x in w {
+                if x > wv {
+                    wv = x;
+                }
+            }
+            let sharp: Vec3 = if k == 2 {
+                let nb = m.inc_crease(i);
+                let (b0, b1) = (pos[nb[0] as usize], pos[nb[1] as usize]);
+                (b0 + b1 + v * 6.0) * 0.125 // 1D 三次 B 样条
+            } else {
+                v // crease 交汇 = corner
+            };
+            if wv >= 1.0 {
+                return sharp;
+            }
+            return MarkIndex::blend(smooth_cc(pos, face_pos, adj, i, v), sharp, wv);
+        }
+    }
+    smooth_cc(pos, face_pos, adj, i, v)
+}
+
+/// CC 内部顶点的光滑规则。**一行未改**，加标记前后共用同一串表达式。
+fn smooth_cc(pos: &[Vec3], face_pos: &[Vec3], adj: &QuadAdjacency, i: usize, v: Vec3) -> Vec3 {
     let nb = adj.neighbors(i);
     let vf = adj.faces_of(i);
     let n = nb.len();
@@ -1170,10 +1662,21 @@ fn cc_vertex_point(pos: &[Vec3], face_pos: &[Vec3], adj: &QuadAdjacency, i: usiz
 }
 
 /// 极限位置（**1-ring 极限 stencil 直接求值，不迭代**；推导见报告 §23.2）。
-fn limit_positions_quad(pos: &[Vec3], quads: &[u32], adj: &QuadAdjacency) -> Vec<Vec3> {
+fn limit_positions_quad(
+    pos: &[Vec3],
+    quads: &[u32],
+    adj: &QuadAdjacency,
+    mi: Option<&MarkIndex>,
+) -> Vec<Vec3> {
     let mut out = Vec::with_capacity(pos.len());
     for i in 0..pos.len() {
         let v = pos[i];
+        if let Some(m) = mi {
+            if m.is_corner(i) {
+                out.push(v);
+                continue;
+            }
+        }
         let bn = adj.boundary_nbrs(i);
         if !bn.is_empty() || adj.has_nonmanifold_edge(i) {
             if bn.len() == 2 {
@@ -1185,33 +1688,63 @@ fn limit_positions_quad(pos: &[Vec3], quads: &[u32], adj: &QuadAdjacency) -> Vec
             }
             continue;
         }
-        let nb = adj.neighbors(i);
-        let vf = adj.faces_of(i);
-        let n = nb.len();
-        if n < 3 || vf.len() != n {
-            out.push(v);
-            continue;
+        // --- crease 极限（内部顶点）---
+        if let Some(m) = mi {
+            let k = m.crease_degree(i);
+            if k == 2 || k >= 3 {
+                let sharp: Vec3 = if k == 2 {
+                    let nb = m.inc_crease(i);
+                    let (b0, b1) = (pos[nb[0] as usize], pos[nb[1] as usize]);
+                    (b0 + b1 + v * 4.0) * (1.0 / 6.0) // 与边界曲线同一支
+                } else {
+                    v
+                };
+                let w = m.inc_weights(i);
+                let mut wv = 0.0f32;
+                for &x in w {
+                    if x > wv {
+                        wv = x;
+                    }
+                }
+                if wv >= 1.0 {
+                    out.push(sharp);
+                    continue;
+                }
+                out.push(MarkIndex::blend(smooth_limit_quad(pos, quads, adj, i, v), sharp, wv));
+                continue;
+            }
         }
-        // P_∞ = (n(n−3)·P + 4·Σmᵢ + 4·ΣFᵢ) / (n(n+5))
-        //      其中 mᵢ = (P + Qᵢ)/2（边中点），Fᵢ = 面形心。
-        let w_p = (n * (n.saturating_sub(3))) as f32;
-        // P 项自带系数 `n(n−3)`；`Σm` 与 `ΣF` 各带系数 4 —— 三者共用同一个分母，
-        // 故先把后两项合并再统一乘 4（**不能**把 P 项也乘 4：那会 double-count）。
-        let mut mf = Vec3::splat(0.0);
-        for &j in nb {
-            mf = mf + (v + pos[j as usize]) * 0.5; // Σmᵢ（边中点）
-        }
-        for &f in vf {
-            // ΣFᵢ（面形心）：**现算不缓存**——缓存一份 `Vec<Vec3>` 是 12 B/面，
-            // 在 k=6 的立方体上是 295 KB 的常驻临时量，而这里每个面最多被 4 个
-            // 顶点各算一次（4 次加法），算得过。
-            let qi = f as usize * 4;
-            mf = mf + quad_centroid(pos, &quads[qi..qi + 4]);
-        }
-        let den = (n * (n + 5)) as f32;
-        out.push((v * w_p + mf * 4.0) * (1.0 / den));
+        out.push(smooth_limit_quad(pos, quads, adj, i, v));
     }
     out
+}
+
+/// CC 内部顶点的极限 stencil。**一行未改**。
+fn smooth_limit_quad(pos: &[Vec3], quads: &[u32], adj: &QuadAdjacency, i: usize, v: Vec3) -> Vec3 {
+    let nb = adj.neighbors(i);
+    let vf = adj.faces_of(i);
+    let n = nb.len();
+    if n < 3 || vf.len() != n {
+        return v;
+    }
+    // P_∞ = (n(n−3)·P + 4·Σmᵢ + 4·ΣFᵢ) / (n(n+5))
+    //      其中 mᵢ = (P + Qᵢ)/2（边中点），Fᵢ = 面形心。
+    let w_p = (n * (n.saturating_sub(3))) as f32;
+    // P 项自带系数 `n(n−3)`；`Σm` 与 `ΣF` 各带系数 4 —— 三者共用同一个分母，
+    // 故先把后两项合并再统一乘 4（**不能**把 P 项也乘 4：那会 double-count）。
+    let mut mf = Vec3::splat(0.0);
+    for &j in nb {
+        mf = mf + (v + pos[j as usize]) * 0.5; // Σmᵢ（边中点）
+    }
+    for &f in vf {
+        // ΣFᵢ（面形心）：**现算不缓存**——缓存一份 `Vec<Vec3>` 是 12 B/面，
+        // 在 k=6 的立方体上是 295 KB 的常驻临时量，而这里每个面最多被 4 个
+        // 顶点各算一次（4 次加法），算得过。
+        let qi = f as usize * 4;
+        mf = mf + quad_centroid(pos, &quads[qi..qi + 4]);
+    }
+    let den = (n * (n + 5)) as f32;
+    (v * w_p + mf * 4.0) * (1.0 / den)
 }
 
 /// 四边面 → 三角形（每面 2 个，绕序保持）。
@@ -1248,25 +1781,63 @@ pub fn catmull_clark(
     uv: &[[f32; 2]],
     levels: u32,
 ) -> SubdivResult {
+    catmull_clark_marked(positions, quads, uv, levels, None)
+}
+
+/// 入口（带 crease / corner 标记）：均匀 Catmull-Clark 细分 `levels` 级 + 极限位置。
+///
+/// [`catmull_clark`] 就是 `catmull_clark_marked(.., None)`。规则与 Loop 侧
+/// **同一套**（[`subdivide_marked`] 的文档表），只是 stencil 换成 CC 的：
+///
+/// | 位置 | 光滑 | crease 侧 |
+/// |---|---|---|
+/// | 顶点（crease 度 2） | `(F̄ + 2R̄ + (n−3)v)/n` | `(b₀ + 6v + b₁)/8` |
+/// | 顶点（crease 度 ≥ 3） | 同上 | `v` |
+/// | 边点 | `(a + b + f₀ + f₁)/4` | `(a + b)/2` |
+/// | 极限（crease 度 2） | `(n(n−3)v + 4Σm + 4ΣF)/(n(n+5))` | `(b₀ + 4v + b₁)/6` |
+///
+/// 混合权重一律 `w_v = max(入射 crease 权重)`、边点用该边自身权重。
+pub fn catmull_clark_marked(
+    positions: &[Vec3],
+    quads: &[u32],
+    uv: &[[f32; 2]],
+    levels: u32,
+    marks: Option<&SubdivMarks>,
+) -> SubdivResult {
     let levels = levels.min(MAX_LEVELS);
     let mut pos: Vec<Vec3> = positions.to_vec();
     let mut quad: Vec<u32> = sanitize_quads(&pos, quads);
     let mut tex: Vec<[f32; 2]> = if uv.len() == positions.len() { uv.to_vec() } else { Vec::new() };
+    // 空标记与"没有标记"等价（结构性逐位退化，判据 V1）。
+    let mut cur: Option<SubdivMarks> = marks.filter(|m| !m.is_empty()).cloned();
 
     if quad.is_empty() {
         return SubdivResult { levels, ..Default::default() };
     }
 
     for _ in 0..levels {
-        let (p, q, u) = refine_once_quad(&pos, &quad, &tex);
+        let (p, q, u, child) = refine_once_quad(&pos, &quad, &tex, cur.as_ref());
         pos = p;
         quad = q;
         tex = u;
+        cur = child;
     }
 
     // 末级不再细分 ⇒ 只建邻接（不建边表）；见 `QuadAdjacency` 的注释。
+    // 但 crease 极限需要边表 —— 有标记时单独建一张**键表**（与
+    // `QuadTopology` 的边表同序：`(min,max)` 排序去重），不重复建邻接。
     let adj = QuadAdjacency::build(pos.len(), &quad);
-    let lim = limit_positions_quad(&pos, &quad, &adj);
+    let mi: Option<MarkIndex> = match cur.as_ref() {
+        Some(m) => {
+            let keys = quad_edge_keys(&quad);
+            Some(MarkIndex::build(keys.len(), pos.len(), m, |a, b| {
+                let key = (a.min(b), a.max(b));
+                keys.binary_search(&key).ok()
+            }))
+        }
+        None => None,
+    };
+    let lim = limit_positions_quad(&pos, &quad, &adj, mi.as_ref());
     drop(adj);
     let tri = triangulate_quads(&quad);
     let normals = vertex_normals(&lim, &tri);
@@ -1418,7 +1989,7 @@ mod cc_tests {
         let mut ratios: Vec<f32> = Vec::new();
         let (mut d_corner, mut d_edge, mut d_face) = (prev, f32::INFINITY, f32::INFINITY);
         for k in 1..=7u32 {
-            let (p, q, _) = refine_once_quad(&pos, &quad, &[]);
+            let (p, q, _, _) = refine_once_quad(&pos, &quad, &[], None);
             pos = p;
             quad = q;
             // 老顶点索引不变（顶点规则结果排在前面）⇒ 边点/面点的序号逐级继承。

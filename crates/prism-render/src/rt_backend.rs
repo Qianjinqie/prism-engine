@@ -379,6 +379,20 @@ fn translate_scene(req: &SceneRenderRequest) -> RtScene {
         {
             continue;
         }
+        // G-9 折痕/角点标记：空标记 ⇒ `None`（与加标记前逐位相同）。
+        let marks: Option<prism_geometry::subdiv::SubdivMarks> =
+            if m.crease.is_empty() && m.corners.is_empty() {
+                None
+            } else {
+                let mut sm = prism_geometry::subdiv::SubdivMarks::new();
+                for &(a, b, w) in &m.crease {
+                    sm = sm.with_crease(a, b, w);
+                }
+                for &v in &m.corners {
+                    sm = sm.with_corner(v);
+                }
+                Some(sm)
+            };
         // 运行期位移：`amplitude == 0` / 无贴图句柄 ⇒ `tessellate_displace`
         // 返回 `None` ⇒ 走**原网格**（判据 V1：与没有位移槽逐位相同）。
         let displaced = m.displacement.and_then(|d| {
@@ -393,6 +407,7 @@ fn translate_scene(req: &SceneRenderRequest) -> RtScene {
                     levels: d.levels,
                 },
                 tex_view,
+                marks.as_ref(),
             )
         });
         let material: MaterialKind = MaterialKind::Pbr(Bsdf::new(

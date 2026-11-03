@@ -165,23 +165,63 @@ pub struct MeshDesc {
     pub uv: Vec<[f32; 2]>,
     /// 位移材质槽（`None` = 无位移）。
     pub displacement: Option<DisplacementSlot>,
+    /// 折痕边 `(a, b, w)`（G-9；`w ∈ [0,1]`，`1` = 永不衰减的硬边）。
+    ///
+    /// # 为什么放在网格上而不是位移槽上
+    ///
+    /// 折痕是**几何属性**（"这条边是硬边"），不是材质属性。它只在细分发生时
+    /// 生效，而运行期细分目前**只**由位移槽触发（`tessellate_displace`）——
+    /// 故没有位移槽时本字段不产生任何几何影响，这是口径而不是缺陷：
+    /// 细分本身没发生，谈"细分曲面的折痕"没有意义。
+    pub crease: Vec<(u32, u32, f32)>,
+    /// 角点顶点（G-9；极限位置等于自身）。
+    pub corners: Vec<u32>,
 }
 
 impl MeshDesc {
     /// 无 uv、无位移槽的网格。
     pub fn new(positions: Vec<Vec3>, indices: Vec<u32>) -> Self {
-        Self { positions, indices, uv: Vec::new(), displacement: None }
+        Self {
+            positions,
+            indices,
+            uv: Vec::new(),
+            displacement: None,
+            crease: Vec::new(),
+            corners: Vec::new(),
+        }
     }
 
     /// 带顶点域 uv 的网格。
     pub fn with_uv(positions: Vec<Vec3>, indices: Vec<u32>, uv: Vec<[f32; 2]>) -> Self {
-        Self { positions, indices, uv, displacement: None }
+        Self { positions, indices, uv, displacement: None, crease: Vec::new(), corners: Vec::new() }
     }
 
     /// 挂位移材质槽（链式）。
     pub fn with_displacement(mut self, slot: DisplacementSlot) -> Self {
         self.displacement = Some(slot);
         self
+    }
+
+    /// 标一条折痕边（链式；`w` 钳到 `[0,1]`，非有限 ⇒ `0`）。
+    pub fn with_crease(mut self, a: u32, b: u32, w: f32) -> Self {
+        if a != b {
+            let w: f32 = if w.is_finite() { w.clamp(0.0, 1.0) } else { 0.0 };
+            self.crease.push((a, b, w));
+        }
+        self
+    }
+
+    /// 标一个角点（链式；重复幂等）。
+    pub fn with_corner(mut self, v: u32) -> Self {
+        if !self.corners.contains(&v) {
+            self.corners.push(v);
+        }
+        self
+    }
+
+    /// 是否有任何折痕/角点标记。
+    pub fn has_marks(&self) -> bool {
+        !self.corners.is_empty() || self.crease.iter().any(|c| c.2 != 0.0)
     }
 
     /// 三角形数（`indices.len() / 3`）。

@@ -264,6 +264,7 @@ pub fn tessellate_displace(
     uv: &[[f32; 2]],
     slot: RuntimeDisplace,
     table: TexTable<'_>,
+    marks: Option<&prism_geometry::subdiv::SubdivMarks>,
 ) -> Option<DisplacedMesh> {
     if slot.is_identity() {
         return None;
@@ -272,7 +273,8 @@ pub fn tessellate_displace(
         return None;
     }
     // ① 细分（复用 `subdiv.rs`；`levels = 0` 只把顶点放到极限位置、不改拓扑）。
-    let sub = prism_geometry::subdiv::subdivide(positions, indices, uv, slot.levels);
+    //    G-9：折痕/角点标记在这里生效；`marks == None` 与加标记前逐位相同。
+    let sub = prism_geometry::subdiv::subdivide_marked(positions, indices, uv, slot.levels, marks);
     if sub.indices.is_empty() {
         return None;
     }

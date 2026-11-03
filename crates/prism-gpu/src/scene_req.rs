@@ -74,6 +74,10 @@ pub struct MeshReq {
     pub uv: Vec<[f32; 2]>,
     /// 位移材质槽（`None` = 无）。
     pub displacement: Option<DisplaceSlotReq>,
+    /// 折痕边 `(a, b, w)`（G-9；`w ∈ [0,1]`）。
+    pub crease: Vec<(u32, u32, f32)>,
+    /// 角点顶点（G-9）。
+    pub corners: Vec<u32>,
 }
 
 /// 几何实例（请求侧）：3×4 仿射行主序 + 共享几何下标 + 材质句柄。

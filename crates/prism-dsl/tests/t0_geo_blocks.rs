@@ -157,3 +157,36 @@ fn d5_unknown_item_message_lists_new_kinds() {
         assert!(msg.contains(k), "未知条目提示里应列出 '{k}'，实际：{msg}");
     }
 }
+
+/// **D6（T1 / G-9）：`mesh` 块能声明折痕边与角点，且真的进了 `MeshDesc`。**
+///
+/// 折痕是"调用方无法表达"的那类缺口——管线里有算法、有判据，但语言里没有
+/// 承载它的位置。D6 就是这一层的存在性证明：写得出、解析得出、带得到
+/// `prism_core::MeshDesc`。至于它有没有真的改变渲染，由 render 侧的
+/// P4 判据（`t0_product_path.rs`）负责。
+#[test]
+fn d6_mesh_block_declares_crease_and_corner() {
+    let src: String = wrap(
+        "mesh m { kind box size 2\n  crease (0, 1, 1.0)\n  crease (1, 3, 0.5)\n  corner 0\n}",
+    );
+    let a: prism_core::SceneAttach = attach_of(&src);
+    assert_eq!(a.meshes.len(), 1);
+    let m = &a.meshes[0];
+    assert_eq!(m.crease.len(), 2, "两条折痕边");
+    assert_eq!(m.crease[0], (0, 1, 1.0), "第一条折痕原样带过来");
+    assert_eq!(m.crease[1], (1, 3, 0.5), "分数权重不丢精度");
+    assert_eq!(m.corners, vec![0], "角点标记");
+    assert!(m.has_marks(), "has_marks 必须能看出有标记");
+
+    // 不写 crease / corner 的网格：全空，且 `has_marks()` 为假。
+    let a: prism_core::SceneAttach = attach_of(&wrap("mesh m { kind plane size 1 }"));
+    assert!(a.meshes[0].crease.is_empty());
+    assert!(a.meshes[0].corners.is_empty());
+    assert!(!a.meshes[0].has_marks());
+
+    // 非法写法报三段式错误，不 panic。
+    let err = compile_v2(&wrap("mesh m { kind plane crease 3 }")).unwrap_err();
+    assert!(err.to_string().contains("P2107"), "crease 需要三元组，实际：{err}");
+    let err = compile_v2(&wrap("mesh m { kind plane corner (1,2,3) }")).unwrap_err();
+    assert!(err.to_string().contains("P2107"), "corner 需要下标，实际：{err}");
+}

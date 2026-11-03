@@ -3142,10 +3142,31 @@ fn geo_mesh(
     };
     let mut m: prism_core::MeshDesc = prism_core::MeshDesc::with_uv(pos, idx, uv);
 
-    // ---- 位移子块 ----
+    // ---- 位移子块 / G-9 折痕标记 ----
     for f in &g.fields {
-        if f.name != "displacement" {
-            continue;
+        match f.name.as_str() {
+            "crease" => {
+                let Some(FieldValue::Vec3(c)) = &f.value else {
+                    return Err(err_at(
+                        f.line,
+                        "[P2107] crease 需要三元组 `(a, b, w)`\n  建议：写成 `crease (0, 1, 1.0)`（w 省略视为 1）",
+                    ));
+                };
+                m = m.with_crease(c.x as u32, c.y as u32, c.z);
+                continue;
+            }
+            "corner" => {
+                let Some(FieldValue::Num(v)) = &f.value else {
+                    return Err(err_at(
+                        f.line,
+                        "[P2107] corner 需要顶点下标\n  建议：写成 `corner 3`",
+                    ));
+                };
+                m = m.with_corner(*v as u32);
+                continue;
+            }
+            "displacement" => {}
+            _ => continue,
         }
         let Some(FieldValue::Block(sub)) = &f.value else {
             return Err(err_at(

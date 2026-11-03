@@ -157,6 +157,8 @@ pub fn build_geo_request(scene: &Scene) -> SceneGeoReq {
                 scale: d.scale,
                 levels: d.levels,
             }),
+            crease: m.crease.clone(),
+            corners: m.corners.clone(),
         }
     };
     let meshes: Vec<MeshReq> = a.meshes.iter().map(conv_mesh).collect();
