@@ -183,13 +183,18 @@ pub const SPH_PARAMS_BYTES: u32 = 48;
 /// / `compliance_bend@20` / `damping@24` / `gravity:vec3@32`，末尾 44 →
 /// 对齐 16 → **48**。
 pub const CLOTH_PARAMS_BYTES: u32 = 48;
-/// `rt_wavefront.wgsl::WFParams` 的 uniform 字节数（10 × `u32` = 40 → **48**）。
-pub const WF_PARAMS_BYTES: u32 = 48;
+/// `rt_wavefront.wgsl::WFParams` 的 uniform 字节数（16 个 4 字节槽 = 64）。
+///
+/// 原 12 槽（48 B）在 T6 扩成 16 槽：`mode`（路径 / CpuRef 兼容）+ 三个
+/// aesthetic 开关（teal_orange / contrast / filmic，与 megakernel 逐字段同义）。
+/// 新增字段全部落在原 `_pad0`/`_pad1` 之后，路径模式的既有语义不变。
+pub const WF_PARAMS_BYTES: u32 = 64;
 /// `rt_wavefront.wgsl::Camera` 的 uniform 字节数。
 ///
 /// 布局：`eye:vec3@0` / `_p0@12` / `forward:vec3@16` / `_p1@28` / `right:vec3@32` /
 /// `_p2@44` / `up:vec3@48` / `_p3@60` / 5 个 `f32`（`tan_half_fov`/`aperture_radius`/
-/// `focus_distance`/`shutter_open`/`shutter_close`）@64..84，末尾对齐 16 → **96**。
+/// `focus_distance`/`shutter_open`/`shutter_close`）@64..84，`aspect@84`（原填充位），
+/// 末尾对齐 16 → **96**。
 pub const CAMERA_PARAMS_BYTES: u32 = 96;
 /// 一次 dispatch 最多设置的 bind group 数（`rt_wavefront` 的 generate 用到
 /// group 0/1/2/3 共 4 个；`prism_dispatch` 的 `bgs` 数组容量即此值）。
@@ -293,6 +298,18 @@ pub const WF2_SCENE_OFF: usize = 336;
 /// WebGPU 腿本环境无设备，**未跑**；真值 blob 的运行时判对在 llvmpipe 侧
 /// （探针 + CPU 波前仿真），见 `docs/v2.5-W2-光照报告.md` 的 4 vs 8 弹射实录。
 pub const WF2_ENV_BYTES: u32 = 4;
+/// wavefront `shade` 的 `group(2) @binding(6)`：CpuRef 兼容模式的球表（1 球占位）。
+///
+/// 路径模式（`WF_MODE_PATH`）不读它，但 `shade` 静态引用 ⇒ 绑定必须存在。
+/// 布局与 `rt_scene.wgsl::Sphere` 一致：`center(vec3@0)/radius@12/albedo(vec3@16)/pad@28` = 32 B。
+pub const WF2_SPHERES_BYTES: u32 = 32;
+/// wavefront `shade` 的 `group(2) @binding(7)`：兼容模式方向光表（1 灯占位）。
+///
+/// 与 `rt_scene.wgsl::DirLight` 一致：`dir` 占 0..12、隐式填充 12..16、
+/// `color` 因 `vec3` 的 16 字节对齐落在 16..28、`intensity` 落 28、
+/// 结构体按 16 对齐补到 32。**不能**按 "dir/color/intensity 平铺"理解——
+/// 这正是 megakernel 与 `rt_scene::Light` 灯布局不同的坑。
+pub const WF2_DIRLIGHTS_BYTES: u32 = 32;
 
 // ---- GI 的 GPU compute 路径（`gpu.gi_compute`）----
 //
@@ -533,6 +550,10 @@ struct Scratch {
     wf2_prim_mat: [u8; WF2_PRIM_MAT_BYTES as usize],
     /// wavefront `shade` 的 group(2)@binding(5) 环境 CDF 占位（1 元；见 [`WF2_ENV_BYTES`]）。
     wf2_env: [u8; WF2_ENV_BYTES as usize],
+    /// wavefront `shade` 的 group(2)@binding(6) 球表占位（1 球；见 [`WF2_SPHERES_BYTES`]）。
+    wf2_spheres: [u8; WF2_SPHERES_BYTES as usize],
+    /// wavefront `shade` 的 group(2)@binding(7) 方向光表占位（1 灯；见 [`WF2_DIRLIGHTS_BYTES`]）。
+    wf2_dirlights: [u8; WF2_DIRLIGHTS_BYTES as usize],
     /// D3/D2 的 uniform 参数区（5 份参数共用，按 `*_PARAMS_OFF` 切分）。
     params2: [u8; PARAMS_ARENA_BYTES],
     // ---- GI GPU 路径的输入/输出工作区 ----
@@ -590,6 +611,8 @@ impl Scratch {
             wf2_lights: [0; WF2_LIGHT_BYTES as usize],
             wf2_prim_mat: [0; WF2_PRIM_MAT_BYTES as usize],
             wf2_env: [0; WF2_ENV_BYTES as usize],
+            wf2_spheres: [0; WF2_SPHERES_BYTES as usize],
+            wf2_dirlights: [0; WF2_DIRLIGHTS_BYTES as usize],
             params2: [0; PARAMS_ARENA_BYTES],
             gi_probes: [0; GI_PROBES_BYTES as usize],
             gi_points: [0; GI_POINTS_BYTES as usize],
@@ -3695,6 +3718,16 @@ struct WfParams {
     node_id: u32,
     /// 帧号（同上）。
     frame: u32,
+    /// 0 = 路径追踪；1 = CpuRef 兼容模式（W1）。本测试走 0。
+    mode: u32,
+    /// aesthetic：teal-orange 开关（兼容模式才读）。
+    teal_orange: u32,
+    /// aesthetic：对比度（兼容模式才读）。
+    contrast: f32,
+    /// aesthetic：对比度开关（兼容模式才读）。
+    contrast_on: u32,
+    /// aesthetic：Reinhard filmic 开关（兼容模式才读）。
+    filmic: u32,
 }
 
 /// 本测试固定的 `WFParams`。
@@ -3709,9 +3742,14 @@ const WF_TEST_PARAMS: WfParams = WfParams {
     global_seed: 0x1234_5678,
     node_id: 7,
     frame: 0,
+    mode: 0,
+    teal_orange: 0,
+    contrast: 1.0,
+    contrast_on: 0,
+    filmic: 0,
 };
 
-/// 把 [`WfParams`] 按 WGSL uniform 布局打包（10 × `u32`，末尾补到 48）。
+/// 把 [`WfParams`] 按 WGSL uniform 布局打包（16 × 4 字节槽 = 64）。
 fn wf_params_bytes(p: &WfParams) -> [u8; WF_PARAMS_BYTES as usize] {
     let mut b = [0u8; WF_PARAMS_BYTES as usize];
     // WGSL 里 `clamp_indirect_threshold: f32` 与 `nee_only: u32` 各占一个
@@ -3726,6 +3764,11 @@ fn wf_params_bytes(p: &WfParams) -> [u8; WF_PARAMS_BYTES as usize] {
     pack_u32(&mut b, 28, p.global_seed);
     pack_u32(&mut b, 32, p.node_id);
     pack_u32(&mut b, 36, p.frame);
+    pack_u32(&mut b, 40, p.mode);
+    pack_u32(&mut b, 44, p.teal_orange);
+    pack_f32(&mut b, 48, p.contrast);
+    pack_u32(&mut b, 52, p.contrast_on);
+    pack_u32(&mut b, 56, p.filmic);
     b
 }
 
@@ -4276,6 +4319,8 @@ struct WfCamera {
     shutter_open: f32,
     /// 快门闭。
     shutter_close: f32,
+    /// 画幅比（原尾部填充位 @84；CpuRef 兼容模式读它，路径模式忽略）。
+    aspect: f32,
 }
 
 /// 本测试固定的相机（`forward=+z`、`tan(30°)`、针孔）。
@@ -4289,6 +4334,7 @@ const WF2_CAMERA: WfCamera = WfCamera {
     focus_distance: 1.0,
     shutter_open: 0.0,
     shutter_close: 0.5,
+    aspect: 1.0,
 };
 
 /// 三维归一化（与 WGSL `normalize` 同：先算平方和再开方）。
@@ -4779,6 +4825,11 @@ const WF2_PARAMS: WfParams = WfParams {
     global_seed: 0x1234_5678,
     node_id: WF2_NODE_ID,
     frame: 0,
+    mode: 0,
+    teal_orange: 0,
+    contrast: 1.0,
+    contrast_on: 0,
+    filmic: 0,
 };
 
 /// CPU 参考：`generate` 阶段（写满全部路径槽）。
@@ -4998,6 +5049,8 @@ fn wf2_scene_params_bytes(scene: &WfScene) -> [u8; SCENE_PARAMS_BYTES as usize] 
     pack_f32(&mut b, 16, scene.ambient[0]);
     pack_f32(&mut b, 20, scene.ambient[1]);
     pack_f32(&mut b, 24, scene.ambient[2]);
+    // 兼容模式球数：本测试走路径模式，恒 0（字段占原 `_pad`，布局未变）。
+    pack_u32(&mut b, 28, 0);
     b
 }
 
@@ -5015,6 +5068,8 @@ fn wf2_camera_bytes(cam: &WfCamera) -> [u8; CAMERA_PARAMS_BYTES as usize] {
     pack_f32(&mut b, 72, cam.focus_distance);
     pack_f32(&mut b, 76, cam.shutter_open);
     pack_f32(&mut b, 80, cam.shutter_close);
+    // aspect 落在原结构体尾部填充（offset 84），uniform 仍是 96 字节。
+    pack_f32(&mut b, 84, cam.aspect);
     b
 }
 
@@ -5116,6 +5171,20 @@ fn t_gpu_rt_wavefront_multi() -> Status {
         Ok(h) => h,
         Err(s) => return s,
     };
+    // group(2)@binding(6)：CpuRef 兼容模式的球表占位（路径模式不读，见 WF2_SPHERES_BYTES）。
+    let sph_buf = match make_buffer("gpu.rt_wavefront_multi", dev, WF2_SPHERES_BYTES, usage::STORAGE, || {
+        (addr_of_slice(|s| &s.wf2_spheres[..]), WF2_SPHERES_BYTES)
+    }) {
+        Ok(h) => h,
+        Err(s) => return s,
+    };
+    // group(2)@binding(7)：兼容模式方向光表占位（同上）。
+    let dl_buf = match make_buffer("gpu.rt_wavefront_multi", dev, WF2_DIRLIGHTS_BYTES, usage::STORAGE, || {
+        (addr_of_slice(|s| &s.wf2_dirlights[..]), WF2_DIRLIGHTS_BYTES)
+    }) {
+        Ok(h) => h,
+        Err(s) => return s,
+    };
     // ---- 三个入口的 bind group 前缀（每 group 内为连续前缀 {0..n-1}）----
     // generate：group0=[slots,params] group1=[sobol] group2=[scene_params] group3=[camera]
     let gen_g0 = [slot_buf, par_buf];
@@ -5123,11 +5192,11 @@ fn t_gpu_rt_wavefront_multi() -> Status {
     let gen_g2 = [scn_buf];
     let gen_g3 = [cam_buf];
     // shade：group0=[slots,params] group1=[sobol]
-    //        group2=[scene_params,materials,prim_mat,tris,lights,env_blob]（6 绑定，仍是连续前缀）
-    // A2/W2：env_blob 是这一波新增的第 6 个；它**只能**挂在这里——group(3) 已给
-    // camera、WebGPU 的 maxBindGroups=4 不允许再开第 5 组（见 rt_wavefront.wgsl 的
-    // 绑定段注释）。
-    let sh_g2 = [scn_buf, mat_buf, pm_buf, tri_buf, light_buf, env_buf];
+    //        group2=[scene_params,materials,prim_mat,tris,lights,env_blob,spheres]（7 绑定，仍是连续前缀）
+    // A2/W2：env_blob 是第 6 个；T6：spheres 是第 7 个（CpuRef 兼容模式）。
+    // 二者**只能**挂在这里——group(3) 已给 camera、WebGPU 的 maxBindGroups=4
+    // 不允许再开第 5 组（见 rt_wavefront.wgsl 的绑定段注释）。
+    let sh_g2 = [scn_buf, mat_buf, pm_buf, tri_buf, light_buf, env_buf, sph_buf, dl_buf];
     // extend：group0/group1 同；group2=[scene_params,materials,prim_mat,tris]（不引用 lights）
     let ex_g2 = [scn_buf, mat_buf, pm_buf, tri_buf];
     let gen_groups = [

@@ -62,6 +62,41 @@ const TARGETS: &[Target] = &[
         entry: "env_probe",
         spv: "crates/prism-gpu/shaders/spv/rt_env_probe.spv",
     },
+    // ---- T6：整条 wavefront 的 5 个 compute 入口（同一份 WGSL，5 个产物） ----
+    //
+    // 一个 `.wgsl` 对应多个 `OpEntryPoint` 时**必须一个入口一个 `.spv`**：
+    // 驱动侧的 `VkPipelineShaderStageCreateInfo.p_name` 只能选中模块里的一个
+    // 入口，而 pipeline layout 的静态资源用量以模块为准；把 5 个入口塞进同一
+    // 字流会让每个 pipeline 都背着其余四个入口的死代码（且 naga 的
+    // `entry_points.retain` 本来就是单入口语义）。
+    //
+    // 清单因此从 5 列扩成 6 列（新增 `<spv 相对路径>`）——这是**格式扩展**，
+    // 不是重排：前 5 列语义与顺序不变，第 6 列追加在末尾。
+    Target {
+        wgsl: "crates/prism-gpu/shaders/rt_wavefront.wgsl",
+        entry: "generate",
+        spv: "crates/prism-gpu/shaders/spv/rt_wavefront_generate.spv",
+    },
+    Target {
+        wgsl: "crates/prism-gpu/shaders/rt_wavefront.wgsl",
+        entry: "shade",
+        spv: "crates/prism-gpu/shaders/spv/rt_wavefront_shade.spv",
+    },
+    Target {
+        wgsl: "crates/prism-gpu/shaders/rt_wavefront.wgsl",
+        entry: "connect",
+        spv: "crates/prism-gpu/shaders/spv/rt_wavefront_connect.spv",
+    },
+    Target {
+        wgsl: "crates/prism-gpu/shaders/rt_wavefront.wgsl",
+        entry: "extend",
+        spv: "crates/prism-gpu/shaders/spv/rt_wavefront_extend.spv",
+    },
+    Target {
+        wgsl: "crates/prism-gpu/shaders/rt_wavefront.wgsl",
+        entry: "accumulate",
+        spv: "crates/prism-gpu/shaders/spv/rt_wavefront_accumulate.spv",
+    },
 ];
 
 /// 清单文件（相对仓库根）。
@@ -89,7 +124,26 @@ fn repo_root() -> PathBuf {
 /// 与 `crates/prism-gpu/src/shaders.rs` 的展开器**同一指令**（`//!include`），
 /// 保证"浏览器宿主看到的源"与"naga 编译的源"是同一份组合。深度上限 8，
 /// 缺文件即报错（不静默跳过——跳过会让 SPIR-V 少一段实现却仍然编译通过）。
+///
+/// # 为什么必须「同一文件只展开一次」
+///
+/// `rt_wavefront.wgsl` 的 include 图是菱形（`rt_shade` / `rt_scene` / `rt_env`
+/// 各自都 include `rt_common`）。WGSL 没有头文件保护，重复展开会直接
+/// `redefinition of PI`。这里的去重语义与 `shaders.rs::expand_into` 一致：
+/// **按文件名（相对 shader 目录）首次出现为准**，后续 include 静默跳过。
+/// 这不是"容忍错误包含"——真正的循环包含会先撞深度上限（8 层）报错。
 fn expand_includes(src: &str, dir: &Path, depth: u32) -> Result<String, String> {
+    let mut seen: Vec<String> = Vec::new();
+    expand_includes_inner(src, dir, depth, &mut seen)
+}
+
+/// [`expand_includes`] 的实现体（`seen` 跨整棵 include 树共享）。
+fn expand_includes_inner(
+    src: &str,
+    dir: &Path,
+    depth: u32,
+    seen: &mut Vec<String>,
+) -> Result<String, String> {
     if depth == 0 {
         return Err("//!include 嵌套超过 8 层（疑似循环包含）".to_string());
     }
@@ -98,11 +152,16 @@ fn expand_includes(src: &str, dir: &Path, depth: u32) -> Result<String, String> 
         let t = line.trim();
         if let Some(rest) = t.strip_prefix("//!include ") {
             let name = rest.trim();
+            // 已展开过：跳过（菱形 include 图的唯一正确语义）。
+            if seen.iter().any(|s| s == name) {
+                continue;
+            }
+            seen.push(name.to_string());
             let path = dir.join(name);
             let text = fs::read_to_string(&path)
                 .map_err(|e| format!("//!include {} 读取失败：{e}", path.display()))?;
             out.push_str(&format!("// ---- include {name} ----\n"));
-            out.push_str(&expand_includes(&text, dir, depth - 1)?);
+            out.push_str(&expand_includes_inner(&text, dir, depth - 1, seen)?);
             out.push('\n');
         } else {
             out.push_str(line);
@@ -297,14 +356,16 @@ struct ManifestRow {
     wgsl: String,
     entry: String,
     naga: String,
+    /// SPIR-V 产物相对路径（**第 6 列**；同一 WGSL 多入口时靠它区分）。
+    spv: String,
 }
 
 impl ManifestRow {
     /// 渲染成一行（分隔符固定两个空格；字段内不含空格）。
     fn line(&self) -> String {
         format!(
-            "{}  {}  {}  {}  {}",
-            self.wgsl_sha, self.spv_sha, self.wgsl, self.entry, self.naga
+            "{}  {}  {}  {}  {}  {}",
+            self.wgsl_sha, self.spv_sha, self.wgsl, self.entry, self.naga, self.spv
         )
     }
 }
@@ -319,7 +380,7 @@ fn build_manifest(root: &Path) -> Result<String, String> {
     out.push_str("# 校验：cargo test -p prism-gpu --test spv_freshness\n");
     out.push_str("#\n");
     out.push_str("# 格式（每行，字段间两个空格）：\n");
-    out.push_str("#   <wgsl_sha256>  <spv_sha256>  <wgsl相对路径>  <entry>  <naga版本>\n");
+    out.push_str("#   <wgsl_sha256>  <spv_sha256>  <wgsl相对路径>  <entry>  <naga版本>  <spv相对路径>\n");
     for t in TARGETS {
         let wgsl_bytes = fs::read(root.join(t.wgsl))
             .map_err(|e| format!("读不到 {}：{e}", root.join(t.wgsl).display()))?;
@@ -332,6 +393,7 @@ fn build_manifest(root: &Path) -> Result<String, String> {
                 wgsl: t.wgsl.to_string(),
                 entry: t.entry.to_string(),
                 naga: NAGA_VERSION.to_string(),
+                spv: t.spv.to_string(),
             }
             .line(),
         );
@@ -340,7 +402,7 @@ fn build_manifest(root: &Path) -> Result<String, String> {
     Ok(out)
 }
 
-/// 解析清单为 `(wgsl 路径 → 行)`（忽略空行与 `#` 注释）。
+/// 解析清单为记录列表（忽略空行与 `#` 注释）。
 fn parse_manifest(text: &str) -> Result<Vec<ManifestRow>, String> {
     let mut rows = Vec::new();
     for (i, line) in text.lines().enumerate() {
@@ -349,9 +411,9 @@ fn parse_manifest(text: &str) -> Result<Vec<ManifestRow>, String> {
             continue;
         }
         let f: Vec<&str> = t.split_whitespace().collect();
-        if f.len() != 5 {
+        if f.len() != 6 {
             return Err(format!(
-                "清单第 {} 行字段数 {} ≠ 5：{t}",
+                "清单第 {} 行字段数 {} ≠ 6：{t}",
                 i + 1,
                 f.len()
             ));
@@ -362,6 +424,7 @@ fn parse_manifest(text: &str) -> Result<Vec<ManifestRow>, String> {
             wgsl: f[2].to_string(),
             entry: f[3].to_string(),
             naga: f[4].to_string(),
+            spv: f[5].to_string(),
         });
     }
     Ok(rows)
@@ -503,10 +566,17 @@ fn run_check(root: &Path) -> Result<(), String> {
                 ));
             }
             for t in TARGETS {
-                let Some(row) = rows.iter().find(|r| r.wgsl == t.wgsl) else {
-                    problems.push(format!("{MANIFEST} 缺少 {} 的记录", t.wgsl));
+                // 同一 WGSL 可能对应多个入口 ⇒ 以 **spv 产物路径**为唯一键。
+                let Some(row) = rows.iter().find(|r| r.spv == t.spv) else {
+                    problems.push(format!("{MANIFEST} 缺少 {} 的记录", t.spv));
                     continue;
                 };
+                if row.wgsl != t.wgsl {
+                    problems.push(format!(
+                        "{} 的 wgsl 源不符（清单 {} / TARGETS {}）",
+                        t.spv, row.wgsl, t.wgsl
+                    ));
+                }
                 let wgsl_sha = sha256::sha256_hex(&fs::read(root.join(t.wgsl)).map_err(|e| e.to_string())?);
                 let spv_sha = sha256::sha256_hex(&fs::read(root.join(t.spv)).map_err(|e| e.to_string())?);
                 if row.wgsl_sha != wgsl_sha {
@@ -524,13 +594,13 @@ fn run_check(root: &Path) -> Result<(), String> {
                 if row.entry != t.entry {
                     problems.push(format!(
                         "{} 的 entry 不符（清单 {} / TARGETS {}）",
-                        t.wgsl, row.entry, t.entry
+                        t.spv, row.entry, t.entry
                     ));
                 }
                 if row.naga != NAGA_VERSION {
                     problems.push(format!(
                         "{} 的 naga 版本不符（清单 {} / 本工具 {NAGA_VERSION}）",
-                        t.wgsl, row.naga
+                        t.spv, row.naga
                     ));
                 }
             }

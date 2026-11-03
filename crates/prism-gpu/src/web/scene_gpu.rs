@@ -118,6 +118,12 @@ pub const MIN_BUF_BYTES: u32 = 4;
 /// 像素区「尚未落盘」的哨兵字节（详见模块文档的可靠性论证）。
 pub const CANARY: u8 = 0xA5;
 
+/// wavefront 的 `accum` 读回上限（`MAX_FRAME_PIXELS` 像素 × 16 B/像素 = 16 KiB）。
+///
+/// `accum` 在 WGSL 里是 `array<vec4<f32>>`，每像素 16 字节；`MAX_FRAME_W ×
+/// MAX_FRAME_H = 1024` 像素 ⇒ 16 KiB，与「像素区 4 KiB」是同一批像素的两种视图。
+const WF_ACCUM_MAX: usize = MAX_FRAME_PIXELS * 4;
+
 /// 参数块字节数（V2 剖面 = `PARAMS_WORDS_V2` 个字）。
 const PARAMS_BYTES: usize = PARAMS_WORDS_V2 * 4;
 /// 球体缓冲竞技场字节数。
@@ -287,6 +293,24 @@ enum Owner {
     Render,
 }
 
+/// 帧槽的读回来源：megakernel 直写 pixels，wavefront 先落 `wf_accum` 再换算。
+///
+/// # 为什么 wavefront 不能直接落 `pixels`
+///
+/// `accum` 在 WGSL 里是 `array<vec4<f32>>`（每像素 16 B）；compat 模式把打包好的
+/// RGBA8 位型塞在第一个 f32 里，路径模式则留着 HDR。`copy_out` 只能**原样**
+/// 搬字节，不能在搬的过程中做「16 B → 4 B」的换算，故必须两段式：
+/// 读回 → `wf_accum`（哨兵可判）→ settle 后换算进 `pixels`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WfKind {
+    /// 非 wavefront（megakernel：`pixels` 由胶水直写）。
+    None,
+    /// `WavefrontMode::CpuRefCompat`：`wf_accum` 的每 4 字节就是 RGBA8。
+    Compat,
+    /// `WavefrontMode::Path`：`wf_accum` 是 HDR `f32 × 4`，换算时量化。
+    Path,
+}
+
 /// 帧槽元数据（不含 16 KB 像素区，故可 `Copy`，便于 `const` 初始化）。
 #[derive(Debug, Clone, Copy)]
 struct FrameMeta {
@@ -300,6 +324,8 @@ struct FrameMeta {
     height: u32,
     /// 请求的读回字节数。
     read_len: u32,
+    /// 读回来源（决定「落盘判定」看哪块内存、以及是否需要换算）。
+    wf: WfKind,
 }
 
 impl FrameMeta {
@@ -310,6 +336,7 @@ impl FrameMeta {
         width: 0,
         height: 0,
         read_len: 0,
+        wf: WfKind::None,
     };
 }
 
@@ -364,6 +391,11 @@ struct SceneArena {
     bgs: [u32; BG_CAP],
     /// 各帧像素区（宿主 `settle()` 时写入）。
     pixels: [[u8; MAX_FRAME_PIXELS]; FRAME_SLOTS],
+    /// wavefront 的 `accum` 读回区（每槽 `MAX_FRAME_PIXELS × 4` = 16 KiB）。
+    ///
+    /// 为什么是「每槽一块」而不是共用一块：`copy_out` 是**登记式**的，真正落盘
+    /// 发生在宿主 `settle()`；若共用一块，两个在飞的 wavefront 帧会互相覆盖。
+    wf_accum: Vec<Box<[u8]>>,
     /// 各帧元数据。
     meta: [FrameMeta; FRAME_SLOTS],
 }
@@ -391,6 +423,9 @@ impl SceneArena {
             handles: [0u32; HANDLE_CAP],
             bgs: [0u32; BG_CAP],
             pixels: [[0u8; MAX_FRAME_PIXELS]; FRAME_SLOTS],
+            wf_accum: (0..FRAME_SLOTS)
+                .map(|_| vec![0u8; WF_ACCUM_MAX].into_boxed_slice())
+                .collect(),
             meta: [FrameMeta::EMPTY; FRAME_SLOTS],
         }
     }
@@ -560,21 +595,103 @@ fn alloc_frame_slot(
     height: u32,
     read_len: u32,
 ) -> Result<usize, SceneDispatchError> {
+    alloc_frame_slot_with(owner, width, height, read_len, WfKind::None)
+}
+
+/// [`alloc_frame_slot`] 的完整版：额外指定读回来源。
+///
+/// 「可复用」的判据按**读回来源**选：megakernel 看 `pixels` 是否还全是哨兵，
+/// wavefront 看 `wf_accum`——否则 wavefront 帧的 `pixels` 永远是哨兵（它压根不
+/// 往那儿写），槽位会被判成"从未落盘"从而**永不回收**（10 帧后全线 `NoFreeFrameSlot`）。
+fn alloc_frame_slot_with(
+    owner: Owner,
+    width: u32,
+    height: u32,
+    read_len: u32,
+    wf: WfKind,
+) -> Result<usize, SceneDispatchError> {
     ARENA.with(|a| {
         let mut a = a.borrow_mut();
-        let pick = (0..FRAME_SLOTS).find(|&i| !a.meta[i].used).or_else(|| {
-            (0..FRAME_SLOTS).find(|&i| {
-                let n = a.meta[i].read_len as usize;
-                !is_canary(&a.pixels[i][..n])
-            })
-        });
+        let pick = (0..FRAME_SLOTS)
+            .find(|&i| !a.meta[i].used)
+            .or_else(|| (0..FRAME_SLOTS).find(|&i| slot_settled(&a, i)));
         let Some(i) = pick else {
             return Err(SceneDispatchError::NoFreeFrameSlot);
         };
         a.pixels[i] = [CANARY; MAX_FRAME_PIXELS];
-        a.meta[i] = FrameMeta { used: true, owner, width, height, read_len };
+        let accum_len = wf_accum_len(width, height);
+        a.wf_accum[i][..accum_len].fill(CANARY);
+        a.meta[i] = FrameMeta {
+            used: true,
+            owner,
+            width,
+            height,
+            read_len,
+            wf,
+        };
         Ok(i)
     })
+}
+
+/// wavefront 帧的 `accum` 读回字节数（`npix × 16`，上限 [`WF_ACCUM_MAX`]）。
+fn wf_accum_len(width: u32, height: u32) -> usize {
+    let npix = (width as usize).saturating_mul(height as usize);
+    npix.saturating_mul(16).min(WF_ACCUM_MAX)
+}
+
+/// 把某槽的 `wf_accum`（`array<vec4<f32>>` 的字节视图）换算进 `pixels`（RGBA8）。
+///
+/// 两个借用来自 `SceneArena` 的**不同字段**，故用一次解构把借用拆开——这是
+/// `(&a.wf_accum[i], &mut a.pixels[i])` 无法通过借用检查的唯一原因（同结构体
+/// 两个字段的同时可变/不可变借用，编译器不能从索引表达式推出不相交）。
+///
+/// 换算**幂等**：每次都从 accum 原字节重算，重复调用不会累积误差。
+fn wf_convert(a: &mut SceneArena, slot: usize, wf: WfKind, npix: usize) {
+    let SceneArena {
+        wf_accum, pixels, ..
+    } = a;
+    let accum: &[u8] = &wf_accum[slot];
+    let px: &mut [u8] = &mut pixels[slot];
+    for i in 0..npix {
+        let o = i * 16;
+        let d = i * 4;
+        if o + 16 > accum.len() || d + 4 > px.len() {
+            break;
+        }
+        match wf {
+            // compat：前 4 B 就是打包好的 RGBA8（小端 r,g,b,a）。
+            WfKind::Compat => px[d..d + 4].copy_from_slice(&accum[o..o + 4]),
+            // path：HDR `f32 × 3` → RGBA8（与 `Framebuffer::set_pixel` 同式）。
+            WfKind::Path => {
+                for c in 0..3 {
+                    let v = f32::from_le_bytes([
+                        accum[o + c * 4],
+                        accum[o + c * 4 + 1],
+                        accum[o + c * 4 + 2],
+                        accum[o + c * 4 + 3],
+                    ]);
+                    px[d + c] = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+                }
+                px[d + 3] = 255;
+            }
+            WfKind::None => break,
+        }
+    }
+}
+
+/// 槽位是否**已落盘**（按读回来源看对应的那块内存是否已不是哨兵）。
+fn slot_settled(a: &SceneArena, i: usize) -> bool {
+    let m = a.meta[i];
+    match m.wf {
+        WfKind::None => {
+            let n = m.read_len as usize;
+            n != 0 && n <= MAX_FRAME_PIXELS && !is_canary(&a.pixels[i][..n])
+        }
+        WfKind::Compat | WfKind::Path => {
+            let n = wf_accum_len(m.width, m.height);
+            n != 0 && !is_canary(&a.wf_accum[i][..n])
+        }
+    }
 }
 
 /// 归还一个**提交失败**的帧槽（该槽的读回从未登记，永远不会落盘）。
@@ -821,6 +938,304 @@ fn emit_frame(
 }
 
 // ---------------------------------------------------------------------------
+// wavefront 五段式（T6 / R-13 A6）—— WebGPU 侧
+// ---------------------------------------------------------------------------
+
+/// 每个 wavefront stage 的「组前缀」表：`(bind group 索引, 本组绑定个数)`。
+///
+/// # 为什么必须按 stage 裁剪（不能全给 14 条）
+///
+/// 宿主用 `pipeline.getBindGroupLayout(group)` + `createBindGroup`，而 pipeline 是
+/// `layout: "auto"`：它的每组建布局**只含该 entry 静态引用到的 binding**。给多了
+/// （或给少了）`createBindGroup` 直接验证失败并返回 0。
+///
+/// 所以这张表是**契约**，与 WGSL 的静态引用集逐条对应（`rt_wavefront.wgsl` /
+/// `rt_scene.wgsl` / `rt_shade.wgsl` 的 `@group/@binding` 声明 + 调用图）：
+///
+/// | stage | g0 | g1 | g2 | g3 |
+/// |---|---|---|---|---|
+/// | generate   | slots, params | sobol | scene_params | camera |
+/// | shade      | slots, params | sobol | scene_params … dir_lights（8） | — |
+/// | connect    | slots, params | — | — | — |
+/// | extend     | slots, params | sobol | scene_params … lights（5） | — |
+/// | accumulate | slots, params, accum | — | — | — |
+///
+/// `connect` 只搬槽位与读 `params`（MIS 权重在 `shade` 内已算），`accumulate` 多
+/// 一个输出 `accum`——两者都是「不给就不会被读」的最小集。
+pub(crate) const WF_STAGE_GROUPS: [&[(u32, u32)]; 5] = [
+    &[(0, 2), (1, 1), (2, 1), (3, 1)],
+    &[(0, 2), (1, 1), (2, 8)],
+    &[(0, 2)],
+    &[(0, 2), (1, 1), (2, 5)],
+    &[(0, 3)],
+];
+
+/// 5 条 wavefront pipeline 的缓存（5 个 entry 共用同一个 shader module）。
+///
+/// 与 [`PIPE`] / [`PIPE_V3`] 各自独立：源文件不同、绑定组数不同（这里是 4 组），
+/// 共用缓存会把 6 绑定的 V2 pipeline 错用于 14 绑定的 wavefront 派发。
+#[derive(Debug, Clone, Copy)]
+struct WavefrontPipes {
+    /// 所属 device 句柄。
+    device: GpuHandle,
+    /// 5 个 entry 的 pipeline（`0` = 未建）。
+    pipes: [GpuHandle; 5],
+}
+
+impl WavefrontPipes {
+    /// 空缓存。
+    const EMPTY: WavefrontPipes = WavefrontPipes {
+        device: 0,
+        pipes: [0; 5],
+    };
+}
+
+thread_local! {
+    /// wavefront 的 5 条 pipeline 缓存。
+    static PIPE_WF: RefCell<WavefrontPipes> = const { RefCell::new(WavefrontPipes::EMPTY) };
+}
+
+/// 确保拿到 5 条 wavefront compute pipeline（首次提交时真编译展开后的 WGSL）。
+fn ensure_wavefront_pipelines(device: GpuHandle) -> Result<[GpuHandle; 5], SceneDispatchError> {
+    let cached = PIPE_WF.with(|p| {
+        let c = *p.borrow();
+        if c.device == device && c.pipes.iter().all(|&h| h != 0) {
+            Some(c.pipes)
+        } else {
+            None
+        }
+    });
+    if let Some(pipes) = cached {
+        return Ok(pipes);
+    }
+    // `//!include` 必须在交给宿主之前展开（WebGPU 没有 include）。
+    let src = crate::shaders::expand("rt_wavefront.wgsl");
+    let module = gpu::create_shader_module(device, addr_of(src.as_bytes()), src.len() as u32);
+    if module == 0 {
+        return Err(SceneDispatchError::step("create_shader_module", NO_BINDING));
+    }
+    note_err_scope(); // 编译错误经 `getCompilationInfo()` 的 promise 回传
+    let mut pipes = [0u32; 5];
+    for (i, (entry, _)) in crate::vulkan::wavefront::STAGES.iter().enumerate() {
+        let h = gpu::create_compute_pipeline(
+            device,
+            module,
+            addr_of(entry.as_bytes()),
+            entry.len() as u32,
+        );
+        if h == 0 {
+            return Err(SceneDispatchError::step("create_compute_pipeline", i as u32));
+        }
+        pipes[i] = h;
+    }
+    PIPE_WF.with(|p| {
+        *p.borrow_mut() = WavefrontPipes { device, pipes };
+    });
+    Ok(pipes)
+}
+
+/// **wavefront 五段式的 WebGPU 提交**（真 GPU 路径；无设备由调用方回退 CPU）。
+///
+/// 与 [`submit_scene_frame`] 同一个竞技场、同一套「登记读回 → 宿主 settle」语义，
+/// 区别只在：5 条 pipeline、4 个 bind group、14 个 buffer，且读回落 `wf_accum`
+/// （`accum` 是 `vec4<f32>`，与像素区的 1:1 视图不同，见 [`WfKind`]）。
+///
+/// 资源表来自 [`crate::vulkan::wavefront::build_resources`]——**跨后端单一真源**：
+/// Vulkan 用它建 VkBuffer/descriptor，这里用它建 GPUBuffer/bind group，绑定
+/// 顺序与初始字节两端不可能漂移。
+pub(crate) fn submit_wavefront_frame(
+    device: GpuHandle,
+    req: &crate::vulkan::wavefront::WavefrontRequest,
+) -> Result<SceneFrame, SceneDispatchError> {
+    use crate::vulkan::wavefront::WavefrontMode;
+    if !cfg!(target_arch = "wasm32") {
+        // 与 `submit_frame` 同一口径：native 侧 `gpu::*` 是返回 0 的桩，
+        // 用 `cfg!` 而非 `#[cfg]` 让本函数在 native 下**仍然完整类型检查**。
+        return Err(SceneDispatchError::NotWasmTarget);
+    }
+    // ---- 0. 规模守卫（纯数据；与设备无关，故可单独测）----
+    wavefront_guard(req)?;
+    let npix = req.width * req.height;
+    let out_bytes = npix * 4;
+    let kind = match req.mode {
+        WavefrontMode::CpuRefCompat => WfKind::Compat,
+        WavefrontMode::Path => WfKind::Path,
+    };
+    let resources = crate::vulkan::wavefront::build_resources(req);
+    // 资源表形状是本文件的静态契约（stage 前缀表按它裁剪），先自检再上机。
+    if resources.len() != WF_BINDINGS_TOTAL {
+        return Err(SceneDispatchError::step("build_resources", NO_BINDING));
+    }
+    let pipes = ensure_wavefront_pipelines(device)?;
+    let slot = alloc_frame_slot_with(Owner::Render, req.width, req.height, out_bytes, kind)?;
+    match emit_wavefront(device, slot, req, &resources, &pipes) {
+        Ok(()) => Ok(SceneFrame {
+            slot,
+            width: req.width,
+            height: req.height,
+            read_len: out_bytes,
+        }),
+        Err(e) => {
+            release_frame_slot(slot);
+            Err(e)
+        }
+    }
+}
+
+
+/// wavefront 提交的**纯数据守卫**（零 GPU 依赖 ⇒ 无条件可测）。
+///
+/// 先判再建缓冲：超限请求不该走到 `create_buffer`（那会在浏览器里抛 4 次错，
+/// 而错误原因看起来像"胶水坏了"）。
+fn wavefront_guard(
+    req: &crate::vulkan::wavefront::WavefrontRequest,
+) -> Result<(), SceneDispatchError> {
+    if req.width == 0 || req.height == 0 || req.spp == 0 {
+        return Err(SceneDispatchError::EmptyFrame);
+    }
+    if req.width > MAX_FRAME_W {
+        return Err(SceneDispatchError::TooLarge {
+            what: "width",
+            need: req.width,
+            cap: MAX_FRAME_W,
+        });
+    }
+    if req.height > MAX_FRAME_H {
+        return Err(SceneDispatchError::TooLarge {
+            what: "height",
+            need: req.height,
+            cap: MAX_FRAME_H,
+        });
+    }
+    Ok(())
+}
+
+/// 资源表总条数（g0=3 + g1=2 + g2=8 + g3=1）。
+pub(crate) const WF_BINDINGS_TOTAL: usize = 14;
+
+/// wavefront 一次提交的实现体：14 个 buffer → 5×(bind group + dispatch) → 读回。
+fn emit_wavefront(
+    device: GpuHandle,
+    slot: usize,
+    req: &crate::vulkan::wavefront::WavefrontRequest,
+    resources: &[crate::vulkan::wavefront::Resource],
+    pipes: &[GpuHandle; 5],
+) -> Result<(), SceneDispatchError> {
+    // ---- 1. 14 个 buffer（uniform / storage 逐条按资源表决定）----
+    let mut bufs: Vec<GpuHandle> = Vec::with_capacity(resources.len());
+    for (i, r) in resources.iter().enumerate() {
+        let usage = if r.uniform {
+            usage::UNIFORM
+        } else {
+            usage::STORAGE
+        };
+        let h = gpu::create_buffer(device, buf_size(r.bytes.len()), usage);
+        if h == 0 {
+            return Err(SceneDispatchError::step("create_buffer", i as u32));
+        }
+        if !r.bytes.is_empty() && gpu::write_buffer(device, h, addr_of(&r.bytes), r.bytes.len() as u32) == 0
+        {
+            return Err(SceneDispatchError::step("write_buffer", i as u32));
+        }
+        bufs.push(h);
+    }
+    // ---- 2. 按 (group, binding) 分组：组内顺序 = 资源表顺序 ----
+    let mut groups: [Vec<GpuHandle>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+    for (i, r) in resources.iter().enumerate() {
+        let g = r.group as usize;
+        if g >= groups.len() {
+            return Err(SceneDispatchError::step("resource_group", i as u32));
+        }
+        // 绑定号必须与"组内第几个"一致：前缀语义靠这条不变量。
+        if r.binding as usize != groups[g].len() {
+            return Err(SceneDispatchError::step("resource_binding", i as u32));
+        }
+        groups[g].push(bufs[i]);
+    }
+    // ---- 3. 段计划（与 native 侧同一形状）----
+    let mut plan: Vec<usize> = Vec::new();
+    plan.push(0); // generate
+    for _ in 0..req.max_bounces.max(1) {
+        plan.push(1); // shade
+        plan.push(2); // connect
+        plan.push(3); // extend
+    }
+    plan.push(4); // accumulate
+    if let Some(k) = req.stage_stop {
+        plan.truncate(k.clamp(1, plan.len()));
+    }
+    // ---- 4. 每段：建本段的 bind group（布局由该 pipeline 决定）→ dispatch ----
+    for (step, &stage) in plan.iter().enumerate() {
+        let pipeline = pipes[stage];
+        let mut bg_count = 0u32;
+        for &(group, n) in WF_STAGE_GROUPS[stage] {
+            let g = group as usize;
+            let want = n as usize;
+            if g >= groups.len() || groups[g].len() < want {
+                return Err(SceneDispatchError::step("bind_group_prefix", group));
+            }
+            let ptr = ARENA.with(|a| {
+                let mut a = a.borrow_mut();
+                a.handles[..want].copy_from_slice(&groups[g][..want]);
+                a.handles.as_ptr() as usize as u32
+            });
+            let bg = gpu::create_bind_group(device, pipeline, group, ptr, n);
+            if bg == 0 {
+                return Err(SceneDispatchError::step("create_bind_group", group));
+            }
+            ARENA.with(|a| a.borrow_mut().bgs[bg_count as usize] = bg);
+            bg_count += 1;
+        }
+        let bgs_ptr = ARENA.with(|a| a.borrow().bgs.as_ptr() as usize as u32);
+        let groups_x = wavefront_workgroups(req, stage);
+        if gpu::dispatch(device, pipeline, bgs_ptr, bg_count, groups_x, 1, 1) == 0 {
+            return Err(SceneDispatchError::step("dispatch", step as u32));
+        }
+        note_err_scope();
+    }
+    if gpu::wait_idle(device) == 0 {
+        return Err(SceneDispatchError::step("wait_idle", NO_BINDING));
+    }
+    // ---- 5. 读回 accum（第 3 个资源）→ 本槽的 wf_accum 区 ----
+    let accum = bufs[2];
+    let accum_len = wf_accum_len(req.width, req.height);
+    let staging = gpu::read_buffer(device, accum, accum_len as u32);
+    if staging == 0 {
+        return Err(SceneDispatchError::step("read_buffer", 2));
+    }
+    let dst = ARENA.with(|a| a.borrow().wf_accum[slot].as_ptr() as usize as u32);
+    if gpu::copy_out(staging, dst, accum_len as u32) == 0 {
+        return Err(SceneDispatchError::step("copy_out", 2));
+    }
+    Ok(())
+}
+
+/// 某一段的工作组数（64 线程/组；`accumulate` 按像素数，其余按路径数）。
+fn wavefront_workgroups(
+    req: &crate::vulkan::wavefront::WavefrontRequest,
+    stage: usize,
+) -> u32 {
+    let n = if stage == 4 {
+        (req.width as u64) * (req.height as u64)
+    } else {
+        (req.width as u64) * (req.height as u64) * (req.spp as u64)
+    };
+    n.div_ceil(64).max(1) as u32
+}
+
+/// **wavefront 的设备门面**：提交本帧，交出**上一帧已落盘**的同尺寸像素。
+///
+/// 与 [`dispatch_scene_frame`] 完全同构（同一「一帧延迟」语义、同样的
+/// `NotSettledYet` 首帧信号），只是读回来源换成 `wf_accum`（见 [`WfKind`]）。
+pub(crate) fn dispatch_wavefront_frame(
+    device: GpuHandle,
+    req: &crate::vulkan::wavefront::WavefrontRequest,
+) -> Result<Vec<u8>, SceneDispatchError> {
+    let _frame = submit_wavefront_frame(device, req)?;
+    take_settled_render_frame(req.width, req.height).ok_or(SceneDispatchError::NotSettledYet)
+}
+
+// ---------------------------------------------------------------------------
 // 读回访问
 // ---------------------------------------------------------------------------
 
@@ -829,17 +1244,30 @@ fn emit_frame(
 /// 只取不可变借用，故可安全嵌套（比较两帧时用得上）。
 pub(crate) fn with_settled_pixels<R>(frame: SceneFrame, f: impl FnOnce(&[u8]) -> R) -> Option<R> {
     ARENA.with(|a| {
-        let a = a.borrow();
-        let meta = a.meta[frame.slot];
         let n = frame.read_len as usize;
-        if !meta.used || n == 0 || n > MAX_FRAME_PIXELS {
+        if n == 0 || n > MAX_FRAME_PIXELS {
             return None;
         }
-        let px = &a.pixels[frame.slot][..n];
-        if is_canary(px) {
+        let mut a = a.borrow_mut();
+        let meta = a.meta[frame.slot];
+        if !meta.used {
             return None;
         }
-        Some(f(px))
+        if meta.wf == WfKind::None {
+            let px = &a.pixels[frame.slot][..n];
+            if is_canary(px) {
+                return None;
+            }
+            return Some(f(px));
+        }
+        // wavefront：先判 `wf_accum` 是否已落盘，再把 `accum` 换算进 `pixels`
+        // （换算幂等：每次都用同一份 accum 原字节重算，重复读不会漂移）。
+        let accum_len = wf_accum_len(meta.width, meta.height);
+        if is_canary(&a.wf_accum[frame.slot][..accum_len]) {
+            return None;
+        }
+        wf_convert(&mut a, frame.slot, meta.wf, n / 4);
+        Some(f(&a.pixels[frame.slot][..n]))
     })
 }
 
@@ -863,9 +1291,19 @@ fn take_settled_render_frame(width: u32, height: u32) -> Option<Vec<u8>> {
             if !m.used || m.owner != Owner::Render || m.width != width || m.height != height {
                 return false;
             }
-            let n = m.read_len as usize;
-            n != 0 && n <= MAX_FRAME_PIXELS && !is_canary(&a.pixels[i][..n])
+            m.read_len != 0 && m.read_len as usize <= MAX_FRAME_PIXELS && slot_settled(&a, i)
         })?;
+        // wavefront 帧要先换算进 `pixels` 才能交出 RGBA8；转换逻辑与
+        // `with_settled_pixels` 同源（这里就地做一次，避免二次借用竞技场）。
+        let meta = a.meta[idx];
+        if meta.wf != WfKind::None {
+            let npix = (meta.read_len as usize) / 4;
+            let accum_len = wf_accum_len(meta.width, meta.height);
+            if is_canary(&a.wf_accum[idx][..accum_len]) {
+                return None;
+            }
+            wf_convert(&mut a, idx, meta.wf, npix);
+        }
         let n = a.meta[idx].read_len as usize;
         let px = a.pixels[idx][..n].to_vec();
         a.meta[idx].used = false;
@@ -1280,6 +1718,148 @@ mod tests {
         ARENA.with(|a| *a.borrow_mut() = SceneArena::new());
         PIPE.with(|p| *p.borrow_mut() = PipelineCache::EMPTY);
         let _ = take_err_scopes();
+    }
+
+    /// **静态门（无设备）**：wavefront 的资源表 / 组前缀表 / 段表三者的契约。
+    ///
+    /// 这条不做 GPU 调用，因此**任何环境都会执行**——它盯的是"接线形状"：
+    /// * 资源表恒 14 条，且**组内绑定号必须是 0..n-1 的连续前缀**
+    ///   （宿主把句柄数组第 i 个硬绑到 `binding:i`，不连续就整组错位）；
+    /// * 每个 stage 的前缀表不得超过该组的绑定总数；
+    /// * 组数 ≤ 4（WebGPU `maxBindGroups` 默认 4，开第 5 组直接越界）；
+    /// * 5 个 stage 的名字与 `vulkan::wavefront::STAGES` 逐个一致。
+    #[test]
+    fn wavefront_static_gate() {
+        use crate::vulkan::wavefront::{build_resources, WavefrontRequest, STAGES};
+
+        // 兼容模式的最小请求（球/灯/相机齐备，尺寸取竞技场上限内）。
+        let scene = small_request();
+        let req = WavefrontRequest::compat_from_scene(&scene);
+        let res = build_resources(&req);
+        assert_eq!(res.len(), WF_BINDINGS_TOTAL, "资源表必须是 14 条");
+        let mut per_group = [0usize; 4];
+        for (i, r) in res.iter().enumerate() {
+            let g = r.group as usize;
+            assert!(g < 4, "第 {i} 条落在 group({g})：WebGPU 只有 4 组");
+            assert_eq!(
+                r.binding as usize, per_group[g],
+                "group({g}) 的绑定号必须连续：第 {} 条是 binding {}",
+                per_group[g], r.binding
+            );
+            assert!(!r.bytes.is_empty() || r.uniform, "storage 缓冲不得为空");
+            per_group[g] += 1;
+        }
+        assert_eq!(per_group, [3, 2, 8, 1], "分组条数：g0=3 g1=2 g2=8 g3=1");
+
+        // 前缀表必须落在各组容量内，且组号单调递增（bind group 顺序即数组顺序）。
+        assert_eq!(WF_STAGE_GROUPS.len(), 5, "5 段");
+        for (stage, groups) in WF_STAGE_GROUPS.iter().enumerate() {
+            let mut last = 0u32;
+            for (k, &(g, n)) in groups.iter().enumerate() {
+                assert!(g < 4, "stage {stage} 用了 group({g})");
+                assert!(n as usize <= per_group[g as usize], "stage {stage} 组 {g} 要 {n} 个，只有 {} 个", per_group[g as usize]);
+                assert_eq!(g, k as u32, "stage {stage} 的组号必须是 0,1,2… 连续");
+                last = g;
+            }
+            assert!(last < 4);
+        }
+        // 段名与 native 派发器的 STAGES 同源。
+        assert_eq!(STAGES.len(), WF_STAGE_GROUPS.len());
+        assert_eq!(
+            STAGES.iter().map(|(e, _)| *e).collect::<Vec<_>>(),
+            vec!["generate", "shade", "connect", "extend", "accumulate"]
+        );
+    }
+
+    /// **静态门（无设备）**：native 目标下 wavefront 提交必须**如实报**「本目标无
+    /// WebGPU」，不得假装提交过（返回 `Ok` 会让调用方以为帧在飞）。
+    #[test]
+    fn submit_wavefront_on_native_reports_not_wasm_target() {
+        reset();
+        let scene = small_request();
+        let req = crate::vulkan::wavefront::WavefrontRequest::compat_from_scene(&scene);
+        let r = submit_wavefront_frame(0, &req);
+        assert_eq!(r.err(), Some(SceneDispatchError::NotWasmTarget));
+        // 门面同理：先提交失败 ⇒ 不会走到"取上一帧"。
+        let f = dispatch_wavefront_frame(0, &req);
+        assert_eq!(f.err(), Some(SceneDispatchError::NotWasmTarget));
+    }
+
+    /// **静态门（无设备）**：规模守卫先于任何 GPU 调用。
+    #[test]
+    fn submit_wavefront_refuses_oversized_without_gpu() {
+        reset();
+        let scene = small_request();
+        let mut req = crate::vulkan::wavefront::WavefrontRequest::compat_from_scene(&scene);
+        req.width = MAX_FRAME_W + 1;
+        match wavefront_guard(&req) {
+            Err(SceneDispatchError::TooLarge { what, need, cap }) => {
+                assert_eq!((what, need, cap), ("width", MAX_FRAME_W + 1, MAX_FRAME_W));
+            }
+            other => panic!("应报 TooLarge(width)，实得 {other:?}"),
+        }
+        req.width = 0;
+        assert_eq!(wavefront_guard(&req).err(), Some(SceneDispatchError::EmptyFrame));
+        // 目标门在最外层：native 上无论尺寸如何都先报 NotWasmTarget（与
+        // `submit_frame` 同序），不让"尺寸非法"掩盖"本目标没有 WebGPU"。
+        req.width = MAX_FRAME_W + 1;
+        assert_eq!(
+            submit_wavefront_frame(0, &req).err(),
+            Some(SceneDispatchError::NotWasmTarget)
+        );
+    }
+
+    /// **静态门（无设备）**：`wf_accum` 的换算（compat 直拷 / path 量化）与
+    /// 落盘判定都必须可独立验证——这些是"有设备"分支最后一步的唯一逻辑，
+    /// 不能等到浏览器里才发现方向反了。
+    #[test]
+    fn wavefront_accum_conversion_and_canary() {
+        reset();
+        // compat：accum 前 4 B 原样搬到像素
+        {
+            let slot = alloc_frame_slot_with(Owner::Render, 2, 1, 8, WfKind::Compat).unwrap();
+            ARENA.with(|a| {
+                let mut a = a.borrow_mut();
+                let accum = &mut a.wf_accum[slot];
+                // 每像素 16 B；compat 的打包 RGBA8 落在每 16 B 的**前 4 B**。
+                accum[0..4].copy_from_slice(&[1, 2, 3, 255]);
+                accum[16..20].copy_from_slice(&[4, 5, 6, 255]);
+                accum[4..16].fill(0);
+                accum[20..32].fill(0);
+            });
+            let px = with_settled_pixels(SceneFrame { slot, width: 2, height: 1, read_len: 8 }, |p| p.to_vec())
+                .expect("已落盘");
+            assert_eq!(px, vec![1, 2, 3, 255, 4, 5, 6, 255]);
+        }
+        reset();
+        // path：HDR → RGBA8
+        {
+            let slot = alloc_frame_slot_with(Owner::Render, 1, 1, 4, WfKind::Path).unwrap();
+            ARENA.with(|a| {
+                let mut a = a.borrow_mut();
+                let accum = &mut a.wf_accum[slot];
+                for (i, v) in [0.0f32, 0.5, 1.0, 0.0].iter().enumerate() {
+                    accum[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+                }
+                accum[16..].fill(0);
+            });
+            let px = with_settled_pixels(SceneFrame { slot, width: 1, height: 1, read_len: 4 }, |p| p.to_vec())
+                .expect("已落盘");
+            assert_eq!(px, vec![0, 128, 255, 255]);
+        }
+        reset();
+        // 未落盘：整段哨兵 ⇒ 交出 None（不得把哨兵当像素）
+        {
+            let slot = alloc_frame_slot_with(Owner::Render, 2, 1, 8, WfKind::Compat).unwrap();
+            assert!(
+                with_settled_pixels(
+                    SceneFrame { slot, width: 2, height: 1, read_len: 8 },
+                    |_| ()
+                )
+                .is_none(),
+                "哨兵未覆盖时不得交出像素"
+            );
+        }
     }
 
     fn small_request() -> SceneRenderRequest {

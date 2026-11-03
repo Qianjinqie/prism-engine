@@ -72,6 +72,25 @@ struct LightSample {
 @group(2) @binding(2) var<storage, read> prim_mat: array<u32>;    // prim → material 索引
 @group(2) @binding(3) var<storage, read> tris: array<Tri>;
 @group(2) @binding(4) var<storage, read> lights: array<Light>;
+// group(2) @binding(6)：**CpuRef 兼容模式**（W1）的球表。
+//
+// 为什么需要它：megakernel（`spirv_rt.rs`）的判对基准是 `CpuRefBackend` 的
+// 球面单弹射模型，而 `tris`/`materials` 表达不了"球心 + 半径 + 反照率"这套
+// 语义。绑定 6 只被 `shade` 的兼容分支静态引用，`shade` 的引用集因此是
+// {0,1,2,3,4,5,6,7} —— 仍是连续前缀；`extend` 仍是 {0,1,2,3,4}。
+//
+// # 为什么是 `array<f32>` 而不是 `struct Sphere`
+//
+// megakernel 的球表是**平铺 8 f32**（`center.xyz @0..11 / radius @12 /
+// albedo.xyz @13..23 / pad @28`）。WGSL 的 `vec3<f32>` 对齐 16，写成 struct
+// 会把 albedo 推到 16——与 megakernel 的字节流错位 4 字节。故这里按**字索引**
+// 读取（兼容模式专用；路径模式的 `tris`/`materials` 仍是结构体）。
+@group(2) @binding(6) var<storage, read> spheres: array<f32>;
+// group(2) @binding(7)：兼容模式的**方向光表**（megakernel 的平铺 8 f32：
+// `dir.xyz @0..11 / color.xyz @12..23 / intensity @24 / pad @28`）。
+// 与 `rt_scene::Light`（`position/radius/color` 的 std430 布局）**不是**
+// 同一份字节，故单开一条只读绑定；`shade` 的引用集因此是 {0..7}。
+@group(2) @binding(7) var<storage, read> dir_lights: array<f32>;
 
 struct SceneParams {
   material_count: u32,
@@ -81,7 +100,9 @@ struct SceneParams {
   ambient_r: f32,
   ambient_g: f32,
   ambient_b: f32,
-  _pad: f32,
+  // 原 `_pad`：现承载**球体个数**（CpuRef 兼容模式用；路径模式恒 0）。
+  // 位置/大小未动（u32 @ 28），故 32 字节的 uniform 布局与 W2 完全相同。
+  sphere_count: u32,
 }
 
 // ---- 顶点缓冲（三角形；group 2 binding 3）----

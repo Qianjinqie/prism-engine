@@ -504,6 +504,8 @@ pub(crate) struct DeviceFnTable {
     pub cmd_bind_descriptor_sets: Option<PfnVkCmdBindDescriptorSets>,
     /// `vkCmdDispatch`。
     pub cmd_dispatch: Option<PfnVkCmdDispatch>,
+    /// `vkCmdPipelineBarrier`（wavefront 多 stage 之间的全局内存屏障）。
+    pub cmd_pipeline_barrier: Option<PfnVkCmdPipelineBarrier>,
     /// `vkQueueSubmit`。
     pub queue_submit: Option<PfnVkQueueSubmit>,
     /// `vkQueueWaitIdle`。
@@ -596,6 +598,10 @@ impl DeviceFnTable {
                 PfnVkCmdBindDescriptorSets
             ),
             cmd_dispatch: bind!(c"vkCmdDispatch", PfnVkCmdDispatch),
+            cmd_pipeline_barrier: bind!(
+                c"vkCmdPipelineBarrier",
+                PfnVkCmdPipelineBarrier
+            ),
             queue_submit: bind!(c"vkQueueSubmit", PfnVkQueueSubmit),
             queue_wait_idle: bind!(c"vkQueueWaitIdle", PfnVkQueueWaitIdle),
             create_fence: bind!(c"vkCreateFence", PfnVkCreateFence),
@@ -955,6 +961,8 @@ pub const VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO: i32 = 39;
 pub const VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO: i32 = 40;
 /// `VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO`。
 pub const VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO: i32 = 42;
+/// `VK_STRUCTURE_TYPE_MEMORY_BARRIER`（wavefront 多 stage 之间的全局内存屏障）。
+pub const VK_STRUCTURE_TYPE_MEMORY_BARRIER: i32 = 46;
 
 /// `VK_SHADER_STAGE_COMPUTE_BIT`。
 pub const VK_SHADER_STAGE_COMPUTE_BIT: u32 = 0x0000_0020;
@@ -962,6 +970,16 @@ pub const VK_SHADER_STAGE_COMPUTE_BIT: u32 = 0x0000_0020;
 pub const VK_PIPELINE_BIND_POINT_COMPUTE: u32 = 1;
 /// `VK_DESCRIPTOR_TYPE_STORAGE_BUFFER`。
 pub const VK_DESCRIPTOR_TYPE_STORAGE_BUFFER: u32 = 7;
+/// `VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER`。
+pub const VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER: u32 = 6;
+/// `VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT`。
+pub const VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT: u32 = 0x0000_0010;
+/// `VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT`。
+pub const VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT: u32 = 0x0000_0800;
+/// `VK_ACCESS_SHADER_READ_BIT`。
+pub const VK_ACCESS_SHADER_READ_BIT: u32 = 0x0000_0020;
+/// `VK_ACCESS_SHADER_WRITE_BIT`。
+pub const VK_ACCESS_SHADER_WRITE_BIT: u32 = 0x0000_0040;
 /// `VK_BUFFER_USAGE_STORAGE_BUFFER_BIT`。
 pub const VK_BUFFER_USAGE_STORAGE_BUFFER_BIT: u32 = 0x0000_0020;
 /// `VK_SHARING_MODE_EXCLUSIVE`。
@@ -1165,6 +1183,15 @@ pub struct VkSubmitInfo {
     pub p_signal_semaphores: *const u64,
 }
 
+/// `VkMemoryBarrier`（`VK_STRUCTURE_TYPE_MEMORY_BARRIER`）。
+#[repr(C)]
+pub struct VkMemoryBarrier {
+    pub s_type: i32,
+    pub p_next: *const c_void,
+    pub src_access_mask: u32,
+    pub dst_access_mask: u32,
+}
+
 /// `VkFenceCreateInfo`。
 #[repr(C)]
 pub struct VkFenceCreateInfo {
@@ -1351,6 +1378,24 @@ pub type PfnVkCmdBindDescriptorSets = unsafe extern "system" fn(
 );
 /// `vkCmdDispatch`。
 pub type PfnVkCmdDispatch = unsafe extern "system" fn(VkCommandBuffer, u32, u32, u32);
+/// `vkCmdPipelineBarrier`。
+///
+/// 签名：`(cmd, src_stage, dst_stage, dependency_flags, memory_barrier_count,
+/// p_memory_barriers, buffer_barrier_count, p_buffer_barriers,
+/// image_barrier_count, p_image_barriers)`。wavefront 只用**全局内存屏障**
+/// （storage buffer 之间的 RAW/WAR），buffer/image 屏障计数恒 0。
+pub type PfnVkCmdPipelineBarrier = unsafe extern "system" fn(
+    VkCommandBuffer,
+    u32,
+    u32,
+    u32,
+    u32,
+    *const VkMemoryBarrier,
+    u32,
+    *const c_void,
+    u32,
+    *const c_void,
+);
 /// `vkQueueSubmit`。
 pub type PfnVkQueueSubmit =
     unsafe extern "system" fn(VkQueue, u32, *const VkSubmitInfo, VkFence) -> VkResult;

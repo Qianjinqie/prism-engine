@@ -8,6 +8,38 @@
 
 ## 渲染行为变化清单
 
+### R-2026-xx-09：修复 `rt_wavefront` 路径模式的 NEE 口径（入射方向翻了两次 ⇒ 直接光恒为 0；`cos` 乘了两次）
+
+- **受影响特性**：`prism-gpu` 的 **wavefront 五段式路径模式**（`rt_wavefront.wgsl` 的
+  `shade` 段，跑在 `crates/prism-gpu/src/vulkan/wavefront.rs` 的派发器上）。
+  受影响的是 `rt_shade.wgsl::nee_surface` 一条函数：
+  旧式 `eval_bsdf(load_material(0u), -w_in, ls.wi, n) * cos_l`，
+  新式 `eval_bsdf(load_material(prim), w_in, ls.wi, n)`。
+  **CPU 产品路径（`prism-rt::integrator`）与 megakernel（`spirv_rt.rs`）的代码零改动**，
+  故它们的输出字节不变。
+- **变化原因**：两处口径错误，都是"编译通过、跑得出图、只是数字不对"的那一类：
+  1. `bsdf.rs::eval` 的约定是第 2 参收**射线方向**（函数体内第一件事就是 `-w_in`）。
+     旧调用传 `-w_in`，等于把入射方向翻了两次 ⇒ `cos_i = dot(dir, n) < 0` ⇒
+     `eval_bsdf` 恒返回 0 ⇒ **NEE 整段失效**。真机现象：4 弹射图整幅 `rms = 0`
+     （只剩自发光命中与逃逸背景）。
+  2. `eval_bsdf` 的返回值已含 `* cos_o`（= `cos_l`），旧式再乘一次 `cos_l`，
+     等效把 Lambert 项按 `cos²` 加权。
+  3. 材质旧式硬编码 `load_material(0u)`，多材质场景下所有反射都被算成 0 号材质的颜色；
+     改为**命中图元**的材质（`nee_surface` 新增 `prim` 形参）。
+- **视觉影响描述**：**旧值 → 新值**（`prism-gpu/tests/qa_wavefront.rs`，64×48、
+  1 盏球面灯、2 种材质、spp=1、seed `0x5EED1234`）：
+  - 4 弹射：参照 RMS **0.0 → 0.08473**（旧值整幅全黑，`rms = 0` 会让 W3 的 PSNR 退化
+    成"两张黑图相等"的 ∞，判据因此失去意义）；
+  - 有光像素 **0/3072 → 1826/3072**；
+  - 4 vs 8 弹射：**PSNR 47.23 dB / 相对 RMSE 0.0513**（旧值不可测）。
+  能量方向只增不减（旧式少乘一次 `cos` 且 NEE 为 0），故这是**修复**而不是"调色"。
+- **是否有开关**：有——①`WavefrontMode::Path` 才会走到 `nee_surface`；兼容模式
+  （`CpuRefCompat`，W1 逐位对拍专用）与 megakernel 都不经过它，字节不受影响；
+  ②`WFParams.nee_only != 0` 时 `shade` 跳过 MNEE 焦散段（与 CPU 侧同一条开关语义）；
+  ③整条 wavefront 路径只在 `VulkanBackend::render_wavefront_frame` /
+  `WebGpuBackend::render_wavefront` 被显式调用时执行，既有产品出片路径
+  （`GpuDevice::render_scene` 走 megakernel）不受影响。
+
 ### R-2026-xx-08：修复 GI 存储布局对 `vec3<f32>` 的依赖（真机驱动 size 与规范不一致 → 字段整体错位）
 
 - **受影响特性**：`prism-gpu` 实时 GI 的 GPU 路径存储布局——`gi_compute.wgsl` 的四个

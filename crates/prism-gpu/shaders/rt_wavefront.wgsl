@@ -41,7 +41,13 @@ struct WFParams {
   global_seed: u32,
   node_id: u32,
   frame: u32,
-  _pad0: u32,
+  // 0 = 路径追踪（默认，W2 语义一行未改）；1 = CpuRef 兼容模式（W1 判据用）。
+  mode: u32,
+  // 与 megakernel 的 aesthetic 三个开关逐字段同义（兼容模式才读）。
+  teal_orange: u32,
+  contrast: f32,
+  contrast_on: u32,
+  filmic: u32,
   _pad1: u32,
 }
 
@@ -73,9 +79,37 @@ struct Camera {
   focus_distance: f32,
   shutter_open: f32,
   shutter_close: f32,
+  // 原结构体尾部填充（offset 84）：CpuRef 兼容模式需要 `cam.aspect` 原值
+  // （它可能不等于 width/height）。加在填充位上，uniform 仍是 96 字节。
+  aspect: f32,
 }
 // 独立 group(3)：只被 `generate`（经 cast_ray）引用，单绑定前缀 {0}。
 @group(3) @binding(0) var<uniform> camera: Camera;
+
+/// 路径模式：队列四阶段照旧（W2 语义）。
+const WF_MODE_PATH: u32 = 0u;
+/// CpuRef 兼容模式：**同一估计量**的 wavefront 组织（W1 判据用）。
+///
+/// 这不是"另一条近似路径"——它是 `CpuRefBackend::render_scene` 的逐式移植：
+/// 像素中心射线、球面最近命中、常数环境光 0.08、方向光单弹射、aesthetic
+/// 三段、`clamp01 → *255 → floor(+0.5)` 量化。写成 5 个 stage 是为了证明
+/// **派发器/绑定/队列语义**本身正确（与 megakernel 逐字节对拍），而不是
+/// 为了给产品再添一个渲染器：产品路径仍只走 `WF_MODE_PATH`。
+const WF_MODE_CPUREF: u32 = 1u;
+
+/// 与 `Vec3::dot` 同一求值树（`(x*x + y*y) + z*z`）。
+fn vdot3(a: vec3<f32>, b: vec3<f32>) -> f32 {
+  return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+/// 与 `Vec3::normalize` 同一求值树（逐分量除以 `sqrt(dot)`；退化返回零）。
+fn vnorm(v: vec3<f32>) -> vec3<f32> {
+  let len = sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+  if (len < 1e-8) {
+    return vec3<f32>(0.0, 0.0, 0.0);
+  }
+  return vec3<f32>(v.x / len, v.y / len, v.z / len);
+}
 
 // ---- 环境 CDF（A2 / W2）：挂在场景组 rt_scene 的尾部 ----
 //
@@ -143,9 +177,29 @@ fn generate(@builtin(global_invocation_id) gid: vec3<u32>) {
   let px = idx % params.width;
   let py = (idx / params.width) % params.height;
   let sample = idx / (params.width * params.height);
+  var s: PathSlot;
+  if (params.mode == WF_MODE_CPUREF) {
+    // CpuRef 兼容：像素中心射线（无抖动 / 无 DoF / 无快门）。
+    let nx = (2.0 * (f32(px) + 0.5) / f32(params.width) - 1.0)
+      * camera.tan_half_fov * camera.aspect;
+    let ny = (1.0 - 2.0 * (f32(py) + 0.5) / f32(params.height)) * camera.tan_half_fov;
+    // `nx` 含 aspect、`ny` 不含——与 `CpuRefBackend::render_scene_impl` 逐式相同。
+    let d = camera.forward + camera.right * nx + camera.up * ny;
+    s.origin = camera.eye;
+    s.dir = vnorm(d);
+    s.time = 0.0;
+    s.throughput = vec3<f32>(1.0, 1.0, 1.0);
+    s.radiance = vec3<f32>(0.0, 0.0, 0.0);
+    s.prev_pdf_dir = 0.0;
+    s.state = ST_ACTIVE;
+    s.bounce = 0u;
+    s.flags = 1u;
+    s.aux_steps = 0u;
+    slots[idx] = s;
+    return;
+  }
   let si = sample_index(px, py, sample, 0u);
   let ray = cast_ray(vec2<u32>(px, py), sample, si);
-  var s: PathSlot;
   s.origin = ray[0];
   s.dir = ray[1];
   s.time = 0.0;
@@ -160,6 +214,94 @@ fn generate(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 
 // ---- 着色 stage：NEE + 发光命中 + MNEE（对齐 integrator 主循环）----
+
+/// 兼容模式的 aesthetic 链（逐式移植 `crate::apply_aesthetic`）。
+///
+/// 顺序与常量逐字固定：teal-orange → contrast → Reinhard filmic → clamp01。
+/// 任何"约等于"都会让 W1 的逐字节对拍变成统计对拍。
+fn aesthetic_compat(c0: vec3<f32>) -> vec3<f32> {
+  var c = c0;
+  if (params.teal_orange != 0u) {
+    let luma = 0.299 * c.x + 0.587 * c.y + 0.114 * c.z;
+    let shadow = vec3<f32>(0.10, 0.35, 0.45) * c * (1.0 - luma) * 0.5;
+    let high = vec3<f32>(1.0, 0.7, 0.3) * c * luma * 0.5;
+    c = c * 0.6 + shadow + high;
+  }
+  if (params.contrast_on != 0u) {
+    c = (c - vec3<f32>(0.5, 0.5, 0.5)) * params.contrast
+      + vec3<f32>(0.5, 0.5, 0.5);
+  }
+  if (params.filmic != 0u) {
+    c = c / (c + vec3<f32>(1.0, 1.0, 1.0));
+  }
+  return vec3<f32>(
+    clampf(c.x, 0.0, 1.0),
+    clampf(c.y, 0.0, 1.0),
+    clampf(c.z, 0.0, 1.0));
+}
+
+/// CpuRef 兼容模式的一段式着色（`CpuRefBackend::render_scene_impl` 的逐式移植）。
+///
+/// 只消费 `spheres` / `lights` / `camera` 与 aesthetic 四个开关；**不读**
+/// `tris`/`materials`/`env_blob`。写出的是**已量化前的线性颜色**，量化在
+/// `accumulate` 里做（与 megakernel 的 `quantize` 同一处、同一式）。
+fn shade_compat(idx: u32) {
+  var s = slots[idx];
+  if (s.state != ST_ACTIVE) { return; }
+  // ---- 球面最近命中（`CpuRefBackend` 同式：`t = -b - sqrt(disc)`）----
+  let nspheres = min(scene_params.sphere_count, arrayLength(&spheres) / 8u);
+  var closest: f32 = 1e30;
+  var hit_idx: i32 = -1;
+  var i = 0u;
+  loop {
+    if (i >= nspheres) { break; }
+    let b0 = i * 8u;
+    let center = vec3<f32>(spheres[b0], spheres[b0 + 1u], spheres[b0 + 2u]);
+    let radius = spheres[b0 + 3u];
+    let oc = s.origin - center;
+    let b = vdot3(oc, s.dir);
+    let c = vdot3(oc, oc) - radius * radius;
+    let disc = b * b - c;
+    if (disc >= 0.0) {
+      let t = -b - sqrt(disc);
+      if (t > 0.0 && (hit_idx < 0 || t < closest)) {
+        closest = t;
+        hit_idx = i32(i);
+      }
+    }
+    i = i + 1u;
+  }
+
+  var color = vec3<f32>(0.04, 0.05, 0.08); // 背景（与 CpuRef 同值）
+  if (hit_idx >= 0) {
+    let hb = u32(hit_idx) * 8u;
+    let center = vec3<f32>(spheres[hb], spheres[hb + 1u], spheres[hb + 2u]);
+    let albedo = vec3<f32>(spheres[hb + 4u], spheres[hb + 5u], spheres[hb + 6u]);
+    let p = s.origin + s.dir * closest;
+    let n = vnorm(p - center);
+    let ambient = vec3<f32>(0.08, 0.08, 0.08);
+    var acc = vec3<f32>(0.0, 0.0, 0.0);
+    let nlights = min(scene_params.light_count, arrayLength(&dir_lights) / 8u);
+    var li = 0u;
+    loop {
+      if (li >= nlights) { break; }
+      // 兼容模式的灯布局 = megakernel 的平铺 8 f32：
+      // dir@0..2 / color@3..5 / intensity@6 / pad@7。
+      let lb = li * 8u;
+      let ldir = vec3<f32>(dir_lights[lb], dir_lights[lb + 1u], dir_lights[lb + 2u]);
+      let lcolor = vec3<f32>(dir_lights[lb + 3u], dir_lights[lb + 4u], dir_lights[lb + 5u]);
+      let lint = dir_lights[lb + 6u];
+      let diff = max(vdot3(n, ldir), 0.0);
+      let term = ambient + lcolor * (diff * lint);
+      acc = acc + albedo * term;
+      li = li + 1u;
+    }
+    color = acc;
+  }
+  s.radiance = aesthetic_compat(color);
+  s.state = ST_TERMINATED;
+  slots[idx] = s;
+}
 
 /// 逃逸射线看到的环境贡献（**BSDF 策略 + MIS**，逐句移植 `integrator.rs`
 /// 逃逸段；`rt_wavefront` 与 CPU 权威的唯一差别是"谁来推进队列"）。
@@ -196,6 +338,10 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
   let idx = gid.x;
   let total = params.width * params.height * params.spp;
   if (idx >= total) { return; }
+  if (params.mode == WF_MODE_CPUREF) {
+    shade_compat(idx);
+    return;
+  }
   var s = slots[idx];
   if (s.state != ST_ACTIVE) { return; }
   let ev = s.bounce + 1u;
@@ -211,8 +357,8 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
       let w = emissive_weight(s.flags, s.prev_pdf_dir, hit.prim, s.origin);
       s.radiance = s.radiance + clamp_indirect(hadamard(s.throughput, em) * w, ev);
     }
-    // NEE 直接光（反射域）。
-    s.radiance = s.radiance + nee_surface(p, n, s.dir, s.throughput, ev, s.aux_steps);
+    // NEE 直接光（反射域；材质取命中图元 `hit.prim`）。
+    s.radiance = s.radiance + nee_surface(p, n, s.dir, hit.prim, s.throughput, ev, s.aux_steps);
     // MNEE 焦散（k=2 球面折射链；对齐 caustics.rs::mnee_refraction）。
     if (params.nee_only == 0u) {
       s.radiance = s.radiance + mnee_caustics(p, n, s.dir, s.throughput, ev);
@@ -281,13 +427,34 @@ fn extend(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 
 // ---- 累积 stage：spp 均值（对齐 accum.rs::mean_samples 固定形状树语义）----
+
+/// `clamp01 → *255 → floor(x+0.5)`（与 megakernel 的 `quantize` 逐式相同）。
+fn quantize_compat(x: f32) -> u32 {
+  let clamped = clampf(x, 0.0, 1.0);
+  let scaled = clamped * 255.0;
+  let shifted = scaled + 0.5;
+  return u32(floor(shifted));
+}
+
 @compute @workgroup_size(64)
 fn accumulate(@builtin(global_invocation_id) gid: vec3<u32>) {
   let idx = gid.x;
   let npix = params.width * params.height;
   if (idx >= npix) { return; }
-  var sum = vec3<f32>(0.0, 0.0, 0.0);
   let base = idx * params.spp;
+  if (params.mode == WF_MODE_CPUREF) {
+    // 兼容模式：每样本值相同（无采样），直接取首个 slot，量化成 RGBA8 位型。
+    // 用 f32 承载 u32 位型是为了不改 `accum` 的 `array<vec4<f32>>` 声明
+    // （路径模式仍按 f32 HDR 读回）——宿主读回时按小端 u32 解释第一个分量。
+    let c = slots[base].radiance;
+    let qr = quantize_compat(c.x);
+    let qg = quantize_compat(c.y);
+    let qb = quantize_compat(c.z);
+    let packed = (255u << 24u) | (qb << 16u) | (qg << 8u) | qr;
+    accum[idx] = vec4<f32>(bitcast<f32>(packed), 0.0, 0.0, 1.0);
+    return;
+  }
+  var sum = vec3<f32>(0.0, 0.0, 0.0);
   var k = 0u;
   while (k < params.spp) {
     sum = sum + slots[base + k].radiance;

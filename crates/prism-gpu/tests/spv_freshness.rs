@@ -173,6 +173,8 @@ struct Row {
     entry: String,
     /// 产出该 `.spv` 的 naga 版本。
     naga: String,
+    /// SPIR-V 产物相对路径（第 6 列；同一 WGSL 多入口时靠它区分）。
+    spv: String,
     /// 行号（1 起，诊断用）。
     line: usize,
 }
@@ -186,9 +188,9 @@ fn parse_manifest(text: &str) -> Result<Vec<Row>, String> {
             continue;
         }
         let f: Vec<&str> = t.split_whitespace().collect();
-        if f.len() != 5 {
+        if f.len() != 6 {
             return Err(format!(
-                "清单第 {} 行字段数 {} ≠ 5（应为 wgsl_sha256 / spv_sha256 / wgsl路径 / entry / naga版本）：{t}",
+                "清单第 {} 行字段数 {} ≠ 6（应为 wgsl_sha256 / spv_sha256 / wgsl路径 / entry / naga版本 / spv路径）：{t}",
                 i + 1,
                 f.len()
             ));
@@ -199,6 +201,7 @@ fn parse_manifest(text: &str) -> Result<Vec<Row>, String> {
             wgsl: f[2].to_string(),
             entry: f[3].to_string(),
             naga: f[4].to_string(),
+            spv: f[5].to_string(),
             line: i + 1,
         });
     }
@@ -278,10 +281,10 @@ fn spv_artifacts_match_manifest_and_sources() {
     let mut seen: BTreeMap<String, ()> = BTreeMap::new();
     for row in &rows {
         assert!(
-            seen.insert(row.wgsl.clone(), ()).is_none(),
+            seen.insert(row.spv.clone(), ()).is_none(),
             "清单第 {} 行重复登记 {}",
             row.line,
-            row.wgsl
+            row.spv
         );
 
         let wgsl_path = root.join(&row.wgsl);
@@ -299,13 +302,9 @@ fn spv_artifacts_match_manifest_and_sources() {
         );
 
         // ---- 判据 2：二进制没被手改（或拷错文件）----
-        // 产物路径的约定：`<wgsl 所在目录>/spv/<wgsl 主名>.spv`（清单只登记源路径，
-        // 产物路径由这条约定推出——多一列就多一处可能不一致的地方）。
-        let stem = wgsl_path
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let spv_path = wgsl_path.with_file_name("spv").join(format!("{stem}.spv"));
+        // 产物路径由清单第 6 列直接给出（同一 WGSL 多入口 ⇒ 不能再用
+        // `<stem>.spv` 的命名约定推导）。
+        let spv_path = root.join(&row.spv);
         let spv_bytes = std::fs::read(&spv_path).unwrap_or_else(|e| {
             panic!(
                 "读不到 {}：{e}\n清单登记了它却不存在。修复：{FIX_CMD}",

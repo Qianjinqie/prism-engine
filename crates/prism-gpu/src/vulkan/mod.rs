@@ -116,6 +116,20 @@ pub mod background;
 /// 逐位一致是硬判据，跨后端视觉等价走统计阈值——见 `tests/qa_render_scene.rs`）。
 pub mod scene;
 
+/// **wavefront 五段式派发器**（R-13 A6 / T6）：`rt_wavefront.wgsl` 的 5 个
+/// `@compute` 入口（generate / shade / connect / extend / accumulate）跑在
+/// **同一张 command buffer** 上，段间用 `vkCmdPipelineBarrier`（memory barrier）
+/// 隔离读写；`.spv` 是入库产物（`tools/wgsl2spv --all` 生成，naga 30.0.1）。
+///
+/// 两种模式：
+/// * [`wavefront::WavefrontMode::Path`]——产品语义（路径追踪波前状态机，
+///   逐段与 CPU 版 `prism-rt::wavefront` 的派发循环同构）；
+/// * [`wavefront::WavefrontMode::CpuRefCompat`]——**逐表达式**移植
+///   [`crate::CpuRefBackend::render_scene`]，专供 W1 判据
+///   （wavefront 与 megakernel `spirv_rt` 在 llvmpipe 上
+///   `differing_pixels == 0`）走同一套绑定/队列/时序做逐位对拍。
+pub mod wavefront;
+
 /// **V3 十一绑定场景 kernel 的真机派发 harness**（D-21 / V6 第三条腿）。
 ///
 /// 只在**native 的测试构建**里存在：它读的是**入库产物**
@@ -611,6 +625,29 @@ impl VulkanBackend {
         #[cfg(target_arch = "wasm32")]
         {
             scene::dispatch((), req)
+        }
+    }
+
+    /// **出 wavefront 帧**（T6/R-13 A6：5 段 compute 派发 → 读回）。
+    ///
+    /// 与 [`VulkanBackend::render_scene_frame`] 并列：同一份设备上下文、同一套
+    /// 「无设备如实报错、不 panic、不造帧」纪律；区别只在 kernel 的段数与绑定。
+    /// `req.mode` 决定跑产品语义（[`wavefront::WavefrontMode::Path`]）还是
+    /// CpuRef 兼容模式（W1 逐位对拍专用）。
+    ///
+    /// 取 `&self`（不改后端状态）：每次派发自建 command buffer / descriptor
+    /// pool，跑完即销毁，后端对象保持可重入。
+    pub fn render_wavefront_frame(
+        &self,
+        req: &wavefront::WavefrontRequest,
+    ) -> wavefront::WavefrontReport {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            wavefront::dispatch(self.context.as_deref(), req)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            wavefront::dispatch((), req)
         }
     }
 

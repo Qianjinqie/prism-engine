@@ -5,6 +5,11 @@
 # 校验：cargo test -p prism-gpu --test spv_freshness
 #
 # 格式（每行，字段间两个空格）：
-#   <wgsl_sha256>  <spv_sha256>  <wgsl相对路径>  <entry>  <naga版本>
-7643d922d41eeab6fda03eb9a46ba37bf539f70cf45d34398212dad09afeb2c4  7e9debf0b67e16da096077e851e93c9f3105677f07eb202ce0457018be8237d0  crates/prism-gpu/shaders/scene_frame_v3.wgsl  scene_main  30.0.1
-23031dae52e716239452e80bf1ed525437942c9e4e70f84c5cab6dade8396f57  e052b9dc25165a206b9aaeca8a5be81d2640d782a5e7661571ce9e5133fab66e  crates/prism-gpu/shaders/rt_env_probe.wgsl  env_probe  30.0.1
+#   <wgsl_sha256>  <spv_sha256>  <wgsl相对路径>  <entry>  <naga版本>  <spv相对路径>
+7643d922d41eeab6fda03eb9a46ba37bf539f70cf45d34398212dad09afeb2c4  7e9debf0b67e16da096077e851e93c9f3105677f07eb202ce0457018be8237d0  crates/prism-gpu/shaders/scene_frame_v3.wgsl  scene_main  30.0.1  crates/prism-gpu/shaders/spv/scene_frame_v3.spv
+23031dae52e716239452e80bf1ed525437942c9e4e70f84c5cab6dade8396f57  e052b9dc25165a206b9aaeca8a5be81d2640d782a5e7661571ce9e5133fab66e  crates/prism-gpu/shaders/rt_env_probe.wgsl  env_probe  30.0.1  crates/prism-gpu/shaders/spv/rt_env_probe.spv
+ae749b044bc450644b0b175b60d31c5526a8457fc25ee49557f3fef9ca58fce9  6f5402314783ef8f7006137a32a2fbe352c95016abb36ea225b994ea9246d0ba  crates/prism-gpu/shaders/rt_wavefront.wgsl  generate  30.0.1  crates/prism-gpu/shaders/spv/rt_wavefront_generate.spv
+ae749b044bc450644b0b175b60d31c5526a8457fc25ee49557f3fef9ca58fce9  09a432309a058c327cb68972be3d77ace5b4c23cd82089a70613962d91b55761  crates/prism-gpu/shaders/rt_wavefront.wgsl  shade  30.0.1  crates/prism-gpu/shaders/spv/rt_wavefront_shade.spv
+ae749b044bc450644b0b175b60d31c5526a8457fc25ee49557f3fef9ca58fce9  99c62fa4c4583926c7e76a0e746e86296ea899e66d095b9bb3d1ba89858514a8  crates/prism-gpu/shaders/rt_wavefront.wgsl  connect  30.0.1  crates/prism-gpu/shaders/spv/rt_wavefront_connect.spv
+ae749b044bc450644b0b175b60d31c5526a8457fc25ee49557f3fef9ca58fce9  c5a23b9b3500a745475957bece9cfd224843e646d43595b364d5fe72d5c73a82  crates/prism-gpu/shaders/rt_wavefront.wgsl  extend  30.0.1  crates/prism-gpu/shaders/spv/rt_wavefront_extend.spv
+ae749b044bc450644b0b175b60d31c5526a8457fc25ee49557f3fef9ca58fce9  a6ce36cd122c43470f3e333ea551d63e692ae9d3e472b22bb5eeae6cf006b203  crates/prism-gpu/shaders/rt_wavefront.wgsl  accumulate  30.0.1  crates/prism-gpu/shaders/spv/rt_wavefront_accumulate.spv

@@ -141,11 +141,80 @@ impl WebGpuBackend {
             buffer_bindings: 3, // keys(read) + hist(atomic) + params(uniform)
         }]
     }
+
+    /// **wavefront 五段式出图**（T6 / R-13 A6）。WebGPU 侧的产品入口。
+    ///
+    /// 语义与 [`GpuDevice::render_scene`] 的 megakernel 分支完全对齐：
+    /// * 有设备 ⇒ 真提交 5 段（generate → [shade → connect → extend]×N →
+    ///   accumulate）并交出**上一帧已落盘**的像素（WebGPU 无阻塞读回，见
+    ///   [`crate::web::scene_gpu`] 的模块文档）；首帧必然拿不到 ⇒ 回退 CPU；
+    /// * 无设备 / wasm 之外的目标 / 规模超限 ⇒ 直接回退 CPU，**不 panic**。
+    ///
+    /// 与 `render_scene` 的差别只有一个：那条走 megakernel（单 kernel、6 绑定），
+    /// 这条走 5 段队列（14 绑定、4 个 bind group）。两条路径的**像素契约相同**
+    /// （`w*h*4` RGBA8），故调用方可按 `is_valid()` 互换。
+    pub fn render_wavefront(
+        &mut self,
+        req: &crate::vulkan::wavefront::WavefrontRequest,
+    ) -> crate::Framebuffer {
+        // 与 `render_scene` 同一纪律：不在 native 上 cfg 掉，让 wasm 侧的接线错误
+        // 在 `cargo test --workspace` 阶段就暴露。
+        if self.is_gpu_ready() {
+            if let Ok(px) =
+                crate::web::scene_gpu::dispatch_wavefront_frame(self.device_handle(), req)
+            {
+                let mut fb = crate::Framebuffer::new(req.width, req.height);
+                if fb.is_valid() && fb.pixels.len() == px.len() {
+                    fb.pixels.copy_from_slice(&px);
+                    return fb;
+                }
+            }
+        }
+        self.cpu_fallback
+            .render_scene(&wavefront_as_scene_request(req))
+    }
 }
 
 impl Default for WebGpuBackend {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// 把 wavefront 请求降级成"CPU 兜底能懂"的场景请求。
+///
+/// CPU 兜底（[`crate::CpuRefBackend`]）只认球 + 方向光；wavefront 的路径模式是
+/// 三角形 + 球面灯，两者**不是同一个估计量**。故这里只搬运能对得上的字段
+/// （相机 / 尺寸 / aesthetic + 兼容模式的球表），路径模式的三角形与球面灯在
+/// CPU 兜底里**不参与**——这会让兜底帧与 GPU 路径不等价，因此本函数的结果只
+/// 用于「设备不可用时仍给出可看的帧」，且调用方可通过
+/// [`crate::Framebuffer::is_valid`] 自行决定是否采用。
+fn wavefront_as_scene_request(
+    req: &crate::vulkan::wavefront::WavefrontRequest,
+) -> crate::SceneRenderRequest {
+    crate::SceneRenderRequest {
+        width: req.width,
+        height: req.height,
+        camera: req.camera.clone(),
+        // 兼容模式的 `lights` 是方向光（`position` 装的是已归一化的方向、
+        // `radius` 装的是强度，见 `WavefrontRequest::compat_from_scene`）；
+        // 路径模式的球面灯没有 CPU 兜底对应物，按"无灯"处理（保住环境光）。
+        lights: match req.mode {
+            crate::vulkan::wavefront::WavefrontMode::CpuRefCompat => req
+                .lights
+                .iter()
+                .map(|l| crate::LightReq {
+                    direction: l.position,
+                    color: l.color,
+                    intensity: l.radius,
+                })
+                .collect(),
+            crate::vulkan::wavefront::WavefrontMode::Path => Vec::new(),
+        },
+        spheres: req.spheres.clone(),
+        aesthetic: req.aesthetic.clone(),
+        curves: Vec::new(),
+        ..Default::default()
     }
 }
 

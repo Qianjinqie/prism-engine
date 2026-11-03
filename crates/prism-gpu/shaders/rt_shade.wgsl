@@ -198,7 +198,20 @@ fn sample_vndf(ve_local: vec3<f32>, alpha: f32, u1: f32, u2: f32) -> vec3<f32> {
 }
 
 // ---- NEE（对齐 light.rs::sample_nee）----
-fn nee_surface(p: vec3<f32>, n: vec3<f32>, w_in: vec3<f32>, throughput: vec3<f32>, ev: u32, aux_steps: u32) -> vec3<f32> {
+//
+// # 两处口径修正（T6 真机实测暴露，修的是估计量不是排版）
+//
+// 1. **入射方向别再加负号**：`eval_bsdf` 的第 2 参按 `bsdf.rs::eval` 的约定
+//    收「从表面指向来向的反向」——它内部第一件事就是 `-w_in`。旧调用传的是
+//    `-w_in`，等于把入射方向翻了两次 ⇒ `cos_i = dot(dir, n) < 0` ⇒
+//    `eval_bsdf` 恒返回 0 ⇒ **NEE 整段失效**（帧里只剩自发光与逃逸背景）。
+//    真机现象：4 弹射图 rms = 0。
+// 2. **不再二次乘 `cos_l`**：`eval_bsdf` 的返回值已含 `* cos_o`（= `cos_l`）；
+//    旧式再乘一次 `cos_l`，等效于把 Lambert 项按 `cos²` 加权（能量偏低）。
+//
+// 另：材质取**命中图元**的（旧式硬编码 `load_material(0u)`，多材质场景会把
+// 所有反射都算成 0 号材质的颜色）。
+fn nee_surface(p: vec3<f32>, n: vec3<f32>, w_in: vec3<f32>, prim: u32, throughput: vec3<f32>, ev: u32, aux_steps: u32) -> vec3<f32> {
   var acc = vec3<f32>(0.0, 0.0, 0.0);
   // 采样流种子按 (像素量化, 样本号) 打包：布尔比较不是合法实参（真机曾报类型错）。
   let seed_px = u32(max(p.x, 0.0)) * 8192u + u32(max(p.y, 0.0));
@@ -210,11 +223,11 @@ fn nee_surface(p: vec3<f32>, n: vec3<f32>, w_in: vec3<f32>, throughput: vec3<f32
     if (ls.pdf_w > 0.0) {
       let cos_l = vdot(n, ls.wi);
       if (cos_l > 0.0) {
-        let bsdf = eval_bsdf(load_material(0u), -w_in, ls.wi, n);
+        let bsdf = eval_bsdf(load_material(prim), w_in, ls.wi, n);
         let vis = shadow_ray(p + n * SURFACE_EPS, ls.wi, ls.dist);
         if (vis > 0.0) {
           let w = nee_mis_weight(li, ls.pdf_w, cos_l * FRAC_1_PI);
-          acc = acc + hadamard(hadamard(throughput, hadamard(bsdf, vec3<f32>(cos_l, cos_l, cos_l))), ls.radiance) * (vis * w / ls.pdf_w);
+          acc = acc + hadamard(hadamard(throughput, bsdf), ls.radiance) * (vis * w / ls.pdf_w);
         }
       }
     }
