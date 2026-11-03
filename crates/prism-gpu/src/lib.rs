@@ -701,6 +701,13 @@ impl CpuRefBackend {
         } else {
             Some(prism_geometry::bvh::Bvh::build(&curve_tris))
         };
+        // G-8 多 BLAS：`geom_id` 下标 → BLAS 树。CU/BLAS 的顺序与编码器
+        // **同一个入口**（`scene_abi::instance_blas`），不各算一份。
+        let geom_blas: Vec<prism_geometry::bvh::Bvh> = if inst.records.is_empty() {
+            Vec::new()
+        } else {
+            scene_abi::instance_blas(req)
+        };
 
         // --- Camera orthonormal basis -------------------------------------
         let forward = (cam.target - cam.eye).normalize();
@@ -768,12 +775,12 @@ impl CpuRefBackend {
                 // 解码）、同一 `CURVE_T_MIN`、同一 1e30 空界、同一 world t。
                 let mut inst_hit: Option<crate::instance::InstanceHit> = None;
                 if inst_active {
-                    if let Some(bvh) = &curve_bvh {
+                    if !geom_blas.is_empty() {
                         let t_max_inst = if hit.is_some() { closest_t } else { 1e30 };
                         if let Some(h) = crate::instance::instance_nearest(
                             &inst.nodes,
                             &inst.records,
-                            bvh,
+                            &geom_blas,
                             origin,
                             dir,
                             CURVE_T_MIN,

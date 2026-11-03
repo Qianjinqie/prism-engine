@@ -668,7 +668,33 @@ impl SceneAbi {
         // V3 球块：V2 的 8 槽前缀逐字节不变 + 尾部 4 个贴图句柄。
         let spheres = encode_spheres_v3(&req.spheres);
         let lights = encode_lights(&req.lights);
-        let (tris, nodes) = encode_curve_buffers(&req.curves);
+        // ---- G-8：BLAS 块（每 `geom_id` 一个）------------------------------
+        //
+        // 三档语义（按"谁提供几何"分）：
+        // * `instances` 为空 ⇒ 既有路径：`triangles`/`nodes` = `req.curves` 的
+        //   **世界几何**，没有 BLAS 表（W1/W2 的产物逐字节不变）；
+        // * `instances` 非空 + `geo.instance_geoms` 为空 ⇒ W3 的单 BLAS 剖面：
+        //   geom 0 = `req.curves` 那一个 BLAS（`INSTANCE_GEOM_SHARED` 的旧语义）；
+        // * `instances` 非空 + `geo.instance_geoms` 非空 ⇒ geom g =
+        //   `instance_geoms[g]`，**每个原型一个 BLAS**，节点块顺序拼接，
+        //   实例记录的槽 27 存它那一块的节点起点。
+        let world = encode_curve_buffers(&req.curves);
+        let blas: Vec<BlasBlock> = if instances.is_empty() {
+            Vec::new()
+        } else {
+            encode_blas_blocks(req)
+        };
+        let (tris, nodes): (Vec<u8>, Vec<u8>) = if blas.is_empty() {
+            world
+        } else {
+            let mut tb: Vec<u8> = Vec::new();
+            let mut nb: Vec<u8> = Vec::new();
+            for b in &blas {
+                tb.extend_from_slice(&b.tri_bytes);
+                nb.extend_from_slice(&b.node_bytes);
+            }
+            (tb, nb)
+        };
         put_u32(
             &mut params,
             P_NUM_TRIS as usize,
@@ -748,25 +774,37 @@ impl SceneAbi {
             if instances.is_empty() {
                 (Vec::new(), Vec::new(), 0u32, 0u32)
             } else {
+                // G-8：`geom_id` 是 BLAS 表的下标（0 起）。越界 ⇒ Err（不静默
+                // 退化成"命中别的原型"——那会变成一帧看起来正常、几何错的画）。
+                let n_geom: u32 = blas.len() as u32;
                 for (i, inst) in instances.iter().enumerate() {
-                    if inst.geom_id != INSTANCE_GEOM_SHARED {
+                    if inst.geom_id >= n_geom {
                         return Err(format!(
-                            "实例 {i} 的 geom_id = {} ≠ {INSTANCE_GEOM_SHARED}：\
-                             V3 剖面只有**一个** BLAS（`triangles`/`nodes` 就是它）；\
-                             多原型需要再开两块缓冲，W3 未做（不是漏：判据只要一个共享原型）",
+                            "实例 {i} 的 geom_id = {} 越界：本帧只有 {n_geom} 个 BLAS\
+                             （`geo.instance_geoms` 提供 N 个；为空时降级为 `curves` 那一个）",
                             inst.geom_id
                         ));
                     }
                 }
-                let (pmin, pmax) = prototype_bounds(&tris).ok_or_else(|| {
-                    "实例表非空但原型几何为空：实例需要有东西可实例化\
-                     （V3 剖面用 `triangles`/`nodes` 承载那一个 BLAS）"
-                        .to_string()
-                })?;
-                let set = crate::instance::build_instance_set(instances, pmin, pmax);
+                let bounds: Vec<(Vec3, Vec3)> = blas
+                    .iter()
+                    .map(|b| match prototype_bounds(&b.tri_bytes) {
+                        Some(v) => v,
+                        None => (Vec3::splat(0.0), Vec3::splat(0.0)),
+                    })
+                    .collect();
+                if bounds.is_empty() {
+                    return Err(
+                        "实例表非空但原型几何为空：实例需要有东西可实例化\
+                         （`geo.instance_geoms` 或 `curves` 至少一个非空）"
+                            .to_string(),
+                    );
+                }
+                let node_bases: Vec<u32> = blas.iter().map(|b| b.node_base).collect();
+                let set = crate::instance::build_instance_set(instances, &bounds, &node_bases);
                 let nodes_len = (set.nodes.len() / (NODE_SLOTS as usize * 4)) as u32;
                 (
-                    crate::instance::encode_instances(&set.instances),
+                    crate::instance::encode_instance_set(&set),
                     set.nodes,
                     set.instances.len() as u32,
                     nodes_len,
@@ -1275,6 +1313,159 @@ pub fn encode_lights(lights: &[LightReq]) -> Vec<u8> {
 /// 步长分别为 [`TRIANGLE_SLOTS`] / [`NODE_SLOTS`] 个 f32。
 ///
 /// 空曲线 ⇒ 两份缓冲皆空（WGSL 遍历段按 `num_tris == 0` 整段跳过）。
+/// 一个原型几何的 BLAS 块（G-8 多 BLAS 的宿主侧编码产物）。
+///
+/// # 为什么块内自带 `tri_base` / `node_base`
+///
+/// 三后端只读**一份** `triangles` 与**一份** `nodes`。多原型时把它们顺序拼接：
+/// 叶子节点的 `start` 必须是**拼接后**的绝对三角形槽（shader 直接
+/// `tris[start + i]`），而节点下标保持在块内相对（`l = id + 1`、`right_child`
+/// 都是块内量），块起点另存进实例记录的槽 27。两处偏移各有各的口径，
+/// 写在这里而不是让调用方各算一遍。
+pub struct BlasBlock {
+    /// 三角形槽字节（已按 BVH 的 `tris` 重排；叶子 `start` 已加上 `tri_base`）。
+    pub tri_bytes: Vec<u8>,
+    /// 节点槽字节（块内相对下标）。
+    pub node_bytes: Vec<u8>,
+    /// 本块第一个三角形在拼接缓冲里的槽号。
+    pub tri_base: u32,
+    /// 本块第一个节点在拼接缓冲里的节点号。
+    pub node_base: u32,
+    /// 本块的三角形数。
+    pub tri_count: u32,
+    /// 本块的节点数。
+    pub node_count: u32,
+}
+
+impl BlasBlock {
+    /// 从一个三角形流建块（`tri_base` / `node_base` 由调用方按拼接顺序给）。
+    pub fn build(
+        tris: &[prism_geometry::bvh::Triangle],
+        tri_base: u32,
+        node_base: u32,
+    ) -> Option<Self> {
+        if tris.is_empty() {
+            return None;
+        }
+        let bvh = prism_geometry::bvh::Bvh::build(tris);
+        if bvh.tris.is_empty() || bvh.nodes.is_empty() {
+            return None;
+        }
+        let mut tri_bytes = Vec::with_capacity(bvh.tris.len() * TRIANGLE_SLOTS as usize * 4);
+        for t in &bvh.tris {
+            let mut block = [0u8; TRIANGLE_SLOTS as usize * 4];
+            put_f32(&mut block, 0, t.a.x);
+            put_f32(&mut block, 1, t.a.y);
+            put_f32(&mut block, 2, t.a.z);
+            put_f32(&mut block, 4, t.b.x);
+            put_f32(&mut block, 5, t.b.y);
+            put_f32(&mut block, 6, t.b.z);
+            put_f32(&mut block, 8, t.c.x);
+            put_f32(&mut block, 9, t.c.y);
+            put_f32(&mut block, 10, t.c.z);
+            tri_bytes.extend_from_slice(&block);
+        }
+        let mut node_bytes = Vec::with_capacity(bvh.nodes.len() * NODE_SLOTS as usize * 4);
+        for nd in &bvh.nodes {
+            let mut block = [0u8; NODE_SLOTS as usize * 4];
+            put_f32(&mut block, 0, nd.bounds.min.x);
+            put_f32(&mut block, 1, nd.bounds.min.y);
+            put_f32(&mut block, 2, nd.bounds.min.z);
+            put_f32(&mut block, 4, nd.bounds.max.x);
+            put_f32(&mut block, 5, nd.bounds.max.y);
+            put_f32(&mut block, 6, nd.bounds.max.z);
+            // 叶子 `start` **加块内偏移**：拼接后 shader 用全局三角形槽索引。
+            put_u32(
+                &mut block,
+                8,
+                if nd.count > 0 { nd.start.saturating_add(tri_base) } else { nd.start },
+            );
+            put_u32(&mut block, 9, nd.count);
+            put_u32(&mut block, 10, nd.right_child);
+            node_bytes.extend_from_slice(&block);
+        }
+        Some(Self {
+            tri_bytes,
+            node_bytes,
+            tri_base,
+            node_base,
+            tri_count: bvh.tris.len() as u32,
+            node_count: bvh.nodes.len() as u32,
+        })
+    }
+}
+
+/// `MeshReq` → 三角形流（越界/非有限 ⇒ 该三角形剔除，与 `Mesh::new` 同口径）。
+fn mesh_triangles(m: &crate::MeshReq) -> Vec<prism_geometry::bvh::Triangle> {
+    let n = m.positions.len();
+    let finite = |v: Vec3| v.x.is_finite() && v.y.is_finite() && v.z.is_finite();
+    let mut out: Vec<prism_geometry::bvh::Triangle> = Vec::with_capacity(m.indices.len() / 3);
+    for c in m.indices.chunks_exact(3) {
+        let (i0, i1, i2) = (c[0] as usize, c[1] as usize, c[2] as usize);
+        if i0 >= n || i1 >= n || i2 >= n {
+            continue;
+        }
+        let (a, b, d) = (m.positions[i0], m.positions[i1], m.positions[i2]);
+        if !finite(a) || !finite(b) || !finite(d) {
+            continue;
+        }
+        out.push(prism_geometry::bvh::Triangle { a, b, c: d });
+    }
+    out
+}
+
+/// **CPU 权威**：本帧每个 `geom_id` 对应的 BLAS 树（与 GPU 读同一份三角形）。
+///
+/// 顺序即 `geom_id` 下标：
+/// * `geo.instance_geoms` 非空 ⇒ 一项一个原型（`instance_geoms[g]`）；
+/// * 否则 ⇒ 一项 = `curves` 那一棵（W3 的单 BLAS 语义）。
+///
+/// 编码器（[`BlasBlock::build`]）与 CPU 参考都从本函数取几何，**不各算一份**：
+/// "ABI 编码 ≡ CPU 权威逐字节"这条判据的结构前提就是这个唯一入口。
+pub fn instance_blas(req: &SceneRenderRequest) -> Vec<prism_geometry::bvh::Bvh> {
+    if !req.geo.instance_geoms.is_empty() {
+        return req
+            .geo
+            .instance_geoms
+            .iter()
+            .map(|m| prism_geometry::bvh::Bvh::build(&mesh_triangles(m)))
+            .collect();
+    }
+    let tris = prism_geometry::curve_tess::tessellate_all(&req.curves, CURVE_TESS_TOL);
+    if tris.is_empty() {
+        Vec::new()
+    } else {
+        vec![prism_geometry::bvh::Bvh::build(&tris)]
+    }
+}
+
+/// 把 [`instance_blas`] 的每一棵树编成 [`BlasBlock`]（顺序拼接，偏移自动累加）。
+fn encode_blas_blocks(req: &SceneRenderRequest) -> Vec<BlasBlock> {
+    let trees = instance_blas(req);
+    let src: Vec<Vec<prism_geometry::bvh::Triangle>> = if !req.geo.instance_geoms.is_empty() {
+        req.geo.instance_geoms.iter().map(mesh_triangles).collect()
+    } else {
+        vec![prism_geometry::curve_tess::tessellate_all(&req.curves, CURVE_TESS_TOL)]
+    };
+    let mut out: Vec<BlasBlock> = Vec::with_capacity(src.len());
+    let mut tri_base: u32 = 0;
+    let mut node_base: u32 = 0;
+    for (g, tris) in src.iter().enumerate() {
+        let _ = &trees;
+        let Some(b) = BlasBlock::build(tris, tri_base, node_base) else {
+            // 空原型：**保留一个空槽**会让 `geom_id` 错位，故直接跳过并把
+            // 它的 `geom_id` 变成越界（编码前的校验会报 Err）。这里返回空表
+            // 的语义是"没有可实例化的几何"。
+            continue;
+        };
+        tri_base = tri_base.saturating_add(b.tri_count);
+        node_base = node_base.saturating_add(b.node_count);
+        out.push(b);
+        let _ = g;
+    }
+    out
+}
+
 pub fn encode_curve_buffers(curves: &[prism_geometry::curve_tess::CurveReq]) -> (Vec<u8>, Vec<u8>) {
     if curves.is_empty() {
         return (Vec::new(), Vec::new());

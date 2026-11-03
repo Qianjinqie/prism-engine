@@ -776,6 +776,248 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // G-8 / T4：多 BLAS（每 geom_id 一个原型）
+    // -----------------------------------------------------------------------
+
+    /// 原型 A：三角化立方体（`half` = 半边长）。
+    fn proto_box(half: f32) -> crate::MeshReq {
+        let mut pos: Vec<Vec3> = Vec::with_capacity(8);
+        for &z in &[-half, half] {
+            for &y in &[-half, half] {
+                for &x in &[-half, half] {
+                    pos.push(Vec3::new(x, y, z));
+                }
+            }
+        }
+        let idx: Vec<u32> = vec![
+            0, 1, 3, 0, 3, 2, 4, 6, 7, 4, 7, 5, 0, 4, 5, 0, 5, 1, 2, 3, 7, 2, 7, 6, 1, 5, 7, 1, 7,
+            3, 0, 2, 6, 0, 6, 4,
+        ];
+        crate::MeshReq {
+            positions: pos,
+            indices: idx,
+            uv: Vec::new(),
+            displacement: None,
+            crease: Vec::new(),
+            corners: Vec::new(),
+        }
+    }
+
+    /// 原型 B：正八面体（`r` = 半径；12 个三角形，与立方体的三角数差得远，
+    /// 便于用"三角形总数"反查两块 BLAS 真的都编进去了）。
+    fn proto_octa(r: f32) -> crate::MeshReq {
+        let pos = vec![
+            Vec3::new(r, 0.0, 0.0),
+            Vec3::new(-r, 0.0, 0.0),
+            Vec3::new(0.0, r, 0.0),
+            Vec3::new(0.0, -r, 0.0),
+            Vec3::new(0.0, 0.0, r),
+            Vec3::new(0.0, 0.0, -r),
+        ];
+        let idx: Vec<u32> = vec![
+            0, 2, 4, 2, 1, 4, 1, 3, 4, 3, 0, 4, 2, 0, 5, 1, 2, 5, 3, 1, 5, 0, 3, 5,
+        ];
+        crate::MeshReq {
+            positions: pos,
+            indices: idx,
+            uv: Vec::new(),
+            displacement: None,
+            crease: Vec::new(),
+            corners: Vec::new(),
+        }
+    }
+
+    /// 读回三角形槽流（`array<f32>` 视角 → `(a, b, c)` 逐位）。
+    fn decode_tri_slots(bytes: &[u8]) -> Vec<(Vec3, Vec3, Vec3)> {
+        let stride = crate::scene_abi::TRIANGLE_SLOTS as usize * 4;
+        let rd = |b: &[u8], off: usize| -> f32 {
+            f32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
+        };
+        let mut out: Vec<(Vec3, Vec3, Vec3)> = Vec::new();
+        for block in bytes.chunks_exact(stride) {
+            let mut v = [Vec3::splat(0.0); 3];
+            for (k, base) in [0usize, 4, 8].into_iter().enumerate() {
+                v[k] = Vec3::new(
+                    rd(block, base * 4),
+                    rd(block, base * 4 + 4),
+                    rd(block, base * 4 + 8),
+                );
+            }
+            out.push((v[0], v[1], v[2]));
+        }
+        out
+    }
+
+    /// 读回实例记录的槽 27（`node_base`）。
+    fn decode_node_bases(bytes: &[u8]) -> Vec<u32> {
+        let stride = crate::instance::INSTANCE_BYTES;
+        let off = crate::instance::INSTANCE_NODE_BASE_OFFSET * 4;
+        bytes
+            .chunks_exact(stride)
+            .map(|b| u32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]]))
+            .collect()
+    }
+
+    /// **G-8 / T4：两原型 × 各 2 实例（多 BLAS）。**
+    ///
+    /// 判据（四条，一条都不放宽）：
+    /// 1. **GPU（llvmpipe）≡ CPU 参考**：`differing_pixels = 0` 且
+    ///    `max_channel_delta = 0`（软件 ICD 硬判据）；
+    /// 2. **双跑逐字节**：编码两遍字节全等、派发两遍读回全等；
+    /// 3. **ABI ≡ CPU 权威逐字节**：`triangles` 解回来必须与
+    ///    `scene_abi::instance_blas` 的 `bvh.tris` 顺序拼接**逐位相同**，
+    ///    实例槽 27 必须等于该原型的节点块起点；
+    /// 4. **每个 `geom_id` 真的查自己的块**：两个原型的三角数不同（12 vs 8），
+    ///    若哪个实例查错了块，画面必然分叉（第 1 条会红）。
+    #[test]
+    fn g8_two_prototypes_multi_blas_match_cpu_reference() {
+        let mut req = scene_spheres(AestheticReq {
+            teal_orange: false,
+            contrast: 1.0,
+            filmic: false,
+        });
+        // 世界几何全清：本判据只量实例（球/曲线若也在场，差异归因会变浑）。
+        req.spheres.clear();
+        req.curves.clear();
+        req.geo.instance_geoms = vec![proto_box(0.55), proto_octa(0.62)];
+
+        let instances = [
+            InstanceReq::scale_translate(
+                Vec3::splat(1.0),
+                Vec3::new(-1.55, 0.25, 0.0),
+                0,
+                crate::instance::INSTANCE_MAT_FROM_GEOM,
+            )
+            .expect("单位仿射可逆"),
+            InstanceReq::scale_translate(
+                Vec3::splat(0.8),
+                Vec3::new(-0.55, -0.35, 0.2),
+                0,
+                crate::instance::INSTANCE_MAT_FROM_GEOM,
+            )
+            .expect("均匀缩放可逆"),
+            InstanceReq::scale_translate(
+                Vec3::splat(1.0),
+                Vec3::new(0.6, 0.3, -0.1),
+                1,
+                crate::instance::INSTANCE_MAT_FROM_GEOM,
+            )
+            .expect("单位仿射可逆"),
+            InstanceReq::scale_translate(
+                Vec3::splat(0.7),
+                Vec3::new(1.55, -0.3, 0.15),
+                1,
+                crate::instance::INSTANCE_MAT_FROM_GEOM,
+            )
+            .expect("均匀缩放可逆"),
+        ];
+
+        // ---- 判据 3：ABI ≡ CPU 权威（逐字节/逐位）----
+        let buffers = crate::scene_abi::SceneAbi::encode_v3_instanced(&req, &[], None, &instances)
+            .expect("两原型编码必须成功");
+        let trees = crate::scene_abi::instance_blas(&req);
+        assert_eq!(trees.len(), 2, "两个原型必须各有一个 BLAS");
+        let want_tris: Vec<(Vec3, Vec3, Vec3)> = trees
+            .iter()
+            .flat_map(|b| b.tris.iter().map(|t| (t.a, t.b, t.c)))
+            .collect();
+        let got_tris = decode_tri_slots(&buffers.triangles);
+        assert_eq!(got_tris.len(), want_tris.len(), "三角形总数必须等于两块 BLAS 之和");
+        for (i, (g, w)) in got_tris.iter().zip(want_tris.iter()).enumerate() {
+            for (a, b) in [(g.0, w.0), (g.1, w.1), (g.2, w.2)] {
+                assert_eq!(
+                    (a.x.to_bits(), a.y.to_bits(), a.z.to_bits()),
+                    (b.x.to_bits(), b.y.to_bits(), b.z.to_bits()),
+                    "第 {i} 个三角形槽与 CPU 权威不逐位相同"
+                );
+            }
+        }
+        let base1: u32 = trees[0].nodes.len() as u32;
+        let bases = decode_node_bases(&buffers.instances);
+        assert_eq!(bases.len(), 4, "四条实例");
+        assert_eq!(
+            bases.iter().filter(|b| **b == 0).count(),
+            2,
+            "geom 0 的实例槽 27 必须是 0（块起点）"
+        );
+        assert_eq!(
+            bases.iter().filter(|b| **b == base1).count(),
+            2,
+            "geom 1 的实例槽 27 必须是第一块节点数（= {base1}）"
+        );
+
+        // ---- 判据 2：编码双跑逐字节 ----
+        let buffers2 = crate::scene_abi::SceneAbi::encode_v3_instanced(&req, &[], None, &instances)
+            .expect("二次编码必须成功");
+        assert_eq!(buffers.triangles, buffers2.triangles, "双跑三角形字节不一致");
+        assert_eq!(buffers.nodes, buffers2.nodes, "双跑节点字节不一致");
+        assert_eq!(buffers.instances, buffers2.instances, "双跑实例字节不一致");
+        assert_eq!(buffers.instance_nodes, buffers2.instance_nodes, "双跑 TLAS 字节不一致");
+
+        // ---- 判据 1：GPU ≡ CPU 参考 ----
+        let mut cpu = CpuRefBackend;
+        let cpu_ref = cpu
+            .render_scene_instanced(&req, &[], &instances)
+            .expect("CPU 参考的实例编码必须成功");
+        assert!(cpu_ref.is_valid());
+        let lit = (0..(64 * 48))
+            .filter(|i| {
+                let p = cpu_ref.get_pixel(i % 64, i / 64).unwrap();
+                p[0] > 20 || p[1] > 20 || p[2] > 24
+            })
+            .count();
+        assert!(lit >= 300, "四个实例应覆盖画面，实测 {lit} 个非背景像素");
+
+        let backend = VulkanBackend::new();
+        if !device_ready(&backend) {
+            println!("无可用设备：GPU 侧 0 差异判据跳过（实机项 = 永不进门禁）");
+            return;
+        }
+        let words = load_committed_spv().expect("入库 .spv 必须可读（D-21 S1 产物）");
+        let ctx = backend.context();
+        let gpu = dispatch_v3_instanced(ctx, &req, &[], None, &instances, &words)
+            .expect("多 BLAS 派发编码必须成功");
+        assert_eq!(gpu.status, DispatchStatus::Ok, "多 BLAS 派发失败：{}", gpu.detail);
+        assert!(
+            gpu.output.iter().any(|&b| b != 0),
+            "读回全 0 —— 两个原型一个都没画出来（假绿）"
+        );
+        assert_parity("G-8 两原型多 BLAS", &gpu.device, &cpu_ref, &gpu.output);
+
+        let again = dispatch_v3_instanced(ctx, &req, &[], None, &instances, &words)
+            .expect("二次派发必须成功");
+        assert_eq!(again.status, DispatchStatus::Ok);
+        assert_eq!(again.output, gpu.output, "连跑两次读回不一致 —— 违反确定性铁律");
+        println!(
+            "[G-8 两原型] 双跑逐位一致 ✓ 4 实例 / 2 BLAS（{base1} 节点起第二块），\
+             {lit} 个非背景像素"
+        );
+    }
+
+    /// **G-8 负向：`geom_id` 越界 ⇒ `Err`（不静默退化成"命中别的原型"）。**
+    #[test]
+    fn g8_out_of_range_geom_id_is_rejected() {
+        let mut req = scene_spheres(AestheticReq {
+            teal_orange: false,
+            contrast: 1.0,
+            filmic: false,
+        });
+        req.curves.clear();
+        req.geo.instance_geoms = vec![proto_box(0.3)];
+        let bad = [InstanceReq::scale_translate(
+            Vec3::splat(1.0),
+            Vec3::new(0.0, 0.0, 0.0),
+            1, // 只有 1 个 BLAS（下标 0）
+            crate::instance::INSTANCE_MAT_FROM_GEOM,
+        )
+        .expect("单位仿射可逆")];
+        let err = crate::scene_abi::SceneAbi::encode_v3_instanced(&req, &[], None, &bad)
+            .expect_err("越界 geom_id 必须报错");
+        assert!(err.contains("geom_id"), "错误信息应点名 geom_id，实际：{err}");
+        println!("G-8 负向：geom_id 越界 ⇒ {err}");
+    }
+
     /// kernel 描述的结构自洽（**无设备也能跑**）：11 绑定连续前缀、输出在最后、
     /// 元素容量与 `V3_BINDINGS` 对齐。这条防的是"改绑定表忘了改 kernel 描述"。
     #[test]

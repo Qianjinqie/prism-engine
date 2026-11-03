@@ -93,6 +93,10 @@ const INST_INVERSE: u32 = 12u;    // 3×4 逆（行主序）
 const INST_GEOM: u32 = 24u;       // geom_id
 const INST_MAT: u32 = 25u;        // mat_id（0xFFFFFFFF = 取共享几何默认）
 const INST_FLAGS: u32 = 26u;      // bit0 = identity，bit1 = mirrored
+// 槽 27 = `node_base`（G-8 多 BLAS）：该实例所属 BLAS 的**节点块起点**。
+// 单 BLAS 剖面下恒 0 ⇒ 与 W3 的字节逐位相同（原来的 pad 字被赋予语义，
+// 112 B / 28 槽的剖面一个字都没变）
+const INST_NODE_BASE: u32 = 27u;
 const INST_FLAG_IDENTITY: u32 = 1u;
 const INST_FLAG_MIRRORED: u32 = 2u;
 const INST_MAT_FROM_GEOM: u32 = 0xFFFFFFFFu;
@@ -655,7 +659,11 @@ fn tri_normal(slot: u32, rd: vec3<f32>) -> vec3<f32> {
 // 栈式 BVH 遍历（最近命中）：返回 (t, tri_slot)；未命中 tri_slot = 0xFFFFFFFF。
 // 语义逐句移植 `rt_bvh.wgsl::bvh_intersect`：固定深度显式栈（64）、近子先处理、
 // 进入 t 相等先左（确定性 tie-break）。
-fn bvh_intersect(node_count: u32, tri_count: u32,
+//
+// `node_base` = 本 BLAS 的节点块起点（G-8 多 BLAS：所有 BLAS 的节点顺序拼接，
+// 块内下标仍是相对的 —— `l = id + 1`、`right_child` 都是块内量；叶子的
+// `start` 在宿主侧已经加成了**拼接后的绝对三角形槽**）。
+fn bvh_intersect(node_base: u32, node_count: u32, tri_count: u32,
                  ro: vec3<f32>, rd: vec3<f32>, t_min: f32, t_max: f32) -> vec2<f32> {
   var best_t = t_max;
   var best_tri = 0xFFFFFFFFu;
@@ -678,7 +686,7 @@ fn bvh_intersect(node_count: u32, tri_count: u32,
     if (t_lo > best_t) {
       continue;
     }
-    let nb = id * NODE_STRIDE;
+    let nb = (node_base + id) * NODE_STRIDE;
     let count = nodes[nb + 9u];
     if (count > 0u) {
       let start = nodes[nb + 8u];
@@ -698,8 +706,8 @@ fn bvh_intersect(node_count: u32, tri_count: u32,
     } else {
       let l = id + 1u;
       let r = nodes[nb + 10u];
-      let hl = aabb_ray(node_bmin(l), node_bmax(l), ro, inv, t_min, t_max);
-      let hr = aabb_ray(node_bmin(r), node_bmax(r), ro, inv, t_min, t_max);
+      let hl = aabb_ray(node_bmin(node_base + l), node_bmax(node_base + l), ro, inv, t_min, t_max);
+      let hr = aabb_ray(node_bmin(node_base + r), node_bmax(node_base + r), ro, inv, t_min, t_max);
       let ok_l = hl.x <= hl.y;
       let ok_r = hr.x <= hr.y;
       // 近子后入栈（先处理）；进入 t 相等先左（确定性 tie-break）。
@@ -834,7 +842,9 @@ fn instance_one(i: u32, ro: vec3<f32>, rd: vec3<f32>, t_min: f32, t_max: f32) ->
     ro_l = inst_world_to_local_point(i, ro);
     rd_l = inst_world_to_local_dir(i, rd);
   }
-  let h = bvh_intersect(params[P_NUM_NODES], params[P_NUM_TRIS], ro_l, rd_l, t_min, t_max);
+  // G-8：查**该实例自己那个原型**的节点块（槽 27 = 块起点）。
+  let h = bvh_intersect(inst_word(i, INST_NODE_BASE), params[P_NUM_NODES], params[P_NUM_TRIS],
+                        ro_l, rd_l, t_min, t_max);
   if (h.y == f32(0xFFFFFFFFu)) {
     return out;
   }
@@ -1028,7 +1038,7 @@ fn scene_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   // 与 `meshes` 分开同一条纪律，见 `scene_abi::encode_v3_instanced`）。
   if (num_inst == 0u && num_tris > 0u && num_nodes > 0u) {
     let t_max_curve = select(1e30, closest_t, hit_idx >= 0);
-    let hitc = bvh_intersect(num_nodes, num_tris, origin, dir, CURVE_T_MIN, t_max_curve);
+    let hitc = bvh_intersect(0u, num_nodes, num_tris, origin, dir, CURVE_T_MIN, t_max_curve);
     if (hitc.y != f32(0xFFFFFFFFu)) {
       closest_t = hitc.x;
       curve_slot = i32(hitc.y);

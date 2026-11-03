@@ -6,5 +6,5 @@
 #
 # 格式（每行，字段间两个空格）：
 #   <wgsl_sha256>  <spv_sha256>  <wgsl相对路径>  <entry>  <naga版本>
-7ecca186a56ee5c89522959b07d2f53976921103fcd0d07f79d4d88850a28f0f  60c9117a43970aef781fe49467081fdcc70430827efa84223ef17d0950140a03  crates/prism-gpu/shaders/scene_frame_v3.wgsl  scene_main  30.0.1
+7643d922d41eeab6fda03eb9a46ba37bf539f70cf45d34398212dad09afeb2c4  7e9debf0b67e16da096077e851e93c9f3105677f07eb202ce0457018be8237d0  crates/prism-gpu/shaders/scene_frame_v3.wgsl  scene_main  30.0.1
 23031dae52e716239452e80bf1ed525437942c9e4e70f84c5cab6dade8396f57  e052b9dc25165a206b9aaeca8a5be81d2640d782a5e7661571ce9e5133fab66e  crates/prism-gpu/shaders/rt_env_probe.wgsl  env_probe  30.0.1

@@ -24,7 +24,7 @@
 //! | 24 | `geom_id`（BLAS 句柄；单 BLAS 剖面下恒为 0） |
 //! | 25 | `mat_id`（材质；[`INSTANCE_MAT_FROM_GEOM`] = 取共享几何默认） |
 //! | 26 | `flags`（bit0 identity / bit1 mirrored） |
-//! | 27 | `pad`（恒 0） |
+//! | 27 | `node_base`（G-8 多 BLAS：该实例所属 BLAS 的**节点块起点**；单 BLAS 剖面下恒 0） |
 //!
 //! 与 `TRIANGLE_SLOTS` / `NODE_SLOTS` 的"每 `vec3` 补 pad"不同：实例记录**不做**
 //! `vec4` 化补齐（补成 4×4 会变 128 B/条，违背 §4 的 112 B 定稿）。代价是
@@ -59,6 +59,18 @@ pub const INSTANCE_MAT_OFFSET: usize = INSTANCE_GEOM_OFFSET + 1;
 
 /// `flags` 在记录内的槽偏移（= 26）。
 pub const INSTANCE_FLAGS_OFFSET: usize = INSTANCE_MAT_OFFSET + 1;
+
+/// `node_base` 在记录内的槽偏移（= 27）。
+///
+/// # 为什么用"原来的 pad"承载（G-8 多 BLAS，零 ABI 剖面变更）
+///
+/// 多 BLAS 下 `nodes` 是**所有** BLAS 的节点块顺序拼接，shader 需要"这个实例
+/// 属于哪一块"的起点。三个选项：①新增 params 表（`PARAMS_WORDS_V3` 变长、
+/// 三后端缓冲尺寸都要动）；②新增绑定（bind group 布局变更）；③**把已有的
+/// `pad` 字赋予语义**。③ 的代价只有一条：112 B / 28 槽的剖面一个字都没变
+/// （`INSTANCE_BYTES` / `INSTANCE_SLOTS` 不动），单 BLAS 时该字仍是 0
+/// ⇒ 既有字节逐位不变。故取 ③。
+pub const INSTANCE_NODE_BASE_OFFSET: usize = INSTANCE_FLAGS_OFFSET + 1;
 
 /// `flags` 位：变换为恒等（`affine == inverse == [I|0]`）。
 ///
@@ -317,8 +329,13 @@ impl InstanceReq {
         out
     }
 
-    /// 编码成 112 B（little-endian；`pad` 恒 0）。
+    /// 编码成 112 B（little-endian；`node_base` 恒 0 = 单 BLAS 剖面）。
     pub fn to_bytes(&self) -> [u8; INSTANCE_BYTES] {
+        self.to_bytes_with_base(0)
+    }
+
+    /// 编码成 112 B，并把槽 27 写成 `node_base`（G-8 多 BLAS 用）。
+    pub fn to_bytes_with_base(&self, node_base: u32) -> [u8; INSTANCE_BYTES] {
         let mut out = [0u8; INSTANCE_BYTES];
         for (k, v) in self.affine.iter().enumerate() {
             out[k * 4..k * 4 + 4].copy_from_slice(&v.to_bits().to_le_bytes());
@@ -333,16 +350,27 @@ impl InstanceReq {
             .copy_from_slice(&self.mat_id.to_le_bytes());
         out[INSTANCE_FLAGS_OFFSET * 4..INSTANCE_FLAGS_OFFSET * 4 + 4]
             .copy_from_slice(&self.flags.to_le_bytes());
-        // 槽 27 = pad：保持 0（`out` 已零初始化）。
+        out[INSTANCE_NODE_BASE_OFFSET * 4..INSTANCE_NODE_BASE_OFFSET * 4 + 4]
+            .copy_from_slice(&node_base.to_le_bytes());
         out
     }
 }
 
-/// 把实例表编码成扁平 `array<u32>`（[`INSTANCE_SLOTS`] 槽/条）。
+/// 把实例表编码成扁平 `array<u32>`（[`INSTANCE_SLOTS`] 槽/条；`node_base` 全 0）。
 pub fn encode_instances(instances: &[InstanceReq]) -> Vec<u8> {
     let mut out = Vec::with_capacity(instances.len() * INSTANCE_BYTES);
     for inst in instances {
         out.extend_from_slice(&inst.to_bytes());
+    }
+    out
+}
+
+/// 按 [`InstanceSet`] 里的 `node_bases` 编码（G-8 多 BLAS 的唯一入口）。
+pub fn encode_instance_set(set: &InstanceSet) -> Vec<u8> {
+    let mut out = Vec::with_capacity(set.instances.len() * INSTANCE_BYTES);
+    for (i, inst) in set.instances.iter().enumerate() {
+        let base: u32 = set.node_bases.get(i).copied().unwrap_or(0);
+        out.extend_from_slice(&inst.to_bytes_with_base(base));
     }
     out
 }
@@ -356,6 +384,8 @@ pub struct InstanceSet {
     pub nodes: Vec<u8>,
     /// 重排映射：第 `i` 个（重排后）实例在输入里的下标。
     pub order: Vec<u32>,
+    /// 逐实例的 BLAS 节点块起点（与 `instances` 同序；单 BLAS 时全 0）。
+    pub node_bases: Vec<u32>,
     /// 全场景世界包围盒（空实例表 ⇒ 空盒）。
     pub bounds: Aabb,
 }
@@ -373,26 +403,42 @@ pub struct InstanceSet {
 /// 这一点由 [`InstanceSet::order`] 显式给出，不靠"碰巧一样"。
 pub fn build_instance_set(
     instances: &[InstanceReq],
-    proto_min: Vec3,
-    proto_max: Vec3,
+    geom_bounds: &[(Vec3, Vec3)],
+    geom_node_base: &[u32],
 ) -> InstanceSet {
     if instances.is_empty() {
         return InstanceSet {
             instances: Vec::new(),
             nodes: Vec::new(),
             order: Vec::new(),
+            node_bases: Vec::new(),
             bounds: Aabb::empty(),
         };
     }
+    // G-8 多 BLAS：每个实例的局部包围盒取自**它自己那个原型**。
+    // 越界的 `geom_id` 在这里退化为空盒（编码层已经先判过，这里是兜底：
+    // 空盒实例在 TLAS 里永不命中，不会变成"命中别人的几何"）。
     let aabbs: Vec<Aabb> = instances
         .iter()
-        .map(|i| i.world_aabb(proto_min, proto_max))
+        .map(|i| match geom_bounds.get(i.geom_id as usize) {
+            Some((lo, hi)) => i.world_aabb(*lo, *hi),
+            None => Aabb::empty(),
+        })
         .collect();
     let bvh = prism_geometry::aabb_bvh::AabbBvh::build(&aabbs);
     let order: Vec<u32> = bvh.order().to_vec();
     let reordered: Vec<InstanceReq> = order
         .iter()
         .map(|&i| instances[i as usize])
+        .collect();
+    let node_bases: Vec<u32> = order
+        .iter()
+        .map(|&i| {
+            geom_node_base
+                .get(instances[i as usize].geom_id as usize)
+                .copied()
+                .unwrap_or(0)
+        })
         .collect();
     let mut nodes = Vec::with_capacity(bvh.node_count() * NODE_SLOTS as usize * 4);
     for k in 0..bvh.node_count() {
@@ -414,7 +460,7 @@ pub fn build_instance_set(
         block[40..44].copy_from_slice(&right.to_le_bytes());
         nodes.extend_from_slice(&block);
     }
-    InstanceSet { instances: reordered, nodes, order, bounds: bvh_bounds(&aabbs) }
+    InstanceSet { instances: reordered, nodes, order, node_bases, bounds: bvh_bounds(&aabbs) }
 }
 
 /// 图元 AABB 的并（与 `AabbBvh::build` 的 `bounds` 同口径）。
@@ -601,7 +647,7 @@ mod tests {
                 )
             })
             .collect();
-        let set = build_instance_set(&insts, Vec3::splat(-1.0), Vec3::splat(1.0));
+        let set = build_instance_set(&insts, &[(Vec3::splat(-1.0), Vec3::splat(1.0))], &[0]);
         assert_eq!(set.instances.len(), 20);
         let mut seen = [0u32; 20];
         let node_count = set.nodes.len() / (NODE_SLOTS as usize * 4);
@@ -720,7 +766,7 @@ mod tests {
         let tris = unit_cube_tris();
         let blas = prism_geometry::bvh::Bvh::build(&tris);
         let inst = InstanceReq::identity(INSTANCE_GEOM_SHARED, INSTANCE_MAT_FROM_GEOM);
-        let set = build_instance_set(&[inst], Vec3::splat(-1.0), Vec3::splat(1.0));
+        let set = build_instance_set(&[inst], &[(Vec3::splat(-1.0), Vec3::splat(1.0))], &[0]);
         // 走一遍**字节流**再解码：与 GPU 读到的是同一份字节，不是同一份内存。
         let nodes = decode_nodes(&set.nodes);
         let insts = decode_instances(&encode_instances(&set.instances));
@@ -742,7 +788,7 @@ mod tests {
             let rd = d * (1.0 / len);
             compared += 1;
             let flat = blas.ray_intersect_raw(ro, rd, T_MIN, T_MAX);
-            let vi = instance_nearest(&nodes, &insts, &blas, ro, rd, T_MIN, T_MAX);
+            let vi = instance_nearest(&nodes, &insts, std::slice::from_ref(&blas), ro, rd, T_MIN, T_MAX);
             match (flat, vi) {
                 (None, None) => {}
                 (Some(f), Some(v)) => {
@@ -823,7 +869,7 @@ mod tests {
             })
             .collect();
         let world_bvh = prism_geometry::bvh::Bvh::build(&world);
-        let set = build_instance_set(&[inst], Vec3::splat(-1.0), Vec3::splat(1.0));
+        let set = build_instance_set(&[inst], &[(Vec3::splat(-1.0), Vec3::splat(1.0))], &[0]);
         let nodes = decode_nodes(&set.nodes);
         let insts = decode_instances(&encode_instances(&set.instances));
 
@@ -858,7 +904,7 @@ mod tests {
             }
             let rd = d * (1.0 / len);
             let flat = world_bvh.ray_intersect_raw(ro, rd, T_MIN, T_MAX);
-            let vi = instance_nearest(&nodes, &insts, &blas, ro, rd, T_MIN, T_MAX);
+            let vi = instance_nearest(&nodes, &insts, std::slice::from_ref(&blas), ro, rd, T_MIN, T_MAX);
             let (f, v) = match (flat, vi) {
                 (None, None) => continue,
                 (Some(f), Some(v)) => (f, v),
@@ -976,7 +1022,7 @@ mod tests {
             })
             .collect();
 
-        let set = build_instance_set(&insts, proto_min, proto_max);
+        let set = build_instance_set(&insts, &[(proto_min, proto_max)], &[0]);
         assert_eq!(set.instances.len(), n, "实例一条不许丢");
         let ibytes = encode_instances(&set.instances);
         assert_eq!(ibytes.len(), n * INSTANCE_BYTES, "必须恰好 112 B/实例");
@@ -998,7 +1044,7 @@ mod tests {
         );
 
         // 两跑一致：同输入 ⇒ 同字节（含 TLAS 的排序 tie-break）。
-        let set2 = build_instance_set(&insts, proto_min, proto_max);
+        let set2 = build_instance_set(&insts, &[(proto_min, proto_max)], &[0]);
         assert_eq!(set2.nodes, set.nodes, "两跑 TLAS 字节必须一致");
         assert_eq!(
             encode_instances(&set2.instances),
@@ -1196,13 +1242,13 @@ pub fn instance_world_normal(
 pub fn instance_nearest(
     nodes: &[TlasNode],
     instances: &[InstanceReq],
-    blas: &prism_geometry::bvh::Bvh,
+    blas: &[prism_geometry::bvh::Bvh],
     ro: Vec3,
     rd: Vec3,
     t_min: f32,
     t_max: f32,
 ) -> Option<InstanceHit> {
-    if nodes.is_empty() || instances.is_empty() || blas.tris.is_empty() {
+    if nodes.is_empty() || instances.is_empty() || blas.iter().all(|b| b.tris.is_empty()) {
         return None;
     }
     let inv = Vec3::new(1.0 / rd.x, 1.0 / rd.y, 1.0 / rd.z);
@@ -1228,16 +1274,21 @@ pub fn instance_nearest(
                     None => continue,
                 };
                 let (ro_l, rd_l) = inst.local_ray(ro, rd);
+                // G-8 多 BLAS：查**该实例自己那个原型**的树（`geom_id` 下标）。
+                // 越界的 `geom_id` ⇒ 没有几何可交（等价于空实例，不 panic）。
+                let Some(one) = blas.get(inst.geom_id as usize) else {
+                    continue;
+                };
                 // **slot 口径**：三后端上传的三角形缓冲就是 `blas.tris`（重排后），
                 // 原始数组在 GPU 侧不存在。用 `ray_intersect_raw` 的原始下标去索引
                 // `blas.tris` 会取到另一个三角形（t 对、法线错）——见
                 // `Bvh::ray_intersect_slot` 的文档。
-                let h = match blas.ray_intersect_slot(ro_l, rd_l, t_min, cur) {
+                let h = match one.ray_intersect_slot(ro_l, rd_l, t_min, cur) {
                     Some(h) => h,
                     None => continue,
                 };
                 if h.t < cur {
-                    let tri = &blas.tris[h.tri as usize];
+                    let tri = &one.tris[h.tri as usize];
                     best = Some(InstanceHit {
                         t: h.t,
                         inst: slot,
