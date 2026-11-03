@@ -671,6 +671,7 @@ fn scene_from_graph(graph: &Graph, cone: &BTreeSet<NodeId>) -> Scene {
             (30.0 + 35.0 * h(14)).to_radians(),
         ),
         aesthetic: Aesthetic::new(h(15) > 0.5, 0.85 + 0.4 * h(16), h(17) > 0.5),
+        attach: Default::default(),
     };
     apply_overrides(&mut scene, &collect_overrides(graph, cone));
     scene

@@ -59,7 +59,8 @@ fn baseline_request(w: u32, h: u32) -> SceneRenderRequest {
             filmic: false,
         },
         curves: Vec::new(),
-    }
+    ..Default::default()
+}
 }
 
 /// FNV-1a 64（仅指纹用：跨进程比同一串字节是否相同）。

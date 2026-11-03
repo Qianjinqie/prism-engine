@@ -1062,7 +1062,8 @@ mod tests {
                 filmic: false,
             },
         curves: Vec::new(),
-        }
+    ..Default::default()
+}
     }
 
     /// 后端标识跨平台稳定；可用性 = **compute 自检 ∧ 渲染自检**（Q4 裁定）。

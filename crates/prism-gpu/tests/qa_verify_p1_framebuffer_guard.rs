@@ -44,7 +44,8 @@ fn scene_req(width: u32, height: u32) -> SceneRenderRequest {
         }],
         aesthetic: AestheticReq { teal_orange: false, contrast: 1.0, filmic: false },
     curves: Vec::new(),
-    }
+    ..Default::default()
+}
 }
 
 /// 所有必须「不 panic」的尺寸组合（含溢出源与边界值）。

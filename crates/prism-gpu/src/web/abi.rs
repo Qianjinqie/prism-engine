@@ -6912,6 +6912,7 @@ fn scene_request(scene: usize) -> SceneRenderRequest {
             filmic: false,
         },
         curves,
+        ..Default::default()
     }
 }
 
@@ -7007,7 +7008,8 @@ fn scene_request_v3(
             filmic: false,
         },
         curves,
-    };
+    ..Default::default()
+};
     let textures = vec![
         crate::scene_abi::TextureUpload {
             w: 8,

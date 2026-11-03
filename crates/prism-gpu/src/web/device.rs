@@ -559,7 +559,8 @@ mod tests {
                 filmic: false,
             },
         curves: Vec::new(),
-        };
+    ..Default::default()
+};
         let gpu_fb = backend.render_scene(&req);
         let cpu_fb = crate::CpuRefBackend.render_scene(&req);
         assert_eq!(gpu_fb.width, cpu_fb.width);
@@ -582,7 +583,8 @@ mod tests {
             spheres: Vec::new(),
             aesthetic: crate::AestheticReq { teal_orange: false, contrast: 1.0, filmic: false },
             curves: Vec::new(),
-        };
+    ..Default::default()
+};
         let plan = super::scene_dispatch_plan(&req);
         assert_eq!(plan.entry, SceneAbi::ENTRY, "入口名必须来自 scene_abi");
         assert_eq!(plan.workgroup, SceneAbi::WORKGROUP, "工作组尺寸必须来自 scene_abi");

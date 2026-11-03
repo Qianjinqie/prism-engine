@@ -42,6 +42,13 @@ pub use prism_geometry::curve_tess::CurveReq;
 // ----------------------------------------------------------------------------
 
 pub mod shaders;
+/// T0 产品路径接线：场景附加能力的请求侧 DTO。
+pub mod scene_req;
+
+pub use scene_req::{
+    DisplaceSlotReq, HairReq, InstanceReq, MediumBoxReq, MeshReq, SceneGeoReq, StrandReq,
+    TextureReq,
+};
 pub mod scene_abi;
 pub mod instance;
 pub mod cpu_tex;
@@ -417,8 +424,7 @@ pub struct AestheticReq {
 #[derive(Debug, Clone)]
 pub struct SceneRenderRequest {
     pub width: u32,
-    pub height: u32,
-    pub camera: CameraReq,
+    pub height: u32,    pub camera: CameraReq,
     pub lights: Vec<LightReq>,
     pub spheres: Vec<SphereReq>,
     pub aesthetic: AestheticReq,
@@ -427,6 +433,40 @@ pub struct SceneRenderRequest {
     /// **缺省空 ⇒ 与 V2.1 输出逐位相同**（这是 A-2 不回归的机械保证，见设计
     /// §4.3）：空集时 CPU 参考不建 BVH、GPU 侧遍历段整段跳过。
     pub curves: Vec<CurveReq>,
+    /// 场景附加能力（T0）：介质 / 网格 / 实例 / 纹理 / 毛发 / 位移槽。
+    ///
+    /// **缺省全空 ⇒ 与加字段前逐字节同帧**（判据 P1）：`translate_scene` 在
+    /// `geo.is_empty()` 时不产生任何新的 `prism_rt::Scene` 条目。
+    ///
+    /// 为什么聚成一个字段而不是六个：本结构体在仓库里有 50+ 处字面量构造
+    /// （三后端 + 测试 + 示例）。加一个复合字段只需每处补一次
+    /// `geo: SceneGeoReq::default()`（或用 `..Default::default()`），未来
+    /// 扩展附加能力不再触碰它们。
+    pub geo: SceneGeoReq,
+}
+
+impl Default for SceneRenderRequest {
+    /// 中性缺省：8×8、原点相机、无灯无球、关后期、无曲线、空附加能力。
+    ///
+    /// 只为让新增字段能用 `..Default::default()` 补齐——**不是**一个"可渲染
+    /// 场景"的缺省（无灯无球 ⇒ 全黑 8×8）。
+    fn default() -> Self {
+        Self {
+            width: 8,
+            height: 8,
+            camera: CameraReq {
+                eye: Vec3::new(0.0, 0.0, -4.0),
+                target: Vec3::new(0.0, 0.0, 0.0),
+                fov: 60.0_f32.to_radians(),
+                aspect: 1.0,
+            },
+            lights: Vec::new(),
+            spheres: Vec::new(),
+            aesthetic: AestheticReq { teal_orange: false, contrast: 1.0, filmic: false },
+            curves: Vec::new(),
+            geo: SceneGeoReq::default(),
+        }
+    }
 }
 
 /// 曲线命中面的着色反照率（A-2 切片口径）。
@@ -1008,7 +1048,8 @@ mod tests {
                 filmic: false,
             },
         curves: Vec::new(),
-        }
+    ..Default::default()
+}
     }
 
     /// 以 `[r, g, b, a]` 形式读回指定像素（行主序 RGBA8）。
@@ -1126,7 +1167,8 @@ mod framebuffer_bounds {
                 filmic: false,
             },
         curves: Vec::new(),
-        }
+    ..Default::default()
+}
     }
 
     /// 穷举极端尺寸组合：`new` 不 panic、不 abort，且尺寸原样回显。

@@ -245,6 +245,7 @@ dependencies = [
  "prism-anim",
  "prism-core",
  "prism-dsl",
+ "prism-geometry",
  "prism-gpu",
  "prism-io",
  "prism-math",

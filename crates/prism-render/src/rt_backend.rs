@@ -60,7 +60,14 @@ use prism_gpu::{CameraReq, Framebuffer, GpuDevice, SceneRenderRequest};
 use prism_math::Vec3;
 use prism_rt::bsdf::Bsdf;
 use prism_rt::camera::Camera as RtCamera;
-use prism_rt::integrator::{Light, MaterialKind, RenderParams, Scene as RtScene, Sphere};
+use prism_rt::displace::{tessellate_displace, RuntimeDisplace};
+use prism_rt::hair_scatter::{HairGeometry, HairScatter};
+use prism_rt::integrator::{
+    Aabb as RtAabb, Light, MaterialKind, MediumRegion, RenderParams, Scene as RtScene, Sphere,
+};
+use prism_rt::instance::Instance;
+use prism_rt::media::{HomogeneousMedium, Medium};
+use prism_rt::texsample::TexTable;
 
 use crate::rt_tiles::auto_threads;
 
@@ -243,10 +250,34 @@ impl GpuDevice for RtBackend {
 // 请求 → prism-rt 场景翻译
 // ---------------------------------------------------------------------------
 
-/// 把请求里的球 / 灯光翻译成 `prism-rt` 场景。
+/// 把请求翻译成 `prism-rt` 场景（球 / 灯 / **以及 T0 的六项附加能力**）。
 ///
-/// 只翻译**实际用到**的字段；`Scene::medium` / `meshes` / `paraboloids` 等保持
-/// 缺省（请求里没有对应表达）。
+/// # 六条非空翻译分支（判据 P3 查的就是它们在场）
+///
+/// | # | 能力 | 请求字段 | rt 落点 |
+/// |---|---|---|---|
+/// | 1 | 介质区域 | `geo.media` | `Scene::media`（`MediumRegion` + `priority`） |
+/// | 2 | 纹理表 | `geo.textures` | `Scene::textures` + `Scene::texels`（`build_rgba8`） |
+/// | 3 | 三角网格 | `geo.meshes` | `Scene::add_mesh`（+ 运行期位移） |
+/// | 4 | 实例原型 | `geo.instance_geoms` | `Scene::instance_geoms` |
+/// | 5 | 实例 | `geo.instances` | `Scene::instances`（`Instance::from_affine`）+ `rebuild_instance_bvh` |
+/// | 6 | 毛发股 | `geo.strands` | 每股一个 `Mesh` + `MaterialKind::Hair`（每股自己的标架） |
+///
+/// # 顺序不是随意的
+///
+/// 纹理必须在网格**之前**建好：位移槽要在采样器里查纹素。故本函数分两段——
+/// 先把纹理构造成**局部** `refs`/`texels`（不借 `scene`），用它建 `TexTable`
+/// 烘焙所有网格，最后再把纹理搬进 `scene`（避开"借用 scene 又要写 scene"）。
+///
+/// # 空 ⇒ 逐字节同帧
+///
+/// `geo.is_empty()` 时六段循环一次都不执行，`scene` 与加字段前逐字段相同；
+/// 末尾 `if !refs.is_empty()` 的搬运也不发生。判据 P1（md5 对账）。
+///
+/// # 非法输入
+///
+/// 沿用既有风格：**显式跳过**（`continue`），绝不 panic、绝不塞垃圾进 rt
+/// （rt 侧的 `Bsdf::new` / `HomogeneousMedium::new` / `RtCamera::new` 都带断言）。
 fn translate_scene(req: &SceneRenderRequest) -> RtScene {
     let mut scene: RtScene = RtScene::default();
     for s in &req.spheres {
@@ -289,8 +320,240 @@ fn translate_scene(req: &SceneRenderRequest) -> RtScene {
             cos_theta_max: RT_DIRECTIONAL_COS_MAX,
         });
     }
+
+    // ---- 分支 1/6：纹理表（必须在网格之前：位移槽要采样它）-----------------
+    //
+    // 逐张按 `build_rgba8`（**同一份** mip 链 / sRGB LUT 实现）构造，
+    // offset 用运行游标——与 `Scene::add_texture_rgba8` 的排布逐字节等价。
+    let mut refs: Vec<prism_rt::texture::TextureRef> = Vec::new();
+    let mut texels: Vec<[f32; 4]> = Vec::new();
+    for t in &req.geo.textures {
+        let need: u64 = (t.width as u64) * (t.height as u64) * 4;
+        if t.width == 0 || t.height == 0 || need != t.rgba8.len() as u64 {
+            // 尺寸与像素流不自洽：显式跳过（不 panic、不产生越界读）。
+            continue;
+        }
+        let offset: u32 = texels.len() as u32;
+        let (r, px) = prism_rt::texture::build_rgba8(t.width, t.height, t.srgb, offset, &t.rgba8);
+        refs.push(r);
+        texels.extend_from_slice(&px);
+    }
+
+    // ---- 分支 2/6：介质区域（A6）------------------------------------------
+    for m in &req.geo.media {
+        if !is_finite_vec(m.bounds_min) || !is_finite_vec(m.bounds_max) {
+            continue;
+        }
+        if m.bounds_min.x > m.bounds_max.x
+            || m.bounds_min.y > m.bounds_max.y
+            || m.bounds_min.z > m.bounds_max.z
+        {
+            continue; // 空/反向盒：rt 侧没有"反向区间"语义，跳过
+        }
+        if !(m.sigma_t.is_finite() && m.sigma_t > 0.0) {
+            continue; // `HomogeneousMedium::new` 对 σt ≤ 0 是断言
+        }
+        if !(m.albedo.is_finite() && (0.0..=1.0).contains(&m.albedo)) {
+            continue;
+        }
+        if !(m.g.is_finite() && m.g > -1.0 && m.g < 1.0) {
+            continue;
+        }
+        let bounds: RtAabb = RtAabb::new(m.bounds_min, m.bounds_max);
+        let medium = Medium::Homogeneous(HomogeneousMedium::new(m.sigma_t, m.albedo, m.g));
+        scene.media.push(MediumRegion::new(bounds, medium).with_priority(m.priority));
+    }
+
+    // 位移要用纹理：先把视图建好（只读借用局部 `refs`/`texels`）。
+    let tex_view: TexTable<'_> = TexTable::new(&refs, &texels);
+
+    // ---- 分支 3/6：三角网格（+ G-10 运行期位移）---------------------------
+    for m in &req.geo.meshes {
+        if m.indices.len() < 3 {
+            continue;
+        }
+        if !m
+            .positions
+            .iter()
+            .all(|p| p.x.is_finite() && p.y.is_finite() && p.z.is_finite())
+        {
+            continue;
+        }
+        // 运行期位移：`amplitude == 0` / 无贴图句柄 ⇒ `tessellate_displace`
+        // 返回 `None` ⇒ 走**原网格**（判据 V1：与没有位移槽逐位相同）。
+        let displaced = m.displacement.and_then(|d| {
+            tessellate_displace(
+                &m.positions,
+                &m.indices,
+                &m.uv,
+                RuntimeDisplace {
+                    texture: d.texture,
+                    amplitude: d.amplitude,
+                    scale: d.scale,
+                    levels: d.levels,
+                },
+                tex_view,
+            )
+        });
+        let material: MaterialKind = MaterialKind::Pbr(Bsdf::new(
+            default_mesh_albedo(),
+            0.0,
+            0.6,
+            RT_DIELECTRIC_IOR,
+            0.0,
+            0.0,
+            Vec3::splat(RT_SSS_RADIUS),
+        ));
+        match displaced {
+            Some(d) => {
+                let mut mesh = prism_rt::integrator::Mesh::new(d.positions, d.indices);
+                mesh.uv = d.uv;
+                scene.meshes.push((mesh, material));
+            }
+            None => {
+                let mut mesh =
+                    prism_rt::integrator::Mesh::new(m.positions.clone(), m.indices.clone());
+                // uv 长度不符 ⇒ 按"无 uv"处理（`Mesh::uv` 的契约），不 panic。
+                if m.uv.len() == m.positions.len() {
+                    mesh.uv = m.uv.clone();
+                }
+                scene.meshes.push((mesh, material));
+            }
+        }
+    }
+
+    // ---- 分支 4/6：实例原型（共享几何；**不**直接进场景）-------------------
+    for m in &req.geo.instance_geoms {
+        if m.indices.len() < 3 {
+            continue;
+        }
+        if !m
+            .positions
+            .iter()
+            .all(|p| p.x.is_finite() && p.y.is_finite() && p.z.is_finite())
+        {
+            continue;
+        }
+        let material: MaterialKind = MaterialKind::Pbr(Bsdf::new(
+            default_mesh_albedo(),
+            0.0,
+            0.6,
+            RT_DIELECTRIC_IOR,
+            0.0,
+            0.0,
+            Vec3::splat(RT_SSS_RADIUS),
+        ));
+        let mut mesh = prism_rt::integrator::Mesh::new(m.positions.clone(), m.indices.clone());
+        if m.uv.len() == m.positions.len() {
+            mesh.uv = m.uv.clone();
+        }
+        scene.instance_geoms.push((mesh, material));
+    }
+
+    // ---- 分支 5/6：实例（世界仿射 + 逆由 rt 侧算一次）----------------------
+    for inst in &req.geo.instances {
+        if !inst.affine.iter().all(|v| v.is_finite()) {
+            continue;
+        }
+        // `geom_id` 越界 ⇒ 该实例的 TLAS 叶子是空盒（永不命中）；rt 侧的
+        // `validate_layout` 会把这种"实例指向不存在的几何"当错误报出来，
+        // 故这里**跳过**而不是塞进去变成一个静默空叶子。
+        if inst.geom_id as usize >= scene.instance_geoms.len() {
+            continue;
+        }
+        if let Some(instance) = Instance::from_affine(inst.affine, inst.geom_id, inst.mat_id) {
+            scene.instances.push(instance);
+        }
+    }
+    if !scene.instances.is_empty() {
+        scene.rebuild_instance_bvh();
+    }
+
+    // ---- 分支 6/6：毛发股（**每股一个 Mesh + 该股自己的标架**）-------------
+    //
+    // T3 的修法：`MaterialKind::Hair` 是一材质一标架，于是"同 Mesh 内多股异向"
+    // 只有一股精确。这里**按股切 Mesh**——每股一个 `HairGeometry`，标架取该股
+    // 的首段（`strand_frames` 的平行传输标架），于是异向股束里每一股都精确。
+    // `hair_scatter.rs` 与 `surface_brdf` 一行不改（命中路径仍是一个 Mesh 一个
+    // 材质）。理由与备选方案对比见 `prism_core::attach::StrandDesc` 的文档。
+    for st in &req.geo.strands {
+        if st.points.len() < 2 {
+            continue;
+        }
+        if !st
+            .points
+            .iter()
+            .all(|p| p.x.is_finite() && p.y.is_finite() && p.z.is_finite())
+        {
+            continue;
+        }
+        let radii: Vec<f32> = if st.radii.len() == st.points.len() {
+            st.radii.clone()
+        } else {
+            vec![DEFAULT_STRAND_RADIUS; st.points.len()]
+        };
+        if !radii.iter().all(|r| r.is_finite() && *r > 0.0) {
+            continue;
+        }
+        let curve = prism_geometry::curve_tess::CurveReq::Strand {
+            points: st.points.clone(),
+            radii,
+        };
+        let tris = prism_geometry::curve_tess::tessellate(&curve, STRAND_TOLERANCE);
+        if tris.is_empty() {
+            continue;
+        }
+        // 该股自己的标架：平行传输的首段（切向 + 法平面参考）。
+        let frames = prism_geometry::curve_tess::strand_frames(&st.points);
+        let geometry: HairGeometry = match frames.first() {
+            Some(f) => HairGeometry::new(f.tangent, f.normal_ref),
+            None => continue,
+        };
+        // 三瓣参数：先走 `HairScatter::new`（参数域断言在此生效），再覆盖权重。
+        if !(st.params.beta_m > 0.0 && st.params.beta_m <= 1.0)
+            || !(st.params.k_azimuth >= 0.0)
+            || !(st.params.eta >= 1.0)
+            || !(st.params.sigma_a >= 0.0)
+            || !(st.params.radius > 0.0)
+        {
+            continue;
+        }
+        let mut scatter = HairScatter::new(
+            st.params.beta_m,
+            st.params.k_azimuth,
+            st.params.eta,
+            st.params.sigma_a,
+            st.params.radius,
+        );
+        scatter.w_r = st.params.w_r;
+        scatter.w_tt = st.params.w_tt;
+        scatter.w_trt = st.params.w_trt;
+        scatter.phi_tt_shift = st.params.phi_tt_shift;
+        scene.meshes.push((
+            prism_rt::integrator::Mesh::from_triangles(tris),
+            MaterialKind::Hair { scatter, geometry },
+        ));
+    }
+
+    // 纹理最后搬进场景（避免与上面的只读借用冲突）。
+    if !refs.is_empty() {
+        scene.textures = refs;
+        scene.texels = texels;
+    }
     scene
 }
+
+/// 场景网格的固定反照率（请求侧的 `MeshReq` 不带材质；与 `CURVE_ALBEDO` 同口径
+/// 的中性灰，保证"网格进得来、颜色可对拍"）。
+fn default_mesh_albedo() -> Vec3 {
+    Vec3::new(0.72, 0.74, 0.78)
+}
+
+/// 毛股三角化的弦高容差（与 `curve_tess` 的既有缺省同量级）。
+const STRAND_TOLERANCE: f32 = 0.02;
+
+/// 毛股半径缺省（请求没给逐点半径时）。
+const DEFAULT_STRAND_RADIUS: f32 = 0.02;
 
 /// 请求相机 → `prism-rt` 透视相机（针孔 / 零长快门 / fov 转度）。
 ///
@@ -408,7 +671,8 @@ mod tests {
                 filmic: false,
             },
             curves: Vec::new(),
-        }
+    ..Default::default()
+}
     }
 
     /// 两跑逐字节一致（确定性铁律：同输入必然同位模式）。
@@ -547,7 +811,8 @@ mod tests {
                 filmic: false,
             },
             curves: Vec::new(),
-        };
+    ..Default::default()
+};
         let slow: Framebuffer = RtBackend::new(12, 4).render_scene(&req);
         let fast: Framebuffer = prism_gpu::CpuRefBackend.render_scene(&req);
         // fast 只看 N·L（无阴影射线）；slow 有阴影。统计"fast 亮、slow 黑"的像素。

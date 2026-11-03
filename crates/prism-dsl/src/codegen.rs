@@ -38,7 +38,7 @@ use prism_math::Vec3;
 
 use crate::ast::{
     AngleUnit, AudioAst, CameraV2Ast, ComposeAst, ComposeRef, DocumentAst, DocumentV2Ast,
-    FieldValue, FormulaAst, LayerAst, LightV2Ast, MaterialV2Ast, NamedField, NoteAst,
+    FieldValue, FormulaAst, GeoAst, LayerAst, LightV2Ast, MaterialV2Ast, NamedField, NoteAst,
     OutputFormatAst, PostAst, SceneItem, SdfAst, SimAst, Stage3dAst, TimeVal, TimeUnit,
     TransitionAst,
     AngleVal,
@@ -172,6 +172,11 @@ pub(crate) fn codegen(doc: &DocumentAst) -> crate::CompileOutput {
         lights,
         camera,
         aesthetic,
+        // T0：v1 块语法的附加能力（介质 / 网格 / 实例 / 纹理 / 毛发 / 位移槽）
+        // 由 v2 的 `media` / `mesh` / `instance` / `hair` 块声明，见
+        // `crate::codegen::scene_attach`。v1 文档模型没有这些块 ⇒ 恒空 ⇒
+        // 输出与加字段前逐字节相同（判据 P1）。
+        attach: prism_core::SceneAttach::default(),
     };
 
     crate::CompileOutput { scene, width, height, fps, duration, format }
@@ -313,6 +318,11 @@ pub struct SceneV2 {
     pub audio: Option<AudioInfo>,
     /// note 块列表（作曲系统；可多个）。
     pub notes: Vec<NoteInfo>,
+    /// T0：本场景的附加能力（介质 / 网格 / 实例 / 纹理 / 毛发）。
+    ///
+    /// 由 `media` / `mesh` / `texture` / `hair` / `instance` 五类块声明；
+    /// 未声明 ⇒ 全空 ⇒ 该场景的输出与加字段前**逐字节相同**（判据 P1）。
+    pub attach: prism_core::SceneAttach,
 }
 
 /// v2 过渡产物：重叠区间（[start, start+duration) 与后一场景重叠）。
@@ -1077,6 +1087,9 @@ pub(crate) fn codegen_v2(doc: &DocumentV2Ast) -> Result<CompileV2Output, DslErro
         // 已投影但不进 node_ids（render 消费面）的节点：audio / post / light。
         // 进 graph 供求值台可见，登记于各块 Info；进 node_ids 会误报 R5010。
         let mut deferred_ids: Vec<NodeId> = Vec::new();
+        // T0：本场景的附加能力（介质 / 网格 / 实例 / 纹理 / 毛发）。
+        let mut attach: prism_core::SceneAttach = prism_core::SceneAttach::default();
+        let mut geo_blocks: Vec<&GeoAst> = Vec::new();
         // 本场景的 compose 定义列表（build_compose 递归解析引用用）。
         let scene_composes: Vec<&ComposeAst> = scene
             .items
@@ -1126,8 +1139,13 @@ pub(crate) fn codegen_v2(doc: &DocumentV2Ast) -> Result<CompileV2Output, DslErro
                     post.params.extend(info.params);
                     post.node_ids.extend(info.node_ids);
                 }
+                // T0：附加能力块（不出节点、不进 node_ids —— 它们是场景
+                // 几何/材质声明，不是求值面节点）。先收集，循环后统一构建
+                // （`instance` / `displacement` 按名引用其它块）。
+                SceneItem::Geo(g) => geo_blocks.push(g),
             }
         }
+        build_geo_all(&mut attach, &geo_blocks)?;
         let node_ids: Vec<NodeId> = (id_begin..b.next_id)
             .filter(|id| !deferred_ids.contains(id))
             .collect();
@@ -1142,6 +1160,7 @@ pub(crate) fn codegen_v2(doc: &DocumentV2Ast) -> Result<CompileV2Output, DslErro
             post,
             audio,
             notes,
+            attach,
         });
     }
 
@@ -2843,3 +2862,431 @@ pub static COMBINATOR_TABLE: &[(&str, fn(&CombinatorArgs) -> Result<NodeGraph, C
     ("ken_burns", expand_ken_burns),
     ("morph_between", expand_morph_between),
 ];
+
+// ---------------------------------------------------------------------------
+// T0：附加能力块（media / mesh / texture / hair / instance）→ SceneAttach
+// ---------------------------------------------------------------------------
+
+/// 缺省网格尺寸（世界单位）。
+const GEO_DEFAULT_SIZE: f32 = 2.0;
+/// 缺省纹素边长（边长像素数）。
+const GEO_DEFAULT_TEX_SIZE: u32 = 8;
+/// 缺省毛发股数。
+const GEO_DEFAULT_HAIR_COUNT: u32 = 4;
+/// 缺省股半径。
+const GEO_DEFAULT_HAIR_RADIUS: f32 = 0.02;
+/// 缺省股长。
+const GEO_DEFAULT_HAIR_LENGTH: f32 = 1.5;
+
+/// 把本场景收集到的附加能力块翻译成 [`prism_core::SceneAttach`]。
+///
+/// # 三趟（顺序是语义，不是风格）
+///
+/// 1. **纹理**先建：句柄 = 本场景纹理声明序 + 1（与 `Scene::textures` 同口径）；
+/// 2. **网格**次建：`displacement.texture` 可以写**句柄**也可以写**纹理名**，
+///    名字解析要用第 1 趟的表；
+/// 3. **介质 / 毛发 / 实例**最后：`instance.geom` 按**网格名**解析。
+///
+/// 三趟都只做"生成 [`MeshDesc`]/[`TextureDesc`]/... 的字面量"——真正的语义
+/// 在 `prism-core::attach` 与 `prism-rt`，DSL 侧**不定义**任何渲染语义。
+fn build_geo_all(
+    attach: &mut prism_core::SceneAttach,
+    blocks: &[&GeoAst],
+) -> Result<(), DslError> {
+    // ---- 趟 1：纹理 ----
+    let mut tex_names: BTreeMap<String, u32> = BTreeMap::new();
+    for g in blocks {
+        if g.kind != "texture" {
+            continue;
+        }
+        let t: prism_core::TextureDesc = geo_texture(g)?;
+        attach.textures.push(t);
+        let handle: u32 = attach.textures.len() as u32;
+        if tex_names.insert(g.name.clone(), handle).is_some() {
+            return Err(err_at(
+                g.line,
+                format!(
+                    "[P3008] 纹理块 '{}' 重名\n  建议：纹理名在同场景内唯一（displacement.texture 按名解析）",
+                    g.name
+                ),
+            ));
+        }
+    }
+    // ---- 趟 2：网格 ----
+    let mut mesh_names: BTreeMap<String, usize> = BTreeMap::new();
+    for g in blocks {
+        if g.kind != "mesh" {
+            continue;
+        }
+        let m: prism_core::MeshDesc = geo_mesh(g, &tex_names)?;
+        attach.meshes.push(m);
+        if mesh_names.insert(g.name.clone(), attach.meshes.len() - 1).is_some() {
+            return Err(err_at(
+                g.line,
+                format!(
+                    "[P3008] 网格块 '{}' 重名\n  建议：网格名在同场景内唯一（instance.geom 按名解析）",
+                    g.name
+                ),
+            ));
+        }
+    }
+    // ---- 趟 3：介质 / 毛发 / 实例 ----
+    let mut geoms_by_mesh: BTreeMap<String, u32> = BTreeMap::new();
+    for g in blocks {
+        match g.kind.as_str() {
+            "texture" | "mesh" => {}
+            "media" => attach.media.push(geo_media(g)?),
+            "hair" => {
+                for st in geo_hair(g)? {
+                    attach.strands.push(st);
+                }
+            }
+            "instance" => {
+                let (mesh_idx, mut inst) = geo_instance(g, &mesh_names)?;
+                // 原型去重：同一网格被多个实例引用时只建一次 BLAS 源。
+                let key: String = format!("\u{1}{mesh_idx}");
+                let geom_id: u32 = match geoms_by_mesh.get(&key) {
+                    Some(id) => *id,
+                    None => {
+                        attach.instance_geoms.push(attach.meshes[mesh_idx].clone());
+                        let id: u32 = attach.instance_geoms.len() as u32 - 1;
+                        geoms_by_mesh.insert(key, id);
+                        id
+                    }
+                };
+                inst.geom_id = geom_id;
+                attach.instances.push(inst);
+            }
+            other => {
+                return Err(err_at(
+                    g.line,
+                    format!("[P1001] 未知附加能力块 '{other}'\n  建议：允许 media / mesh / texture / hair / instance"),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 读一个数字字段（`Num` / `Percent` / `Px` 都按裸数取；其余类型报 P2107）。
+fn geo_num(g: &GeoAst, key: &str, default: Option<f32>) -> Result<f32, DslError> {
+    for f in &g.fields {
+        if f.name != key {
+            continue;
+        }
+        let v: f32 = match &f.value {
+            Some(FieldValue::Num(v)) => *v,
+            Some(FieldValue::Percent(v)) => *v,
+            Some(FieldValue::Px(v)) => *v,
+            Some(FieldValue::Time(t)) => t.value,
+            _ => {
+                return Err(err_at(
+                    f.line,
+                    format!("[P2107] {} 块的 '{key}' 需要数字\n  建议：写成 `{key} 0.5`", g.kind),
+                ))
+            }
+        };
+        if !v.is_finite() {
+            return Err(err_at(
+                f.line,
+                format!("[P1011] {} 块的 '{key}' 必须有限，收到 {v}\n  建议：非有限值会污染几何/介质", g.kind),
+            ));
+        }
+        return Ok(v);
+    }
+    match default {
+        Some(d) => Ok(d),
+        None => Err(err_at(
+            g.line,
+            format!("[P1003] {} 块 '{}' 缺少必填字段 '{key}'\n  建议：补上 `{key} <值>`", g.kind, g.name),
+        )),
+    }
+}
+
+/// 读一个整数（`u32`）字段。
+fn geo_u32(g: &GeoAst, key: &str, default: u32) -> Result<u32, DslError> {
+    let v: f32 = geo_num(g, key, Some(default as f32))?;
+    if v < 0.0 || v > 4_294_967_295.0 {
+        return Err(err_at(
+            g.line,
+            format!("[P1011] {} 块的 '{key}' 越界：{v}\n  建议：取 0..=4294967295 的整数值", g.kind),
+        ));
+    }
+    Ok(v as u32)
+}
+
+/// 读一个 vec3 字段（`Vec3` 或三个裸数不支持；缺省给 `None`）。
+fn geo_vec3(g: &GeoAst, key: &str) -> Option<Vec3> {
+    for f in &g.fields {
+        if f.name == key {
+            if let Some(FieldValue::Vec3(v)) = &f.value {
+                return Some(*v);
+            }
+        }
+    }
+    None
+}
+
+/// 读一个裸标识符字段（如 `kind plane`）。
+fn geo_ident<'a>(g: &'a GeoAst, key: &str) -> Option<&'a str> {
+    for f in &g.fields {
+        if f.name == key {
+            if let Some(FieldValue::Ident(v)) = &f.value {
+                return Some(v.as_str());
+            }
+        }
+    }
+    None
+}
+
+/// `texture 名 { kind checker|gradient  size 8  period 2 }` → RGBA8 位图。
+///
+/// **程序化纹素**（不是渲染语义）：产出的是普通 RGBA8 像素流，之后与任何外部
+/// 资产同权（走 `TextureDesc` → `Scene::add_texture_rgba8` 同一条路）。
+fn geo_texture(g: &GeoAst) -> Result<prism_core::TextureDesc, DslError> {
+    let kind: &str = geo_ident(g, "kind").unwrap_or("checker");
+    let size: u32 = geo_u32(g, "size", GEO_DEFAULT_TEX_SIZE)?.max(1);
+    let period: u32 = geo_u32(g, "period", 2)?.max(1);
+    let mut px: Vec<u8> = Vec::with_capacity((size as usize) * (size as usize) * 4);
+    for y in 0..size {
+        for x in 0..size {
+            let v: u8 = match kind {
+                "checker" => {
+                    if ((x / period) + (y / period)) % 2 == 0 {
+                        235
+                    } else {
+                        30
+                    }
+                }
+                "gradient" => {
+                    // 沿 x 的整数线性渐变（末尾像素满值）。
+                    let denom: u32 = size.saturating_sub(1).max(1);
+                    ((x * 255) / denom) as u8
+                }
+                other => {
+                    return Err(err_at(
+                        g.line,
+                        format!("[P1002] texture 块的 kind '{other}' 不支持\n  建议：checker / gradient"),
+                    ))
+                }
+            };
+            px.extend_from_slice(&[v, v, v, 255]);
+        }
+    }
+    Ok(prism_core::TextureDesc::new(size, size, false, px))
+}
+
+/// `mesh 名 { kind plane|box  size 2  subdiv 2  displacement { … } }` → `MeshDesc`。
+///
+/// `kind` 只是**顶点流糖**：`plane` 给一个 XZ 平面的四边形，`box` 给一个
+/// 立方体（12 三角形）。两者产出的都是普通的 `positions/indices`，
+/// 之后与外部网格同权。
+fn geo_mesh(
+    g: &GeoAst,
+    tex_names: &BTreeMap<String, u32>,
+) -> Result<prism_core::MeshDesc, DslError> {
+    let kind: &str = geo_ident(g, "kind").unwrap_or("plane");
+    let size: f32 = geo_num(g, "size", Some(GEO_DEFAULT_SIZE))?;
+    if size <= 0.0 {
+        return Err(err_at(
+            g.line,
+            format!("[P1011] mesh 块的 size 必须为正，收到 {size}\n  建议：给正的世界尺度"),
+        ));
+    }
+    let h: f32 = size * 0.5;
+    let (pos, idx, uv): (Vec<Vec3>, Vec<u32>, Vec<[f32; 2]>) = match kind {
+        "plane" => (
+            vec![
+                Vec3::new(-h, 0.0, -h),
+                Vec3::new(h, 0.0, -h),
+                Vec3::new(h, 0.0, h),
+                Vec3::new(-h, 0.0, h),
+            ],
+            vec![0, 2, 1, 0, 3, 2],
+            vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+        ),
+        "box" => {
+            let mut pos: Vec<Vec3> = Vec::with_capacity(8);
+            for &z in &[-h, h] {
+                for &y in &[-h, h] {
+                    for &x in &[-h, h] {
+                        pos.push(Vec3::new(x, y, z));
+                    }
+                }
+            }
+            // 6 面 × 2 三角形（绕序朝外）。
+            let idx: Vec<u32> = vec![
+                0, 1, 3, 0, 3, 2, // z = −h
+                4, 6, 7, 4, 7, 5, // z = +h
+                0, 4, 5, 0, 5, 1, // y = −h
+                2, 3, 7, 2, 7, 6, // y = +h
+                1, 5, 7, 1, 7, 3, // x = +h
+                0, 2, 6, 0, 6, 4, // x = −h
+            ];
+            let mut uv: Vec<[f32; 2]> = Vec::with_capacity(8);
+            for &z in &[0.0f32, 1.0] {
+                for &y in &[0.0f32, 1.0] {
+                    for &x in &[0.0f32, 1.0] {
+                        uv.push([x, 0.5 * y + 0.5 * z]);
+                    }
+                }
+            }
+            (pos, idx, uv)
+        }
+        other => {
+            return Err(err_at(
+                g.line,
+                format!("[P1002] mesh 块的 kind '{other}' 不支持\n  建议：plane / box"),
+            ))
+        }
+    };
+    let mut m: prism_core::MeshDesc = prism_core::MeshDesc::with_uv(pos, idx, uv);
+
+    // ---- 位移子块 ----
+    for f in &g.fields {
+        if f.name != "displacement" {
+            continue;
+        }
+        let Some(FieldValue::Block(sub)) = &f.value else {
+            return Err(err_at(
+                f.line,
+                "[P2107] displacement 需要子块\n  建议：写成 `displacement { texture 1 amplitude 0.1 }`",
+            ));
+        };
+        let sub_ast: GeoAst = GeoAst {
+            kind: "displacement".to_string(),
+            name: g.name.clone(),
+            fields: sub.clone(),
+            line: f.line,
+        };
+        // texture：数字 = 句柄；字符串 = 本场景纹理名。
+        let mut texture: u32 = 0;
+        for sf in &sub_ast.fields {
+            if sf.name != "texture" {
+                continue;
+            }
+            match &sf.value {
+                Some(FieldValue::Num(v)) => texture = *v as u32,
+                Some(FieldValue::Str(name)) => match tex_names.get(name) {
+                    Some(h) => texture = *h,
+                    None => {
+                        return Err(err_at(
+                            sf.line,
+                            format!("[P3006] displacement.texture 引用了未声明的纹理 '{name}'\n  建议：先在本场景写 `texture {name} {{ … }}`"),
+                        ))
+                    }
+                },
+                _ => {
+                    return Err(err_at(
+                        sf.line,
+                        "[P2107] displacement.texture 需要句柄或纹理名\n  建议：`texture 1` 或 `texture \"hatch\"`",
+                    ))
+                }
+            }
+        }
+        let amplitude: f32 = geo_num(&sub_ast, "amplitude", Some(0.0))?;
+        let scale: f32 = geo_num(&sub_ast, "scale", Some(1.0))?;
+        let levels: u32 = geo_u32(&sub_ast, "levels", 0)?;
+        m.displacement = Some(prism_core::DisplacementSlot::new(texture, amplitude, scale, levels));
+    }
+    Ok(m)
+}
+
+/// `media 名 { min (..) max (..) sigma_t .. albedo .. g .. priority .. }`。
+fn geo_media(g: &GeoAst) -> Result<prism_core::MediumBox, DslError> {
+    let min: Vec3 = geo_vec3(g, "min").ok_or_else(|| {
+        err_at(
+            g.line,
+            format!("[P1003] media 块 '{}' 缺少 'min (x,y,z)'\n  建议：写 `min (-2,-2,-2)`", g.name),
+        )
+    })?;
+    let max: Vec3 = geo_vec3(g, "max").ok_or_else(|| {
+        err_at(
+            g.line,
+            format!("[P1003] media 块 '{}' 缺少 'max (x,y,z)'\n  建议：写 `max (2,2,2)`", g.name),
+        )
+    })?;
+    let sigma_t: f32 = geo_num(g, "sigma_t", Some(0.5))?;
+    let albedo: f32 = geo_num(g, "albedo", Some(0.9))?;
+    let gg: f32 = geo_num(g, "g", Some(0.0))?;
+    let priority: u32 = geo_u32(g, "priority", 0)?;
+    let m: prism_core::MediumBox = prism_core::MediumBox::new(min, max, sigma_t, albedo, gg)
+        .with_priority(priority);
+    if !m.is_translatable() {
+        return Err(err_at(
+            g.line,
+            format!(
+                "[P1011] media 块 '{}' 参数越界（min ≤ max、sigma_t > 0、albedo ∈ [0,1]、|g| < 1 需同时成立）\n  建议：核对 min/max 顺序与三个物理量的取值范围",
+                g.name
+            ),
+        ));
+    }
+    Ok(m)
+}
+
+/// `hair 名 { count 4  from (..)  dir (..)  length 1.5  radius 0.03 }` → 逐股。
+///
+/// 一个 `hair` 块产出**多股同向**毛股（`count` 条，沿 `dir` 排开）。异向股束
+/// 写成多个 `hair` 块即可——翻译层**每股一个 Mesh、每股自己的标架**，
+/// 故同向/异向都精确（T3）。
+fn geo_hair(g: &GeoAst) -> Result<Vec<prism_core::StrandDesc>, DslError> {
+    let origin: Vec3 = geo_vec3(g, "from").unwrap_or(Vec3::new(0.0, 0.0, 0.0));
+    let dir: Vec3 = geo_vec3(g, "dir").unwrap_or(Vec3::new(0.0, 1.0, 0.0));
+    let len: f32 = geo_num(g, "length", Some(GEO_DEFAULT_HAIR_LENGTH))?;
+    let radius: f32 = geo_num(g, "radius", Some(GEO_DEFAULT_HAIR_RADIUS))?;
+    let count: u32 = geo_u32(g, "count", GEO_DEFAULT_HAIR_COUNT)?.max(1);
+    let spread: f32 = geo_num(g, "spread", Some(0.3))?;
+    let segs: u32 = geo_u32(g, "segments", 4)?.max(1);
+    let d: Vec3 = if dir.length() > 1e-6 { dir.normalize() } else { Vec3::new(0.0, 1.0, 0.0) };
+    // 与 `dir` 最不平行的坐标轴做叉乘 ⇒ 侧向偏移方向（不会退化成零向量）。
+    let ax: Vec3 = if d.x.abs() < 0.9 { Vec3::new(1.0, 0.0, 0.0) } else { Vec3::new(0.0, 0.0, 1.0) };
+    let side: Vec3 = d.cross(&ax).normalize();
+    let mut out: Vec<prism_core::StrandDesc> = Vec::with_capacity(count as usize);
+    for i in 0..count {
+        // count = 1 ⇒ 恰好落在 `from`（不引入任何偏移，保持"单股 = 原地"）。
+        let t: f32 = if count <= 1 {
+            0.0
+        } else {
+            (i as f32) / ((count - 1) as f32) - 0.5
+        };
+        let base: Vec3 = origin + side * (spread * t);
+        let mut pts: Vec<Vec3> = Vec::with_capacity((segs + 1) as usize);
+        for k in 0..=segs {
+            let s: f32 = (k as f32) / (segs as f32);
+            pts.push(base + d * (len * s));
+        }
+        out.push(prism_core::StrandDesc::new(pts, radius));
+    }
+    Ok(out)
+}
+
+/// `instance 名 { geom "网格名"  offset (x,y,z) }` → (共享原型, 实例记录)。
+fn geo_instance(
+    g: &GeoAst,
+    mesh_names: &BTreeMap<String, usize>,
+) -> Result<(usize, prism_core::InstanceDesc), DslError> {
+    let mut geom_name: Option<String> = None;
+    for f in &g.fields {
+        if f.name == "geom" {
+            if let Some(FieldValue::Str(n)) = &f.value {
+                geom_name = Some(n.clone());
+            }
+        }
+    }
+    let name: String = geom_name.ok_or_else(|| {
+        err_at(
+            g.line,
+            format!("[P1003] instance 块 '{}' 缺少 'geom \"网格名\"'\n  建议：先声明 `mesh ground {{ … }}` 再 `instance i {{ geom \"ground\" }}`", g.name),
+        )
+    })?;
+    let idx: usize = *mesh_names.get(&name).ok_or_else(|| {
+        err_at(
+            g.line,
+            format!("[P3006] instance.geom 引用了未声明的网格 '{name}'\n  建议：网格块须写在本块之前"),
+        )
+    })?;
+    // 返回"引用了哪个网格"；原型几何由 `build_geo_all` 复制进 `instance_geoms`
+    // 并回填 `geom_id`（同一个网格只建一份原型）。
+    let off: Vec3 = geo_vec3(g, "offset").unwrap_or(Vec3::new(0.0, 0.0, 0.0));
+    Ok((idx, prism_core::InstanceDesc::translated(0, off)))
+}

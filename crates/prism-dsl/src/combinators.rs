@@ -394,6 +394,7 @@ fn camera_node(
 /// 空场景摘要（单场景组合子的通用骨架）。
 fn plain_scene(name: &str, duration: f32, node_ids: Vec<NodeId>, camera: Option<CameraOrbit>, layers: Vec<LayerInfo>) -> SceneV2 {
     SceneV2 {
+        attach: prism_core::SceneAttach::default(),
         name: name.to_string(),
         start: 0.0,
         duration,

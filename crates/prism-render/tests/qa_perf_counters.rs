@@ -63,7 +63,8 @@ fn fixed_scene() -> Scene {
             60.0_f32.to_radians(),
         ),
         aesthetic: Aesthetic::new(false, 1.0, false),
-    }
+            attach: Default::default(),
+        }
 }
 
 /// 池化路径场景：每帧 acquire→render→copy→release，返回逐帧像素（供判据 ②）。

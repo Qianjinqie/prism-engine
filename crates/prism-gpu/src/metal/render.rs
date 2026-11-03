@@ -390,7 +390,8 @@ mod tests {
             ],
             aesthetic,
         curves: Vec::new(),
-        }
+    ..Default::default()
+}
     }
 
     fn off() -> AestheticReq {

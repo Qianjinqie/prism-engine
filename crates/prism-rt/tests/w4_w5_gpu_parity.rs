@@ -100,7 +100,8 @@ fn base_request(w: u32, h: u32) -> SceneRenderRequest {
         }],
         aesthetic: AestheticReq { teal_orange: false, contrast: 1.0, filmic: false },
         curves: Vec::new(),
-    }
+    ..Default::default()
+}
 }
 
 fn is_background(px: [u8; 4]) -> bool {

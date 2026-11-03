@@ -103,6 +103,7 @@ fn test_fb(w: u32, h: u32) -> Framebuffer {
 /// 最小 SceneV2（无任何新节点）。
 fn bare_scene(name: &str) -> SceneV2 {
     SceneV2 {
+        attach: prism_core::SceneAttach::default(),
         name: name.to_string(),
         start: 0.0,
         duration: 1.0,
@@ -444,7 +445,8 @@ fn consumed_post_chain_applies_to_rendered_frame_deterministically() {
         lights: vec![],
         camera: Camera::new(Vec3::new(0.0, 0.0, -4.0), Vec3::new(0.0, 0.0, 0.0), 60.0_f32.to_radians()),
         aesthetic: Aesthetic::new(false, 1.0, false),
-    };
+            attach: Default::default(),
+};
     let mut device = CpuRefBackend;
     let base: Framebuffer = prism_render::render_frame(&mut device, &scene, 0.0, 1.0, 32, 18);
     let mut x = base.clone();

@@ -212,6 +212,33 @@ pub(crate) enum SceneItem {
     Audio(AudioAst),
     Note(NoteAst),
     Post(PostAst),
+    /// T0 产品路径接线：几何 / 介质 / 纹理 / 毛发 / 实例块。
+    Geo(GeoAst),
+}
+
+/// T0 的附加能力块（`media` / `mesh` / `texture` / `hair` / `instance`）。
+///
+/// # 为什么是开放字段集（而不是每块一个强类型）
+///
+/// 五块的字段**互不重叠**且数量少（4–8 个），共享同一条"名 值"字段流解析与
+/// 同一套行号诊断。强类型化会让 parser 多五个近乎相同的函数，而 codegen 侧
+/// 仍要逐字段白名单校验（值域检查跑不掉）。故统一用 [`NamedField`]，
+/// 由 `codegen::build_geo` 按 `kind` 做白名单 + 值域校验（未知名报 P1002）。
+///
+/// # 语义边界（不许读成"DSL 自创了一套几何语义"）
+///
+/// 这些块最终都翻译成 [`crate::codegen`] 里对应 `prism_core::attach` 的
+/// `MeshDesc` / `TextureDesc` / `StrandDesc` / `MediumBox` / `InstanceDesc`——
+/// **与 Rust 侧 API 走同一条通路**，没有任何 DSL 专属的渲染语义。
+/// `mesh kind plane|box` 与 `texture kind checker|gradient` 是**几何/纹素糖**：
+/// 它们只生成顶点流与 RGBA8 像素，之后与外部资产完全同权。
+pub(crate) struct GeoAst {
+    /// 块种类：`media` / `mesh` / `texture` / `hair` / `instance`。
+    pub(crate) kind: String,
+    /// 块名（引用用；`instance` 用它找 `mesh`）。
+    pub(crate) name: String,
+    pub(crate) fields: Vec<NamedField>,
+    pub(crate) line: usize,
 }
 
 /// scene v2 块：`scene "名" { duration? 条目* }`（可多个场景，构成时间线）。

@@ -1,0 +1,77 @@
+// ============================================================================
+// t0_media_mesh —— T0 产品路径接线的端到端示例（介质 + 位移网格 + 实例 + 毛发）
+//
+// 这个文件存在的意义：证明 `prism-app render` **真的能出带附加能力的帧**。
+// 在 T0 之前，`prism_core::Scene` 只有球与方向光，DSL 也没有 `media` /
+// `mesh` / `texture` / `hair` / `instance` 这五个块 —— W1–W7 补的纹理 / 介质 /
+// 实例 / 毛发 / 细分 / 位移 / 自适应一条都出不了产品片。
+//
+// 覆盖：
+//   - `texture hatch`     程序化棋盘高度图（RGBA8，线性域）
+//   - `mesh ground`       XZ 平面 + `displacement` 子块（细分 3 级后按亮度位移）
+//   - `instance`          同一网格的两份平移实例（共享一份原型几何）
+//   - `media fog`         一个均匀介质盒（A6 互斥区域）
+//   - `hair tuft`          8 股同向毛发（每股一个 Mesh + 该股自己的标架）
+//
+// 旧 `.prism` 文件**照常解析、逐字节同帧**：这五个块只是新增条目，
+// 不声明它们时 `SceneAttach` 全空（判据 P1 用 md5 对账）。
+//
+// 实跑（workspace 根目录）：
+//   cargo run -p prism-app -- render examples/t0_media_mesh.prism \
+//     --out output/t0_media_mesh.mp4 --codec mjpeg
+// ============================================================================
+
+// prism-dsl 1
+
+movie "t0-media-mesh" { duration 1s fps 8 resolution 160x120 format png }
+
+theme { contrast 1.0 }
+
+scene "接线" {
+    duration 1s
+
+    stage3d {
+        camera main { orbit { center 0,0,0 radius 4.5 } fov 55 }
+        sdf ball { kind sphere radius 0.55 }
+        material hero { albedo #4f7fd0 roughness 0.4 metalness 0.1 }
+        light key { direction(0.4,-1,-0.6) color #ffffff intensity 3.2 }
+    }
+
+    // 程序化高度图（棋盘）。句柄 = 本场景纹理声明序 + 1 ⇒ 这里恰好是 1。
+    texture hatch { kind checker size 8 period 2 }
+
+    // 地面：4×4 的 XZ 平面，细分 3 级（4³×2 = 128 三角形）后按亮度位移 0.12。
+    mesh ground {
+        kind plane
+        size 4
+        displacement { texture 1 amplitude 0.12 scale 1 levels 3 }
+    }
+
+    // 两块竖直挡板：同一 `ground` 网格原型的两份平移实例。
+    // （平面被旋转不是本块的能力 —— `instance` 只给平移；旋转留给后续波次。）
+    instance board_l { geom "ground" offset (-1.6, 0.9, -0.4) }
+    instance board_r { geom "ground" offset (1.6, 0.9, -0.4) }
+
+    // 一层薄雾（均匀介质，互斥区域；priority 在本场景不参与判定）。
+    media fog {
+        min (-2.5, -2.5, -1.0)
+        max (2.5, 0.6, 2.5)
+        sigma_t 0.35
+        albedo 0.85
+        g 0.2
+        priority 1
+    }
+
+    // 8 股同向毛发（每股东向一致；翻译层仍按股切 Mesh，异向场景同样精确）。
+    hair tuft {
+        count 8
+        from (0, -0.5, 0.2)
+        dir (0, 1, 0)
+        length 1.1
+        radius 0.02
+        spread 0.5
+        segments 4
+    }
+}
+
+output { resolution 160x120 format png }

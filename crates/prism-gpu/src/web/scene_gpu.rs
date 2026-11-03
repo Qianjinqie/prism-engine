@@ -1307,6 +1307,7 @@ mod tests {
             }],
             aesthetic: crate::AestheticReq { teal_orange: false, contrast: 1.0, filmic: false },
             curves: Vec::new(),
+            ..Default::default()
         }
     }
 

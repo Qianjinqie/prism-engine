@@ -199,6 +199,12 @@ struct SceneModel {
     sim_base_frame: u64,
     /// 文本图层（S12 layer text；按节点序合成）。
     texts: Vec<NodeRef>,
+    /// T0：本场景的附加能力（介质 / 网格 / 实例 / 纹理 / 毛发 / 位移槽）。
+    ///
+    /// 来源是 `prism_dsl::CompileV2Output` 的 `SceneV2::attach`（`media` /
+    /// `mesh` / `texture` / `hair` / `instance` 块）。空 ⇒ 该场景与加字段前
+    /// **逐字节同帧**（判据 P1）。
+    attach: prism_core::SceneAttach,
 }
 
 // ---------------------------------------------------------------------------
@@ -476,6 +482,7 @@ fn build_models(
             sims: Vec::new(),
             sim_base_frame: 0,
             texts: Vec::new(),
+            attach: scene.attach.clone(),
         };
         // node_ids 升序（codegen 保证）→ 合成序确定。
         for &id in &scene.node_ids {
@@ -1644,6 +1651,9 @@ fn render_scene_frame(
         lights,
         camera: Camera::new(Vec3::new(0.0, 0.0, -orbit_radius), center, fov_rad),
         aesthetic,
+        // T0：DSL 声明的附加能力（media / mesh / instance / texture / hair /
+        // 位移槽）。空 ⇒ 与加字段前逐字节同帧。
+        attach: model.attach.clone(),
     };
     let t_local: f32 = t - model.start;
     // 场景时长为正（活跃判据已保证）；防御性下限防除零。
@@ -2211,6 +2221,7 @@ mod tests {
         graph.add_node(sdf).expect("id 3");
 
         let scene = SceneV2 {
+            attach: prism_core::SceneAttach::default(),
             name: "s".to_string(),
             start: 0.0,
             duration: 1.0,
@@ -2441,6 +2452,7 @@ mod tests {
         node.params = params;
         graph.add_node(node).expect("id 1");
         let scene = SceneV2 {
+            attach: prism_core::SceneAttach::default(),
             name: "t".to_string(),
             start: 0.0,
             duration: 0.5,
@@ -2516,6 +2528,7 @@ mod tests {
         }];
         graph.add_node(node).expect("id 1");
         let scene = SceneV2 {
+            attach: prism_core::SceneAttach::default(),
             name: "t".to_string(),
             start: 0.0,
             duration: 1.0,
@@ -2811,6 +2824,7 @@ mod tests {
     fn scene_first_frame_matches_active_predicate() {
         let model = |start: f32, duration: f32| -> SceneModel {
             SceneModel {
+            attach: prism_core::SceneAttach::default(),
                 index: 0,
                 name: "s".to_string(),
                 start,

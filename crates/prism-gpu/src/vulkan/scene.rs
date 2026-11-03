@@ -214,7 +214,8 @@ pub(crate) fn self_test_request() -> SceneRenderRequest {
             filmic: false,
         },
     curves: Vec::new(),
-    }
+    ..Default::default()
+}
 }
 
 // ---------------------------------------------------------------------------

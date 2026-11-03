@@ -466,7 +466,8 @@ mod tests {
             ],
             aesthetic,
             curves: Vec::new(),
-        }
+    ..Default::default()
+}
     }
 
     /// 场景 C：球 + 圆环（曲线 → 三角化 → 扁平 BVH）——专测 V3 刚补回的遍历段。
@@ -483,7 +484,7 @@ mod tests {
             axis: Vec3::new(0.0, 1.0, 0.0),
         }];
         req
-    }
+}
 
     /// 判据（**仓库既有口径，一字未改**）：
     /// * 软件 ICD：`max_channel_delta == 0` 且 `differing_pixels == 0`（硬判据）；
@@ -969,7 +970,8 @@ mod tests {
                 filmic: false,
             },
             curves: Vec::new(),
-        }
+    ..Default::default()
+}
     }
 
     /// 主判据：贴 **mip 链棋盘**的球在 **llvmpipe** 上与 CPU 参考**逐位一致**。
@@ -1286,7 +1288,8 @@ mod tests {
                 filmic: false,
             },
             curves: Vec::new(),
-        }
+    ..Default::default()
+}
     }
 
     /// 主判据（W1 段 2）：带 **法线 + 金属度-粗糙度** 贴图的球在 **llvmpipe**

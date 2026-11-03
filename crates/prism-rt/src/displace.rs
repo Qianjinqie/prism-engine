@@ -182,6 +182,122 @@ pub fn bake_triangles(positions: &[Vec3], indices: &[u32]) -> Vec<Triangle> {
 }
 
 // ---------------------------------------------------------------------------
+// G-10 / T2：**运行期**位移（细分 + 位移的同源复用）
+// ---------------------------------------------------------------------------
+
+/// 运行期位移槽（与 `prism_core::attach::DisplacementSlot` 同构）。
+///
+/// # 为什么参数包在 rt 侧另立一份
+///
+/// `prism-rt` 不依赖 `prism-core` 的**高层**类型（core → rt 是反向），而
+/// 位移通路必须能被 rt 自己的测试与 `Scene` 直接驱动。故这里是一份纯参数
+/// 结构：`prism-render` 的翻译层把 core 的槽搬成这一份。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RuntimeDisplace {
+    /// 高度图句柄（1 起；0 = 无贴图 ⇒ 幅值恒 0）。
+    pub texture: u32,
+    /// 幅值（世界单位；恰 0 ⇒ 构造性短路）。
+    pub amplitude: f32,
+    /// uv 缩放（`1.0` = 原样，**不进入**浮点乘法）。
+    pub scale: f32,
+    /// 细分级别（截断到 [`prism_geometry::subdiv::MAX_LEVELS`]）。
+    pub levels: u32,
+}
+
+impl Default for RuntimeDisplace {
+    fn default() -> Self {
+        Self { texture: 0, amplitude: 0.0, scale: 1.0, levels: 0 }
+    }
+}
+
+impl RuntimeDisplace {
+    /// 是否恒等（幅值恰为 0 / ±0；或无贴图句柄）。
+    ///
+    /// **`texture == 0` 也算恒等**：没有高度图就取不到幅值，`amplitude_at`
+    /// 恒返回 0，位移后的网格与细分后的网格相同——但细分本身仍会改几何，
+    /// 所以这条短路是"整条通路（含细分）都不做"，而不是"只跳过加法"。
+    pub fn is_identity(&self) -> bool {
+        self.amplitude == 0.0 || self.texture == crate::texture::NO_TEXTURE
+    }
+
+    /// 转成烘焙期参数（`channel` 恒为亮度，见模块文档第 3 条）。
+    pub fn params(&self) -> DisplaceParams {
+        DisplaceParams::new(self.amplitude)
+    }
+}
+
+/// 运行期位移的产物（与 `prism_geometry::subdiv::SubdivResult` 同形，只保留
+/// 进 `Mesh` 需要的三段）。
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct DisplacedMesh {
+    /// 位移后的顶点位置。
+    pub positions: Vec<Vec3>,
+    /// 三角形索引流。
+    pub indices: Vec<u32>,
+    /// 顶点域 uv（与 `positions` 同长同序；输入无 uv 则为空）。
+    pub uv: Vec<[f32; 2]>,
+}
+
+/// **运行期位移入口**（G-10 / T2）：`细分 → 位移`，两段都复用既有实现。
+///
+/// # 同源性（判据 V2）
+///
+/// 本函数**只调**
+/// [`prism_geometry::subdiv::subdivide`] 与 [`displace_positions`]，
+/// 一行几何/采样数学都没有第二份。于是"运行期结果 vs 烘焙期
+/// `subdiv → displace` 同一输入"的差 **恒为 0**（不是 1e-6 以内，是逐位）。
+///
+/// # 构造性短路（判据 V1）
+///
+/// `slot.is_identity()` ⇒ 返回 `None`（**调用方据此保留原网格**）。
+/// 这样"`displacement = 0`"与"没有位移槽"走的是同一条路径 —— 连细分都不做，
+/// 因此逐位相同，而不是"细分后再算一个 0"。
+///
+/// # uv 缩放
+///
+/// `scale == 1.0` 时**不乘**（保住"缩放 1 = 原样"的逐位性：`x * 1.0` 对有限
+/// `x` 逐位相等，但 `-0.0 * 1.0 = -0.0` 也成立，故严格说两者等价；这里仍然
+/// 显式短路，只为了让"有没有缩放"在代码里可读）。
+pub fn tessellate_displace(
+    positions: &[Vec3],
+    indices: &[u32],
+    uv: &[[f32; 2]],
+    slot: RuntimeDisplace,
+    table: TexTable<'_>,
+) -> Option<DisplacedMesh> {
+    if slot.is_identity() {
+        return None;
+    }
+    if indices.len() < 3 {
+        return None;
+    }
+    // ① 细分（复用 `subdiv.rs`；`levels = 0` 只把顶点放到极限位置、不改拓扑）。
+    let sub = prism_geometry::subdiv::subdivide(positions, indices, uv, slot.levels);
+    if sub.indices.is_empty() {
+        return None;
+    }
+    // ② 位移（复用本模块的烘焙期实现；法线是细分后的**极限法线**）。
+    let scaled_uv: Vec<[f32; 2]> = if slot.scale == 1.0 {
+        sub.uv.clone()
+    } else {
+        sub.uv
+            .iter()
+            .map(|t| [t[0] * slot.scale, t[1] * slot.scale])
+            .collect()
+    };
+    let moved = displace_positions(
+        &sub.positions,
+        &sub.normals,
+        &scaled_uv,
+        table,
+        slot.texture,
+        slot.params(),
+    );
+    Some(DisplacedMesh { positions: moved, indices: sub.indices, uv: sub.uv })
+}
+
+
+// ---------------------------------------------------------------------------
 // 测试（native；不需要 GPU）
 // ---------------------------------------------------------------------------
 

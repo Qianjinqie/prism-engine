@@ -23,6 +23,9 @@ prism-text = { path = "../prism-text" }
 # 依赖方向合法性：prism-rt → {prism-core, prism-math, prism-geometry,
 # prism-noise}，无一环回 prism-render（render → rt 是新增单向边）。
 prism-rt = { path = "../prism-rt" }
+# T0：翻译层直接构造 `Aabb` 并三角化毛股（`curve_tess`）。路径依赖，非第三方；
+# prism-geometry → {prism-math, prism-noise}，不反向依赖本 crate，无环。
+prism-geometry = { path = "../prism-geometry" }
 
 # dev-only：movie 测试构造 Track 通道（prism-dsl 的 anim/expr 块产物类型）。
 # prism-anim → {prism-math, prism-noise}，无环回 prism-render。

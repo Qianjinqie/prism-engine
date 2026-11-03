@@ -681,7 +681,8 @@ fn web_backend_native_never_ready_and_falls_back() {
         }],
         aesthetic: AestheticReq { teal_orange: false, contrast: 1.0, filmic: false },
     curves: Vec::new(),
-    };
+    ..Default::default()
+};
     let gpu_fb = b.render_scene(&req);
     let cpu_fb = CpuRefBackend.render_scene(&req);
     assert_eq!(gpu_fb.width, cpu_fb.width);

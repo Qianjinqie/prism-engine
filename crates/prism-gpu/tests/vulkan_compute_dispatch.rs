@@ -273,7 +273,8 @@ fn availability_requires_verified_dispatch_not_just_a_device() {
             filmic: false,
         },
     curves: Vec::new(),
-    };
+    ..Default::default()
+};
     let fb = backend.render_scene(&req);
     assert!(
         fb.is_valid(),

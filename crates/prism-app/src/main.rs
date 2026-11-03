@@ -220,7 +220,8 @@ fn run_demo() -> std::io::Result<()> {
             contrast: 1.12,
             filmic: true,
         },
-    };
+            attach: Default::default(),
+};
 
     // ---- 2. CPU 参考后端离线渲染 -------------------------------------------
     // 12fps * 3s = 36 帧；逐帧由 prism-core 编译请求、CpuRefBackend 光追成像。

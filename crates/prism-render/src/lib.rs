@@ -16,7 +16,11 @@
 //! 效果）与 [`orchestrator`]（tile 化求值编排），存储域为 `prism_io::fbuf`
 //! 的 RGBA16F 半精度帧缓冲。
 
-use prism_gpu::{AestheticReq, CameraReq, Framebuffer, GpuDevice, LightReq, SceneRenderRequest, SphereReq};
+use prism_gpu::{
+    AestheticReq, CameraReq, DisplaceSlotReq, Framebuffer, GpuDevice, HairReq, InstanceReq,
+    LightReq, MediumBoxReq, MeshReq, SceneGeoReq, SceneRenderRequest, SphereReq, StrandReq,
+    TextureReq,
+};
 use prism_core::Scene;
 
 /// 渲染单帧：把场景在时刻 `t` 编译成设备请求，再交给 GPU 设备渲染。
@@ -109,8 +113,89 @@ pub fn build_render_request(
         lights,
         spheres,
         aesthetic,
-    curves: Vec::new(),
+        curves: Vec::new(),
+        // T0：把 core 的附加能力搬成请求侧的影子 DTO。**逐条非空分支**——
+        // 六个能力各写一次，不做"借用某个反射机制自动搬"的魔术（判据 P3
+        // 就是查这六段非空翻译存在）。
+        geo: build_geo_request(scene),
     }
+}
+
+/// core 的 [`prism_core::SceneAttach`] → 请求侧 [`SceneGeoReq`]。
+///
+/// # 为什么逐字段手写而不是 derive
+///
+/// 翻译层是"core 语义 ↔ rt 语义"的唯一交接面。任何自动映射都会在两端字段
+/// 名漂移时静默产生"字段加了但没接"（正是本轮要消灭的那类缺口）。手写的
+/// 代价是每次扩展都到这里报到；收益是**漏接会编译不过**（结构体字面量必须
+/// 写出每个字段）。
+///
+/// 判据 P3（`crates/prism-render/tests/t0_product_path.rs`）在源码层再查一遍：
+/// 六个能力在 `translate_scene` 里各有非空分支。
+pub fn build_geo_request(scene: &Scene) -> SceneGeoReq {
+    let a = &scene.attach;
+    let media: Vec<MediumBoxReq> = a
+        .media
+        .iter()
+        .map(|m| MediumBoxReq {
+            bounds_min: m.bounds_min,
+            bounds_max: m.bounds_max,
+            sigma_t: m.sigma_t,
+            albedo: m.albedo,
+            g: m.g,
+            priority: m.priority,
+        })
+        .collect();
+    let conv_mesh = |m: &prism_core::MeshDesc| -> MeshReq {
+        MeshReq {
+            positions: m.positions.clone(),
+            indices: m.indices.clone(),
+            uv: m.uv.clone(),
+            displacement: m.displacement.map(|d| DisplaceSlotReq {
+                texture: d.texture,
+                amplitude: d.amplitude,
+                scale: d.scale,
+                levels: d.levels,
+            }),
+        }
+    };
+    let meshes: Vec<MeshReq> = a.meshes.iter().map(conv_mesh).collect();
+    let instance_geoms: Vec<MeshReq> = a.instance_geoms.iter().map(conv_mesh).collect();
+    let instances: Vec<InstanceReq> = a
+        .instances
+        .iter()
+        .map(|i| InstanceReq { geom_id: i.geom_id, affine: i.affine, mat_id: i.mat_id })
+        .collect();
+    let textures: Vec<TextureReq> = a
+        .textures
+        .iter()
+        .map(|t| TextureReq {
+            width: t.width,
+            height: t.height,
+            srgb: t.srgb,
+            rgba8: t.rgba8.clone(),
+        })
+        .collect();
+    let strands: Vec<StrandReq> = a
+        .strands
+        .iter()
+        .map(|s| StrandReq {
+            points: s.points.clone(),
+            radii: s.radii.clone(),
+            params: HairReq {
+                beta_m: s.params.beta_m,
+                k_azimuth: s.params.k_azimuth,
+                eta: s.params.eta,
+                sigma_a: s.params.sigma_a,
+                radius: s.params.radius,
+                w_r: s.params.w_r,
+                w_tt: s.params.w_tt,
+                w_trt: s.params.w_trt,
+                phi_tt_shift: s.params.phi_tt_shift,
+            },
+        })
+        .collect();
+    SceneGeoReq { media, meshes, instance_geoms, instances, textures, strands }
 }
 
 /// 渲染整段视频：按 `fps` 在 `[0, duration]` 区间均匀采样若干帧。
@@ -351,6 +436,7 @@ mod tests {
                 60.0_f32.to_radians(),
             ),
             aesthetic: Aesthetic::new(true, 1.2, true),
+            attach: Default::default(),
         }
     }
 
@@ -457,6 +543,7 @@ mod tests {
             // 运行时契约：fov 以弧度计（60° → π/3），与 prism-app/main.rs 一致。
             camera: Camera::new(Vec3::new(0.0, 0.0, -3.0), Vec3::new(0.0, 0.0, 0.0), 60.0_f32.to_radians()),
             aesthetic: Aesthetic::new(false, 1.0, false),
+            attach: Default::default(),
         }
     }
 

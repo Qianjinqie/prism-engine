@@ -69,7 +69,8 @@ fn base_request(w: u32, h: u32) -> SceneRenderRequest {
             filmic: false,
         },
         curves: Vec::new(),
-    }
+    ..Default::default()
+}
 }
 
 /// 中心放一个正对相机的圆柱（轴沿 Z），用于"几何位置可判"的成像断言。

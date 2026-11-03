@@ -40,6 +40,9 @@
 // v2 节点模型：节点三元组 + 特解注册表（第一批）与图 + 求值调度（第二批）
 // ---------------------------------------------------------------------------
 
+// T0 产品路径接线：场景附加能力（介质 / 网格 / 实例 / 纹理 / 毛发 / 位移槽）。
+// 空 ⇒ 与加字段前逐字节同帧（判据 P1）。
+pub mod attach;
 pub mod node;
 pub mod registry;
 pub mod graph;
@@ -57,6 +60,10 @@ pub mod sceneseq;
 pub mod fixpoint;
 
 pub use node::{EvalCtx, Node, NodeId, Params, Payload, SampleIndex, StructureId};
+pub use attach::{
+    DisplacementSlot, HairParams, InstanceDesc, MediumBox, MeshDesc, SceneAttach, StrandDesc,
+    TextureDesc,
+};
 pub use registry::{NodeRegistry, RegistryError};
 pub use depth::{DepthComposite, DepthLayer, DepthMap};
 pub use compose::{apply_fog, blend_pixel, ComposeNode, LayerBuf};
@@ -165,6 +172,43 @@ pub struct Scene {
     pub lights: Vec<Light>,
     pub camera: Camera,
     pub aesthetic: Aesthetic,
+    /// 场景附加能力（T0）：介质区域 / 三角网格 / 实例 / 纹理 / 毛发股 / 位移槽。
+    ///
+    /// # 硬约束：`Default`（全空）⇒ 行为与加字段前**逐字节相同**
+    ///
+    /// 这条不是"期望"而是**结构性结论**：翻译层（`prism-render::rt_backend::
+    /// translate_scene`）在 `attach.is_empty()` 时不产生任何新的 rt 侧条目，
+    /// 于是渲染走的是同一串浮点运算与同一串采样索引。判据 P1 用 md5 对账
+    /// （`crates/prism-render/tests/t0_product_path.rs`）。
+    ///
+    /// 为什么是**一个**字段而不是六个：`Scene` 的构造模式是跨 crate 结构体
+    /// 字面量（十余处，含 tests / examples）。加六个字段就要改六处 × 十余处，
+    /// 且每加一个能力都要再改一遍；聚成一个带 `Default` 的复合值后，既有
+    /// 调用点只需 `..Default::default()`，未来扩展不再触碰它们。
+    pub attach: SceneAttach,
+}
+
+impl Default for Scene {
+    /// 中性缺省：零半径球、单盏强度 1 的白光、45° 相机、关后期、空附加能力。
+    ///
+    /// 存在的唯一理由是让既有结构体字面量能用 `..Default::default()` 补齐新增
+    /// 字段（`Scene` 没有天然缺省，但"空附加能力 + 中性主体"是可用的起点）。
+    fn default() -> Self {
+        Scene {
+            radius: 0.0,
+            orbit_center: Vec3::new(0.0, 0.0, 0.0),
+            orbit_radius: 4.0,
+            material: Material::new(Vec3::splat(0.8), 0.5, 0.0),
+            lights: Vec::new(),
+            camera: Camera::new(
+                Vec3::new(0.0, 0.0, -4.0),
+                Vec3::new(0.0, 0.0, 0.0),
+                45.0_f32.to_radians(),
+            ),
+            aesthetic: Aesthetic::new(false, 1.0, false),
+            attach: SceneAttach::default(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -217,6 +261,7 @@ mod tests {
             )],
             camera: Camera::new(Vec3::new(0.0, 0.0, -4.0), Vec3::new(0.0, 0.0, 0.0), 60.0_f32.to_radians()),
             aesthetic: Aesthetic::new(true, 1.2, true),
+            attach: Default::default(),
         }
     }
 

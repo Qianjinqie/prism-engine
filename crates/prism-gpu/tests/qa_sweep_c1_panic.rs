@@ -75,7 +75,8 @@ fn a03_vulkan_backend_render_scene_does_not_panic() {
         width: 4,
         height: 4,
     curves: Vec::new(),
-    };
+    ..Default::default()
+};
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let fb = backend.render_scene(&req);
         fb.pixels.len()
@@ -171,7 +172,8 @@ fn base_req(w: u32, h: u32) -> SceneRenderRequest {
         width: w,
         height: h,
     curves: Vec::new(),
-    }
+    ..Default::default()
+}
 }
 
 /// 各种退化/极端渲染请求不得 panic。

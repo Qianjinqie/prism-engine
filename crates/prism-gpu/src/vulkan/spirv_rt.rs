@@ -2420,7 +2420,8 @@ mod tests {
                 filmic: false,
             },
         curves: Vec::new(),
-        }
+    ..Default::default()
+}
     }
 
     /// 结构验证：入口 / LocalSize / 绑定 / 单函数 / 动态循环 / 指令铺满字流。

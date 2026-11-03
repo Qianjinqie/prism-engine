@@ -1356,7 +1356,8 @@ mod tests {
                 filmic: false,
             },
         curves: Vec::new(),
-        }
+    ..Default::default()
+}
     }
 
     #[test]

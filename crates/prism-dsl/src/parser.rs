@@ -15,7 +15,7 @@ use crate::ast::{
     MaterialV2Ast,
     MorphRefAst, MovieAst, NamedField, NoteAst, OutputAst, PostAst, SceneItem, SceneV2Ast, SdfAst,
     SimAst,
-    Stage3dAst, TimeVal, TimeUnit, TransitionAst, AestheticAst, AngleVal, AngleUnit,
+    GeoAst, Stage3dAst, TimeVal, TimeUnit, TransitionAst, AestheticAst, AngleVal, AngleUnit,
     OutputFormatAst, SceneAst, SphereAst, MaterialAst, CameraAst, LightAst, TimelineAst,
 };
 use crate::{DslError, err_at};
@@ -1144,11 +1144,15 @@ impl Parser {
                 "audio" => items.push(SceneItem::Audio(self.parse_audio(line)?)),
                 "note" => items.push(SceneItem::Note(self.parse_note(line)?)),
                 "post" => items.push(SceneItem::Post(self.parse_post(line)?)),
+                // T0：附加能力块（几何 / 介质 / 纹理 / 毛发 / 实例）。
+                "media" | "mesh" | "texture" | "hair" | "instance" => {
+                    items.push(SceneItem::Geo(self.parse_geo(kw, line)?))
+                }
                 other => {
                     return Err(err_at(
                         line,
                         format!(
-                            "[P1002] scene 块中未知条目 '{}'（允许：stage3d / layer / sim / compose / audio / note / post）\n  建议：检查条目名拼写",
+                            "[P1002] scene 块中未知条目 '{}'（允许：stage3d / layer / sim / compose / audio / note / post / media / mesh / texture / hair / instance）\n  建议：检查条目名拼写",
                             other
                         ),
                     ));
@@ -1419,6 +1423,19 @@ impl Parser {
         self.expect_punct(Tok::LBrace, "{")?;
         let fields = self.parse_named_fields("note")?;
         Ok(NoteAst { name, fields, line: kw_line })
+    }
+
+    /// T0 附加能力块：`media|mesh|texture|hair|instance 名 { 字段* }`。
+    ///
+    /// 名可省略（`media { ... }`）⇒ 缺省同种类名；引用型字段
+    /// （`instance.geom`、`displacement.texture`）按名解析，见
+    /// `codegen::build_geo`。
+    fn parse_geo(&mut self, kind: String, kw_line: usize) -> Result<GeoAst, DslError> {
+        let name: String = self.parse_optional_block_name(&format!("{kind} 名称"))?;
+        let name: String = if name.is_empty() { kind.clone() } else { name };
+        self.expect_punct(Tok::LBrace, "{")?;
+        let fields: Vec<NamedField> = self.parse_named_fields(&kind)?;
+        Ok(GeoAst { kind, name, fields, line: kw_line })
     }
 
     /// post 块：`post { bloom 0.3 grain 0.1 }`（开放字段，codegen 白名单）。

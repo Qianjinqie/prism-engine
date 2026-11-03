@@ -282,7 +282,8 @@ mod tests {
                 filmic: false,
             },
         curves: Vec::new(),
-        }
+    ..Default::default()
+}
     }
 
     /// 非 macOS 平台：Metal 恒不可用。
