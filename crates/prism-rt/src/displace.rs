@@ -272,9 +272,13 @@ pub fn tessellate_displace(
     if indices.len() < 3 {
         return None;
     }
+    // 级别上界：`subdivide` 内部也会截断，这里再钳一次是**接口契约**——
+    // 调用方读 `slot.levels = 1e6` 不该指望"反正下游会挡"。钳到同一常量，
+    // 两处不可能漂移（`MAX_LEVELS` 是 `pub const`）。
+    let levels: u32 = slot.levels.min(prism_geometry::subdiv::MAX_LEVELS);
     // ① 细分（复用 `subdiv.rs`；`levels = 0` 只把顶点放到极限位置、不改拓扑）。
     //    G-9：折痕/角点标记在这里生效；`marks == None` 与加标记前逐位相同。
-    let sub = prism_geometry::subdiv::subdivide_marked(positions, indices, uv, slot.levels, marks);
+    let sub = prism_geometry::subdiv::subdivide_marked(positions, indices, uv, levels, marks);
     if sub.indices.is_empty() {
         return None;
     }

@@ -312,7 +312,7 @@ pub mod rt_backend;
 /// 线程数不进结果（D-20）。
 pub mod rt_tiles;
 
-pub use rt_backend::{RtBackend, RT_DEFAULT_BOUNCES, RT_DEFAULT_SPP};
+pub use rt_backend::{translate_scene, RtBackend, RT_DEFAULT_BOUNCES, RT_DEFAULT_SPP};
 pub use rt_tiles::{auto_threads, RT_TILE_H, RT_TILE_W};
 
 // ---------------------------------------------------------------------------

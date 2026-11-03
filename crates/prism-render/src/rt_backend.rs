@@ -278,7 +278,11 @@ impl GpuDevice for RtBackend {
 ///
 /// 沿用既有风格：**显式跳过**（`continue`），绝不 panic、绝不塞垃圾进 rt
 /// （rt 侧的 `Bsdf::new` / `HomogeneousMedium::new` / `RtCamera::new` 都带断言）。
-fn translate_scene(req: &SceneRenderRequest) -> RtScene {
+/// `SceneRenderRequest` → `prism_rt::Scene`（翻译层；**只做搬运，不做语义发明**）。
+///
+/// 公开导出是为了让 QA 能直接对"翻译产物"下断言（T3 要证明每股一个 Mesh、
+/// 每股自己的标架），而不是只能隔着像素猜。生产路径只走 [`RtBackend::render_scene`]。
+pub fn translate_scene(req: &SceneRenderRequest) -> RtScene {
     let mut scene: RtScene = RtScene::default();
     for s in &req.spheres {
         if !(s.radius.is_finite() && s.radius > 0.0) {
