@@ -92,7 +92,23 @@ pub struct AdaptiveParams {
     pub mantissa_bits: u32,
     /// tile 边长（pilot 缓冲与精化暂存的作用域）。
     pub tile: u32,
+    /// **精化轮数（C2）**：`1` = 只分配一次（旧行为，逐位不变）；
+    /// `≥ 2` = 第一轮只花**部分**预算，用第一轮全部样本重估 `σ̂` 后再分配剩下
+    /// 那部分。上限 [`MAX_REFINE_ROUNDS`]。
+    ///
+    /// 轮数越多，`σ̂` 的相对误差越小（`n` 越大越准），但前几轮花的预算也越少
+    /// ⇒ 第一轮的分配越粗。判据档取 2（`c2_refine` 的 C2-3/C2-4）；3/4 轮在重尾
+    /// 高档还能再降 2~5%，收益递减（那张表里逐档可见）。
+    pub rounds: u32,
 }
+
+/// 精化轮数上限。
+///
+/// 4 轮时第一轮只花 `1/4` 的余量（`N0` 之上），`σ̂` 的初估已经很粗，再往上加
+/// 收益递减（`c2_refine` 的实测表：256 档 C1→C4 是 1.09e-2→9.13e-3，增量集中在
+/// 前两轮）。上限存在的意义是**确定性**（轮数是整数、预算划分是整数除法），
+/// 不是"4 最好"。
+pub const MAX_REFINE_ROUNDS: u32 = 4;
 
 impl AdaptiveParams {
     /// 以总预算构造默认参数（`N0 = 8`、`k = 8`、tile 64）。
@@ -102,7 +118,14 @@ impl AdaptiveParams {
             total,
             mantissa_bits: DEFAULT_MANTISSA_BITS,
             tile: DEFAULT_TILE,
+            rounds: 1,
         }
+    }
+
+    /// 开 C2 精化（默认 2 轮：先花一半预算，再用其全部样本重估 `σ̂` 分配余量）。
+    pub fn with_rounds(mut self, rounds: u32) -> Self {
+        self.rounds = rounds.max(1);
+        self
     }
 
     /// 分桶右移位数（`23 − k`）。
@@ -284,6 +307,60 @@ pub fn allocate_per_pixel(sigma: &[f32], n0: u32, total: u32, mantissa_bits: u32
     out
 }
 
+/// **C2 精化分配**：在已有 `floor` 的基础上，把余量按 `σ̂` 权重分掉。
+///
+/// `Σ out == total`（当 `Σ floor ≤ total`）；`out_i ≥ floor_i` 恒成立
+/// （**已花的样本不回收**——回收会让"样本索引连续 `0..n_p`"断掉，也会浪费
+/// 已经追踪过的样本）。
+///
+/// 分桶与权重和 [`allocate_per_pixel`] **同一套**（`sigma_bucket` +
+/// `bucket_weight` + `allocate_spp`），纯整数分桶不变。
+///
+/// # Panics
+/// `sigma.len() != floor.len()`；`Σ floor > total`；`total > 2²⁴`。
+pub fn allocate_refined(
+    sigma: &[f32],
+    floor: &[u32],
+    total: u32,
+    mantissa_bits: u32,
+) -> Vec<u32> {
+    assert_eq!(sigma.len(), floor.len(), "σ̂ 与 floor 必须同长");
+    assert!((1..=23).contains(&mantissa_bits), "mantissa_bits 必须在 [1, 23]");
+    assert!(total <= 1 << 24, "总预算过大：f32 舍入会破坏精确分配");
+    let used: u64 = floor.iter().map(|&v| v as u64).sum();
+    assert!(used <= total as u64, "已花样本 {used} 超过总预算 {total}");
+    let mut out: Vec<u32> = floor.to_vec();
+    let rest: u32 = (total as u64 - used) as u32;
+    if rest == 0 || out.is_empty() {
+        return out;
+    }
+    let k: u32 = mantissa_bits;
+    let all_zero = sigma.iter().all(|s| sigma_bucket(*s, k) == 0);
+    let mut w: Vec<f32> = Vec::with_capacity(out.len());
+    for s in sigma {
+        let b = sigma_bucket(*s, k);
+        w.push(if all_zero { 1.0 } else { bucket_weight(b, k) });
+    }
+    let extra = allocate_spp(&w, rest);
+    for (v, e) in out.iter_mut().zip(extra.iter()) {
+        *v += *e;
+    }
+    debug_assert_eq!(out.iter().map(|&v| v as u64).sum::<u64>(), total as u64);
+    out
+}
+
+/// 前缀和（`prefix[p]` = 前 `p` 个像素的样本数之和；长度 `npix + 1`）。
+fn prefix_sums(n: &[u32]) -> Vec<usize> {
+    let mut out: Vec<usize> = Vec::with_capacity(n.len() + 1);
+    let mut acc: usize = 0;
+    out.push(0);
+    for &v in n {
+        acc += v as usize;
+        out.push(acc);
+    }
+    out
+}
+
 /// **自适应渲染入口**：pilot → 分配 → 定量追加 → 固定形状归约。
 ///
 /// 每个像素的样本序列是 `s = 0, 1, …, n_p − 1`（**连续、不跳、不重排**），
@@ -350,58 +427,121 @@ pub fn render_adaptive(
         }
     }
 
-    // ---- 第二段：全局分配（与 tile 划分无关的纯函数） ----
-    let spp = allocate_per_pixel(&sigma, n0, ap.total, ap.mantissa_bits);
+    // ---- 第二段：分配（+ C2 精化），样本存进一条**扁平**缓冲 --------------
+    //
+    // 布局：像素 `p` 的样本在 `buf[prefix[p] .. prefix[p] + n_p]`，索引从 **0**
+    // 起连续（`0..n_p`）—— 这正是"逐位等于 `render_pixel(p, n_p)`"的结构前提
+    // （判据 V1）。精化只改 `n_p`，不动索引口径。
+    //
+    // 内存代价：`total × 16 B`（`rounds ≥ 2` 必须留住第一轮的样本才能重估
+    // `σ̂` 而不重追踪；`rounds == 1` 本可以走 tile 局部缓冲，但两条路径会
+    // 漂移，故统一成一条）。`total ≤ 2²⁴` 时上界 256 MB —— 这条上限与
+    // `allocate_spp` 共用，不是本函数新加的。
+    let rounds: u32 = ap.rounds.clamp(1, MAX_REFINE_ROUNDS);
+    // 第 `r` 轮的预算：前几轮只花一部分，最后一轮吃满 `total`。
+    // 全整数运算（`span * (r+1) / rounds`），无浮点、无累计误差。
+    let budget_of = |r: u32| -> u32 {
+        let span: u64 = ap.total as u64 - base;
+        (base + span * ((r as u64) + 1) / (rounds as u64)) as u32
+    };
 
-    // ---- 第三段：逐 tile 定量追加 + 归约；tile 结束即释放该 tile 的 pilot 缓冲 ----
+    // pilot 的 `σ̂` 要原样带进 `AdaptiveImage::sigma_pilot`（收敛判据看的是它，
+    // **不是**精化后的 `σ̂`）；`sigma_now` 起手用它，随后每轮被全样本重估覆盖。
+    let sigma_pilot_for_image: Vec<f32> = sigma.clone();
+    let mut sigma_now: Vec<f32> = sigma;
+    let mut spp: Vec<u32> =
+        allocate_per_pixel(&sigma_now, n0, budget_of(0), ap.mantissa_bits);
+
+    // pilot 搬进扁平缓冲（`0..n0`）。
+    let mut buf: Vec<[f32; 4]> = vec![[0.0; 4]; ap.total as usize];
+    let mut prefix: Vec<usize> = prefix_sums(&spp);
+    {
+        let mut ti = 0usize;
+        for ty in 0..tiles_y {
+            for tx in 0..tiles_x {
+                let x0 = tx * tile;
+                let y0 = ty * tile;
+                let tw = tile.min(w - x0);
+                let th = tile.min(h - y0);
+                let pilot = &pilots[ti];
+                for ly in 0..th {
+                    for lx in 0..tw {
+                        let (gx, gy) = (x0 + lx, y0 + ly);
+                        let p = (ly as usize) * (tw as usize) + (lx as usize);
+                        let gi = (gy as usize) * (w as usize) + (gx as usize);
+                        let dst = prefix[gi];
+                        buf[dst..dst + n0 as usize]
+                            .copy_from_slice(&pilot[p * n0 as usize..(p + 1) * n0 as usize]);
+                    }
+                }
+                ti += 1;
+            }
+        }
+    }
+    pilots.clear();
+    pilots.shrink_to_fit();
+
+    // 第一轮：补到 `n_p`，并现算 `σ̂`（全部 `n_p` 个样本，不是 pilot 的 8 个）。
+    for y in 0..h {
+        for x in 0..w {
+            let gi = (y as usize) * (w as usize) + (x as usize);
+            let n = spp[gi];
+            let base_i = prefix[gi];
+            for s in n0..n {
+                buf[base_i + s as usize] =
+                    trace_sample(scene, cam, ctx, resolution, (x, y), s, params);
+            }
+            sigma_now[gi] = sigma_of(&buf[base_i..base_i + n as usize]);
+        }
+    }
+
+    // 第二轮起：用上一轮**全部样本**重估的 `σ̂` 重新分配，只补新增的样本。
+    for r in 1..rounds {
+        let n2: Vec<u32> = allocate_refined(&sigma_now, &spp, budget_of(r), ap.mantissa_bits);
+        let prefix2: Vec<usize> = prefix_sums(&n2);
+        // 搬移：**降序**安全。`prefix2[p] ≥ prefix[p]`（`n2` 用 floor 起算，
+        // 且前缀和单调），降序保证读到 `p` 的旧数据时后方的像素都已搬走，
+        // 而目的区间 `[prefix2[p], prefix2[p]+n_p)` 与下一个像素的新区间不重叠。
+        for p in (0..npix).rev() {
+            let (src, dst, len) = (prefix[p], prefix2[p], spp[p] as usize);
+            if src != dst {
+                buf.copy_within(src..src + len, dst);
+            }
+        }
+        // 追加：`n_p .. n2_p`（索引仍然连续）。
+        for y in 0..h {
+            for x in 0..w {
+                let gi = (y as usize) * (w as usize) + (x as usize);
+                let (old, new) = (spp[gi], n2[gi]);
+                let base_i = prefix2[gi];
+                for s in old..new {
+                    buf[base_i + s as usize] =
+                        trace_sample(scene, cam, ctx, resolution, (x, y), s, params);
+                }
+            }
+        }
+        spp = n2;
+        prefix = prefix2;
+        for gi in 0..npix {
+            sigma_now[gi] = sigma_of(&buf[prefix[gi]..prefix[gi] + spp[gi] as usize]);
+        }
+    }
+
+    // ---- 第三段：固定形状归约（与 `render_pixel(p, spp = n_p)` 逐位相同） ----
     let mut image = AdaptiveImage {
         width: w,
         height: h,
         pixels: vec![[0.0; 4]; npix],
-        spp: spp.clone(),
-        sigma_pilot: sigma,
-        sigma: vec![0.0f32; npix],
+        spp,
+        sigma_pilot: sigma_pilot_for_image,
+        sigma: sigma_now,
         traced: 0,
     };
-    let mut scratch: Vec<[f32; 4]> = Vec::new();
-    let mut ti = 0usize;
-    for ty in 0..tiles_y {
-        for tx in 0..tiles_x {
-            let x0 = tx * tile;
-            let y0 = ty * tile;
-            let tw = tile.min(w - x0);
-            let th = tile.min(h - y0);
-            let pilot = std::mem::take(&mut pilots[ti]);
-            for ly in 0..th {
-                for lx in 0..tw {
-                    let (gx, gy) = (x0 + lx, y0 + ly);
-                    let p = (ly as usize) * (tw as usize) + (lx as usize);
-                    let gi = (gy as usize) * (w as usize) + (gx as usize);
-                    let n = spp[gi];
-                    scratch.clear();
-                    scratch.reserve(n as usize);
-                    scratch.extend_from_slice(&pilot[p * n0 as usize..(p + 1) * n0 as usize]);
-                    // 连续索引：`N0 .. n_p`（不跳、不重排）。
-                    for s in n0..n {
-                        scratch.push(trace_sample(
-                            scene,
-                            cam,
-                            ctx,
-                            resolution,
-                            (gx, gy),
-                            s,
-                            params,
-                        ));
-                    }
-                    image.pixels[gi] = mean_samples(&scratch);
-                    // 收敛判据用的 σ̂：**全部 n_p 个**样本现算（不是 pilot 的 8 个）。
-                    image.sigma[gi] = sigma_of(&scratch);
-                    image.traced += n as u64;
-                }
-            }
-            drop(pilot); // tile 结束即释放（逐样本值不留跨 tile 状态）
-            ti += 1;
-        }
+    for gi in 0..npix {
+        let base_i = prefix[gi];
+        let n = image.spp[gi] as usize;
+        image.pixels[gi] = mean_samples(&buf[base_i..base_i + n]);
+        image.traced += n as u64;
     }
     debug_assert_eq!(
         image.traced, ap.total as u64,
