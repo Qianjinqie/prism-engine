@@ -247,14 +247,12 @@ pub fn bucket_weight(bucket: u32, mantissa_bits: u32) -> f32 {
 ///
 /// # Panics
 /// `total < N0·P`、`total > 2²⁴`、`n0 < 2`、`mantissa_bits ∉ [1, 23]`。
-pub fn allocate_per_pixel(
-    sigma: &[f32],
-    n0: u32,
-    total: u32,
-    mantissa_bits: u32,
-) -> Vec<u32> {
+pub fn allocate_per_pixel(sigma: &[f32], n0: u32, total: u32, mantissa_bits: u32) -> Vec<u32> {
     assert!(n0 >= 2, "N0 必须 ≥ 2（样本方差不定义于 1 个样本）");
-    assert!((1..=23).contains(&mantissa_bits), "mantissa_bits 必须在 [1, 23]");
+    assert!(
+        (1..=23).contains(&mantissa_bits),
+        "mantissa_bits 必须在 [1, 23]"
+    );
     assert!(total <= 1 << 24, "总预算过大：f32 舍入会破坏精确分配");
     let npix = sigma.len();
     let base = (npix as u64) * (n0 as u64);
@@ -327,12 +325,21 @@ pub fn render_adaptive(
             let y0 = ty * tile;
             let tw = tile.min(w - x0);
             let th = tile.min(h - y0);
-            let mut buf: Vec<[f32; 4]> = Vec::with_capacity((tw as usize) * (th as usize) * n0 as usize);
+            let mut buf: Vec<[f32; 4]> =
+                Vec::with_capacity((tw as usize) * (th as usize) * n0 as usize);
             for ly in 0..th {
                 for lx in 0..tw {
                     let (gx, gy) = (x0 + lx, y0 + ly);
                     for s in 0..n0 {
-                        buf.push(trace_sample(scene, cam, ctx, resolution, (gx, gy), s, params));
+                        buf.push(trace_sample(
+                            scene,
+                            cam,
+                            ctx,
+                            resolution,
+                            (gx, gy),
+                            s,
+                            params,
+                        ));
                     }
                     let off = ((ly as usize) * (tw as usize) + (lx as usize)) * (n0 as usize);
                     let sl = &buf[off..off + (n0 as usize)];
@@ -376,7 +383,15 @@ pub fn render_adaptive(
                     scratch.extend_from_slice(&pilot[p * n0 as usize..(p + 1) * n0 as usize]);
                     // 连续索引：`N0 .. n_p`（不跳、不重排）。
                     for s in n0..n {
-                        scratch.push(trace_sample(scene, cam, ctx, resolution, (gx, gy), s, params));
+                        scratch.push(trace_sample(
+                            scene,
+                            cam,
+                            ctx,
+                            resolution,
+                            (gx, gy),
+                            s,
+                            params,
+                        ));
                     }
                     image.pixels[gi] = mean_samples(&scratch);
                     // 收敛判据用的 σ̂：**全部 n_p 个**样本现算（不是 pilot 的 8 个）。
@@ -388,7 +403,10 @@ pub fn render_adaptive(
             ti += 1;
         }
     }
-    debug_assert_eq!(image.traced, ap.total as u64, "实际追踪样本数必须等于总预算");
+    debug_assert_eq!(
+        image.traced, ap.total as u64,
+        "实际追踪样本数必须等于总预算"
+    );
     image
 }
 
@@ -579,7 +597,10 @@ mod tests {
         };
         // 两样本 {0, 1}：样本标准差 = |Δ| / √2。
         let s2 = sigma_of(&[px(0.0), px(1.0)]);
-        assert!((s2 - std::f32::consts::FRAC_1_SQRT_2).abs() <= 1e-6, "两样本 {s2}");
+        assert!(
+            (s2 - std::f32::consts::FRAC_1_SQRT_2).abs() <= 1e-6,
+            "两样本 {s2}"
+        );
         // 四样本 {0,0,1,1}：样本标准差 = √(1/3)。
         let s4 = sigma_of(&[px(0.0), px(0.0), px(1.0), px(1.0)]);
         let want = (1.0f32 / 3.0).sqrt();
@@ -605,7 +626,13 @@ mod tests {
         let npix = 97usize;
         // 造一个跨 6 个数量级的 σ 场（含 0）。
         let sigma: Vec<f32> = (0..npix)
-            .map(|i| if i % 7 == 0 { 0.0 } else { (i as f32 * 0.37).sin().abs() })
+            .map(|i| {
+                if i % 7 == 0 {
+                    0.0
+                } else {
+                    (i as f32 * 0.37).sin().abs()
+                }
+            })
             .collect();
         for avg in [8u32, 9, 16, 23, 64, 255] {
             let total = (npix as u32) * avg;
@@ -639,7 +666,12 @@ mod tests {
         let total = 64 * 16;
         let n = allocate_per_pixel(&sigma, 8, total, DEFAULT_MANTISSA_BITS);
         assert_eq!(n[0], 8, "σ̂=0 的像素必须恰好拿 N0");
-        assert!(n[10] > n[20], "更吵的像素必须拿更多（{} vs {}）", n[10], n[20]);
+        assert!(
+            n[10] > n[20],
+            "更吵的像素必须拿更多（{} vs {}）",
+            n[10],
+            n[20]
+        );
         assert!(n[20] > 8, "次吵的像素也必须有追加样本");
         assert_eq!(n.iter().map(|&v| v as u64).sum::<u64>(), total as u64);
     }
@@ -647,7 +679,9 @@ mod tests {
     /// 分桶 `k` 改变 ⇒ 分配可能变，但**同一 k 下同输入必须逐位同分配**（纯函数）。
     #[test]
     fn allocate_is_a_pure_function_of_sigma() {
-        let sigma: Vec<f32> = (0..50).map(|i| (i as f32 * 0.11).cos().abs() * 0.3).collect();
+        let sigma: Vec<f32> = (0..50)
+            .map(|i| (i as f32 * 0.11).cos().abs() * 0.3)
+            .collect();
         let a = allocate_per_pixel(&sigma, 8, 50 * 20, DEFAULT_MANTISSA_BITS);
         let b = allocate_per_pixel(&sigma, 8, 50 * 20, DEFAULT_MANTISSA_BITS);
         assert_eq!(a, b);
@@ -682,7 +716,10 @@ mod tests {
         let g = sample_luma([1.0, 1.0, 1.0, 1.0]);
         assert!((g - 1.0).abs() <= 1e-7, "灰必须映射到 1.0，实得 {g}");
         // α 通道不参与。
-        assert_eq!(sample_luma([0.3, 0.4, 0.5, 1.0]), sample_luma([0.3, 0.4, 0.5, 0.0]));
+        assert_eq!(
+            sample_luma([0.3, 0.4, 0.5, 1.0]),
+            sample_luma([0.3, 0.4, 0.5, 0.0])
+        );
     }
 
     /// PSNR：同图 ⇒ ∞；常数偏 δ ⇒ `10·log10(1/δ²)`（peak = 1）。
@@ -691,7 +728,10 @@ mod tests {
         let a = vec![[0.5f32, 0.25, 0.75, 1.0]; 4];
         assert!(psnr(&a, &a, 1.0).is_infinite(), "同图 PSNR 必须为 ∞");
         let d = 0.01f32;
-        let b: Vec<[f32; 4]> = a.iter().map(|p| [p[0] + d, p[1] + d, p[2] + d, 1.0]).collect();
+        let b: Vec<[f32; 4]> = a
+            .iter()
+            .map(|p| [p[0] + d, p[1] + d, p[2] + d, 1.0])
+            .collect();
         let got = psnr(&a, &b, 1.0);
         let want = 10.0 * (1.0f32 / (d * d)).log10();
         assert!((got - want).abs() <= 1e-3, "PSNR {got} vs {want}");

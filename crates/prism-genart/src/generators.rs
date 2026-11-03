@@ -620,8 +620,14 @@ mod tests {
         let b = g.generate(64, 64);
         assert_eq!(hash_cov(&a.coverage), hash_cov(&b.coverage));
         // 中心点 (-0.5,0) 属集（覆盖率=1，未逃逸）。
+        //
+        // 原断言是 `center >= 0.0`——覆盖率按 `i/maxit` 定义、恒非负，等于
+        // 永真。这里钉住"属集 ⇒ 恰为 1.0"，并补一条"图里确实有逃逸像素"，
+        // 否则整幅返回 1.0 的实现也能过。
         let center = a.coverage.data[32 * 64 + 32];
-        assert!(center >= 0.0);
+        assert_eq!(center, 1.0, "中心点 (-0.5,0) 属集，覆盖率应为 1.0，实得 {center}");
+        let escaped = a.coverage.data.iter().filter(|&&v| v < 1.0).count();
+        assert!(escaped > 0, "视窗 [-2, 1]×[-1.5, 1.5] 内必有逃逸像素，实得 0 个");
     }
 
     #[test]

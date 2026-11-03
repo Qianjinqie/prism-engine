@@ -213,7 +213,12 @@ impl LiftGammaGain {
         if self.lift != 0.0 {
             x = self.lift + (1.0 - self.lift) * x;
         }
-        // 幂底座：负输入（线性 HDR 允许 <0）视为 0（`x ≥ 0 ⟺ x^(1/gamma) ≥ 0`）。
+        // 幂底座：`x ≤ 0` 时 `x^(1/gamma)` 无定义（负底非整数幂无解），故底座取 0
+        // ⇒ 下面的分支整段不执行。**注意语义**：不执行 ≠ 结果置 0——`x` 只在分支
+        // 内部被改写，所以 `x ≤ 0` 时输入**原样透传**（再乘 `gain`）。线性 HDR 允许
+        // 负值，透传让上游的过冲/负能量不被这里静默抹平。
+        // 现行行为由 `apply_scalar` 的测试与 `qa_probe_secondary::probe_degenerate_smoke`
+        // 钉住（2026-11 QA 收口时修正本条注释：原文写"负输入视为 0"，与实现不符）。
         let base = if x > 0.0 { x } else { 0.0 };
         if self.gamma != 1.0 && base > 0.0 {
             let steps = self.gamma_steps.max(1).min(30);

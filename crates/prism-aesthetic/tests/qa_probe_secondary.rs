@@ -73,9 +73,50 @@ fn probe_p1_3_hue_ring() {
     let _ = r95;
 }
 
-/// P1-4/P1-5 空 & 退化输入已由既有测试覆盖；此处仅记录引用。
+/// 退化输入：全区间选区 = 处处选中；中性 LGG = 逐位恒等。
+///
+/// 本条原先只有 `assert!(true)`（永真占位，零判别力）。2026-11 QA 收口时
+/// 换成两条**能红**的断言：
+///
+/// * `HslQualifier::default()` 三段都是全区间（`lo ≤ 0 且 hi ≥ 1`）⇒
+///   `soft_range` / `hue_range_weight` 走早退分支返回 1.0，故任意颜色权重恰 1.0。
+///   若有人把早退改成"算过渡带"，这里会掉到 < 1。
+/// * `LiftGammaGain::default()` 满足 `is_neutral()`，且 `apply_scalar` 在中性参数
+///   下不进入任何分支 ⇒ 输出与输入**逐位**相同（含负值：底座被钳到 0）。
 #[test]
 fn probe_degenerate_smoke() {
-    // 单色 stop / 单点路径由 texture/text 测试覆盖；此处安全占位。
-    assert!(true);
+    // 1. 全区间选区 ⇒ 处处选中（含纯黑、纯白、高饱和色）。
+    let full = HslQualifier::default();
+    for c in [
+        [0.0f32, 0.0, 0.0, 1.0],
+        [1.0, 1.0, 1.0, 1.0],
+        [0.9, 0.1, 0.05, 1.0],
+        [0.0, 0.0, 0.0, 0.0],
+    ] {
+        let w = full.weight(c);
+        assert_eq!(w, 1.0, "全区间选区应处处选中（c={c:?} 得到 w={w}）");
+    }
+
+    // 2. 中性 LGG ⇒ 逐位恒等（负值也直通：钳零只发生在幂底座，且仅当 gamma ≠ 1）。
+    let neutral = LiftGammaGain::default();
+    assert!(neutral.is_neutral(), "默认 LGG 必须是中性");
+    for &x in &[0.0f32, 0.25, 0.5, 1.0, 4.0, -0.5] {
+        let got = neutral.apply_scalar(x);
+        assert_eq!(
+            got.to_bits(),
+            x.to_bits(),
+            "中性 LGG 应逐位恒等（x={x} 得到 {got}）"
+        );
+    }
+
+    // 3. x ≤ 0 且 gamma ≠ 1：幂无定义 ⇒ 底座取 0、分支不执行，`x` **原样透传**
+    //    （不是置 0）。这是现行实现（`apply_scalar` 的底座注释已按实现改写），
+    //    本条只做表征钉住：若哪天改成"钳到 0"，这里会红。
+    let g2 = LiftGammaGain { gamma: 2.0, ..LiftGammaGain::default() };
+    assert_eq!(
+        g2.apply_scalar(-0.5).to_bits(),
+        (-0.5f32).to_bits(),
+        "gamma≠1 且 x<0 ⇒ 现行实现是原样透传"
+    );
+    assert_eq!(g2.apply_scalar(0.0).to_bits(), 0.0f32.to_bits(), "x=0 ⇒ 0");
 }
