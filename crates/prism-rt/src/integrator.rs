@@ -406,6 +406,24 @@ pub struct Mesh {
 }
 
 impl Mesh {
+    /// 网格堆内存估算（字节；`size_of::<Mesh>()` 之外的部分）。
+    ///
+    /// 逐 `Vec` 按容量计，外加 BVH 的三个扁平数组。用途同
+    /// [`Scene::memory_bytes`]：多区域介质 / 实例化之后，"场景多大"必须有
+    /// 一处统一口径，否则内存问题只能靠事后 RSS 猜。
+    pub fn memory_bytes(&self) -> usize {
+        let mut n: usize = 0;
+        n += self.positions.capacity() * core::mem::size_of::<Vec3>();
+        n += self.indices.capacity() * core::mem::size_of::<u32>();
+        n += self.triangles.capacity() * core::mem::size_of::<GeoTriangle>();
+        n += self.uv.capacity() * core::mem::size_of::<[f32; 2]>();
+        n += self.tangent.capacity() * core::mem::size_of::<[f32; 4]>();
+        n += self.bvh.nodes.capacity() * core::mem::size_of::<prism_geometry::bvh::BvhNode>();
+        n += self.bvh.tris.capacity() * core::mem::size_of::<GeoTriangle>();
+        n += self.bvh.order.capacity() * core::mem::size_of::<u32>();
+        n
+    }
+
     /// 索引网格构造：`indices.chunks_exact(3)` 逐个展开为三角形并建树。
     ///
     /// 越界索引、非有限顶点坐标 ⇒ 该三角形被剔除（不 panic，不产生
@@ -818,6 +836,38 @@ pub struct MediumRegion {
     pub bounds: Aabb,
     /// 介质（均匀 / 异质）。
     pub medium: Medium,
+    /// 优先级（A6 / W6，C1「区域列表 + 优先级（不重叠）」）。
+    ///
+    /// # 语义（**只在重叠时才说话**，这是规格的一部分）
+    ///
+    /// A6 的规格是「**区域不得重叠**」：物理上互斥的介质盒各占一块空间。
+    /// 在合规场景里，优先级**永远不参与判定** —— 一段射线在任一 `t` 上至多
+    /// 属于一个区域，所以选哪个区域由几何唯一决定（见 [`select_region`]：
+    /// 先按入点 `t_enter` 升序，`t_enter` 相同才比 `priority`）。
+    ///
+    /// 于是本字段的作用只有两个：
+    ///
+    /// 1. **违规场景的确定性兜底**：用户若摆出重叠区域，`select_region` 仍须
+    ///    返回**唯一定值**（逐位），不能依赖 `Vec` 顺序之外的任何东西——
+    ///    这条由 `a6_select_region_is_total_order_on_overlap` 钉死；
+    /// 2. **未来的表达力预留**：C2（介质栈）解除重叠约束后，"谁遮谁"要有
+    ///    一个引擎侧可声明的量，而不是靠列表顺序（列表顺序是构造细节）。
+    ///
+    /// 值大者胜。缺省 0（与 `MediumRegion::new` 一致）。
+    pub priority: u32,
+}
+
+impl MediumRegion {
+    /// 构造一个优先级为 0 的区域（单区域场景 / 既有测试的最小写法）。
+    pub fn new(bounds: Aabb, medium: Medium) -> Self {
+        MediumRegion { bounds, medium, priority: 0 }
+    }
+
+    /// 指定优先级（链式；`priority` 大者胜，见字段文档）。
+    pub fn with_priority(mut self, priority: u32) -> Self {
+        self.priority = priority;
+        self
+    }
 }
 
 /// 最小场景。
@@ -1196,6 +1246,69 @@ impl Scene {
         if let Err(msg) = self.validate_layout() {
             panic!("场景布局违规（W1-A 定桩断言）：{msg}");
         }
+    }
+
+    /// 场景**堆内存**估算（字节；`size_of::<Scene>()` 之外的部分）。
+    ///
+    /// # 覆盖口径
+    ///
+    /// 逐字段按 `Vec::capacity() × size_of::<T>()` 累加（`capacity` 而非 `len`
+    /// ——容量才是真实占用的那块堆），外加 [`Scene::texels`] 与
+    /// [`Scene::media`] 的像素/网格荷载。
+    ///
+    /// **A6 记账**：`media` 是 `Vec<MediumRegion>`，每个区域自带一个
+    /// [`Medium`]；异质介质的 σt 场（[`crate::media::Grid3`]）是堆上的
+    /// `Vec<f32>`，不数进去会低估几个数量级（256³ 的场是 64 MB）。故本函数
+    /// 逐区域把 `medium.heap_bytes()` 加上。
+    ///
+    /// # 为什么需要它
+    ///
+    /// 多区域介质把"场景里有多少介质"从 0/1 变成 N；没有一处统一的记账，
+    /// "10 个 256³ 的异质场"会静默吃掉 640 MB 而没人知道。本函数是唯一的
+    /// 口径出口（测试 `a6_memory_bytes_counts_media` 钉住它随 `media` 增长）。
+    ///
+    /// # 不是什么
+    ///
+    /// 不是 RSS：`Vec` 的 capacity 可能大于实际使用，且分配器/碎片/共享几何
+    /// 的引用计数都不在此列。是个**上界式估算**，用于"量级对不对"的判定。
+    pub fn memory_bytes(&self) -> usize {
+        // 单条 `Vec` 的堆占用（容量 × 元素大小；元素内若还含 `Vec`，由调用方另计）。
+        fn vec_bytes<T>(v: &Vec<T>) -> usize {
+            v.capacity() * core::mem::size_of::<T>()
+        }
+        let mut n: usize = 0;
+        n += vec_bytes(&self.spheres);
+        n += vec_bytes(&self.boxes);
+        n += vec_bytes(&self.paraboloids);
+        n += vec_bytes(&self.planes);
+        n += vec_bytes(&self.cylinders);
+        n += vec_bytes(&self.cones);
+        n += vec_bytes(&self.toruses);
+        n += vec_bytes(&self.revolutions);
+        n += vec_bytes(&self.lights);
+        n += vec_bytes(&self.textures);
+        n += vec_bytes(&self.texels);
+        n += vec_bytes(&self.instances);
+        n += vec_bytes(&self.instance_geoms);
+        // 网格：顶点 / 索引 / 三角形 / uv / tangent / BVH 节点都不是本函数能
+        // 逐项数清的（`Mesh` 的内部布局是私有实现），按 `Mesh::memory_bytes`
+        // 的口径取一次——若该口径不存在，则退化为"元素大小 × 数量"。
+        for (m, _) in &self.meshes {
+            n += m.memory_bytes();
+        }
+        for (m, _) in &self.instance_geoms {
+            n += m.memory_bytes();
+        }
+        // 介质：单区域旧路径 + 多区域新路径都要记（A6）。
+        if let Some(r) = &self.medium {
+            n += core::mem::size_of::<MediumRegion>();
+            n += r.medium.heap_bytes();
+        }
+        n += vec_bytes(&self.media);
+        for r in &self.media {
+            n += r.medium.heap_bytes();
+        }
+        n
     }
 
     /// 注册**索引三角网格**（顶点流 + 索引流；内建 BVH 在此构建），
@@ -3222,6 +3335,11 @@ fn rr_survive(st: &mut PathState, stream: &SampleStream<'_>, next_ev: u32) -> bo
 /// 沿线段做 delta tracking：返回段内碰撞点距离（Some = 碰撞）。
 /// 进入介质不耗权重（外部 σt = 0，进入前碰撞概率为 0）；aux 流 =
 /// bounce_dim(ev, SLOT_AUX) + 共享步计数器（变长游程序列）。
+///
+/// 本函数只做**单区域**（旧路径 `Scene::medium`）的区间推导；自由程本体在
+/// [`medium_collide_span`] 里，多区域（A6）复用同一份。两次 `segment_interval`
+/// 的语义（含 `contains` 时 `t_enter = 0`）逐字保留，故旧场景的采样流与
+/// 算术顺序一个字节都没变（V1 由 md5 钉死）。
 fn medium_collide(
     region: &MediumRegion,
     ro: Vec3,
@@ -3244,6 +3362,29 @@ fn medium_collide(
     // 内部可能多步），故按 `needs_accept_uniform` 决定是否多抽一个——均匀
     // 路径的采样流消耗与接线前**逐字节一致**。
     let exit = b.segment_interval(ro, rd, t_enter, t_max)?.1;
+    medium_collide_span(region, ro, rd, t_enter, exit, t_max, stream, aux_dim, steps)
+}
+
+/// 在**已算好**的子区间 `[t_enter, exit]` 内做一次自由程抽样（A6 的共用原语）。
+///
+/// 抽出这个函数的唯一理由是**多区域介质**：区域列表路径要把一条线段拆成
+/// 若干子区间（每个区域一段），区间推导在 [`select_region`] 里完成，自由程
+/// 判定必须与旧路径**逐位同式**——同一份 `needs_accept_uniform` 分支、同一
+/// 顺序的 `aux_1d` 抽取、同一个 `t_enter + t_free < exit && < t_max` 判据。
+///
+/// `steps` 由调用方拥有：旧路径传路径级共享计数器（逐位兼容），多区域路径
+/// 传**该区域自己的**计数器（A6 硬化要求，见 [`region_aux_dim`]）。
+fn medium_collide_span(
+    region: &MediumRegion,
+    ro: Vec3,
+    rd: Vec3,
+    t_enter: f32,
+    exit: f32,
+    t_max: f32,
+    stream: &SampleStream<'_>,
+    aux_dim: u16,
+    steps: &mut u32,
+) -> Option<f32> {
     let t_free = if region.medium.needs_accept_uniform() {
         let us = stream.aux_1d(aux_dim, *steps);
         *steps += 1;
@@ -3262,7 +3403,159 @@ fn medium_collide(
     }
 }
 
+// ---------------------------------------------------------------------------
+// A6 / W6：多区域介质（C1「区域列表 + 优先级（不重叠）」）
+// ---------------------------------------------------------------------------
+//
+// # 规格（选型报告 §7 定稿 C1）
+//
+// * 区域**不得重叠**。合规场景里每一段射线的每一个 `t` 至多属于一个区域，
+//   故"选哪个区域"由几何唯一决定；`priority` 只在违规（重叠）时破同入点。
+// * 一条线段可能穿过**多个不相交**的区域（串联板），因此不是"每段挑一个就完"，
+//   而是**按入点升序逐子区间行进**：在每个子区间里各做一次自由程抽样，遇到
+//   第一个碰撞事件即返回。这正是 V3（`exp(−σt₁d₁−σt₂d₂)`）能成立的机制。
+// * **逐区域独立的 aux 步计数器 + 逐区域独立的 aux 维**：区域 k 的抽样流是
+//   `aux_1d(base + k, j)`，`j` 从 0 起。于是"新增一个区域"**不会平移**任何
+//   既有区域的抽样流（否则 V1 那一类逐位兼容在 media 场景里立刻失效）。
+
+/// 多区域介质行进结果（A6）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct MediaHit {
+    /// 命中的区域下标（`Scene::media` 的下标）。
+    pub region: usize,
+    /// 碰撞点沿射线的参数（从 `ro` 起算）。
+    pub t: f32,
+    /// 该区域自己的 aux 步计数器在本段消耗到哪儿（散事件从这里继续抽）。
+    pub steps: u32,
+}
+
+/// 区域 `k` 的 aux 维：`base + k`（**逐区域独立**，A6 硬化要求）。
+///
+/// `base` 是事件段 aux 维（`bounce_dim(ev, SLOT_AUX)`）或阴影臂基址（`+32`）。
+/// 区域数 ≤ [`SHADOW_BASE_OFFSET`] 时，各区域的维互不相同、且与阴影臂不重叠。
+/// 超过该数会与阴影臂别名——那是**统计相关性**（同一 `hash3` 的两个维被复用），
+/// 不是确定性风险：同一场景两跑仍是逐字节相同。
+///
+/// `k` 大于 `u16` 表示范围的部分按 `u16::MAX` 截断（实际不可能：区域表长度
+/// 受场景内存限制，且此处不引入任何 panic 路径）。
+#[inline]
+pub(crate) fn region_aux_dim(base: u16, k: usize) -> u16 {
+    let kk: u16 = if k > usize::from(u16::MAX) { u16::MAX } else { k as u16 };
+    base.wrapping_add(kk)
+}
+
+/// 阴影臂 / 体 NEE 的 aux 维相对散事件基址的偏移（见 [`region_aux_dim`]）。
+pub(crate) const SHADOW_BASE_OFFSET: u16 = 32;
+
+/// 选出 `[t0, t1]` 上与射线相交的**下一个**区域：返回 `(下标, 入点, 出点)`。
+///
+/// # 全序（这条是 V5 的判据本体）
+///
+/// 排序键：`t_enter` 升序 → `priority` 降序 → 下标升序。三个键都是整数/浮点
+/// 的**严格比较**（无 epsilon、无哈希遍历序），故同一输入必得同一结果——这也
+/// 是 [`Scene::media`] 允许"违规重叠"却不允许"结果不定"的兜底。
+///
+/// # 退化区间
+///
+/// `exit <= enter`（切向掠过 / 已被游标走过）不参与选择：它不构成任何物理
+/// 子区间，选它会让行进循环空转。
+///
+/// # 公开性
+///
+/// `pub` 是为了让 V5（重叠区域下的唯一定值）能从集成测试直接探针，而不是
+/// 只能间接从像素反推。
+pub fn select_region(
+    scene: &Scene,
+    ro: Vec3,
+    rd: Vec3,
+    t0: f32,
+    t1: f32,
+) -> Option<(usize, f32, f32)> {
+    let mut best: Option<(usize, f32, f32)> = None;
+    for (k, region) in scene.media.iter().enumerate() {
+        let Some((enter, exit)) = region.bounds.segment_interval(ro, rd, t0, t1) else {
+            continue;
+        };
+        if exit <= enter {
+            continue; // 退化：零长度子区间
+        }
+        let better: bool = match best {
+            None => true,
+            Some((bk, benter, _)) => {
+                if enter < benter {
+                    true
+                } else if enter > benter {
+                    false
+                } else {
+                    // 同一入点（合规场景里不存在，只有重叠才会出现）：
+                    // 优先级高者胜；再相同则保留下标更小者（best 先到者）。
+                    region.priority > scene.media[bk].priority
+                }
+            }
+        };
+        if better {
+            best = Some((k, enter, exit));
+        }
+    }
+    best
+}
+
+/// 沿 `[t_lo, t_hi]` 依次走遍所有介质区域的子区间，返回**第一个**碰撞事件。
+///
+/// 循环上界 `media.len() + 1`：每轮必然消费掉一个区域（游标前进到该区域出点，
+/// 该区域下一次查询即为退化区间被跳过），故正常输入下轮数 = 穿过的区域数 +
+/// 1。上界是防御性的——即使区间推导出现意料之外的几何，也只退化为"少走几段"，
+/// 不会挂死（宪章 C18：不 panic、不死循环）。
+///
+/// `aux_dim` 是散事件段的 aux 维基址；区域 `k` 用 `aux_dim + k`，每个区域
+/// 自带从 0 起的步计数器。
+pub(crate) fn advance_multi(
+    scene: &Scene,
+    ro: Vec3,
+    rd: Vec3,
+    t_lo: f32,
+    t_hi: f32,
+    stream: &SampleStream<'_>,
+    aux_dim: u16,
+) -> Option<MediaHit> {
+    let mut cursor: f32 = t_lo;
+    let budget: usize = scene.media.len() + 1;
+    for _ in 0..budget {
+        let (k, enter, exit) = select_region(scene, ro, rd, cursor, t_hi)?;
+        let region: &MediumRegion = &scene.media[k];
+        let mut steps: u32 = 0;
+        let dim: u16 = region_aux_dim(aux_dim, k);
+        if let Some(t) =
+            medium_collide_span(region, ro, rd, enter, exit, t_hi, stream, dim, &mut steps)
+        {
+            return Some(MediaHit { region: k, t, steps });
+        }
+        if exit >= t_hi {
+            return None; // 已到段末
+        }
+        cursor = exit;
+    }
+    None
+}
+
 /// 阴影射线可见性 = 几何遮挡 × 介质透射（二值），结果 ∈ {0.0, 1.0}。
+///
+/// # 多区域（A6）：连乘各区域的**独立**二值估计
+///
+/// `scene.media` 非空时走新分支：对**每一个**区域各做一次独立的二值估计
+/// （各自从 `steps = 0` 起、各自用 `aux_dim + k` 这个维），再连乘。
+///
+/// 两条硬化要求写在这里而不是散在代码里：
+///
+/// 1. **连乘而非取一**：阴影射线穿过的每个区域都在衰减，漏掉任一区域就是
+///    系统性漏光（V3 的串联板会直接抓到）；
+/// 2. **逐区域独立**：区域 k 的抽样流只依赖 `(aux_dim + k, j)`。加一个区域
+///    不会平移任何既有区域的流 —— 若共用一个步计数器，"前面多插一个区域"
+///    就会把后面所有区域的 `u` 全部错位，逐位兼容立刻失效。
+///
+/// 调用方的 `steps`（路径级共享计数器）在本分支**不被推进**：多区域路径的
+/// 全部抽样都在区域自己的计数器上，故区域数与场景其余部分的采样流无关。
+/// 旧分支（`scene.medium`）一行未改，仍用调用方的 `steps`。
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn visibility(
     scene: &Scene,
@@ -3276,6 +3569,34 @@ pub(crate) fn visibility(
 ) -> f32 {
     if scene.intersect(ro, rd, max_t - T_MIN, skip).is_some() {
         return 0.0;
+    }
+    if !scene.media.is_empty() {
+        let t_end: f32 = max_t - T_MIN;
+        let mut vis: f32 = 1.0;
+        for (k, region) in scene.media.iter().enumerate() {
+            // 区间推导与 `medium_collide` 同式（一次 `segment_interval`，
+            // 端点已含 `max(0, t_near)` / `min(t_far, t_end)` 钳制）。
+            let Some((enter, exit)) = region.bounds.segment_interval(ro, rd, 0.0, t_end) else {
+                continue; // 该区域不在这条阴影射线上
+            };
+            if exit <= enter {
+                continue; // 退化：切向掠过，不构成遮挡
+            }
+            // 阴影臂维基址：`aux_dim + SHADOW_BASE_OFFSET`。**不是**可选优化：
+            // 若用 `aux_dim + k`，同一个事件的"主射线自由程"（`advance_multi`
+            // 的区域 k，步 0）与"阴影射线自由程"会取到**同一个** `u`，而两者
+            // 之间存在条件关系（主射线没碰撞 ⇔ u 偏大）⇒ 阴影透射率有偏。
+            // 实测：单区域 σt=1、albedo=0 时 E[vis] 应为 0.108，复用同一 `u`
+            // 会给出 0.30（偏亮 2.7×）。
+            let dim: u16 = region_aux_dim(aux_dim.wrapping_add(SHADOW_BASE_OFFSET), k);
+            let mut ksteps: u32 = 0;
+            if medium_collide_span(region, ro, rd, enter, exit, t_end, stream, dim, &mut ksteps)
+                .is_some()
+            {
+                vis = 0.0;
+            }
+        }
+        return vis;
     }
     if let Some(region) = &scene.medium {
         if medium_collide(region, ro, rd, max_t - T_MIN, stream, aux_dim, steps).is_some()
@@ -3442,7 +3763,78 @@ fn trace_one(
         let t_surf = hit.map_or(MISS_T, |h| h.t);
 
         // ---- 介质段（相机/续弹段统一；碰撞事件优先于表面事件）----
-        if let Some(region) = &scene.medium {
+        //
+        // 两条通路**严格互斥**（A6 硬化要求，选型报告 §7）：
+        // `media` 非空 ⇒ 新路径；`media.is_empty()` ⇒ 原分支、**一行不改**。
+        // 不允许"空列表也走新路径"——那会把旧场景的共享 aux 步计数器换成
+        // 逐区域计数器，采样流立刻平移，逐位兼容当场失效（V1）。
+        if !scene.media.is_empty() {
+            // 逐子区间行进：区域序由入点决定（`select_region` 全序），
+            // 一段射线可以顺次穿过多个不相交区域（V3 的串联板）。
+            if let Some(hit) =
+                advance_multi(scene, ray.origin, ray.dir, T_MIN, t_surf, stream, aux_dim)
+            {
+                let region: &MediumRegion = &scene.media[hit.region];
+                let p: Vec3 = ray.at(hit.t);
+                // 该区域**自己的** aux 流：维 = aux_dim + 区域下标，步从这里续。
+                let rdim: u16 = region_aux_dim(aux_dim, hit.region);
+                let rsteps: u32 = hit.steps;
+                // 散射 vs 吸收（同一区域的下一步）。这是本区域本段的**最后一次**
+                // 抽取：散射之后射线已离开该区域的子区间，后续抽样全在阴影臂的
+                // 独立基址上，故不必回写计数器。
+                let u_scatter = stream.aux_1d(rdim, rsteps);
+                if u_scatter >= region.medium.albedo() {
+                    break; // 吸收：终止（存活权重隐式）
+                }
+                let (u_l1, u_l2) = stream.sample_2d(bounce_dim(ev, SLOT_LIGHT));
+                let w_in = -ray.dir; // 相函数轴向（散射前传播方向）
+                for (li, light) in scene.lights.iter().enumerate() {
+                    // 阴影臂基址：按灯序号错开（`visibility` 内部再加
+                    // `SHADOW_BASE_OFFSET`）—— 同一散点的多盏灯不共用同一串均匀量。
+                    let sdim: u16 = aux_dim.wrapping_add(li as u16);
+                    let mut ssteps: u32 = 0;
+                    // ---- A2：环境贴图（CDF 策略）----
+                    if let Light::Environment { .. } = light {
+                        if let Some(env) = scene.env() {
+                            let tex_v = TexTable::new(&scene.textures, &scene.texels);
+                            let c = nee_env_volume(
+                                scene, env, tex_v, light, p, w_in, st.throughput, region,
+                                u_l1, u_l2, stream, sdim, &mut ssteps,
+                            );
+                            st.radiance =
+                                st.radiance + clamp_indirect(c, ev, params.clamp_indirect);
+                        }
+                        continue;
+                    }
+                    let skip = light_skip(scene, light);
+                    let ls = match sample_nee(light, p, u_l1, u_l2) {
+                        Some(ls) => ls,
+                        None => continue,
+                    };
+                    let cos_l = w_in.dot(&ls.wi);
+                    let ph = region.medium.phase(cos_l);
+                    let vis =
+                        visibility(scene, p, ls.wi, ls.dist, skip, stream, sdim, &mut ssteps);
+                    if vis <= 0.0 {
+                        continue;
+                    }
+                    let w = nee_mis_weight(light, ls.pdf_w, ph);
+                    let c = hadamard(st.throughput, ls.radiance)
+                        * (ph * vis * w / ls.pdf_w);
+                    st.radiance = st.radiance + clamp_indirect(c, ev, params.clamp_indirect);
+                }
+                // 相位抽样续弹。
+                let (u1, u2) = stream.sample_2d(bounce_dim(ev, SLOT_BSDF));
+                let dir = region.medium.sample_phase(w_in, u1, u2);
+                st.prev_pdf_dir = region.medium.phase(w_in.dot(&dir));
+                st.prev_specular = false;
+                if !rr_survive(&mut st, stream, ev + 1) {
+                    break;
+                }
+                ray = Ray { origin: p, dir, time: ray.time };
+                continue;
+            }
+        } else if let Some(region) = &scene.medium {
             if let Some(tc) =
                 medium_collide(region, ray.origin, ray.dir, t_surf, stream, aux_dim, &mut aux_steps)
             {
@@ -3802,6 +4194,9 @@ fn trace_one(
 
 /// 像素渲染（纯函数）：spp 样本经 prism-core reduce 固定形状归约取均值
 /// （像素级局部归约，禁跨 tile）。
+///
+/// 等价于 `render_pixel_range(..., 0, params.spp)`——**不是"另一条路"，是它的
+/// 特例**（W7 / B3 的同源要求：预览只降 `(spp, res)`，不换函数）。
 pub fn render_pixel(
     scene: &Scene,
     cam: &Camera,
@@ -3810,8 +4205,53 @@ pub fn render_pixel(
     resolution: (u32, u32),
     params: &RenderParams,
 ) -> [f32; 4] {
-    let mut samples = Vec::with_capacity(params.spp as usize);
-    for s in 0..params.spp {
+    render_pixel_range(scene, cam, ctx, pixel, resolution, params, 0, params.spp)
+}
+
+/// 像素渲染（**样本区间**形式）：只取样本序号 `[s_begin, s_end)`，返回其均值。
+///
+/// # 前缀语义（W7 / B3 判据 P3 的实现基础）
+///
+/// 第 `s` 个样本只由 `(种子, 像素, s, 维度)` 决定（[`trace_sample`]，D-28
+/// 像素域），**与 `params.spp` 无关**。于是
+///
+/// ```text
+/// render_pixel_range(p, 0, N) 的样本序列  ==  render_pixel(p, spp=M).的样本序列 的前 N 项
+/// ```
+///
+/// 对任意 `N ≤ M` 逐位成立。这就是"预览的 N 个样本是终帧 M 个样本的前缀"的
+/// 可判定形式：它不是"同一 spp 下两处调用相等"（那是同义反复），而是**样本
+/// 流本身可截断**——预览停下来时手里那 N 个样本，等于终帧同一位置的前 N 个。
+///
+/// # 归约口径
+///
+/// 区间内取 [`mean_samples`]（prism-core `reduce` 固定形状树），与
+/// [`render_pixel`] 完全同一个出口；`count == 1` 时直接返回该样本（`reduce`
+/// 对单项是恒等、`/1.0` 是精确运算，故**逐位等价**，同时省掉两次 `Vec`
+/// 分配——480×270 / spp=1 的视口路径正是这一档）。
+///
+/// # 空区间
+///
+/// `s_end <= s_begin` ⇒ 返回单位元 `[0,0,0,0]`（与 [`mean_samples`] 的空集
+/// 语义一致）。调用方不该依赖它，但它不会 panic。
+pub fn render_pixel_range(
+    scene: &Scene,
+    cam: &Camera,
+    ctx: &EvalCtx,
+    pixel: (u32, u32),
+    resolution: (u32, u32),
+    params: &RenderParams,
+    s_begin: u32,
+    s_end: u32,
+) -> [f32; 4] {
+    if s_end <= s_begin {
+        return [0.0; 4];
+    }
+    if s_end - s_begin == 1 {
+        return trace_sample(scene, cam, ctx, resolution, pixel, s_begin, params);
+    }
+    let mut samples = Vec::with_capacity((s_end - s_begin) as usize);
+    for s in s_begin..s_end {
         samples.push(trace_sample(scene, cam, ctx, resolution, pixel, s, params));
     }
     mean_samples(&samples)
@@ -4471,6 +4911,7 @@ mod tests {
             medium: Some(MediumRegion {
                 bounds: Aabb::new(Vec3::new(-5.0, 0.0, -5.0), Vec3::new(5.0, height, 5.0)),
                 medium: Medium::Homogeneous(HomogeneousMedium::new(sigma_t, 0.0, 0.0)),
+                priority: 0,
             }),
             paraboloids: vec![],
             meshes: Vec::new(),
@@ -4536,6 +4977,7 @@ mod tests {
                 medium: Medium::Heterogeneous(HeterogeneousMedium::constant_sigma_t(
                     sigma_t, 0.0, 0.0,
                 )),
+                priority: 0,
             }),
             paraboloids: vec![],
             meshes: Vec::new(),
@@ -6171,8 +6613,15 @@ mod w1a_layout_tests {
     ///
     /// 这条测试因此从"惰性字段不干扰"升级成"**悬空实例不干扰**"的回归闸：
     /// 若哪天有人把 `instance_geoms` 的越界访问改成 panic 或改成"用 0 号
-    /// 几何兜底"，这里第一个红。（`textures` / `media` 被点亮时同理——
-    /// 那是预期的，届时按新语义改写。）
+    /// 几何兜底"，这里第一个红。
+    ///
+    /// # W6 / A6 改写（原注释预言的那一天）
+    ///
+    /// `media` **已被点亮**（多区域介质），故它不再是"未读字段"，本测试不再
+    /// 把它塞进 `stubbed`——原样保留会让"填了 media 就改像素"变成失败，而
+    /// 那恰恰是新语义的正确行为。`media` 的新语义判据在
+    /// `tests/w6_a6_media.rs`（V1–V5），这里只守 `textures` / `instances`
+    /// 这两个仍然惰性的字段。
     #[test]
     fn dormant_stub_fields_do_not_change_pixel_output() {
         let white = MaterialKind::Pbr(Bsdf::new(
@@ -6201,13 +6650,7 @@ mod w1a_layout_tests {
             16, 16, 5, 0, TEX_FMT_RGBA16F, SRGB_LINEAR,
         ));
         stubbed.instances.push(crate::instance::Instance::identity(0, 0));
-        // media 与旧 medium 并存也是"未读"的：本段不查它。
-        stubbed.media.push(MediumRegion {
-            bounds: Aabb::new(Vec3::splat(-1.0), Vec3::splat(1.0)),
-            medium: crate::media::Medium::Homogeneous(crate::media::HomogeneousMedium::new(
-                0.1, 0.9, 0.0,
-            )),
-        });
+        // `media` 自 W6 起被消费，不再是定桩字段（见上方"W6 / A6 改写"）。
 
         let cam = Camera::new(
             Vec3::new(0.0, 0.0, -4.0),

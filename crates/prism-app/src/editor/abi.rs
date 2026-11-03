@@ -893,7 +893,7 @@ mod tests {
         // 回归测试：`RefCell::as_ptr()`（Rust 1.86 稳定）会自动解引用**遮蔽**
         // `Vec::as_ptr()`，返回指向 Vec **结构体**（ptr/len/cap）的指针，而非像素
         // 首地址。二者仅隔 16 字节且紧邻 ERR 缓冲——真实 wasm 上表现为：
-        //   1) 读出的是 Vec 的三个字，alpha 恒 0（to_rgba 永远写 255）；
+        //   1) 读出的是 Vec 的三个字，alpha 恒 0（真像素缓冲的 alpha 恒 255）；
         //   2) 任何一次错误文本写入都会踩坏相邻缓冲；
         //   3) 指针在 Vec 重新分配后失效 → 两次渲染像素"随机"不同（假性非确定）。
         // 本测试从**可观测后果**入手，不依赖实现细节。
@@ -906,7 +906,7 @@ mod tests {
         assert_ne!(ptr, 0, "像素指针不应为空");
         // SAFETY: 契约保证 ptr 指向 len 字节的 RGBA 缓冲。
         let buf = unsafe { std::slice::from_raw_parts(ptr as *const u8, len) };
-        // 关键断言：alpha 恒 255（to_rgba 对每个像素写 255）。
+        // 关键断言：alpha 恒 255（`prism-rt` 出帧时对每个像素写 255）。
         // 若指针误指向 Vec 结构体，这里读到的会是 ptr/len/cap 三个字，alpha 必为 0。
         // 注意取 alpha 的偏移是 3（RGBA 排列），不能写成 `step_by(4)`——
         // 那从偏移 0 起跳，取到的是**红通道**（本项目首像素 R=173，正是曾经的误报值）。

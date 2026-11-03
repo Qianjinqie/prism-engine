@@ -241,13 +241,13 @@ mod tests {
 
     #[test]
     fn real_quality_renders_through_async_worker() {
-        // Real（Final）档经后台线程出帧：采样数 = FINAL_REAL_SPP，且与 Draft 不同。
+        // Real（Final）档经后台线程出帧：采样数 = `PreviewQuality::Final.spp()`。
         let mut async_preview = AsyncPreview::new();
         assert_eq!(async_preview.submit(req(PreviewQuality::Final, 0)), Some(1));
         let frame = wait_latest(&mut async_preview, Duration::from_secs(30))
             .expect("Real 档后台结果应到达");
         let got = frame.result.expect("Real 档后台渲染应成功");
-        assert_eq!(got.stats.spp, crate::editor::preview::FINAL_REAL_SPP);
+        assert_eq!(got.stats.spp, crate::editor::PreviewQuality::Final.spp());
         assert_eq!(got.rgba.len(), 64 * 48 * 4);
     }
 

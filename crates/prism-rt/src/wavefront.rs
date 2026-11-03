@@ -37,8 +37,9 @@ use crate::accum::mean_samples;
 use crate::bsdf::{hadamard, SampleCtx};
 use crate::camera::{Camera, Ray};
 use crate::integrator::{
-    light_skip, material_bsdf, nee_env_surface, nee_env_volume, surface_brdf, surface_pdf,
-    visibility, MaterialKind, RenderParams, Scene, FRAC_1_PI_F32, T_MIN_SENTINEL,
+    advance_multi, light_skip, material_bsdf, nee_env_surface, nee_env_volume, region_aux_dim,
+    surface_brdf, surface_pdf, visibility, MaterialKind, MediumRegion, RenderParams, Scene,
+    FRAC_1_PI_F32, T_MIN, T_MIN_SENTINEL,
 };
 use crate::light::{ambient_background, nee_mis_weight, sample_nee, Light};
 use crate::sampler::{onb, SampleStream};
@@ -213,7 +214,69 @@ fn advance_one(
     let t_surf = hit.map_or(MISS_T, |h| h.t);
 
     // ---- 介质段（相机/续弹统一；碰撞优先于表面）----
-    if let Some(region) = &scene.medium {
+    //
+    // 与 integrator 主循环同构：`media` 非空走多区域子区间行进（A6），
+    // 否则走单区域 `scene.medium`（原分支不动）。两条通路的物理（自由程 /
+    // 散射-吸收 / 体 NEE / 相位续弹）逐式相同，差别只在区域的取法。
+    if !scene.media.is_empty() {
+        if let Some(hit) =
+            advance_multi(scene, st.ray.origin, st.ray.dir, T_MIN, t_surf, stream, aux_dim)
+        {
+            let region: &MediumRegion = &scene.media[hit.region];
+            let p = st.ray.at(hit.t);
+            let rdim: u16 = region_aux_dim(aux_dim, hit.region);
+            let u_scatter = stream.aux_1d(rdim, hit.steps);
+            if u_scatter >= region.medium.albedo() {
+                stats.terminated += 1;
+                return false; // 吸收
+            }
+            let (u_l1, u_l2) = stream.sample_2d(bounce_dim(ev, SLOT_LIGHT));
+            let w_in = -st.ray.dir;
+            for (li, light) in scene.lights.iter().enumerate() {
+                let sdim: u16 = aux_dim.wrapping_add(li as u16);
+                let mut ssteps: u32 = 0;
+                if let Light::Environment { .. } = light {
+                    if let Some(env) = scene.env() {
+                        let tex_v = TexTable::new(&scene.textures, &scene.texels);
+                        let c = nee_env_volume(
+                            scene, env, tex_v, light, p, w_in, st.throughput, region,
+                            u_l1, u_l2, stream, sdim, &mut ssteps,
+                        );
+                        st.radiance =
+                            st.radiance + clamp_indirect(c, ev, params.clamp_indirect);
+                    }
+                    continue;
+                }
+                let skip = light_skip(scene, light);
+                let ls = match sample_nee(light, p, u_l1, u_l2) {
+                    Some(ls) => ls,
+                    None => continue,
+                };
+                let cos_l = w_in.dot(&ls.wi);
+                let ph = region.medium.phase(cos_l);
+                let vis = visibility(scene, p, ls.wi, ls.dist, skip, stream, sdim, &mut ssteps);
+                if vis <= 0.0 {
+                    continue;
+                }
+                let w = nee_mis_weight(light, ls.pdf_w, ph);
+                let c = hadamard(st.throughput, ls.radiance) * (ph * vis * w / ls.pdf_w);
+                st.radiance = st.radiance + clamp_indirect(c, ev, params.clamp_indirect);
+            }
+            stats.shaded += 1;
+            let (u1, u2) = stream.sample_2d(bounce_dim(ev, SLOT_BSDF));
+            let dir = region.medium.sample_phase(w_in, u1, u2);
+            st.prev_pdf_dir = region.medium.phase(w_in.dot(&dir));
+            st.prev_specular = false;
+            if !rr_survive(st, stream, ev + 1) {
+                stats.terminated += 1;
+                return false;
+            }
+            stats.extended += 1;
+            st.ray = Ray { origin: p, dir, time: st.ray.time };
+            st.bounce = bounce + 1;
+            return st.bounce < params.max_bounces;
+        }
+    } else if let Some(region) = &scene.medium {
         if let Some(tc) = medium_collide(
             scene,
             st.ray.origin,

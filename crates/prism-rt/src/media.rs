@@ -531,6 +531,21 @@ impl Medium {
             Medium::Heterogeneous(m) => m.sample_phase(w, u1, u2),
         }
     }
+
+    /// 堆内存占用（字节；`size_of::<Medium>()` 之外的部分）。
+    ///
+    /// 均匀介质是纯值类型 ⇒ 0；异质介质的 σt 场是堆上的 `Vec<f32>` ⇒ 必须记，
+    /// 否则"场景里有多少介质"这件事在内存账上完全看不出来（A6：区域列表把
+    /// 介质数量从 0/1 变成 N，每个都可能是几十 MB 的场）。
+    ///
+    /// 口径：`data.capacity() × 4`（容量而非长度，见
+    /// [`crate::integrator::Scene::memory_bytes`] 的说明）。
+    pub fn heap_bytes(&self) -> usize {
+        match self {
+            Medium::Homogeneous(_) => 0,
+            Medium::Heterogeneous(m) => m.sigma_t_field.data.capacity() * core::mem::size_of::<f32>(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

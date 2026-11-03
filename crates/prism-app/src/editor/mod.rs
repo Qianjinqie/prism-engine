@@ -26,13 +26,16 @@
 //! 数（[`FINAL_SPP`]）。具体数值经 [`prism_core::CacheDims`] 的 `spp_tier`
 //! 进入缓存键——档位切换天然使旧缓存失效（C13），无需手工清缓存。
 //!
-//! # 质量档位的两档分工
-//! - `Draft`：几何图案（整数散列 + 多项式插值，无 libm），1/4 内部分辨率，
-//!   快得可以每帧重算——交互期保延迟；
-//! - `Final`（Real 档）：低 spp **真实渲染**（走 `prism_render` 既有管线，
-//!   每像素 [`crate::editor::preview::FINAL_REAL_SPP`] 个确定性亚像素 tap）。
-//!   Real 档单帧耗时远超 Draft，故配 [`async_preview`] 的**后台刷新**机制
-//!   （提交即返回、完成后替换预览缓冲）；ABI 同步路径不变（已冻结）。
+//! # 质量档位的两档分工（W7 / B3 定稿）
+//! 两档是**同一个渲染器**的两个预算点，差异只有"内部分辨率 + spp"：
+//! - `Draft`：内部 `⌈R/消4⌉` + 1 spp **真渲染**（`prism-rt`），再经固定整数盒
+//!   上采样回 R。交互期用它保延迟；
+//! - `Final`：R + 16 spp 真渲染。定稿质量。
+//!
+//! 两档都走 [`prism_render::RtBackend`] + [`prism_render::render_frame`]，即
+//! `prism-app render` 的同一条出片通路——**预览不含任何第二套着色函数**。
+//! Draft 也配 [`async_preview`] 的后台刷新（提交即返回、完成后替换缓冲）；
+//! ABI 同步路径不变（已冻结）。
 //!
 //! # 零第三方依赖
 //! 仅用 `std` + workspace 内 crate（`prism-core` 图 / 签名 / 节点模型；
@@ -48,7 +51,9 @@ pub mod state;
 pub use abi::EDITOR_ABI_VERSION;
 pub use async_preview::{AsyncFrame, AsyncPreview, PreviewRequest};
 pub use command::{EditCommand, EditError, ParamSpec};
-pub use preview::{PreviewError, PreviewRenderer, RenderStats, FINAL_REAL_SPP, MAX_DIM};
+pub use preview::{
+    PreviewError, PreviewRenderer, RenderStats, DRAFT_DOWNSCALE, MAX_DIM, PREVIEW_BOUNCES,
+};
 pub use state::{
     DirtySet, EditorState, ExportError, PreviewQuality, EDITOR_SCHEMA_VERSION, DRAFT_SPP, FINAL_SPP,
 };

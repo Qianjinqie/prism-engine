@@ -84,6 +84,7 @@ fn medium_scene() -> Scene {
         medium: Some(prism_rt::integrator::MediumRegion {
             bounds: Aabb::new(Vec3::new(-1.0, -1.0, -1.0), Vec3::new(1.0, 3.0, 1.0)),
             medium: prism_rt::media::Medium::Homogeneous(HomogeneousMedium::new(0.1, 0.9, 0.6)),
+            priority: 0,
         }),
         paraboloids: vec![],
         meshes: Vec::new(),
