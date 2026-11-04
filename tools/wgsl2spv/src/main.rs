@@ -259,6 +259,8 @@ fn compile(wgsl_src: &str, entry: &str) -> Result<Vec<u32>, String> {
     if words.is_empty() {
         return Err("SPIR-V 生成失败：字流为空".to_string());
     }
+    // 精度钉死：全部浮点算术加 NoContraction（R-1 逐位判据的前提，见函数文档）。
+    let words = pin_no_contraction(&words);
     Ok(words)
 }
 
@@ -268,6 +270,110 @@ fn words_to_bytes(words: &[u32]) -> Vec<u8> {
     for w in words {
         out.extend_from_slice(&w.to_le_bytes());
     }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// 精度钉死（NoContraction post-pass；T-B R-1 逐位判据的前提）
+// ---------------------------------------------------------------------------
+
+/// `OpDecorate <id> NoContraction` 的装饰码（SPIR-V 1.0 §3.32）。
+const DEC_NO_CONTRACTION: u32 = 42;
+
+/// 会被 FMA 收缩的浮点算术 opcode（SPIR-V 1.0 核心指令码；**逐个对过表**：
+/// 128 IAdd / 130 ISub / 132 IMul / 134 UDiv / 135 SDiv / 137-139 整数取模
+/// 都**不在**表内）。
+const FP_CONTRACTABLE_OPS: &[u32] = &[
+    127, // OpFNegate
+    129, // OpFAdd
+    131, // OpFSub
+    133, // OpFMul
+    136, // OpFDiv
+    140, // OpFRem
+    141, // OpFMod
+    142, // OpVectorTimesScalar
+    143, // OpMatrixTimesScalar
+    144, // OpVectorTimesMatrix
+    145, // OpMatrixTimesVector
+    146, // OpMatrixTimesMatrix
+    147, // OpOuterProduct
+    148, // OpDot
+];
+
+/// 给全部浮点算术结果的 SSA id 加 `NoContraction` 装饰（原位返回新字流）。
+///
+/// # 为什么必须做（T-B R-1 的根因之一，真机实测抓到）
+///
+/// Vulkan 的 SPIR-V **默认允许 FMA 收缩**：`a*b + c` 可以被驱动编译成
+/// `fma(a,b,c)`，末位与分开乘加不同。WGSL/naga 不生成 `NoContraction`
+/// 装饰 ⇒ llvmpipe 的 NIR `fuse_fma` 合法地融合了着色链里的乘加，对拍
+/// 出现"单像素 1 ULP"的分歧（CPU 侧 Rust 不收缩）。R-1 的判据是
+/// `to_bits()` 全等，收缩必须禁掉——本 pass 给**所有**浮点算术结果加
+/// `NoContraction`（保守超集：装饰全部结果 ⇒ 任何乘加都不可能被融合），
+/// 把语义钉死为逐指令 IEEE。
+///
+/// # 为什么是"插 OpDecorate"而不是改 naga
+///
+/// 装饰不分配 id、不改任何结果编号：把 `OpDecorate` 字插进 annotations 段
+/// （位于 debug 段之后、types/constants 段之前，SPIR-V 逻辑布局 §2.4）即可，
+/// 其余字流一字节不动。插完后仍过 `spirv-val` 官方校验。
+fn pin_no_contraction(words: &[u32]) -> Vec<u32> {
+    // 1. 收集浮点算术结果 id（带结果类型的指令：result id 在 word[i+2]）。
+    let mut ids: Vec<u32> = Vec::new();
+    let mut i = 5usize; // 跳过 magic/version/generator/bound/schema 头
+    while i < words.len() {
+        let op = words[i] & 0xFFFF;
+        let wc = (words[i] >> 16) as usize;
+        if wc == 0 {
+            break; // 字流损坏防御（正常不会发生）
+        }
+        match op {
+            12 => {
+                // OpExtInst：<id> result type, <id> result, set, inst...
+                // GLSL.std450 的浮点件（sqrt/tan/fma/...）结果也纳入保守超集。
+                if wc >= 3 {
+                    ids.push(words[i + 2]);
+                }
+            }
+            op if FP_CONTRACTABLE_OPS.contains(&op) => {
+                if wc >= 3 {
+                    ids.push(words[i + 2]);
+                }
+            }
+            _ => {}
+        }
+        i += wc;
+    }
+    if ids.is_empty() {
+        return words.to_vec();
+    }
+    // 2. 找插入点：第一条 types/constants 段指令（opcode ≥ 19，排除装饰段
+    //    71/72——装饰必须整体位于 types 之前）。**按指令粒度**走（字粒度会把
+    //    操作数里的立即数误当 opcode，插进指令中间 = 模块损坏）。naga 输出
+    //    的段序保证存在。
+    let mut insert_at = words.len();
+    let mut i = 5usize;
+    while i < words.len() {
+        let op = words[i] & 0xFFFF;
+        let wc = (words[i] >> 16) as usize;
+        if wc == 0 {
+            break;
+        }
+        if op >= 19 && op != 71 && op != 72 {
+            insert_at = i;
+            break;
+        }
+        i += wc;
+    }
+    // 3. 生成 OpDecorate 字（wordcount 3：opcode, target, decoration）。
+    let mut out = Vec::with_capacity(words.len() + ids.len() * 3);
+    out.extend_from_slice(&words[..insert_at]);
+    for &id in &ids {
+        out.push((3u32 << 16) | 71);
+        out.push(id);
+        out.push(DEC_NO_CONTRACTION);
+    }
+    out.extend_from_slice(&words[insert_at..]);
     out
 }
 

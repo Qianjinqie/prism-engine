@@ -43,22 +43,24 @@
     "wasm": {
       "label": "WebGPU wasm 产物",
       "path": "crates/prism-gpu/web/prism_gpu.wasm",
-      "baseline_bytes": 423855,
-      "max_bytes": 458752,
+      "baseline_bytes": 699414,
+      "max_bytes": 786432,
       "max_growth_ratio": 0.16,
       "rationale": [
-        "声明上限 448 KiB = 458,752 B（V2.2 修订，原 400 KiB = 409,600 B）。",
-        "放宽理由：V2.2-T03 补齐「有设备」分支（PRD 验收 3 的「有设备返 w*h*4」此前从未实现）。",
-        "  新增体积逐项实测归因：真 dispatch 链 ≈25.0 KB + 设备侧 CPU 参考对拍 ≈17.1 KB",
-        "  + run 阶段/结果文本/错误枚举 ≈28.7 KB = 合计 +56,775 B（367,080 → 423,855）。",
-        "  这些不是冗余，全部是「能在真机判对」所必需的代码；砍掉任何一项都会削弱判据。",
-        "对冲手段（已做）：[profile.wasm] 的 opt-level 由 \"s\" 收紧到 \"z\"（实测 −14,098 B / −3.2%），",
-        "  且判据 3 改用精确整数判决（等价 PSNR≥40 dB，去掉浮点与对数）再省 ≈2.3 KB。",
-        "原 400 KiB 的 16% 余量（Q9）低估的是「完整实现」而非「接线」：接线只进 22,406 B，",
-        "  真 dispatch + 对拍要 56,775 B。上限按实测重构，不按乐观估算保留。",
-        "相对带 16% 是**次要**约束（423,855*1.16 = 491,672 B > 458,752 B），故生效上限仍是绝对上限。",
-        "余量：458,752 − 423,855 = 34,897 B（+8.2%）。要再放宽须改本文件并在 review 说明原因。",
-        "注意：ci_wasm_verify.mjs 原注释写「当前产物 ~158KB」与实测差 2.1 倍，属漂移；已按实测值订正。"
+        "声明上限 768 KiB = 786,432 B（v2.5 T-B/T-A 修订，原 448 KiB = 458,752 B）。",
+        "放宽理由（两段增长都有逐项归因，全部是「能在真机判对」所必需的代码/数据）：",
+        "  ① T6/T7（上一轮）：wavefront 五段式接线（5 entry WGSL 内嵌文本 + Vulkan/WebGPU",
+        "     派发器 + NEE 口径修复 + env CDF 接线），576,620 B——当时未更新基线，属遗留，",
+        "     本轮一并订正；",
+        "  ② 本轮 T-B/T-A：wavefront **路径模式**逐位对拍链（rt_u64.wgsl 的 64 位 PCG",
+        "     (lo,hi) 仿真 + wf 采样流 + 路径 shade/extend 重写 + Material.kind 判别式）",
+        "     + 浏览器测试项 gpu.wavefront_path + CPU golden 数据段（wavefront_path_golden.bin",
+        "     的 include_bytes!，15,580 B）= 699,414 B。",
+        "对冲手段（已做）：[profile.wasm] opt-level \"z\" 维持；golden 用位模式二进制而非",
+        "  JSON（比十进制文本省 ~60%）；sobol 表以 golden 载体复用（不内嵌第二份）。",
+        "相对带：max_growth_ratio 0.16 为次要约束（699,414×1.16 = 811,320 > 786,432），",
+        "  生效上限仍是绝对上限。余量：786,432 − 699,414 = 87,018 B（+12.4%）。",
+        "要再放宽须改本文件并在 review 说明原因——阈值是数据，不是代码里的魔数。"
       ],
       "history": [
         {
@@ -75,6 +77,16 @@
           "stage": "T03 有设备分支补齐",
           "bytes": 423855,
           "note": "真 dispatch + CPU 参考对拍；同期 opt-level s→z 已含在内"
+        },
+        {
+          "stage": "T6/T7 wavefront 五段接线",
+          "bytes": 576620,
+          "note": "上一轮实测（当时基线未更新，本轮订正登记）"
+        },
+        {
+          "stage": "T-B/T-A 路径模式逐位对拍 + golden",
+          "bytes": 699414,
+          "note": "rt_u64 仿真 + wf 采样流 + gpu.wavefront_path 测试项 + golden 数据段 15,580 B"
         }
       ]
     },

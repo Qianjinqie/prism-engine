@@ -11,3 +11,10 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 prism-math = { path = "../prism-math" }
 prism-geometry = { path = "../prism-geometry" }
+
+# dev-only：R-1 逐位对拍的 CPU 参考侧（`prism_rt::wavefront::render_frame`、
+# `sampler::sobol_u32`、`Camera`）。不进 [dependencies]——wasm 体积预算
+# （453,239 B / 458,752 B）装不下整条 prism-rt。
+[dev-dependencies]
+prism-rt = { path = "../prism-rt" }
+prism-core = { path = "../prism-core" }

@@ -37,6 +37,16 @@ fn bounce_dim(ev: u32, slot: u32) -> u32 {
 // ---- Vec3 基础件（与 prism-math Vec3 同运算，仅 ±×÷√）----
 fn v3(x: f32, y: f32, z: f32) -> vec3<f32> { return vec3<f32>(x, y, z); }
 fn vdot(a: vec3<f32>, b: vec3<f32>) -> f32 { return a.x*b.x + a.y*b.y + a.z*b.z; }
+// 与 `Vec3::normalize` 同一求值树（len = sqrt(dot)；len < 1e-8 退化返零）。
+// **不用 WGSL builtin normalize**：它不承诺与 `v/length(v)` 同一棵表达式树，
+// 逐位对拍要求两边算术逐句相同（T-B R-1）。
+fn vnorm(v: vec3<f32>) -> vec3<f32> {
+  let len = sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+  if (len < 1e-8) {
+    return vec3<f32>(0.0, 0.0, 0.0);
+  }
+  return vec3<f32>(v.x / len, v.y / len, v.z / len);
+}
 fn hadamard(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> { return a * b; }
 fn luminance(c: vec3<f32>) -> f32 { return 0.2126*c.x + 0.7152*c.y + 0.0722*c.z; }
 fn clampf(x: f32, lo: f32, hi: f32) -> f32 { return min(max(x, lo), hi); }
@@ -75,11 +85,11 @@ fn cos_sin(x: f32) -> vec2<f32> {
 }
 fn det_tan(x: f32) -> f32 { let cs = cos_sin(x); return cs.y / cs.x; }
 
-// ---- onb（叉积法，格锚纪律：禁浮点三角）----
+// ---- onb（叉积法，格锚纪律：禁浮点三角；归一化走 vnorm，与 Vec3::normalize 同树）----
 fn onb(n: vec3<f32>) -> mat3x3<f32> {
   var up = vec3<f32>(1.0, 0.0, 0.0);
   if (abs(n.x) > 0.9) { up = vec3<f32>(0.0, 1.0, 0.0); }
-  let t = normalize(cross(up, n));
+  let t = vnorm(cross(up, n));
   let b = cross(n, t);
   return mat3x3<f32>(t, b, n);
 }

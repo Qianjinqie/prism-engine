@@ -89,6 +89,9 @@ pub static SHADERS: &[(&str, &str)] = &[
 /// 由未来的 hair 材质着色 kernel 经 `//!include hair_scatter.wgsl` 复用。
 pub static LIBRARIES: &[(&str, &str)] = &[
     ("rt_scene.wgsl", include_str!("../shaders/rt_scene.wgsl")),
+    // T-B / R-1：64 位 PCG 的 WGSL (lo,hi) 仿真库（逐位复刻 prism-noise/src/pcg.rs）。
+    // 无入口 → 入 LIBRARIES；被 rt_shade.wgsl `//!include`（路径模式采样流的根基）。
+    ("rt_u64.wgsl", include_str!("../shaders/rt_u64.wgsl")),
     ("hair_scatter.wgsl", include_str!("../shaders/hair_scatter.wgsl")),
     // A2 / W2：环境贴图采样（等距柱状映射 + u32 定点 CDF 反演 + 同源 pdf）。
     // **唯一一份** WGSL 实现：探针 `rt_env_probe.wgsl` 用 `//!include` 引它，
@@ -205,8 +208,13 @@ impl ShaderCheck {
 }
 
 /// 仅在拼接时前置、本身不含入口的 include-only 文件（豁免入口断言）。
-const INCLUDE_ONLY: &[&str] =
-    &["rt_common.wgsl", "rt_bvh.wgsl", "rt_shade.wgsl", "sim_common.wgsl"];
+const INCLUDE_ONLY: &[&str] = &[
+    "rt_common.wgsl",
+    "rt_bvh.wgsl",
+    "rt_shade.wgsl",
+    "rt_u64.wgsl",
+    "sim_common.wgsl",
+];
 
 /// WGSL 内建函数/类型/属性名白名单（[`unresolved_symbols`] 用）。
 ///
@@ -1071,7 +1079,7 @@ mod tests {
     fn include_only_files_are_still_compilable_standalone() {
         // rt_scene / rt_shade 等 include-only 文件在真机上也是独立编译项，
         // 故它们自身也必须零未解析符号。
-        for name in ["rt_common.wgsl", "rt_scene.wgsl", "rt_shade.wgsl", "sim_common.wgsl"] {
+        for name in ["rt_common.wgsl", "rt_scene.wgsl", "rt_shade.wgsl", "rt_u64.wgsl", "sim_common.wgsl"] {
             let missing = unresolved_symbols(&expand(name));
             assert!(missing.is_empty(), "{name} 独立展开后有未解析符号 {:?}", missing);
         }

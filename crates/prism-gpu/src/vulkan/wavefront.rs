@@ -163,6 +163,9 @@ pub struct WavefrontMaterial {
     pub ior: f32,
     /// 自发光。
     pub emissive: Vec3,
+    /// 材质种类（T-B R-1）：0 = Lambert、1 = Mirror、2 = Pbr、3 = Emissive
+    /// （与 `prism_rt::MaterialKind` 判别式对齐；占 WGSL `Material.kind` 槽 @40）。
+    pub kind: u32,
 }
 
 /// 路径模式的球面灯代理（与 `rt_scene.wgsl::Light` 对应）。
@@ -209,6 +212,24 @@ pub struct WavefrontRequest {
     pub ambient: Vec3,
     /// 环境 CDF blob（空 = 1 元占位 ⇒ `env_present()` 假）。
     pub env_blob: Vec<f32>,
+    /// **真 Sobol 方向数表**（T-B R-1；`Some` = 64×32 u32 小端字节流）。
+    ///
+    /// 路径模式逐位对拍必须上传真 Joe–Kuo 表（测试侧由
+    /// `prism_rt::sampler::sobol_u32(d, 1<<k)` 生成）——内置的
+    /// `sobol_table(seed)` 是 PCG 混洗表，只保证非零/确定，不承诺低差异，
+    /// 与 CPU 的方向数表不同流。`None` = 维持旧行为（W1/W3 判据不受影响）。
+    pub sobol_table: Option<Vec<u8>>,
+    /// 求值上下文 node_id（`WFParams.node_id`；采样流基种子成分）。
+    pub node_id: u32,
+    /// 求值上下文帧号（`WFParams.frame`；采样流基种子成分）。
+    pub frame: u32,
+    /// 相机 uniform 原始 96 字节覆盖（T-B R-1）。
+    ///
+    /// 对拍要求相机基向量 / `tan_half_fov` 与 CPU `prism_rt::Camera` **逐位**
+    /// 相同（`sampler::tan` 的多项式与 `det_trig::tan` 不保证同一棵树）。
+    /// 测试侧由 `prism_rt::Camera` 的公开字段直接打包；`None` = 维持
+    /// `camera_basis(req.camera)` 旧行为。
+    pub camera_uniform: Option<[u8; 96]>,
     /// **只跑到 `stage_plan` 的第 k 段**（`None` = 跑完整计划）。
     ///
     /// 存在的理由只有一个：W1 的「差异定位到每像素每阶段」。把派发停在
@@ -253,6 +274,10 @@ impl WavefrontRequest {
             lights,
             ambient: Vec3::splat(0.0),
             env_blob: Vec::new(),
+            sobol_table: None,
+            node_id: 0,
+            frame: 0,
+            camera_uniform: None,
             stage_stop: None,
             readback_slots: false,
         }
@@ -382,7 +407,7 @@ fn encode_lights_rt(lights: &[WavefrontLight]) -> Vec<u8> {
     out
 }
 
-/// 材质表（`rt_scene.wgsl::Material` 的 16 个 f32 槽）。
+/// 材质表（`rt_scene.wgsl::Material` 的 16 个 f32 槽；`kind` u32 占 @40）。
 fn encode_materials(materials: &[WavefrontMaterial]) -> Vec<u8> {
     let mut out = vec![0u8; materials.len().max(1) * MATERIAL_BYTES];
     for (i, m) in materials.iter().enumerate() {
@@ -393,6 +418,7 @@ fn encode_materials(materials: &[WavefrontMaterial]) -> Vec<u8> {
         put_f32(&mut out, b + 28, m.metalness);
         put_f32(&mut out, b + 32, m.transmission);
         put_f32(&mut out, b + 36, m.ior);
+        put_u32(&mut out, b + 40, m.kind);
         put_vec3(&mut out, b + 48, m.emissive);
     }
     out
@@ -411,7 +437,18 @@ fn encode_tris(tris: &[WavefrontTri]) -> Vec<u8> {
 }
 
 /// 相机 uniform（96 字节，`aspect` 在原填充位 @84）。
-fn encode_camera(cam: &CameraReq) -> [u8; CAMERA_BYTES] {
+///
+/// `req.camera_uniform`（T-B R-1）非 `None` 时逐字节直传——对拍侧用它
+/// 上传与 `prism_rt::Camera` 逐位相同的基向量 / `tan_half_fov`。
+fn encode_camera(req: &WavefrontRequest) -> [u8; CAMERA_BYTES] {
+    if let Some(raw) = &req.camera_uniform {
+        return *raw;
+    }
+    encode_camera_basis(&req.camera)
+}
+
+/// `camera_basis` 旧行为（兼容模式 / W1 判据的相机编码）。
+fn encode_camera_basis(cam: &CameraReq) -> [u8; CAMERA_BYTES] {
     let basis = super::spirv_rt::camera_basis(cam);
     let mut out = [0u8; CAMERA_BYTES];
     for k in 0..3 {
@@ -440,8 +477,8 @@ fn encode_params(req: &WavefrontRequest) -> [u8; WF_PARAMS_BYTES] {
     put_f32(&mut out, 20, 0.0);
     put_u32(&mut out, 24, 0); // nee_only = false（路径模式跑完整 NEE + MIS）
     put_u32(&mut out, 28, req.seed);
-    put_u32(&mut out, 32, 0); // node_id
-    put_u32(&mut out, 36, 0); // frame
+    put_u32(&mut out, 32, req.node_id);
+    put_u32(&mut out, 36, req.frame);
     put_u32(&mut out, 40, req.mode.as_u32());
     put_u32(
         &mut out,
@@ -586,7 +623,10 @@ pub(crate) fn build_resources(req: &WavefrontRequest) -> Vec<Resource> {
             group: 1,
             binding: 0,
             uniform: false,
-            bytes: sobol_table(req.seed),
+            bytes: req
+                .sobol_table
+                .clone()
+                .unwrap_or_else(|| sobol_table(req.seed)),
         },
         Resource {
             group: 1,
@@ -654,7 +694,7 @@ pub(crate) fn build_resources(req: &WavefrontRequest) -> Vec<Resource> {
             group: 3,
             binding: 0,
             uniform: true,
-            bytes: encode_camera(&req.camera).to_vec(),
+            bytes: encode_camera(req).to_vec(),
         },
     ]
 }
@@ -1257,9 +1297,11 @@ unsafe fn run_on_device(ctx: &VulkanContext, req: &WavefrontRequest) -> Wavefron
     }
 
     // stage 序列：generate → [shade, connect, extend] × max_bounces → accumulate。
+    // `max_bounces = 0` = 不允许任何弹射事件（与 CPU `trace_wavefront` 的
+    // `while max_bounces > 0 && advance_one(..)` 短路同语义：0 次着色、黑帧）。
     let mut stage_plan: Vec<usize> = Vec::new();
     stage_plan.push(0); // generate
-    for _ in 0..req.max_bounces.max(1) {
+    for _ in 0..req.max_bounces {
         stage_plan.push(1); // shade
         stage_plan.push(2); // connect
         stage_plan.push(3); // extend
@@ -1570,6 +1612,18 @@ pub(crate) fn dispatch(
             req.width,
             req.height,
             "尺寸/路径数非法（零轴 / > MAX_FRAMEBUFFER_DIM / 路径数 > 2^31）",
+        );
+    }
+    // 路径模式的 spp 上限 = 固定形状归约树的局部缓冲（`rt_wavefront.wgsl::
+    // WF_MAX_SPP`）。超限是结构化拒绝，不是静默换算法（换算法 = 换结合序 =
+    // 逐位判据失效）。
+    if req.mode == WavefrontMode::Path && req.spp > 64 {
+        return WavefrontReport::failed(
+            DispatchStatus::BufferFailed,
+            req.width,
+            req.height,
+            "路径模式 spp > 64：固定形状归约树缓冲（WF_MAX_SPP）超限；\
+             建议：分 pass 渲染后经 AccumBuffer canonical_mean 合成",
         );
     }
     match ctx {

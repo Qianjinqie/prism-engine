@@ -490,6 +490,7 @@ fn path_scene(w: u32, h: u32, max_bounces: u32) -> WavefrontRequest {
         transmission: 0.0,
         ior: 1.5,
         emissive: Vec3::splat(0.0),
+        kind: 0, // Lambert（T-B：路径模式按 kind 选逐位对拍分支）
     };
     let wall_mat = WavefrontMaterial {
         base_color: Vec3::new(0.35, 0.42, 0.62),
@@ -499,6 +500,7 @@ fn path_scene(w: u32, h: u32, max_bounces: u32) -> WavefrontRequest {
         transmission: 0.0,
         ior: 1.5,
         emissive: Vec3::splat(0.0),
+        kind: 0, // Lambert
     };
     let tri = |a: Vec3, b: Vec3, c: Vec3| WavefrontTri { a, b, c };
 
@@ -551,6 +553,10 @@ fn path_scene(w: u32, h: u32, max_bounces: u32) -> WavefrontRequest {
         }],
         ambient: Vec3::splat(0.0),
         env_blob: Vec::new(),
+        sobol_table: None,
+        node_id: 0,
+        frame: 0,
+        camera_uniform: None,
         stage_stop: None,
         readback_slots: false,
     }

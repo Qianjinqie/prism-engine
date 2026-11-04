@@ -18,6 +18,12 @@
 
 // ---- 场景 storage 布局（对齐 scene.rs 的串联缓冲；u32 视图 + 位重解释）----
 // 材质：f0/基色各 vec3（打包成 4×u32 定点 u8/u10 视为 u32 数组槽）。
+// `kind`（T-B R-1 新增，占原 `_pad0` 槽 @40）：材质种类——CPU 侧
+// `MaterialKind` 的判别式，路径模式按它选逐位对拍的分支：
+//   0 = Lambert（albedo = base_color；R-1 判据范围）
+//   1 = Mirror
+//   2 = Pbr（Disney 近似；不进 R-1 判据）
+//   3 = Emissive（emissive = emissive）
 struct Material {
   base_color: vec3<f32>,
   roughness: f32,
@@ -25,9 +31,15 @@ struct Material {
   metalness: f32,
   transmission: f32,
   ior: f32,
+  kind: u32,
   emissive: vec3<f32>,
-  _pad0: f32,
 }
+
+// 材质种类（与 `MaterialKind` 判别式对齐；见上）。
+const MAT_LAMBERT: u32 = 0u;
+const MAT_MIRROR: u32 = 1u;
+const MAT_PBR: u32 = 2u;
+const MAT_EMISSIVE: u32 = 3u;
 
 // 灯光：位置/功率（点光 + 面积光以半径表达，对齐 light.rs 四灯光族）。
 struct Light {
@@ -45,14 +57,6 @@ struct Hit {
   _pad1: u32,
   normal: vec3<f32>,
   _pad2: f32,
-}
-
-// NEE 灯光采样结果（对齐 light.rs::LightSample）。
-struct LightSample {
-  wi: vec3<f32>,
-  dist: f32,
-  radiance: vec3<f32>,
-  pdf_w: f32,
 }
 
 // ---- 场景绑定（group 2 = 场景只读数据；与 group 0 队列 / group 1 采样流分离）----
@@ -116,7 +120,6 @@ struct Tri {
 }
 
 // 间接光钳位开关（wavefront 的 params 在 group 0，此处只读场景级默认）。
-const CLAMP_INDIRECT_DEFAULT: f32 = 10.0;
 
 // ---- 访问器（对齐 scene.rs / bsdf.rs / light.rs 的取数口径）----
 fn load_material(prim: u32) -> Material {
@@ -128,68 +131,22 @@ fn load_light_count() -> u32 {
   return min(scene_params.light_count, arrayLength(&lights));
 }
 
-fn sample_index_seed(prim: u32, ev: u32, slot: u32) -> u32 {
-  // 采样流种子：按 (prim, 事件, 维度槽) 打散，跨平台逐位一致（整数运算）。
-  return prim * 2654435761u + ev * 40503u + slot * 2246822519u + scene_params.node_id;
-}
-
 fn ambient_background() -> vec3<f32> {
   return vec3<f32>(scene_params.ambient_r, scene_params.ambient_g, scene_params.ambient_b);
 }
 
-// 间接光钳位（对齐 integrator.rs::clamp_indirect）。
-fn clamp_indirect(c: vec3<f32>, ev: u32) -> vec3<f32> {
-  _ = ev;
-  let m = max(c.x, max(c.y, c.z));
-  if (m <= CLAMP_INDIRECT_DEFAULT) { return c; }
-  return c * (CLAMP_INDIRECT_DEFAULT / m);
-}
-
-// ---- 灯光采样（NEE；面积光近似为球面均匀，对齐 light.rs::sample）----
-fn sample_light(li: u32, p: vec3<f32>, u: f32, v: f32) -> LightSample {
-  let lt = lights[li];
-  let center = lt.position;
-  let d = center - p;
-  let dist2 = max(vdot(d, d), 1e-8);
-  let dist = sqrt(dist2);
-  let wi = d / dist;
-  // 球面立体角 pdf：立体角 = 2π(1−cosθ_max)，cosθ_max = sqrt(1−r²/dist²)。
-  let sin2 = min(lt.radius * lt.radius / dist2, 0.9999);
-  let cos_max = sqrt(1.0 - sin2);
-  let solid = 2.0 * PI * (1.0 - cos_max);
-  var out: LightSample;
-  out.wi = wi;
-  out.dist = dist;
-  out.radiance = lt.color;
-  out.pdf_w = select(0.0, 1.0 / solid, solid > 1e-9);
-  // u/v 参与：把采样流维度占位真正用掉（面积光位置偏移，D-28 像素域）。
-  out.radiance = out.radiance * (1.0 + 0.0 * (u + v));
-  return out;
-}
-
-// NEE 的 MIS 权重（power heuristic，对齐 light.rs::nee_mis_weight）。
-fn nee_mis_weight(light_index: u32, pdf_w: f32, pdf_l: f32) -> f32 {
-  _ = light_index;
-  let a = pdf_w * pdf_w;
-  let b = pdf_l * pdf_l;
-  let den = a + b;
-  if (den == 0.0) { return 0.0; }
-  return a / den;
-}
-
-// 发光命中权重（对齐 light.rs::emissive_weight；单灯时退化为 1）。
-fn emissive_weight(flags: u32, prev_pdf_dir: f32, prim: u32, origin: vec3<f32>) -> f32 {
-  _ = flags;
-  _ = prim;
-  _ = origin;
-  if (prev_pdf_dir <= 0.0) { return 1.0; }
-  return 1.0;
-}
-
-// ---- 几何求交（对齐 bvh.rs；本骨架对全三角形线性扫描，BVH 遍历在 rt_bvh.wgsl）----
-fn scene_intersect(ro: vec3<f32>, rd: vec3<f32>, t_max: f32, aux_steps: u32, aux_dim: u32) -> Hit {
-  _ = aux_steps;
-  _ = aux_dim;
+// ---- 几何求交（对齐 prism-geometry/bvh.rs::tri_ray_hit 逐式；T-B R-1 逐位对拍）----
+//
+// 与 CPU 的逐位契约（每一处都不能"约等"）：
+// * `det.abs() < 1e-12` ⇒ 该三角形永不命中（同 CPU）；
+// * u / v 的接受域是**闭区间** [0,1]（CPU：`u < 0.0 || u > 1.0` 拒绝）；
+// * t 的接受域是**闭区间** [T_MIN, t_max]（CPU：`hit >= t_min && hit <= t_max`）
+//   —— 可见性射线的 t_max = dist − T_MIN，端点上的遮挡**算**遮挡；
+// * 并列 t 保持先达者（CPU 的 BVH tie-break 按 (t, 原始索引)，线性扫描按
+//   先达者；并列 t 是测度零事件，场景设计避开，见 parity 测试注释）；
+// * 法线 = 三角形单位几何法线，与 `triangle_unit_normal` 同一棵树：
+//   `n·n > 1e-24 ? n·(1/√(n·n)) : 0`。
+fn scene_intersect(ro: vec3<f32>, rd: vec3<f32>, t_max: f32) -> Hit {
   var out: Hit;
   out.t = t_max;
   out.prim = 0xFFFFFFFFu;
@@ -205,7 +162,7 @@ fn scene_intersect(ro: vec3<f32>, rd: vec3<f32>, t_max: f32, aux_steps: u32, aux
     let e2 = tr.c - tr.a;
     let pvec = cross(rd, e2);
     let det = vdot(e1, pvec);
-    if (abs(det) > 1e-12) {
+    if (abs(det) >= 1e-12) {
       let inv_det = 1.0 / det;
       let tvec = ro - tr.a;
       let u = vdot(tvec, pvec) * inv_det;
@@ -214,10 +171,20 @@ fn scene_intersect(ro: vec3<f32>, rd: vec3<f32>, t_max: f32, aux_steps: u32, aux
         let v = vdot(rd, qvec) * inv_det;
         if (v >= 0.0 && u + v <= 1.0) {
           let t = vdot(e2, qvec) * inv_det;
-          if (t > T_MIN && t < out.t) {
-            out.t = t;
-            out.prim = i;
-            out.normal = normalize(cross(e1, e2));
+          if (t >= T_MIN && t <= out.t) {
+            if (t < out.t || out.prim == 0xFFFFFFFFu) {
+              out.t = t;
+              out.prim = i;
+              // 三角形单位几何法线（绕序 a→b→c 右手；与
+              // `triangle_unit_normal` 同树：n·n > 1e-24 才归一化）。
+              let un = cross(e1, e2);
+              let len2 = vdot(un, un);
+              if (len2 > 1e-24) {
+                out.normal = un * (1.0 / sqrt(len2));
+              } else {
+                out.normal = vec3<f32>(0.0, 0.0, 0.0);
+              }
+            }
           }
         }
       }
@@ -227,9 +194,10 @@ fn scene_intersect(ro: vec3<f32>, rd: vec3<f32>, t_max: f32, aux_steps: u32, aux
   return out;
 }
 
-// 可见性（对齐 light.rs::visibility；1 = 通，0 = 被遮蔽）。
+// 可见性（对齐 integrator.rs::visibility 的遮挡语义：max_t − T_MIN 为上界，
+// 闭区间 ⇒ 端点命中算遮挡；无介质场景 vis ∈ {0,1}）。
 fn shadow_ray(origin: vec3<f32>, wi: vec3<f32>, dist: f32) -> f32 {
-  let h = scene_intersect(origin, wi, dist - 2.0 * SURFACE_EPS, 0u, 0u);
+  let h = scene_intersect(origin, wi, dist - T_MIN);
   if (h.prim == 0xFFFFFFFFu) { return 1.0; }
   return 0.0;
 }
@@ -257,34 +225,10 @@ fn pow5_local(x: f32) -> f32 {
   return x2 * x2 * x;
 }
 
-// ---- RR（对齐 integrator.rs::rr_survive / rr_scale）----
-fn should_survive(throughput: vec3<f32>, seed: u32, idx: u32, ev: u32) -> bool {
-  if (ev < 3u) { return true; }
-  let lum = luminance(throughput);
-  let q = min(0.95, max(0.05, lum));
-  // 确定性哈希判存活（不引入 RNG 状态；同输入逐位可复现）。
-  let h = (idx * 747796405u + seed * 2891336453u + ev * 277803737u) >> 8u;
-  return f32(h) * (1.0 / 16777216.0) < q;
-}
-
-fn rr_scale(throughput: vec3<f32>) -> f32 {
-  let lum = luminance(throughput);
-  if (lum <= 0.0) { return 1.0; }
-  return 1.0 / lum;
-}
-
-// ---- MNEE 焦散（k=2 球面折射链占位；对齐 caustics.rs::mnee_refraction）----
-// 真机判对范围 = 编译 + 绑定；数值等价由 CPU 参考 caustics 单测覆盖。
-fn mnee_caustics(p: vec3<f32>, n: vec3<f32>, w_in: vec3<f32>, throughput: vec3<f32>, ev: u32) -> vec3<f32> {
-  _ = ev;
-  let cos_i = max(0.0, vdot(-w_in, n));
-  // 折射锥判据：仅在入射角足够大（趋近临界角）时才有 MNEE 贡献。
-  if (cos_i < 1e-3) { return vec3<f32>(0.0, 0.0, 0.0); }
-  return vec3<f32>(0.0, 0.0, 0.0) * (throughput + p + n + w_in);
-}
-
-// 自发光辐射（对齐 light.rs::emissive；无自发光材质返回 0）。
-fn emissive_radiance(prim: u32) -> vec3<f32> {
-  let mat = load_material(prim);
-  return mat.emissive;
-}
+// ---- RR / MNEE / 发光读取：已上收 —— ----
+// * RR（rr_survive/rr_scale）与间接钳位：路径模式逐位对拍版本在
+//   `rt_wavefront.wgsl`（wf_rr_survive / wf_clamp_indirect，消费 group 0 的
+//   WFParams 与 wf 采样流）；
+// * MNEE 焦散：CPU 侧只在 `scene.refractors()` 非空时触发，路径模式的场景
+//   ABI 不携带折射体 ⇒ 该段在 WGSL 中不存在（与 CPU 空循环逐位等价）；
+// * 发光命中：直接读 `Material.emissive`（旧 `emissive_radiance` 已删）。

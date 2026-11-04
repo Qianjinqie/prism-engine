@@ -3,7 +3,7 @@
 // # 设计（D2：wavefront 队列 kernel——生成/着色/扩展/连接 四阶段）
 // 活路径按状态分组批量处理，避免分支发散：
 //   ① 生成（rt_generate）：相机射线 → 队列项（对齐 CpuRef 相机段）。
-//   ② 着色（rt_shade）：NEE 直接光 + 发光命中 + MNEE 焦散（对齐 integrator 主循环
+//   ② 着色（rt_shade）：NEE 直接光 + 发光命中（对齐 integrator 主循环
 //      的 NEE 段与发光段）。
 //   ③ 连接（rt_connect）：MIS 权重融合（power heuristic，对齐 light.rs）。
 //   ④ 扩展（rt_extend）：BSDF/相位抽样续弹或终止（RR 对齐 integrator rr_survive）。
@@ -11,6 +11,18 @@
 // # 队列数据结构
 // 每条路径一槽（GPU 版：路径索引 = 全局线程号；CPU 仿真版 prism-rt/wavefront.rs
 // 逐条推进以证明估计量等价）。队列项 = PathSlot（射线/吞吐/亮度/状态/深度）。
+//
+// # T-B（R-1 逐位对拍）路径模式重写
+//
+// 路径模式（`WF_MODE_PATH`）的 shade/extend/accumulate 三段是
+// `prism_rt::wavefront::advance_one` / `accum::mean_samples` 的**逐式移植**：
+// 采样流走 `rt_shade.wgsl` 的 `WfStream`（64 位 PCG 仿真 + 真 Joe–Kuo
+// Sobol 表，CPU 同表同流）、求交走 `rt_scene.wgsl::scene_intersect`
+// （Möller–Trumbore 与 `tri_ray_hit` 同树）、RR/钳位走本文件的
+// `wf_rr` / `wf_clamp_indirect`（与 integrator 同式）。判据范围 =
+// **Lambert 材质 + Sphere 灯（不注册为几何）+ 针孔相机 + 无环境图/介质/
+// 折射体** 的场景类；`MAT_PBR` 的 Disney 续弹是方向提案近似，**不进
+// R-1 逐位判据**（如实标注）。
 
 //!include rt_common.wgsl
 //!include rt_shade.wgsl
@@ -102,13 +114,49 @@ fn vdot3(a: vec3<f32>, b: vec3<f32>) -> f32 {
   return a.x * b.x + a.y * b.y + a.z * b.z;
 }
 
-/// 与 `Vec3::normalize` 同一求值树（逐分量除以 `sqrt(dot)`；退化返回零）。
-fn vnorm(v: vec3<f32>) -> vec3<f32> {
-  let len = sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
-  if (len < 1e-8) {
-    return vec3<f32>(0.0, 0.0, 0.0);
+// 相机段维度槽（对齐 camera.rs）。
+const DIM_LENS: u32 = 0u;
+const DIM_SHUTTER: u32 = 2u;
+const DIM_PIXEL: u32 = 3u;
+
+// ---------------------------------------------------------------------------
+// 路径模式公共件（T-B R-1；判对基准 = integrator.rs / wavefront.rs）
+// ---------------------------------------------------------------------------
+
+/// 间接贡献钳位（integrator.rs::clamp_indirect 逐式：`Some(t) if ev ≥ 2` ⇒
+/// 逐分量 min；None/ev<2 ⇒ 原样）。
+fn wf_clamp_indirect(c: vec3<f32>, ev: u32) -> vec3<f32> {
+  if (params.clamp_indirect_on != 0u && ev >= 2u) {
+    let t = params.clamp_indirect_threshold;
+    return vec3<f32>(min(c.x, t), min(c.y, t), min(c.z, t));
   }
-  return vec3<f32>(v.x / len, v.y / len, v.z / len);
+  return c;
+}
+
+/// RR 存活判定（integrator.rs::rr_survive 逐式）。返回 (存活, 吞吐因子)：
+/// `next_ev < 3` 恒存活（因子 1）；否则 `u ≥ q` 判死、存活时吞吐 × 1/q，
+/// q = clamp(max(吞吐分量), 0.05, 0.95)，u ← 槽 4（SLOT_RR）。
+fn wf_rr(st: WfStream, throughput: vec3<f32>, next_ev: u32) -> vec2<f32> {
+  if (next_ev < 3u) { return vec2<f32>(1.0, 1.0); }
+  let q = clampf(max(throughput.x, max(throughput.y, throughput.z)), 0.05, 0.95);
+  let u = wf_sample_1d(st, bounce_dim(next_ev, SLOT_RR));
+  if (u >= q) { return vec2<f32>(0.0, 1.0); }
+  return vec2<f32>(1.0, 1.0 / q);
+}
+
+/// 槽位 → (px, py, sample)（槽位布局 = `p*spp + s`，与 accumulate 同一把尺）。
+fn wf_pixel_of(idx: u32) -> vec3<u32> {
+  let p = idx / params.spp;
+  let sample = idx - p * params.spp;
+  return vec3<u32>(p % params.width, p / params.width, sample);
+}
+
+/// 槽位 → 采样流（generate/shade/extend 三段从同一 idx 纯函数重导出，
+/// 不占额外存储；同输入逐位同流）。
+fn wf_stream_of(idx: u32) -> WfStream {
+  let pxs = wf_pixel_of(idx);
+  return wf_stream(params.global_seed, params.frame, params.node_id,
+                   pxs.x, pxs.y, pxs.z);
 }
 
 // ---- 环境 CDF（A2 / W2）：挂在场景组 rt_scene 的尾部 ----
@@ -139,34 +187,30 @@ fn env_present() -> bool {
   return env_w() > 0u && env_h() > 0u;
 }
 
-fn cast_ray(pixel: vec2<u32>, sample: u32, si: u32) -> array<vec3<f32>, 2> {
+fn cast_ray(pixel: vec2<u32>, st: WfStream) -> array<vec3<f32>, 2> {
   // 像素抖动（槽 3,4）→ 焦平面 → 光圈圆盘（槽 0,1）→ 快门（槽 2）。
-  let jx = sample_1d(si, DIM_PIXEL);
-  let jy = sample_1d(si, DIM_PIXEL + 1u);
-  let u = ((f32(pixel.x) + jx) / f32(params.width)) * 2.0 - 1.0;
-  let v = 1.0 - ((f32(pixel.y) + jy) / f32(params.height)) * 2.0;
+  // 与 camera.rs::cast_ray 同序同式（维度绝对寻址，抽取顺序不改变取值）。
+  let j = wf_sample_2d(st, DIM_PIXEL);
+  let u = ((f32(pixel.x) + j.x) / f32(params.width)) * 2.0 - 1.0;
+  let v = 1.0 - ((f32(pixel.y) + j.y) / f32(params.height)) * 2.0;
   let aspect = f32(params.width) / f32(params.height);
   let d = camera.forward
     + camera.right * (u * camera.tan_half_fov * aspect)
     + camera.up * (v * camera.tan_half_fov);
-  let time = camera.shutter_open + sample_1d(si, DIM_SHUTTER) * (camera.shutter_close - camera.shutter_open);
+  let time = camera.shutter_open + wf_sample_1d(st, DIM_SHUTTER) * (camera.shutter_close - camera.shutter_open);
   if (camera.aperture_radius == 0.0) {
-    return array<vec3<f32>, 2>(camera.eye, normalize(d));
+    // 针孔快路径（CPU 同：视点 = eye，dir = d.normalize() → vnorm 同树）。
+    return array<vec3<f32>, 2>(camera.eye, vnorm(d));
   }
-  let du = normalize(d);
+  let du = vnorm(d);
   let t = camera.focus_distance / vdot(du, camera.forward);
   let focal = camera.eye + du * t;
-  let lens = sample_2d(si, DIM_LENS);
+  let lens = wf_sample_2d(st, DIM_LENS);
   let ld = concentric_disk(lens.x, lens.y);
   let origin = camera.eye + camera.right * (ld.x * camera.aperture_radius)
     + camera.up * (ld.y * camera.aperture_radius);
-  return array<vec3<f32>, 2>(origin, normalize(focal - origin));
+  return array<vec3<f32>, 2>(origin, vnorm(focal - origin));
 }
-
-// 相机段维度槽（对齐 camera.rs）。
-const DIM_LENS: u32 = 0u;
-const DIM_SHUTTER: u32 = 2u;
-const DIM_PIXEL: u32 = 3u;
 
 // ---- 生成 stage ----
 @compute @workgroup_size(64)
@@ -174,9 +218,13 @@ fn generate(@builtin(global_invocation_id) gid: vec3<u32>) {
   let idx = gid.x;
   let total = params.width * params.height * params.spp;
   if (idx >= total) { return; }
-  let px = idx % params.width;
-  let py = (idx / params.width) % params.height;
-  let sample = idx / (params.width * params.height);
+  // 槽位布局（T-B 修正）：slot = p*spp + s，与 accumulate 的 `base = 像素*spp`
+  // 同一把尺。旧式（idx = px + py*w + s*w*h）在 spp>1 时两段错位——W3/W2 均用
+  // spp=1 故未暴露；这是判据缺陷，不是画质问题。
+  let p = idx / params.spp;
+  let sample = idx - p * params.spp;
+  let px = p % params.width;
+  let py = p / params.width;
   var s: PathSlot;
   if (params.mode == WF_MODE_CPUREF) {
     // CpuRef 兼容：像素中心射线（无抖动 / 无 DoF / 无快门）。
@@ -198,8 +246,8 @@ fn generate(@builtin(global_invocation_id) gid: vec3<u32>) {
     slots[idx] = s;
     return;
   }
-  let si = sample_index(px, py, sample, 0u);
-  let ray = cast_ray(vec2<u32>(px, py), sample, si);
+  let st = wf_stream(params.global_seed, params.frame, params.node_id, px, py, sample);
+  let ray = cast_ray(vec2<u32>(px, py), st);
   s.origin = ray[0];
   s.dir = ray[1];
   s.time = 0.0;
@@ -213,7 +261,7 @@ fn generate(@builtin(global_invocation_id) gid: vec3<u32>) {
   slots[idx] = s;
 }
 
-// ---- 着色 stage：NEE + 发光命中 + MNEE（对齐 integrator 主循环）----
+// ---- 着色 stage：NEE + 发光命中（对齐 integrator 主循环）----
 
 /// 兼容模式的 aesthetic 链（逐式移植 `crate::apply_aesthetic`）。
 ///
@@ -308,8 +356,8 @@ fn shade_compat(idx: u32) {
 ///
 /// * `prev_specular`（相机段 / 镜面链）⇒ 权重 1（镜面方向是 δ 分布，
 ///   CDF 策略对它测度为零）；
-/// * 否则 `w = 1 − power_heuristic(pdf_env, pdf_bsdf)`，与 `rt_scene::
-///   nee_mis_weight` 的 Environment 臂逐位互补（`w_nee + w_bsdf ≡ 1`）；
+/// * 否则 `w = 1 − power_heuristic(pdf_env, pdf_bsdf)`，与 Sphere 灯 NEE 的
+///   power heuristic 逐位互补（`w_nee + w_bsdf ≡ 1`）；
 /// * `nee_only && ev > 1` ⇒ `w = 0`（能量对照口径，CPU 侧同一条）。
 fn env_escape(throughput: vec3<f32>, dir: vec3<f32>, prev_pdf_dir: f32,
               prev_specular: bool, nee_only: bool, ev: u32) -> vec3<f32> {
@@ -330,7 +378,7 @@ fn env_escape(throughput: vec3<f32>, dir: vec3<f32>, prev_pdf_dir: f32,
     let p_env = env_pdf(dir);
     w = 1.0 - power_heuristic(p_env, prev_pdf_dir);
   }
-  return clamp_indirect(hadamard(throughput, r) * w, ev);
+  return wf_clamp_indirect(hadamard(throughput, r) * w, ev);
 }
 
 @compute @workgroup_size(64)
@@ -345,30 +393,10 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
   var s = slots[idx];
   if (s.state != ST_ACTIVE) { return; }
   let ev = s.bounce + 1u;
-  let aux_dim = bounce_dim(ev, SLOT_AUX);
-  let hit = scene_intersect(s.origin, s.dir, MISS_T, s.aux_steps, aux_dim);
-  // 介质段 + 体 NEE（对齐 integrator medium 分支）——见 rt_media.wgsl，本骨架挂点位。
-  if (hit.t < 1e29) {
-    let p = s.origin + s.dir * hit.t;
-    let n = hit.normal;
-    // 发光命中（MIS 由 connect stage 融合）。
-    let em = emissive_radiance(hit.prim);
-    if (any(em > vec3<f32>(0.0, 0.0, 0.0))) {
-      let w = emissive_weight(s.flags, s.prev_pdf_dir, hit.prim, s.origin);
-      s.radiance = s.radiance + clamp_indirect(hadamard(s.throughput, em) * w, ev);
-    }
-    // NEE 直接光（反射域；材质取命中图元 `hit.prim`）。
-    s.radiance = s.radiance + nee_surface(p, n, s.dir, hit.prim, s.throughput, ev, s.aux_steps);
-    // MNEE 焦散（k=2 球面折射链；对齐 caustics.rs::mnee_refraction）。
-    if (params.nee_only == 0u) {
-      s.radiance = s.radiance + mnee_caustics(p, n, s.dir, s.throughput, ev);
-    }
-  } else {
-    // 逃逸：环境背景。
-    //
-    // A2 / W2 起走**环境图**（CDF 同源，见 `env_escape`）；`Light::Ambient`
-    // 与 `Light::Environment` 在 CPU 侧互斥（`validate_layout` 拦），故两条
-    // 分支不会双计——此处照抄同一互斥语义：有环境图时 ambient 恒为 0。
+  let hit = scene_intersect(s.origin, s.dir, MISS_T);
+  if (hit.prim == 0xFFFFFFFFu) {
+    // ---- 逃逸（advance_one 的 None 臂逐式）----
+    // ① 环境贴图（无 env 时 env_escape 返 0，加 0 不改位型）。
     s.radiance = s.radiance + env_escape(
       s.throughput,
       s.dir,
@@ -377,9 +405,128 @@ fn shade(@builtin(global_invocation_id) gid: vec3<u32>) {
       params.nee_only != 0u,
       ev,
     );
-    s.radiance = s.radiance + clamp_indirect(hadamard(s.throughput, ambient_background()), ev);
+    // ② 常数环境光（正值判据与 CPU 同：全零不加）。
+    let bg = ambient_background();
+    if (bg.x > 0.0 || bg.y > 0.0 || bg.z > 0.0) {
+      s.radiance = s.radiance + wf_clamp_indirect(hadamard(s.throughput, bg), ev);
+    }
     s.state = ST_TERMINATED;
+    slots[idx] = s;
+    return;
   }
+  let p = s.origin + s.dir * hit.t;
+  let n = hit.normal;
+  // 侧别翻转（与 integrator 同：from_inside ⇒ nv = −n）。
+  let from_inside = vdot(s.dir, n) > 0.0;
+  let nv = select(n, -n, from_inside);
+  let wo = -s.dir;
+  let mat = load_material(hit.prim);
+
+  // ---- 发光命中（MIS；ev==1/镜面链 ⇒ 1）----
+  // 路径模式的场景 ABI 不携带球几何 ⇒ `light_pdf_sa` 恒无匹配 ⇒ 走 CPU 的
+  // None 臂（权重 1）。发光几何 MIS 属 R-1 场景类之外（如实标注）。
+  let em = mat.emissive;
+  if (em.x > 0.0 || em.y > 0.0 || em.z > 0.0) {
+    var w_em = 1.0;
+    if (params.nee_only != 0u && ev > 1u) {
+      w_em = 0.0;
+    }
+    // else：ev==1 / prev_specular ⇒ 1；其余 None 臂 ⇒ 1。恒 1，无须分支赋值。
+    s.radiance = s.radiance + wf_clamp_indirect(hadamard(s.throughput, em) * w_em, ev);
+  }
+
+  // ---- 反射域 NEE（逐灯；Sphere 立体角锥采样，`light.rs::sample_nee` 逐式）----
+  let st = wf_stream_of(idx);
+  let uv_l = wf_sample_2d(st, bounce_dim(ev, SLOT_LIGHT));
+  let light_count = load_light_count();
+  var li = 0u;
+  while (li < light_count) {
+    let lt = lights[li];
+    // Light::Sphere 臂：to_c = center − p；d_c = |to_c|（length = sqrt(dot) 同树）；
+    // 点在球内不采样（`d_c <= radius` ⇒ continue）。
+    let to_c = lt.position - p;
+    let d_c = sqrt(vdot(to_c, to_c));
+    if (d_c > lt.radius) {
+      let cos_max = sqrt(1.0 - lt.radius * lt.radius / (d_c * d_c));
+      let wi = cone_dir(to_c * (1.0 / d_c), cos_max, uv_l.x, uv_l.y);
+      let pdf_w = 1.0 / (2.0 * PI * (1.0 - cos_max));
+      let cos_l = vdot(nv, wi);
+      if (cos_l > 0.0) {
+        // surface_brdf：Lambert 解析（R-1 判据范围）；其余走 Disney 近似 eval。
+        var f = vec3<f32>(0.0, 0.0, 0.0);
+        var alt_pdf = 0.0;
+        if (mat.kind == MAT_LAMBERT) {
+          // wi·nv = cos_l > 0 已判；余下条件 = wo·nv > 0。
+          if (vdot(wo, nv) > 0.0) {
+            f = mat.base_color * FRAC_1_PI;
+          }
+          alt_pdf = cos_l * FRAC_1_PI;
+        } else {
+          f = eval_bsdf(mat, s.dir, wi, nv);
+          alt_pdf = cos_l * FRAC_1_PI;
+        }
+        let f_cos = f * cos_l;
+        let ro = p + nv * SURFACE_EPS;
+        // 遮挡距离 = d_c − T_MIN（闭区间；visibility 无介质臂同语义）。
+        let vis = shadow_ray(ro, wi, d_c);
+        if (vis > 0.0) {
+          // Sphere 灯 = 几何发光体 ⇒ power heuristic（nee_mis_weight 同臂）。
+          let w = power_heuristic(pdf_w, alt_pdf);
+          let c = hadamard(hadamard(s.throughput, f_cos), lt.color)
+            * (vis * w / pdf_w);
+          s.radiance = s.radiance + wf_clamp_indirect(c, ev);
+        }
+      }
+    }
+    li = li + 1u;
+  }
+
+  // ---- 环境贴图 NEE（`Light::Environment` 臂，integrator::nee_env_surface 逐式）----
+  // 路径模式场景 ABI 不携带灯光种类 ⇒ 环境按"灯表尾部项"处理（与
+  // `Scene::add_environment` 把 `Light::Environment` 追加到 `lights` 尾部的
+  // 语义一致）：Sphere 灯循环**之后**执行，求和顺序与 CPU 同。复用上面已
+  // 消耗的 (uv_l)（CPU 的 (u_l1,u_l2) 同源），**不额外消耗样本流**。
+  // 全黑环境：`env_sample` 返 pdf=0（CPU `env.sample()==None` 同判），进不了腿。
+  if (env_present()) {
+    let se = env_sample(uv_l.x, uv_l.y);
+    let cos_e = vdot(nv, se.wi);
+    // `cos_l <= 0 || !(pdf_w > 0.0)` 双门（nee_env_surface 同序）。
+    if (cos_e > 0.0 && se.pdf > 0.0) {
+      // surface_brdf / surface_pdf：Lambert 解析（与上面 Sphere 腿同一形态）。
+      var f_e = vec3<f32>(0.0, 0.0, 0.0);
+      var alt_pdf_e = 0.0;
+      if (mat.kind == MAT_LAMBERT) {
+        // surface_brdf 的 Lambert 门 = wo·nv > 0（wi·nv > 0 已由 cos_e 保证）。
+        if (vdot(wo, nv) > 0.0) {
+          f_e = mat.base_color * FRAC_1_PI;
+        }
+        // surface_pdf = max(0, wi·nv)/π（cos_e > 0 ⇒ 直接 cos_e）。
+        alt_pdf_e = cos_e * FRAC_1_PI;
+      } else {
+        f_e = eval_bsdf(mat, s.dir, se.wi, nv);
+        alt_pdf_e = cos_e * FRAC_1_PI;
+      }
+      let f_cos_e = f_e * cos_e;
+      // radiance 全非正 ⇒ 0（nee_env_surface 同门，顺序在 vis 之前）。
+      let r_e = env_radiance(se.wi);
+      if (r_e.x > 0.0 || r_e.y > 0.0 || r_e.z > 0.0) {
+        let ro_e = p + nv * SURFACE_EPS;
+        // CPU 侧 max_t = INFINITY（无介质场景 vis ∈ {0,1}）；本场景几何有界，
+        // MISS_T − T_MIN 与 INFINITY 的遮挡判定逐位同值。
+        let vis_e = shadow_ray(ro_e, se.wi, MISS_T);
+        if (vis_e > 0.0) {
+          // nee_mis_weight：Environment 与 Sphere 同臂 = power heuristic。
+          let w_e = power_heuristic(se.pdf, alt_pdf_e);
+          let c_e = hadamard(hadamard(s.throughput, f_cos_e), r_e)
+            * (vis_e * w_e / se.pdf);
+          s.radiance = s.radiance + wf_clamp_indirect(c_e, ev);
+        }
+      }
+    }
+  }
+
+  // 焦散 MNEE：CPU 只在 `scene.refractors()` 非空时触发；路径模式场景 ABI
+  // 不携带折射体 ⇒ 空循环，此处无对应段（逐位等价）。
   slots[idx] = s;
 }
 
@@ -392,12 +539,12 @@ fn connect(@builtin(global_invocation_id) gid: vec3<u32>) {
   var s = slots[idx];
   if (s.state != ST_ACTIVE) { return; }
   // MIS 权重已在 shade 内按备择策略 pdf 计算（与 integrator 一致：NEE 权重
-  // nee_mis_weight、发光命中权重 power_heuristic）；本 stage 保留为队列阶段
+  // power_heuristic、发光命中权重按侧别/深度）；本 stage 保留为队列阶段
   // 边界（GPU 实现上可与 shade 合并 dispatch，语义不变）。
   slots[idx] = s;
 }
 
-// ---- 扩展 stage：BSDF/相位抽样续弹或终止（对齐 integrator 续弹段）----
+// ---- 扩展 stage：BSDF 抽样续弹或终止（advance_one 续弹段逐式）----
 @compute @workgroup_size(64)
 fn extend(@builtin(global_invocation_id) gid: vec3<u32>) {
   let idx = gid.x;
@@ -406,27 +553,92 @@ fn extend(@builtin(global_invocation_id) gid: vec3<u32>) {
   var s = slots[idx];
   if (s.state != ST_ACTIVE) { return; }
   let ev = s.bounce + 1u;
-  if (ev >= params.max_bounces) { s.state = ST_TERMINATED; slots[idx] = s; return; }
-  let hit = scene_intersect(s.origin, s.dir, MISS_T, s.aux_steps, bounce_dim(ev, SLOT_AUX));
-  if (hit.t >= 1e29) { s.state = ST_TERMINATED; slots[idx] = s; return; }
+  // 求交与 shade 段同一纯函数（同输入逐位同结果）。
+  let hit = scene_intersect(s.origin, s.dir, MISS_T);
+  if (hit.prim == 0xFFFFFFFFu) {
+    // 逃逸已在 shade 终止；活动槽走到这里只可能是段间状态错位——按 CPU
+    // 语义（None 臂终止）兜一层。
+    s.state = ST_TERMINATED;
+    slots[idx] = s;
+    return;
+  }
   let p = s.origin + s.dir * hit.t;
   let n = hit.normal;
-  let bs = bsdf_sample(hit.prim, s.dir, n, ev);
-  if (bs.pdf < 0.0) { s.state = ST_TERMINATED; slots[idx] = s; return; }
-  s.throughput = hadamard(s.throughput, bs.weight);
-  s.prev_pdf_dir = bs.pdf;
-  // RR（对齐 integrator rr_survive：ev+1 ≥ 3 时按吞吐存活）。
-  if (should_survive(s.throughput, params.global_seed, idx, ev + 1u) == false) {
-    s.state = ST_TERMINATED; slots[idx] = s; return;
+  let mat = load_material(hit.prim);
+  if (mat.kind == MAT_EMISSIVE) {
+    // material_bsdf = None ⇒ 终止（CPU 同）。
+    s.state = ST_TERMINATED;
+    slots[idx] = s;
+    return;
   }
-  s.throughput = s.throughput * rr_scale(s.throughput);
-  s.origin = p + n * SURFACE_EPS;
-  s.dir = bs.dir;
+  let st = wf_stream_of(idx);
+  if (mat.kind == MAT_LAMBERT) {
+    // Lambert 续弹（advance_one Lambert 臂逐式）：(u1,u2) ← SLOT_BSDF+1、
+    // cosine_hemisphere → onb(n)（**用 n 不是 nv**，与 CPU 同）→ 归一化。
+    let uv = wf_sample_2d(st, bounce_dim(ev, SLOT_BSDF) + 1u);
+    let d_local = cosine_hemisphere(uv.x, uv.y);
+    let m = onb(n);
+    let dir = vnorm(m[0] * d_local.x + m[1] * d_local.y + n * d_local.z);
+    s.throughput = hadamard(s.throughput, mat.base_color);
+    s.prev_pdf_dir = d_local.z * FRAC_1_PI;
+    s.flags = s.flags & 0xFFFFFFFEu; // prev_specular = false
+    let rr = wf_rr(st, s.throughput, ev + 1u);
+    if (rr.x == 0.0) {
+      s.state = ST_TERMINATED;
+      slots[idx] = s;
+      return;
+    }
+    s.throughput = s.throughput * rr.y;
+    s.origin = p + n * SURFACE_EPS;
+    s.dir = dir;
+  } else if (mat.kind == MAT_MIRROR) {
+    // Mirror 续弹（advance_one Mirror 臂逐式）：δ 方向、pdf 0、镜面链。
+    let dir = s.dir - n * (2.0 * vdot(s.dir, n));
+    s.prev_pdf_dir = 0.0;
+    s.flags = s.flags | 1u; // prev_specular = true
+    let rr = wf_rr(st, s.throughput, ev + 1u);
+    if (rr.x == 0.0) {
+      s.state = ST_TERMINATED;
+      slots[idx] = s;
+      return;
+    }
+    s.throughput = s.throughput * rr.y;
+    s.origin = p + n * SURFACE_EPS;
+    s.dir = dir;
+  } else {
+    // Pbr：Disney 方向提案（近似；**不进 R-1 逐位判据**，如实标注）。
+    let bs = bsdf_sample(mat, s.dir, n, ev, st);
+    if (bs.pdf < 0.0) {
+      s.state = ST_TERMINATED;
+      slots[idx] = s;
+      return;
+    }
+    s.throughput = hadamard(s.throughput, bs.weight);
+    s.prev_pdf_dir = bs.pdf;
+    // entered（折射/透射）与 specular 都是 δ（镜面）事件（integrator 同口径）。
+    s.flags = (s.flags & 0xFFFFFFFEu) | select(0u, 1u, bs.specular != 0u || bs.entered != 0u);
+    let rr = wf_rr(st, s.throughput, ev + 1u);
+    if (rr.x == 0.0) {
+      s.state = ST_TERMINATED;
+      slots[idx] = s;
+      return;
+    }
+    s.throughput = s.throughput * rr.y;
+    // 出射侧判定（与 integrator 同一规则：dir·n > 0 ⇒ 出射）。
+    let eps = select(-SURFACE_EPS, SURFACE_EPS, vdot(bs.dir, n) > 0.0);
+    s.origin = p + n * eps;
+    s.dir = bs.dir;
+  }
   s.bounce = s.bounce + 1u;
+  // `bounce ≥ max_bounces` ⇒ 无更多事件（CPU：`st.bounce < max_bounces` 出循环）。
+  // 辐亮度已累计，终止只停队列。
+  if (s.bounce >= params.max_bounces) {
+    s.state = ST_TERMINATED;
+  }
   slots[idx] = s;
 }
 
-// ---- 累积 stage：spp 均值（对齐 accum.rs::mean_samples 固定形状树语义）----
+// ---- 累积 stage：spp 均值（accum.rs::mean_samples 固定形状树逐位同树）----
 
 /// `clamp01 → *255 → floor(x+0.5)`（与 megakernel 的 `quantize` 逐式相同）。
 fn quantize_compat(x: f32) -> u32 {
@@ -435,6 +647,10 @@ fn quantize_compat(x: f32) -> u32 {
   let shifted = scaled + 0.5;
   return u32(floor(shifted));
 }
+
+/// 路径模式的 spp 上限：固定形状树用 64 槽 局部数组（prism-core reduce 的
+/// 层序配对 + 奇数尾直进）。宿主对 `spp > 64` 的路径模式请求结构化拒绝。
+const WF_MAX_SPP: u32 = 64u;
 
 @compute @workgroup_size(64)
 fn accumulate(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -454,11 +670,35 @@ fn accumulate(@builtin(global_invocation_id) gid: vec3<u32>) {
     accum[idx] = vec4<f32>(bitcast<f32>(packed), 0.0, 0.0, 1.0);
     return;
   }
-  var sum = vec3<f32>(0.0, 0.0, 0.0);
+  // 路径模式：`reduce` 固定形状树——层序推进、层内左到右、左操作数在前、
+  // 奇数尾元素直进下一层；最后逐通道除以 spp。与 `mean_samples` 逐位同树
+  // （vec4 分量加法 = 4 条独立 f32 加法，IEEE 无交互）。
+  let spp = params.spp;
+  var layer: array<vec4<f32>, 64>;
   var k = 0u;
-  while (k < params.spp) {
-    sum = sum + slots[base + k].radiance;
+  loop {
+    if (k >= spp) { break; }
+    let r = slots[base + k].radiance;
+    layer[k] = vec4<f32>(r.x, r.y, r.z, 1.0);
     k = k + 1u;
   }
-  accum[idx] = vec4<f32>(sum / f32(params.spp), 1.0);
+  var n = spp;
+  while (n > 1u) {
+    var m = 0u;
+    var i = 0u;
+    loop {
+      if (i >= n) { break; }
+      if (i + 1u < n) {
+        layer[m] = layer[i] + layer[i + 1u];
+        m = m + 1u;
+        i = i + 2u;
+      } else {
+        layer[m] = layer[i]; // 奇数尾直进（形状规则）
+        m = m + 1u;
+        i = i + 1u;
+      }
+    }
+    n = m;
+  }
+  accum[idx] = layer[0] / vec4<f32>(f32(spp));
 }

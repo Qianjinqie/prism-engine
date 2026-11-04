@@ -58,6 +58,7 @@ dependencies = [
  "prism-io",
  "prism-math",
  "prism-mux",
+ "prism-postfx",
  "prism-render",
 ]
 
@@ -137,8 +138,10 @@ dependencies = [
 name = "prism-gpu"
 version = "0.1.0"
 dependencies = [
+ "prism-core",
  "prism-geometry",
  "prism-math",
+ "prism-rt",
 ]
 
 [[package]]
@@ -220,6 +223,7 @@ version = "0.1.0"
 dependencies = [
  "prism-aesthetic",
  "prism-core",
+ "prism-gpu",
  "prism-io",
  "prism-math",
  "prism-noise",

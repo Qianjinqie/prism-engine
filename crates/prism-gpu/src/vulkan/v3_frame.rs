@@ -335,6 +335,15 @@ mod tests {
     ///
     /// 与 `tests/qa_render_scene.rs::is_software_icd` 逐字同口径（同一份判据不能
     /// 在两个文件里漂移）。
+    ///
+    /// # 环境限制登记（2026-11，T9）
+    ///
+    /// 本 CI/开发环境**只有软件 ICD**（lavapipe / llvmpipe / SwiftShader），
+    /// 无任何真 GPU。因此所有「真机（非软件 ICD）档位」的判据在本环境一律
+    /// 不可执行——这不是代码缺口，是环境硬边界（路线图 §1.3 未点亮口径）。
+    /// 各矩阵行（R-11 / G-9 / G-10 等）据此把「真机档位未验」登记在
+    /// 「仍受限」而非「部分」。复验触发条件：取得任意真 GPU（含移动端
+    /// Adreno/Mali）即在真机上重跑 `differing_pixels = 0` 全套判据。
     fn is_software_icd(device: &str) -> bool {
         let d = device.to_ascii_lowercase();
         d.contains("llvmpipe") || d.contains("lavapipe") || d.contains("swiftshader")

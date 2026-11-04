@@ -96,6 +96,76 @@ pub const OMEGA_SPHERE: f32 = 4.0 * PI;
 /// 落平台 `libm` 会让同一方向在不同机器上取到不同 texel，
 /// 而 CDF 的 pdf 必须与采样严格同源（V5）。
 #[inline]
+/// 把 CDF 的全部状态打成一个 u32 blob（布局 = `rt_env.wgsl` 文件头那张表）。
+///
+/// **这是 blob 布局的唯一权威**：WGSL 侧只按偏移读，偏移由本函数写入。
+/// （原为 `tests/qa_w2_env_gpu_parity.rs` 的测试内实现；R-10 设备采数也要打
+/// 同一布局的 blob，故正名为公开 API——布局权威不该住在测试文件里。）
+pub fn blob_words(cdf: &EnvCdf, pixels: &[[f32; 4]]) -> Vec<u32> {
+    let (w, h) = cdf.dims();
+    let cond = cdf.cond_words().to_vec();
+    let marg = cdf.marg_res_words().to_vec();
+    let res_cond = cdf.res_cond_words().to_vec();
+    let row_off = cdf.res_row_off_words().to_vec();
+    let spot_prefix = cdf.spot_prefix_words().to_vec();
+    let spot_texels = cdf.spot_texel_words();
+    let stats = cdf.stats();
+    assert_eq!(cond.len(), ((w + 1) * h) as usize);
+    assert_eq!(marg.len(), (h + 1) as usize);
+    assert_eq!(row_off.len(), h as usize);
+    assert_eq!(spot_prefix.len(), stats.spots as usize + 1);
+    assert_eq!(spot_texels.len(), stats.spots as usize);
+
+    let mut blob = vec![0u32; 24];
+    let push = |blob: &mut Vec<u32>, data: &[u32]| -> u32 {
+        let off = blob.len() as u32;
+        blob.extend_from_slice(data);
+        off
+    };
+    blob[0] = w;
+    blob[1] = h;
+    blob[2] = stats.spots;
+    blob[3] = stats.p_spot.to_bits();
+    blob[4] = cdf.omega_total().to_bits();
+    blob[5] = if cdf.total_weight() > 0.0 { 1 } else { 0 };
+    // 残差权重是否非零：`p_spot < 1` 且总能量非零（与 CPU sample 的分支同源）。
+    blob[6] = if cdf.total_weight() > 0.0 && stats.p_spot < 1.0 {
+        1
+    } else {
+        0
+    };
+    blob[7] = cond.len() as u32;
+    blob[8] = marg.len() as u32;
+    blob[9] = res_cond.len() as u32;
+    blob[10] = row_off.len() as u32;
+    blob[11] = spot_prefix.len() as u32;
+    blob[12] = spot_texels.len() as u32;
+    blob[13] = (4 * w * h) as u32;
+
+    blob[14] = 0;
+    let off_cond = push(&mut blob, &cond);
+    let off_marg = push(&mut blob, &marg);
+    let off_res = push(&mut blob, &res_cond);
+    let off_row = push(&mut blob, &row_off);
+    let off_sp = push(&mut blob, &spot_prefix);
+    let off_st = push(&mut blob, &spot_texels);
+    let off_tex = blob.len() as u32;
+    for p in pixels {
+        blob.push(p[0].to_bits());
+        blob.push(p[1].to_bits());
+        blob.push(p[2].to_bits());
+        blob.push(p[3].to_bits());
+    }
+    blob[14] = off_cond;
+    blob[15] = off_marg;
+    blob[16] = off_res;
+    blob[17] = off_row;
+    blob[18] = off_sp;
+    blob[19] = off_st;
+    blob[20] = off_tex;
+    blob
+}
+
 pub fn dir_to_uv(d: Vec3) -> (f32, f32) {
     // u = atan2(z, x)/(2π) + 0.5；`FRAC_1_PI * 0.5` 是 1/(2π)，与 WGSL 侧同式。
     let mut u = det_trig::atan2(d.z, d.x) * (FRAC_1_PI * 0.5) + 0.5;
