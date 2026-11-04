@@ -577,7 +577,10 @@ const DEFAULT_STRAND_RADIUS: f32 = 0.02;
 /// 请求相机 → `prism-rt` 透视相机（针孔 / 零长快门 / fov 转度）。
 ///
 /// 返回 `None` 表示相机几何退化（`eye == target`），调用方按"无画面"处理。
-fn build_camera(cam: &CameraReq) -> Option<RtCamera> {
+///
+/// `pub`：`prism-postfx` 的 `AdaptiveRtBackend`（R-13 产品路径接线）与
+/// [`RtBackend::render_scene`] 共用同一份相机构造——不存在第二份实现。
+pub fn build_camera(cam: &CameraReq) -> Option<RtCamera> {
     if !is_finite_vec(cam.eye) || !is_finite_vec(cam.target) {
         return None;
     }
@@ -615,7 +618,9 @@ fn build_camera(cam: &CameraReq) -> Option<RtCamera> {
 }
 
 /// 全黑**有效**帧（相机退化时的兜底：不透明确 0，alpha 由 `set_pixel` 置 255）。
-fn black_frame(width: u32, height: u32) -> Framebuffer {
+///
+/// `pub`：同 [`build_camera`]，`prism-postfx::AdaptiveRtBackend` 共用。
+pub fn black_frame(width: u32, height: u32) -> Framebuffer {
     let mut fb: Framebuffer = Framebuffer::new(width, height);
     if !fb.is_valid() {
         return fb;

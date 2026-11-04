@@ -39,6 +39,7 @@
 /// 依赖方向是 `postfx → render → rt`，故 A5 只能在 **postfx 及以上**落地；
 /// 放进 rt 会形成 `rt → postfx → render → rt` 的环（Cargo 直接拒绝）。
 pub mod adaptive;
+pub mod adaptive_backend;
 pub mod denoise;
 pub mod effects;
 pub mod registry;

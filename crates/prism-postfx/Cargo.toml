@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+prism-gpu = { path = "../prism-gpu" }
 prism-math = { path = "../prism-math" }
 prism-io = { path = "../prism-io" }
 prism-render = { path = "../prism-render" }

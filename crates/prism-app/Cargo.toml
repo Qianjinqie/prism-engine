@@ -27,3 +27,6 @@ prism-aesthetic = { path = "../prism-aesthetic" }
 prism-ai = { path = "../prism-ai" }
 # `render` 子命令的容器出口（内置 MP4(MJPEG) muxer + ffmpeg 降级链）。
 prism-mux = { path = "../prism-mux" }
+# `--adaptive` 档（R-13 产品路径接线）：AdaptiveRtBackend 在 postfx
+# （依赖方向 postfx → render 已存在，无法反向）。
+prism-postfx = { path = "../prism-postfx" }

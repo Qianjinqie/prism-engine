@@ -27,13 +27,15 @@ use std::time::Instant;
 use prism_gpu::{CpuRefBackend, GpuDevice};
 use prism_mux::extprobe::{self, Codec, FfmpegProbe};
 use prism_mux::{write_mp4_jpeg_color, JpegConfig, TrackSpec};
+use prism_postfx::adaptive_backend::AdaptiveRtBackend;
 use prism_render::{render_movie, RtBackend};
 
 /// render 子命令用法。
 pub const RENDER_USAGE: &str = r#"prism-app render — DSL v2 成片直达（整段渲染为 MP4）
 
 用法:
-  prism-app render <file.prism> [--out <FILE>] [--codec <h264|mjpeg>] [--fast]
+  prism-app render <file.prism> [--out <FILE>] [--codec <h264|mjpeg>]
+                  [--fast] [--adaptive <TOTAL>]
 
 参数:
   <file.prism>   DSL v2 场景源文件（首行须为 // prism-dsl 1 版本头）
@@ -45,6 +47,9 @@ pub const RENDER_USAGE: &str = r#"prism-app render — DSL v2 成片直达（整
   --fast         快速档：走 CpuRefBackend（单弹射 Lambert 射线投射，
                  无阴影 / 无反射 / 无间接光）。用于出图预览与对拍基线，
                  不是成片质量档
+  --adaptive <N> 自适应采样档（R-13）：总预算 N 个样本/帧（npix×8 ≤ N ≤ 2^24），
+                 按 pilot σ̂ 逐像素分配 spp（A5），每像素样本连续 ⇒ 与
+                 render_pixel(p, spp=n_p) 逐位同语义。与 --fast 互斥
   -h, --help     显示本帮助
 
 说明:
@@ -54,9 +59,10 @@ pub const RENDER_USAGE: &str = r#"prism-app render — DSL v2 成片直达（整
   报错，而非静默跳过。
 
   渲染器（D-19 双轨）:
-    默认     prism-rt 完整路径追踪（NEE + MIS + RR + 多弹射：
-             软阴影 / 镜面高光 / 间接光都在）
-    --fast   CpuRefBackend 单弹射 Lambert（ambient 0.08 + N·L，平光）
+    默认       prism-rt 完整路径追踪（NEE + MIS + RR + 多弹射：
+               软阴影 / 镜面高光 / 间接光都在）
+    --adaptive prism-postfx::AdaptiveRtBackend（同一路径追踪核 + A5 预算分配）
+    --fast     CpuRefBackend 单弹射 Lambert（ambient 0.08 + N·L，平光）
 
   两档都是确定性实现：同参数两跑逐字节相同。
 
@@ -80,6 +86,9 @@ struct RenderConfig {
     codec: Codec,
     /// `--fast`：走 `CpuRefBackend`（Lambert）。`false` = `prism-rt` 路径追踪。
     fast: bool,
+    /// `--adaptive <N>`：走 `AdaptiveRtBackend`（总预算 N/帧）。
+    /// `None` = 关。与 `fast` 互斥（解析层拒绝）。
+    adaptive: Option<u32>,
 }
 
 /// render 子命令默认输出文件（相对运行时工作目录）。
@@ -138,6 +147,15 @@ pub fn run(args: &[String]) -> i32 {
     // 失败时**不**回退到另一档：要么出片，要么三段式报错。
     let (renderer_name, renderer_detail): (&str, String) = if cfg.fast {
         ("cpu-ref (Lambert)", "单弹射，ambient 0.08 + N·L".to_string())
+    } else if let Some(total) = cfg.adaptive {
+        let ap = AdaptiveRtBackend::new(total);
+        (
+            "rt-adaptive",
+            format!(
+                "自适应采样：N0={}，总预算 {total} 样本/帧（tile {}，精化 {} 轮）",
+                ap.ap.n0, ap.ap.tile, ap.ap.rounds
+            ),
+        )
     } else {
         let rt: RtBackend = RtBackend::default();
         (
@@ -145,12 +163,28 @@ pub fn run(args: &[String]) -> i32 {
             format!("{} spp / {} 弹射", rt.spp, rt.max_bounces),
         )
     };
-    // 两个后端都先构造，再按开关取一个 trait object（`render_movie` 只认
+    // 三个后端都先构造，再按开关取一个 trait object（`render_movie` 只认
     // `&mut dyn GpuDevice`，故此处不需要分支化的调用点）。
     let mut fast_device = CpuRefBackend;
     let mut rt_device: RtBackend = RtBackend::default();
+    let mut adaptive_device = AdaptiveRtBackend::new(cfg.adaptive.unwrap_or(0));
+    // 自适应档的预算预检：分辨率来自 DSL 编译产物（在 render_movie 之前就知道），
+    // 不足时给 R5xxx 式明确报错，而不是让后端产拒绝帧（那会出全黑片）。
+    if let Some(total) = cfg.adaptive {
+        let npix = (compile.width as usize).saturating_mul(compile.height as usize);
+        let need = adaptive_device.min_total(npix);
+        if (total as u64) < need {
+            eprintln!(
+                "prism-app render: 在哪：--adaptive 预算预检（{}×{}）\n  什么事：总预算 {total} 不足（每帧至少 npix×N0 = {need}，N0 = {}）\n  建议：加大 --adaptive 取值，或降低输出分辨率",
+                compile.width, compile.height, adaptive_device.ap.n0
+            );
+            return 1;
+        }
+    }
     let device: &mut dyn GpuDevice = if cfg.fast {
         &mut fast_device
+    } else if cfg.adaptive.is_some() {
+        &mut adaptive_device
     } else {
         &mut rt_device
     };
@@ -296,6 +330,7 @@ fn parse_args(args: &[String]) -> Result<RenderConfig, String> {
         out: PathBuf::from(DEFAULT_OUT),
         codec: Codec::H264,
         fast: false,
+        adaptive: None,
     };
 
     let mut i: usize = 0;
@@ -304,6 +339,27 @@ fn parse_args(args: &[String]) -> Result<RenderConfig, String> {
         match arg {
             "--fast" => {
                 cfg.fast = true;
+            }
+            "--adaptive" => {
+                i += 1;
+                let value: &str = args
+                    .get(i)
+                    .ok_or_else(|| "参数 --adaptive 缺少取值（每帧总预算，正整数）".to_string())?;
+                let total: u32 = value.parse().map_err(|_| {
+                    format!("参数 --adaptive 的取值 `{value}` 不是合法正整数")
+                })?;
+                if total == 0 {
+                    return Err("参数 --adaptive 的总预算必须 ≥ 1".to_string());
+                }
+                // render_adaptive 的 assert 上界（f32 舍入会破坏精确分配），
+                // CLI 层提前拦，不进 panic 域（宪章 C18）。
+                if total > 1 << 24 {
+                    return Err(format!(
+                        "参数 --adaptive 的总预算 {total} 超过上界 {}（f32 舍入会破坏精确分配）",
+                        1 << 24
+                    ));
+                }
+                cfg.adaptive = Some(total);
             }
             "--out" => {
                 i += 1;
@@ -349,6 +405,9 @@ fn parse_args(args: &[String]) -> Result<RenderConfig, String> {
     if cfg.file.as_os_str().is_empty() {
         return Err("缺少 <file.prism> 场景文件参数".to_string());
     }
+    if cfg.fast && cfg.adaptive.is_some() {
+        return Err("参数 --fast 与 --adaptive 互斥（前者是 Lambert 对拍基线，后者是完整路径追踪 + 自适应预算）".to_string());
+    }
     Ok(cfg)
 }
 
@@ -373,6 +432,35 @@ mod tests {
         assert!(matches!(cfg.codec, Codec::H264));
         // D-19 默认档 = prism-rt 路径追踪（`--fast` 关着）。
         assert!(!cfg.fast, "缺省必须走 prism-rt（fast = false）");
+        assert!(cfg.adaptive.is_none(), "缺省必须关自适应（R-13 档是显式 opt-in）");
+    }
+
+    #[test]
+    fn adaptive_flag_parses_and_validates() {
+        // 位置无关 + 数值解析。
+        let cfg = parse_args(&argv(&["--adaptive", "4096", "a.prism"]))
+            .expect("应解析成功");
+        assert_eq!(cfg.adaptive, Some(4096));
+        let cfg = parse_args(&argv(&["a.prism", "--adaptive", "1048576"]))
+            .expect("应解析成功");
+        assert_eq!(cfg.adaptive, Some(1_048_576));
+        // 缺值 / 非数 / 零 / 越上界，全部明确报错。
+        assert!(parse_args(&argv(&["a.prism", "--adaptive"])).is_err());
+        assert!(parse_args(&argv(&["a.prism", "--adaptive", "abc"])).is_err());
+        assert!(parse_args(&argv(&["a.prism", "--adaptive", "0"])).is_err());
+        assert!(parse_args(&argv(&["a.prism", "--adaptive", &format!("{}", (1 << 24) + 1)])).is_err());
+        // 上界本身合法（render_adaptive 的 assert 上界 = 2^24）。
+        let cfg = parse_args(&argv(&["a.prism", "--adaptive", &format!("{}", 1 << 24)]))
+            .expect("2^24 应是合法上界");
+        assert_eq!(cfg.adaptive, Some(1 << 24));
+    }
+
+    #[test]
+    fn adaptive_and_fast_are_mutually_exclusive() {
+        let err = parse_args(&argv(&["a.prism", "--fast", "--adaptive", "4096"]))
+            .err()
+            .expect("互斥组合必须报错");
+        assert!(err.contains("互斥"), "报错要说明互斥：{err}");
     }
 
     #[test]
