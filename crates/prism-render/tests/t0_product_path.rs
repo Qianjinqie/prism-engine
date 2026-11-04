@@ -414,6 +414,7 @@ fn core_scene_with_attachments() -> prism_core::Scene {
             ],
             vec![0.03f32; 4],
         )],
+        ocio_config: None,
     };
     s
 }

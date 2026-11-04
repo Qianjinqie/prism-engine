@@ -10,7 +10,9 @@
 //! - [`pq`] — PQ（SMPTE ST 2084）HDR 传输函数；
 //! - [`hlg`] — HLG（ITU-R BT.2100）传输函数；
 //! - [`colorspace`] — 线性 sRGB ↔ ACEScg（AP1）矩阵与色彩空间枚举；
-//! - [`aces`] — ACES 输出变换（RRT+ODT 拟合两档）。
+//! - [`aces`] — ACES 输出变换（RRT+ODT 拟合两档）；
+//! - [`ocio`] — V2.5-B1 自研 `config.ocio` 解析（零第三方依赖、结构化报错）；
+//! - [`ocio_lut`] — config → Q24 定点 1D/3D LUT 生成与整数求值（零 libm）。
 
 use std::ops::{Add, Div, Mul, Neg, Sub};
 
@@ -20,6 +22,8 @@ pub mod colorspace_registry;
 pub mod det_pow;
 pub mod det_trig;
 pub mod hlg;
+pub mod ocio;
+pub mod ocio_lut;
 pub mod pq;
 
 /// A three-dimensional vector with `x`, `y` and `z` components.

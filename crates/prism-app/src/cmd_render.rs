@@ -35,7 +35,7 @@ pub const RENDER_USAGE: &str = r#"prism-app render — DSL v2 成片直达（整
 
 用法:
   prism-app render <file.prism> [--out <FILE>] [--codec <h264|mjpeg>]
-                  [--fast] [--adaptive <TOTAL>]
+                  [--fast] [--adaptive <TOTAL>] [--ocio <CONFIG.OCIO>]
 
 参数:
   <file.prism>   DSL v2 场景源文件（首行须为 // prism-dsl 1 版本头）
@@ -50,6 +50,9 @@ pub const RENDER_USAGE: &str = r#"prism-app render — DSL v2 成片直达（整
   --adaptive <N> 自适应采样档（R-13）：总预算 N 个样本/帧（npix×8 ≤ N ≤ 2^24），
                  按 pilot σ̂ 逐像素分配 spp（A5），每像素样本连续 ⇒ 与
                  render_pixel(p, spp=n_p) 逐位同语义。与 --fast 互斥
+  --ocio <FILE>  V2.5-B1：config.ocio 色彩管理（自研解析 + Q24 定点 1D/3D LUT）。
+                 无此开关 / 空 config ⇒ 与既有 ACES 路径逐字节相同；
+                 LUT 由 config 同目录的 FileTransform 源装配，零第三方依赖
   -h, --help     显示本帮助
 
 说明:
@@ -89,6 +92,9 @@ struct RenderConfig {
     /// `--adaptive <N>`：走 `AdaptiveRtBackend`（总预算 N/帧）。
     /// `None` = 关。与 `fast` 互斥（解析层拒绝）。
     adaptive: Option<u32>,
+    /// `--ocio <FILE>`：V2.5-B1 config.ocio 色彩管理路径。
+    /// `None` = 无 config ⇒ 既有 ACES 路径逐字节不变。
+    ocio: Option<PathBuf>,
 }
 
 /// render 子命令默认输出文件（相对运行时工作目录）。
@@ -204,8 +210,31 @@ pub fn run(args: &[String]) -> i32 {
     }
 
     // ---- 5. 写容器（H.264 优先，失败明确降级内置 MJPEG）----------------------
-    let frames: Vec<Vec<u8>> = deliverable.frames.iter().map(|fb| fb.pixels.clone()).collect();
+    let mut frames: Vec<Vec<u8>> = deliverable.frames.iter().map(|fb| fb.pixels.clone()).collect();
     let (w, h, fps) = (deliverable.width, deliverable.height, deliverable.fps);
+
+    // V2.5-B1：config.ocio → Q24 定点 LUT → 落盘前对 RGBA8 帧应用。
+    // 无 --ocio / 空 config 时 `load_ocio_pipeline` 返回 None，本段不执行，
+    // frames 与改动前逐字节相同（判据 V1）。
+    let mut ocio_note: Option<String> = None;
+    if let Some(cfg_path) = cfg.ocio.as_ref() {
+        let display: String = cfg_path.display().to_string();
+        match prism_app::ocio_bridge::load_ocio_pipeline(&display) {
+            Ok(Some(pipeline)) => {
+                pipeline.apply_frames(&mut frames);
+                ocio_note = Some(pipeline.summary());
+            }
+            Ok(None) => {
+                ocio_note = Some(format!("{display}（空 config：沿用既有 ACES 路径）"));
+            }
+            Err(msg) => {
+                eprintln!(
+                    "prism-app render: 在哪：--ocio 配置 `{display}`\n  什么事：{msg}\n  建议：核对 config.ocio 语法与 FileTransform 的 LUT 尺寸"
+                );
+                return 1;
+            }
+        }
+    }
 
     // 输出文件的父目录确保存在（fs::write 不递归创建）。
     if let Some(parent) = cfg.out.parent() {
@@ -289,6 +318,9 @@ pub fn run(args: &[String]) -> i32 {
     println!("  帧数      : {} 帧", deliverable.frames.len());
     println!("  渲染器    : {renderer_name}（{renderer_detail}）");
     println!("  容器编码  : {}", codec_used.name());
+    if let Some(note) = ocio_note {
+        println!("  色彩管理  : {note}");
+    }
     if let Some(note) = degraded_note {
         println!("  降级说明  : {note}");
     }
@@ -331,6 +363,7 @@ fn parse_args(args: &[String]) -> Result<RenderConfig, String> {
         codec: Codec::H264,
         fast: false,
         adaptive: None,
+        ocio: None,
     };
 
     let mut i: usize = 0;
@@ -386,6 +419,16 @@ fn parse_args(args: &[String]) -> Result<RenderConfig, String> {
                         ));
                     }
                 };
+            }
+            "--ocio" => {
+                i += 1;
+                let value: &str = args
+                    .get(i)
+                    .ok_or_else(|| "参数 --ocio 缺少取值（config.ocio 路径）".to_string())?;
+                if value.is_empty() {
+                    return Err("参数 --ocio 的取值不能为空字符串".to_string());
+                }
+                cfg.ocio = Some(PathBuf::from(value));
             }
             other if other.starts_with('-') => {
                 return Err(format!("未知参数 `{other}`"));

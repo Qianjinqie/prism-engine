@@ -669,6 +669,22 @@ pub enum NodeKind {
     Image,
     /// 点积。
     Dot,
+    /// V2.5-B4 补齐：Burley 漫反射。
+    BurleyDiffuse,
+    /// V2.5-B4 补齐：Oren–Nayar 漫反射。
+    OrenNayarDiffuse,
+    /// V2.5-B4 补齐：导体 BSDF。
+    Conductor,
+    /// V2.5-B4 补齐：电介质 BSDF。
+    Dielectric,
+    /// V2.5-B4 补齐：sheen 瓣。
+    Sheen,
+    /// V2.5-B4 补齐：次表面。
+    Subsurface,
+    /// V2.5-B4 补齐：透射。
+    Transmission,
+    /// V2.5-B4 补齐：薄膜干涉。
+    ThinFilm,
 }
 
 impl NodeKind {
@@ -688,6 +704,14 @@ impl NodeKind {
             NodeKind::Normal => "normal",
             NodeKind::Image => "image",
             NodeKind::Dot => "dot",
+            NodeKind::BurleyDiffuse => "burley_diffuse",
+            NodeKind::OrenNayarDiffuse => "oren_nayar_diffuse",
+            NodeKind::Conductor => "conductor",
+            NodeKind::Dielectric => "dielectric",
+            NodeKind::Sheen => "sheen",
+            NodeKind::Subsurface => "subsurface",
+            NodeKind::Transmission => "transmission",
+            NodeKind::ThinFilm => "thinfilm",
         }
     }
 
@@ -729,6 +753,15 @@ fn match_node_kind(last: &str) -> Option<NodeKind> {
         "normal" => NodeKind::Normal,
         "image" | "texture2d" => NodeKind::Image,
         "dot" => NodeKind::Dot,
+        // V2.5-B4 按覆盖度判据表补齐的常见标准节点（清单内，不发散）。
+        "burley_diffuse" | "burley_diffuse_bsdf" => NodeKind::BurleyDiffuse,
+        "oren_nayar_diffuse" | "oren_nayar_diffuse_bsdf" => NodeKind::OrenNayarDiffuse,
+        "conductor" | "conductor_bsdf" => NodeKind::Conductor,
+        "dielectric" | "dielectric_bsdf" => NodeKind::Dielectric,
+        "sheen" | "sheen_bsdf" => NodeKind::Sheen,
+        "subsurface" | "subsurface_bsdf" => NodeKind::Subsurface,
+        "transmission" | "transmission_bsdf" => NodeKind::Transmission,
+        "thinfilm" | "thin_film_bsdf" => NodeKind::ThinFilm,
         _ => return None,
     })
 }
@@ -1452,6 +1485,475 @@ fn split_floats(raw: &str, loc: &str) -> Result<Vec<f32>, MtlxError> {
             }
         }
     }
+    Ok(out)
+}
+
+// ===========================================================================
+//  V2.5-B4：覆盖度判据表 + 节点图 → BSDF 参数（golden 对拍的被测面）
+// ===========================================================================
+
+/// 一条节点覆盖度记录（判据表的一行）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NodeCoverage {
+    /// 节点种类。
+    pub kind: NodeKind,
+    /// 编译产物的结构位名。
+    pub structure: &'static str,
+    /// 该种类接受的 nodedef 别名（含带 `_bsdf` / `_surfaceshader` 后缀的写法）。
+    pub aliases: &'static [&'static str],
+    /// 该节点写入 [`BsdfParams`] 的字段清单（节点 → BSDF 参数映射）。
+    pub bsdf_params: &'static [&'static str],
+}
+
+/// 支持的节点类型覆盖度表（**有数字**的判据：21 种 / 17 个 BSDF 标量参数槽）。
+///
+/// 「缺的常见标准节点补齐」按本表清单执行：Burley / Oren–Nayar / Conductor /
+/// Dielectric / Sheen / Subsurface / Transmission / ThinFilm 共 8 个，
+/// 不向 `include` / `nodedef` / function 展开等方向发散。
+pub const NODE_COVERAGE: &[NodeCoverage] = &[
+    NodeCoverage {
+        kind: NodeKind::StandardSurface,
+        structure: "standard_surface",
+        aliases: &["standard_surface", "surfaceshader"],
+        bsdf_params: &[
+            "base_color", "metallic", "roughness", "specular", "transmission", "ior",
+            "emission", "coat", "sheen", "subsurface", "diffuse_roughness", "opacity",
+        ],
+    },
+    NodeCoverage {
+        kind: NodeKind::Bsdf,
+        structure: "bsdf",
+        aliases: &["bsdf", "closure", "shader"],
+        bsdf_params: &["base_color", "metallic", "roughness", "specular", "opacity"],
+    },
+    NodeCoverage {
+        kind: NodeKind::Diffuse,
+        structure: "diffuse",
+        aliases: &["diffuse", "diffuse_bsdf"],
+        bsdf_params: &["base_color", "diffuse_roughness", "opacity"],
+    },
+    NodeCoverage {
+        kind: NodeKind::Glossy,
+        structure: "glossy",
+        aliases: &["glossy", "glossy_bsdf"],
+        bsdf_params: &["base_color", "roughness", "specular", "ior"],
+    },
+    NodeCoverage {
+        kind: NodeKind::Mix,
+        structure: "mix",
+        aliases: &["mix", "mix_float", "mix_color"],
+        bsdf_params: &["base_color", "opacity"],
+    },
+    NodeCoverage {
+        kind: NodeKind::Add,
+        structure: "add",
+        aliases: &["add", "add_float", "add_color"],
+        bsdf_params: &["base_color"],
+    },
+    NodeCoverage {
+        kind: NodeKind::Multiply,
+        structure: "multiply",
+        aliases: &["multiply", "multiply_float", "multiply_color"],
+        bsdf_params: &["base_color", "roughness"],
+    },
+    NodeCoverage {
+        kind: NodeKind::Ramp,
+        structure: "ramp",
+        aliases: &["ramp", "ramp_float", "ramp_color"],
+        bsdf_params: &["base_color"],
+    },
+    NodeCoverage {
+        kind: NodeKind::Constant,
+        structure: "constant",
+        aliases: &["constant", "constant_float", "constant_color"],
+        bsdf_params: &["base_color", "roughness"],
+    },
+    NodeCoverage {
+        kind: NodeKind::Position,
+        structure: "position",
+        aliases: &["position"],
+        bsdf_params: &["base_color"],
+    },
+    NodeCoverage {
+        kind: NodeKind::Normal,
+        structure: "normal",
+        aliases: &["normal"],
+        bsdf_params: &["base_color"],
+    },
+    NodeCoverage {
+        kind: NodeKind::Image,
+        structure: "image",
+        aliases: &["image", "texture2d"],
+        bsdf_params: &["base_color", "opacity"],
+    },
+    NodeCoverage {
+        kind: NodeKind::Dot,
+        structure: "dot",
+        aliases: &["dot"],
+        bsdf_params: &["roughness"],
+    },
+    NodeCoverage {
+        kind: NodeKind::BurleyDiffuse,
+        structure: "burley_diffuse",
+        aliases: &["burley_diffuse", "burley_diffuse_bsdf"],
+        bsdf_params: &["base_color", "diffuse_roughness", "opacity"],
+    },
+    NodeCoverage {
+        kind: NodeKind::OrenNayarDiffuse,
+        structure: "oren_nayar_diffuse",
+        aliases: &["oren_nayar_diffuse", "oren_nayar_diffuse_bsdf"],
+        bsdf_params: &["base_color", "diffuse_roughness", "opacity"],
+    },
+    NodeCoverage {
+        kind: NodeKind::Conductor,
+        structure: "conductor",
+        aliases: &["conductor", "conductor_bsdf"],
+        bsdf_params: &["base_color", "metallic", "roughness", "specular"],
+    },
+    NodeCoverage {
+        kind: NodeKind::Dielectric,
+        structure: "dielectric",
+        aliases: &["dielectric", "dielectric_bsdf"],
+        bsdf_params: &["base_color", "roughness", "specular", "ior"],
+    },
+    NodeCoverage {
+        kind: NodeKind::Sheen,
+        structure: "sheen",
+        aliases: &["sheen", "sheen_bsdf"],
+        bsdf_params: &["base_color", "sheen", "roughness"],
+    },
+    NodeCoverage {
+        kind: NodeKind::Subsurface,
+        structure: "subsurface",
+        aliases: &["subsurface", "subsurface_bsdf"],
+        bsdf_params: &["base_color", "subsurface", "diffuse_roughness", "ior"],
+    },
+    NodeCoverage {
+        kind: NodeKind::Transmission,
+        structure: "transmission",
+        aliases: &["transmission", "transmission_bsdf"],
+        bsdf_params: &["base_color", "transmission", "ior"],
+    },
+    NodeCoverage {
+        kind: NodeKind::ThinFilm,
+        structure: "thinfilm",
+        aliases: &["thinfilm", "thin_film_bsdf"],
+        bsdf_params: &["thinfilm_thickness", "ior", "specular"],
+    },
+];
+
+/// 节点 → BSDF 参数（特解参数包的**可比对数值面**）。
+///
+/// 全部 `f32`；无 libm、无哈希迭代（字段顺序固定）。`signature()` 把每个
+/// 字段的位型喂进 FNV-1a，供「双跑逐字节」判据直接对拍。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BsdfParams {
+    /// 基础色。
+    pub base_color: [f32; 3],
+    /// 金属度。
+    pub metallic: f32,
+    /// 粗糙度。
+    pub roughness: f32,
+    /// 镜面强度。
+    pub specular: f32,
+    /// 透射权重。
+    pub transmission: f32,
+    /// 折射率。
+    pub ior: f32,
+    /// 自发光。
+    pub emission: [f32; 3],
+    /// 清漆。
+    pub coat: f32,
+    /// 光泽布瓣。
+    pub sheen: f32,
+    /// 次表面权重。
+    pub subsurface: f32,
+    /// 漫反射粗糙度。
+    pub diffuse_roughness: f32,
+    /// 薄膜厚度（nm）。
+    pub thinfilm_thickness: f32,
+    /// 不透明度。
+    pub opacity: f32,
+}
+
+impl Default for BsdfParams {
+    fn default() -> Self {
+        Self {
+            base_color: [0.8, 0.8, 0.8],
+            metallic: 0.0,
+            roughness: 0.5,
+            specular: 0.5,
+            transmission: 0.0,
+            ior: 1.5,
+            emission: [0.0, 0.0, 0.0],
+            coat: 0.0,
+            sheen: 0.0,
+            subsurface: 0.0,
+            diffuse_roughness: 0.0,
+            thinfilm_thickness: 0.0,
+            opacity: 1.0,
+        }
+    }
+}
+
+impl BsdfParams {
+    /// 17 个标量槽 × 位型的 FNV-1a（逐字节确定性）。
+    pub fn signature(&self) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut mix = |bits: u32| {
+            h ^= bits as u64;
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        };
+        mix(self.base_color[0].to_bits());
+        mix(self.base_color[1].to_bits());
+        mix(self.base_color[2].to_bits());
+        mix(self.metallic.to_bits());
+        mix(self.roughness.to_bits());
+        mix(self.specular.to_bits());
+        mix(self.transmission.to_bits());
+        mix(self.ior.to_bits());
+        mix(self.emission[0].to_bits());
+        mix(self.emission[1].to_bits());
+        mix(self.emission[2].to_bits());
+        mix(self.coat.to_bits());
+        mix(self.sheen.to_bits());
+        mix(self.subsurface.to_bits());
+        mix(self.diffuse_roughness.to_bits());
+        mix(self.thinfilm_thickness.to_bits());
+        mix(self.opacity.to_bits());
+        h
+    }
+}
+
+/// 覆盖度报告（判据 V1 的「具体数字」）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoverageReport {
+    /// 支持的节点类型总数。
+    pub node_kinds: usize,
+    /// 别名总数。
+    pub aliases: usize,
+    /// BSDF 参数槽总数。
+    pub bsdf_param_slots: usize,
+    /// 本次编译通过的节点数。
+    pub compiled_nodes: usize,
+    /// 未支持节点的结构化报错行为（错误码 + 语义）。
+    pub unsupported_behavior: &'static str,
+}
+
+/// 覆盖度判据表（静态部分）。
+pub fn coverage_table() -> &'static [NodeCoverage] {
+    NODE_COVERAGE
+}
+
+/// 覆盖度报告（静态表 + 一次编译的通过数）。
+pub fn coverage_report(pack: &MaterialPack) -> CoverageReport {
+    let compiled: usize = pack
+        .materials
+        .iter()
+        .map(|m| m.graph.node_count())
+        .sum();
+    CoverageReport {
+        node_kinds: NODE_COVERAGE.len(),
+        aliases: NODE_COVERAGE.iter().map(|c| c.aliases.len()).sum(),
+        bsdf_param_slots: 17,
+        compiled_nodes: compiled,
+        unsupported_behavior: "MX2004：未知 nodedef 三段式报错，不静默跳过、不降级为常量",
+    }
+}
+
+/// 常量输入取标量（连线输入由求值期提供，编译期取缺省；golden 一律用常量）。
+fn bsdf_scalar(node: &CompiledNode, name: &str, default: f32) -> f32 {
+    match node.inputs.get(name) {
+        Some(PortBinding::Constant(v)) => v.as_scalar().unwrap_or(default),
+        _ => default,
+    }
+}
+
+/// 常量输入取三元组。
+fn bsdf_triple(node: &CompiledNode, name: &str, default: [f32; 3]) -> [f32; 3] {
+    match node.inputs.get(name) {
+        Some(PortBinding::Constant(v)) => v.as_triple().unwrap_or(default),
+        _ => default,
+    }
+}
+
+/// 单个节点 → BSDF 参数（节点图 → BSDF 参数映射的唯一实现）。
+pub fn node_to_bsdf(node: &CompiledNode) -> Result<BsdfParams, MtlxError> {
+    let kind: NodeKind = NodeKind::from_mtlx_type(&node.nodedef).ok_or_else(|| {
+        MtlxError::unknown_node(
+            format!("materialx::node_to_bsdf（节点 {}）", node.name),
+            format!("未注册的节点类型 {:?}", node.nodedef),
+        )
+    })?;
+    let mut p: BsdfParams = BsdfParams::default();
+    let col: [f32; 3] = bsdf_triple(node, "base_color", bsdf_triple(node, "color", [0.8, 0.8, 0.8]));
+    let alt: [f32; 3] = bsdf_triple(node, "color", [0.2, 0.3, 0.4]);
+    match kind {
+        NodeKind::StandardSurface => {
+            p.base_color = col;
+            p.metallic = bsdf_scalar(node, "metallic", 0.0);
+            p.roughness = bsdf_scalar(node, "roughness", 0.5);
+            p.specular = bsdf_scalar(node, "specular", 0.5);
+            p.transmission = bsdf_scalar(node, "transmission", 0.0);
+            p.ior = bsdf_scalar(node, "ior", 1.5);
+            p.emission = bsdf_triple(node, "emission", [0.0, 0.0, 0.0]);
+            p.coat = bsdf_scalar(node, "coat", 0.0);
+            p.sheen = bsdf_scalar(node, "sheen", 0.0);
+            p.subsurface = bsdf_scalar(node, "subsurface", 0.0);
+            p.diffuse_roughness = bsdf_scalar(node, "diffuse_roughness", 0.0);
+            p.opacity = bsdf_scalar(node, "opacity", 1.0);
+        }
+        NodeKind::Bsdf => {
+            p.base_color = col;
+            p.metallic = bsdf_scalar(node, "metallic", 0.0);
+            p.roughness = bsdf_scalar(node, "roughness", 0.5);
+            p.specular = bsdf_scalar(node, "specular", 0.5);
+            p.opacity = bsdf_scalar(node, "opacity", 1.0);
+        }
+        NodeKind::Diffuse | NodeKind::BurleyDiffuse | NodeKind::OrenNayarDiffuse => {
+            p.base_color = col;
+            p.diffuse_roughness = bsdf_scalar(node, "roughness", 0.0);
+            p.opacity = bsdf_scalar(node, "opacity", 1.0);
+            p.metallic = 0.0;
+            p.specular = 0.0;
+        }
+        NodeKind::Glossy | NodeKind::Conductor | NodeKind::Dielectric | NodeKind::Transmission => {
+            p.base_color = col;
+            p.roughness = bsdf_scalar(node, "roughness", 0.5);
+            p.specular = bsdf_scalar(node, "specular", 0.5);
+            p.ior = bsdf_scalar(node, "ior", 1.5);
+            if kind == NodeKind::Conductor {
+                p.metallic = bsdf_scalar(node, "metallic", 1.0);
+            }
+            if kind == NodeKind::Transmission {
+                p.transmission = bsdf_scalar(node, "weight", 1.0);
+            }
+        }
+        NodeKind::Sheen => {
+            p.base_color = col;
+            p.sheen = bsdf_scalar(node, "weight", 1.0);
+            p.roughness = bsdf_scalar(node, "roughness", 0.5);
+        }
+        NodeKind::Subsurface => {
+            p.base_color = col;
+            p.subsurface = bsdf_scalar(node, "weight", 1.0);
+            p.diffuse_roughness = bsdf_scalar(node, "roughness", 0.0);
+            p.ior = bsdf_scalar(node, "ior", 1.5);
+        }
+        NodeKind::ThinFilm => {
+            p.thinfilm_thickness = bsdf_scalar(node, "thickness", 0.0);
+            p.ior = bsdf_scalar(node, "ior", 1.5);
+            p.specular = bsdf_scalar(node, "specular", 0.5);
+        }
+        NodeKind::Mix => {
+            let w: f32 = bsdf_scalar(node, "weight", 0.5);
+            let a: [f32; 3] = bsdf_triple(node, "fg", col);
+            let b: [f32; 3] = bsdf_triple(node, "bg", alt);
+            p.base_color = [
+                a[0] + (b[0] - a[0]) * w,
+                a[1] + (b[1] - a[1]) * w,
+                a[2] + (b[2] - a[2]) * w,
+            ];
+            p.opacity = w;
+        }
+        NodeKind::Add => {
+            let a: [f32; 3] = bsdf_triple(node, "in1", col);
+            let b: [f32; 3] = bsdf_triple(node, "in2", alt);
+            p.base_color = [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+        }
+        NodeKind::Multiply => {
+            let a: [f32; 3] = bsdf_triple(node, "in1", col);
+            let b: [f32; 3] = bsdf_triple(node, "in2", alt);
+            p.base_color = [a[0] * b[0], a[1] * b[1], a[2] * b[2]];
+            p.roughness = bsdf_scalar(node, "weight", 0.5);
+        }
+        NodeKind::Ramp => {
+            // ColorArray 的首项作为该节点写入的 base_color（无则取 color 常量）。
+            if let Some(PortBinding::Constant(ParamValue::ColorArray(cols))) = node.inputs.get("colors") {
+                if let Some(first) = cols.first() {
+                    p.base_color = *first;
+                }
+            } else {
+                p.base_color = col;
+            }
+        }
+        NodeKind::Constant => {
+            match node.inputs.get("value") {
+                Some(PortBinding::Constant(ParamValue::Color3(c))) => p.base_color = *c,
+                Some(PortBinding::Constant(ParamValue::F32x3(c))) => p.base_color = *c,
+                Some(PortBinding::Constant(v)) => {
+                    if let Some(s) = v.as_scalar() {
+                        p.base_color = [s, s, s];
+                        p.roughness = s;
+                    }
+                }
+                _ => {}
+            }
+        }
+        NodeKind::Position => p.base_color = [0.5, 0.5, 0.5],
+        NodeKind::Normal => p.base_color = [0.5, 0.5, 1.0],
+        NodeKind::Image => {
+            p.base_color = bsdf_triple(node, "default", [1.0, 1.0, 1.0]);
+            p.opacity = bsdf_scalar(node, "opacity", 1.0);
+        }
+        NodeKind::Dot => p.roughness = 0.25,
+    }
+    Ok(p)
+}
+
+/// 整包 → 每个节点一条 BSDF 参数（按材质顺序 + 节点名升序，确定性）。
+pub fn compile_to_bsdf(pack: &MaterialPack) -> Result<Vec<(String, BsdfParams)>, MtlxError> {
+    let mut out: Vec<(String, BsdfParams)> = Vec::new();
+    for m in &pack.materials {
+        for (name, node) in &m.graph.nodes {
+            out.push((format!("{}/{}", m.name, name), node_to_bsdf(node)?));
+        }
+    }
+    Ok(out)
+}
+
+/// V2.5-B4 产品路径统一出口：编译 `.mtlx` → 覆盖度报告 → 逐节点参数映射 →
+/// 可直接打印的确定性摘要文本。
+///
+/// 放在库侧而非 `prism-app`：应用 crate 受既有静态门禁
+/// `w7_preview::p2_no_shading_math_in_app_crate` 约束（`src/` 内不得出现
+/// 散射模型词汇），故三个编译入口的调用与含该词汇的摘要文本全部下沉到本模块，
+/// `prism-app` 只做参数校验、调用与打印的薄转发。
+///
+/// # 错误
+/// 读文件 / XML / 未知节点 / 类型错配 / 循环图等错误按原三段式返回；
+/// 空图（0 个节点）单独用 `MX2011` 结构化拒绝，不静默当成功。
+pub fn compile_mtlx_report(path: &str) -> Result<String, MtlxError> {
+    let pack: MaterialPack = compile_file(path)?;
+    let report: CoverageReport = coverage_report(&pack);
+    let params: Vec<(String, BsdfParams)> = compile_to_bsdf(&pack)?;
+    if params.is_empty() {
+        return Err(MtlxError::new(
+            "MX2011",
+            format!("materialx::compile_mtlx_report({path})"),
+            "编译出 0 个节点（空图不视为成功）",
+            "确认 .mtlx 至少含一个 <node> 且其输出连线端点存在",
+        ));
+    }
+    let signature: u64 = params.iter().fold(
+        0xcbf2_9ce4_8422_2325u64,
+        |mut h, (_, p)| {
+            h ^= p.signature();
+            h.wrapping_mul(0x0000_0100_0000_01b3)
+        },
+    );
+    // 逐行 push_str 而非 format! 续行：保证每行前导空格与 CLI 输出逐字节一致。
+    let mut out: String = String::new();
+    out.push_str("prism-app mtlx 完成\n");
+    out.push_str(&format!("  资产        : {path}\n"));
+    out.push_str(&format!("  材质        : {}\n", pack.len()));
+    out.push_str(&format!("  编译通过节点: {}\n", report.compiled_nodes));
+    out.push_str(&format!(
+        "  覆盖度      : {} 种节点 / {} 别名 / {} 个 BSDF 标量参数槽\n",
+        report.node_kinds, report.aliases, report.bsdf_param_slots
+    ));
+    out.push_str(&format!("  BSDF 映射   : {} 条\n", params.len()));
+    out.push_str(&format!("  参数签名    : {:#018x}", signature));
     Ok(out)
 }
 

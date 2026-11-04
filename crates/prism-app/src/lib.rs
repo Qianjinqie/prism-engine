@@ -12,3 +12,8 @@
 //! `prism-render` / `prism-gpu` 既有渲染管线，不另写渲染器）。
 
 pub mod editor;
+
+/// V2.5-B1：`config.ocio` → 定点 LUT → RGBA8 帧的产品路径桥。
+/// 放进库目标是为了让集成测试能直接调用 `load_ocio_pipeline`，
+/// 而不是只做源码扫描（判据 V6「产品路径非空断言」）。
+pub mod ocio_bridge;

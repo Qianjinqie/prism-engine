@@ -457,6 +457,14 @@ pub struct SceneAttach {
     pub textures: Vec<TextureDesc>,
     /// 毛发股（每股一个 Mesh + 该股自己的纤维标架）。
     pub strands: Vec<StrandDesc>,
+    /// V2.5-B1：`config.ocio` 路径（色彩管理，非 rt 几何）。
+    ///
+    /// `None` ⇒ 沿用既有 ACES 路径，**逐字节不变**。该字段由 `prism-app`
+    /// 的渲染出口消费（`cmd_render --ocio` / v1 CLI），不参与
+    /// [`Self::is_empty`]（那是"有无 rt 侧附加几何"的判据）——刻意不混，
+    /// 否则一个纯色彩配置会让翻译层误以为场景带了几何附加能力。
+    /// 静态门禁 `v25_b1_ocio::v6_static_gate_*` 防止"字段加了但没接"。
+    pub ocio_config: Option<String>,
 }
 
 impl SceneAttach {

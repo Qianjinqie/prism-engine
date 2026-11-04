@@ -1,0 +1,12 @@
+LAYER defaultPrim = root
+LAYER metersPerUnit = 1
+LAYER upAxis = Y
+PRIM /root specifier=Sdf.SpecifierDef typeName=Xform
+ATTR xformOp:translate type=double3 custom=false uniform=false default=[0, 1, 0]
+ATTR xformOpOrder type=token[] custom=false uniform=true default=[xformOp:translate]
+PRIM /root/cube specifier=Sdf.SpecifierDef typeName=Mesh
+ATTR faceVertexCounts type=int[] custom=false uniform=false default=[4, 4, 4, 4, 4, 4]
+ATTR faceVertexIndices type=int[] custom=false uniform=false default=[0, 3, 2, 1, 4, 5, 6, 7, 0, 4, 7, 3, 1, 2, 6, 5, 0, 1, 5, 4, 3, 7, 6, 2]
+ATTR points type=point3f[] custom=false uniform=false default=[[-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1], [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]]
+REL material:binding targets=[/root/mat]
+PRIM /root/mat specifier=Sdf.SpecifierDef typeName=Material

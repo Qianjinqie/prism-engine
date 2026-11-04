@@ -72,10 +72,17 @@ pub mod fbuf;
 pub use fbuf::{f16_to_f32, f32_to_f16, Fbuf16F};
 
 // ---------------------------------------------------------------------------
-// 场景与材质互操作（USD `.usda` 文本解析 + MaterialX → 特解参数包）
+// 场景与材质互操作（USD `.usda` / `.usdc` / USDZ 解析 + MaterialX → 特解参数包）
 // ---------------------------------------------------------------------------
 
 pub mod usd;
+
+/// `.usdc` 二进制 Crate 格式解析（V2.5-B2：bootstrap / TOC / LZ4 / 整数编码 /
+/// value rep / path+token+spec 表，零第三方依赖）。
+pub mod usdc;
+
+/// USDZ zip 包解析（V2.5-B2：deflate 复用 `prism-bytes::inflate_raw`）。
+pub mod usdz;
 
 /// `.usda` 导出（引擎场景 → 标准文本，解析器的规范逆；R2 L2 字节不动点）。
 pub mod usd_export;

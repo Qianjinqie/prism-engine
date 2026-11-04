@@ -21,6 +21,7 @@ use prism_io::fbuf::Fbuf16F;
 use prism_math::aces::{AcesFit, AcesOutput};
 use prism_math::colorspace::{ColorSpace, TransformChain};
 use prism_math::hlg::hlg_oetf;
+use prism_math::ocio_lut::OcioLut;
 use prism_math::pq::pq_oetf;
 use prism_render::tile::TileEffect;
 
@@ -119,6 +120,82 @@ impl ColorManage {
         }
 
         [rgb[0], rgb[1], rgb[2], c[3]]
+    }
+
+    /// V2.5-B1：带 OCIO config 的像素变换（**无 config ⇒ 逐字节同 [`Self::apply_color`]**）。
+    ///
+    /// 有 config 时：config 烘焙出的 Q24 定点 1D shaper + 3D cube 取代
+    /// `ACES` 输出变换（避免双重 tone map），随后仍按本节点声明走
+    /// `input → output` 矩阵与 OETF；alpha 直通。
+    /// `None` 分支**直接调用** `apply_color`，一行新运算都不插入，故旧场景
+    /// 逐字节不变（判据 V1）。
+    pub fn apply_color_with_ocio(&self, c: [f32; 4], lut: Option<&OcioLut>) -> [f32; 4] {
+        match lut {
+            None => self.apply_color(c),
+            Some(l) => {
+                let mapped: [f32; 3] = l.apply_f32([c[0], c[1], c[2]]);
+                let mut rgb: [f32; 3] = mapped;
+                let chain = TransformChain::new(self.input, self.output);
+                if let Some(m) = chain.apply(rgb) {
+                    rgb = m;
+                }
+                rgb = self.encode_oetf(rgb);
+                [rgb[0], rgb[1], rgb[2], c[3]]
+            }
+        }
+    }
+
+    /// OETF 编码（与 `apply_color` 第 ③ 段逐字相同；仅供 config 分支复用）。
+    fn encode_oetf(&self, mut rgb: [f32; 3]) -> [f32; 3] {
+        match self.oetf {
+            Oetf::None => {}
+            Oetf::Srgb => {
+                for v in rgb.iter_mut() {
+                    *v = srgb_oetf(*v);
+                }
+            }
+            Oetf::Pq => {
+                for v in rgb.iter_mut() {
+                    *v = pq_oetf(*v);
+                }
+            }
+            Oetf::Hlg => {
+                for v in rgb.iter_mut() {
+                    *v = hlg_oetf(*v);
+                }
+            }
+        }
+        rgb
+    }
+}
+
+/// V2.5-B1：把 OCIO 管线接进既有 `TileEffect` 色彩节点链（同一 `Fbuf16F`
+/// 求值器，不另起第二条色彩路径）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ColorManageOcio {
+    /// 基础色彩节点（输入/输出空间 + OETF）。
+    pub base: ColorManage,
+    /// config.ocio 烘焙出的定点 LUT。
+    pub lut: OcioLut,
+}
+
+impl TileEffect for ColorManageOcio {
+    fn halo_radius(&self) -> u32 {
+        0
+    }
+
+    fn eval_window(&self, window: &Fbuf16F) -> Fbuf16F {
+        let mut out = Fbuf16F::new(window.width, window.height);
+        for y in 0..window.height {
+            for x in 0..window.width {
+                out.set(
+                    x,
+                    y,
+                    self.base.apply_color_with_ocio(window.get(x, y), Some(&self.lut)),
+                );
+            }
+        }
+        out
     }
 }
 

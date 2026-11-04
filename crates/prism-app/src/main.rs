@@ -38,6 +38,8 @@ mod cmd_mcp;
 mod cmd_pack;
 mod cmd_preview;
 mod cmd_render;
+mod cmd_usd;
+mod cmd_mtlx;
 // 编辑器逻辑在库目标（lib.rs）中，binary 复用同一份实现（避免双编译漂移）。
 
 // ===========================================================================
@@ -79,6 +81,8 @@ const USAGE: &str = r#"prism-app — 「代码即视频/图片」命令行渲染
   prism-app pack <add|list|remove> 数据包市场本地库管理
   prism-app render <file.prism>    DSL v2 成片直达（整段渲染为 MP4）
   prism-app preview <file.prism>   预览闭环（HTTP 预览循环 / 单帧直出）
+  prism-app usd <FILE>             读 USD 资产（.usda / .usdc / .usdz）
+  prism-app mtlx <FILE>            编译 MaterialX → 特解参数包
 
 选项:
   --out <DIR>     输出目录（默认 "output"）
@@ -149,6 +153,8 @@ fn main() {
             "critique" => Some(cmd_critique::run(rest)),
             "render" => Some(cmd_render::run(rest)),
             "preview" => Some(cmd_preview::run(rest)),
+            "usd" => Some(cmd_usd::run(rest)),
+            "mtlx" => Some(cmd_mtlx::run(rest)),
             _ => None,
         };
         if let Some(code) = code {
@@ -295,6 +301,20 @@ fn run_cli(cfg: CliConfig) -> Result<(), String> {
     let fps: u32 = cfg.fps.unwrap_or(compiled.fps);
     let duration: f32 = compiled.duration;
 
+    // V2.5-B1：`prism_core::Scene.attach.ocio_config` 是场景自带的色彩管理配置。
+    // 无 config / 空 config ⇒ None ⇒ 帧缓冲一个字节都不改（逐字节同 ACES 路径）。
+    let ocio_pipeline: Option<prism_app::ocio_bridge::OcioFramePipeline> =
+        match compiled.scene.attach.ocio_config.as_deref() {
+            Some(path) => match prism_app::ocio_bridge::load_ocio_pipeline(path) {
+                Ok(p) => p,
+                Err(msg) => {
+                    eprintln!("prism-app: 场景 OCIO 配置 `{path}` 装配失败：{msg}");
+                    std::process::exit(1);
+                }
+            },
+            None => None,
+        };
+
     // 单帧时刻：--frame 优先于整段模式；否则 DSL format=Png 且未给 --frame
     // 时取 t=0；两者都不满足 → 整段模式。超出时长的时刻钳制到 duration。
     let single_frame_t: Option<f32> = match cfg.frame_time {
@@ -323,7 +343,7 @@ fn run_cli(cfg: CliConfig) -> Result<(), String> {
     let (frame_count, mode_line, artifact_line): (usize, String, String) = match single_frame_t {
         // 单帧模式：渲染时刻 t 的一帧 → <out>/preview.png。
         Some(t) => {
-            let fb: prism_gpu::Framebuffer = prism_render::render_frame(
+            let mut fb: prism_gpu::Framebuffer = prism_render::render_frame(
                 &mut device,
                 &compiled.scene,
                 t,
@@ -331,6 +351,9 @@ fn run_cli(cfg: CliConfig) -> Result<(), String> {
                 width,
                 height,
             );
+            if let Some(p) = ocio_pipeline.as_ref() {
+                p.apply_framebuffer(&mut fb);
+            }
             prism_io::save_png(&path_str(&preview_path), &fb)
                 .map_err(|err| format!("写入预览图 `{}` 失败: {err}", preview_path.display()))?;
             (
@@ -341,7 +364,7 @@ fn run_cli(cfg: CliConfig) -> Result<(), String> {
         }
         // 整段模式：按 fps 均匀采样 [0, duration] → <out>/frames/。
         None => {
-            let frames: Vec<prism_gpu::Framebuffer> = prism_render::render_video(
+            let mut frames: Vec<prism_gpu::Framebuffer> = prism_render::render_video(
                 &mut device,
                 &compiled.scene,
                 width,
@@ -354,6 +377,11 @@ fn run_cli(cfg: CliConfig) -> Result<(), String> {
                     "渲染结果为空（0 帧），无法落盘：请检查 DSL 的 fps/duration 是否大于 0"
                         .to_string(),
                 );
+            }
+            if let Some(p) = ocio_pipeline.as_ref() {
+                for fb in frames.iter_mut() {
+                    p.apply_framebuffer(fb);
+                }
             }
             prism_io::save_frames(&path_str(&frames_dir), &frames, fps, duration).map_err(
                 |err| format!("写入帧序列 `{}` 失败: {err}", frames_dir.display()),

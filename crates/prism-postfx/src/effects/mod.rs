@@ -36,7 +36,7 @@ pub mod vignette;
 pub use blur::Blur;
 pub use bloom::Bloom;
 pub use ca::ChromaticAberration;
-pub use color::ColorManage;
+pub use color::{ColorManage, ColorManageOcio, Oetf};
 pub use dissolve::Dissolve;
 pub use dof_full::FullDof;
 pub use glitch::Glitch;

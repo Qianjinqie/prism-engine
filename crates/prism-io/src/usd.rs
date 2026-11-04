@@ -10,6 +10,10 @@
 //! 自带词法器与递归下降解析器。**不引任何 crate**。
 //!
 //! # 支持范围（能做什么）
+//! - **三种容器都真解析**：`.usda` 文本、`PXR-USDC` 二进制 Crate
+//!   （[`crate::usdc`]）、USDZ zip 包（[`crate::usdz`]）；
+//!   `.usdc` 走 TOC + sections + LZ4 解压 + value rep 重现，USDZ 解包后
+//!   与裸 `.usdc` 逐位相同（V2.5-B2）；
 //! - **层头**：`#usda 1.0` + 层元数据括号块（`defaultPrim` / `metersPerUnit`
 //!   / `upAxis` / `subLayers`）——后者**只做记录**，不做跨文件解析；
 //! - **prim 声明**：`def` / `over` / `class`，类型含 `Xform` / `Scope` /
@@ -29,9 +33,10 @@
 //!   按**世界 = 父 ∘ 子**递归累加，最终**烘焙**到顶点。
 //!
 //! # 诚实边界（当前版本明确**不做**，勿高估）
-//! - **`.usdc`（crate 二进制）完全不支持**：识别 magic `PXR-USDC` 后
-//!   **结构化拒绝**（[`UsdError::BinaryNotSupported`]），不做任何部分解析
-//!   ——半解析的二进制比明确拒绝危险得多；
+//! - **`.usdc` / USDZ 只解析单文件层**：不递归 sublayer、不做 asset resolver、
+//!   不展开 references/payload 指向的外部层（与 `.usda` 侧同一口径）；
+//!   `timeSamples` / variantSet / 未实现的 value rep 类型**结构化记账或报错**，
+//!   绝不半解析出看似合理的场景；
 //! - **时间采样不支持**：`timeSamples` 块被跳过并记入
 //!   [`LayerReport::skipped_time_samples`]，当前版本**只取默认帧**
 //!   （`default` 属性的静态值）。属性上的 `timeSamples` 非空时，
@@ -174,11 +179,10 @@ impl UsdError {
         }
     }
 
-    /// PU1001：`.usdc` 等二进制 crate 格式（当前版本不支持）。
-    ///
-    /// **结构化拒绝**（而非部分解析）：`.usdc` 的 crate 容器含压缩的
-    /// token/字段表与 LZ4 压缩块，半解析会产出**看似合理实则错误**的
-    /// 场景数据——这比明确拒绝危险得多（宪章 C20 精神）。
+    /// PU1001：**真非法**的二进制 crate 输入（只有 magic、长度不足以容纳
+    /// 88 B bootstrap，或文本里混进 magic）。合法 `.usdc` / `.usdz` 已由
+    /// [`crate::usdc`] / [`crate::usdz`] 真解析；此处保留结构化拒绝口径，
+    /// 不做半解析（宪章 C20 精神）。
     pub fn binary_not_supported(magic: &[u8]) -> Self {
         let shown: String = magic
             .iter()
@@ -195,10 +199,11 @@ impl UsdError {
             "PU1001",
             "usd::parse_bytes",
             format!(
-                "检测到 USD 二进制 crate 格式（magic = \"{shown}\"），当前版本只支持 `.usda` 文本格式"
+                "检测到 USD 二进制 crate 的 magic = \"{shown}\"，但输入不是合法 crate\
+                 （长度不足以容纳 88 B bootstrap / 二进制容器损坏）"
             ),
-            "用 `usdcat`（或任何 DCC / `pxr` 工具）把资产导出为 `.usda` 文本后再导入；\
-             若需直接支持 `.usdc`，须另行实现 crate 容器 + LZ4 解压（超出当前版本范围）"
+            "确认文件是完整的 `.usdc` / `.usdz`（未被截断）；旧工具产物可用\
+             `usdcat --usda` 导出为 `.usda` 文本；损坏的二进制不做半解析"
                 .to_string(),
         )
     }
@@ -1935,12 +1940,21 @@ pub struct ParsedUsda {
     pub report: LayerReport,
 }
 
-/// 解析 USD 字节流（按内容分派 `.usda` / `.usdc`）。
+/// 解析 USD 字节流（按内容分派 `.usda` / `.usdc` / USDZ）。
 ///
-/// `.usdc`（binary crate）→ **结构化拒绝** [`UsdError::BinaryNotSupported`]。
+/// - `PXR-USDC` → [`crate::usdc::parse_crate`]（真二进制 Crate 解析）；
+///   长度不足以容纳 bootstrap 的「只有 magic」输入保留 `PU1001` 结构化拒绝；
+/// - `PK\x03\x04`（zip）→ [`crate::usdz::parse_usdz`]；
+/// - 其余按 UTF-8 文本走 `.usda` 解析器。
 pub fn parse_bytes(bytes: &[u8]) -> Result<ParsedUsda, UsdError> {
     if bytes.starts_with(USDC_MAGIC) {
-        return Err(UsdError::binary_not_supported(&bytes[..8]));
+        if bytes.len() < crate::usdc::BOOTSTRAP_SIZE {
+            return Err(UsdError::binary_not_supported(&bytes[..8]));
+        }
+        return crate::usdc::parse_crate(bytes);
+    }
+    if bytes.starts_with(crate::usdc::ZIP_LOCAL_MAGIC) {
+        return crate::usdz::parse_usdz(bytes);
     }
     let text =
         std::str::from_utf8(bytes).map_err(|e| UsdError::invalid_utf8(bytes, e.valid_up_to()))?;
@@ -1966,6 +1980,27 @@ pub fn parse_str(text: &str) -> Result<ParsedUsda, UsdError> {
     report.unresolved_asset_paths.sort();
     report.unresolved_asset_paths.dedup();
     Ok(ParsedUsda { layer, report })
+}
+
+/// 产品路径统一资产入口：按扩展名读 USD 层（`.usda` / `.usd` / `.usdc` / `.usdz`）。
+///
+/// 内容分派仍由 [`parse_bytes`] 做（magic 为准，扩展名只做前置校验），
+/// 故 DSL / `prism-app` 只需调这一个函数即可吃到三种容器。
+pub fn parse_asset(path: &str) -> Result<ParsedUsda, UsdError> {
+    let lower: String = path.to_ascii_lowercase();
+    if !(lower.ends_with(".usda")
+        || lower.ends_with(".usd")
+        || lower.ends_with(".usdc")
+        || lower.ends_with(".usdz"))
+    {
+        return Err(UsdError::new(
+            "PU1018",
+            format!("usd::parse_asset({path})"),
+            format!("资产扩展名 `{path}` 不是 USD 层（允许 .usda/.usd/.usdc/.usdz）"),
+            "确认资产路径；USDZ 包内根层必须是 .usdc 或 .usda",
+        ));
+    }
+    parse_file(path)
 }
 
 /// 解析 `.usda` 文件。
