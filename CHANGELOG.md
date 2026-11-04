@@ -8,6 +8,25 @@
 
 ## 渲染行为变化清单
 
+### R-2026-xx-14：`config.ocio` 生效时色彩管理改走 Q24 定点 1D/3D LUT 链（V2.5-B1）
+
+- **受影响特性**：`prism-app render --ocio <CONFIG.OCIO>` 与 v1 CLI /
+  `prism_core::Scene.attach.ocio_config` 显式指定的 RGBA8 出片帧；
+  `prism-postfx` 既有 `ColorManage::apply_color_with_ocio` 色彩链。
+- **变化原因**：E-7 / 需求池 V2.5-B1 收官——此前 ACES 路径无任何 OCIO 配置入口。
+  现自研 `config.ocio` 解析（`colorspaces` / `roles` / `displays`+`views` / `looks`
+  + File / Matrix / Exponent / Log / Range / Group 六类 transform），烘焙为 Q24 定点
+  1D shaper + 3D cube LUT（纯整数求值、零 libm、零线程），有 config 时在既有
+  OETF 编码前插一遍 LUT 变换。
+- **视觉影响描述**：**旧值 → 新值**，仅当显式给出非空 config 时帧字节变化（按
+  config 的 view/look 链做色彩变换）；**无 config / 空 config 时 `apply_color_with_ocio(c, None)`
+  直调 `apply_color(c)`，与既有 ACES 路径 `f32::to_bits()` 逐位相同**，
+  `v25_b1_ocio_color::v1_no_config_matches_aces_path_bitwise` 与
+  `v25_b1_ocio::v1_empty_config_is_noop` 双证。LUT vs 直接求值在 17³=4913 网格点
+  最大偏差 **3.590e-7 ≤ 1e-6**（`v3_lut_vs_direct_evaluation`），双跑逐字节一致。
+- **是否有开关**：有——仅 `--ocio <CONFIG.OCIO>` 或 `Scene.attach.ocio_config: Some(path)`
+  且 config 非空时进入 LUT 分支；`None` / 空 config 走原 ACES 路径，字节不变。
+
 ### R-2026-xx-12：`MaterialKind::Hair` 续弹改走按 f 的 Marschner sampler（旧 Disney 提案退役）
 
 - **受影响特性**：`prism-rt` 路径积分（`integrator.rs`）与 CPU wavefront
