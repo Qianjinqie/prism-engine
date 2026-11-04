@@ -8,6 +8,27 @@
 
 ## 渲染行为变化清单
 
+### R-2026-xx-10：`rt_wavefront.wgsl` 补环境光 NEE 腿（此前只有逃逸臂 ⇒ 环境直接光整条缺失）
+
+- **受影响特性**：`prism-gpu` wavefront 路径模式 `shade` 段的环境光贡献。
+- **变化原因**：CPU 权威 `integrator::nee_env_surface`（CDF 采样环境直接光 +
+  `power_heuristic` MIS）在 WGSL wavefront 里没有对应腿——只有 `env_escape`
+  逃逸臂。R-10 V1 白炉逐位对拍暴露（像素 18：CPU ~1.011 vs GPU ~0.972）。
+- **视觉影响描述**：带环境贴图的 wavefront 帧直接光从缺失到正确，能量分布改变；
+  修复后与 CPU 参考 8 帧逐位一致。7 份 `.spv` 已随源同步重生成（`spv_freshness` 7/7）。
+- **是否有开关**：无（缺陷修复；无环境贴图的场景该分支不进入，输出不变）。
+
+### R-2026-xx-11：wavefront 路径模式 golden 对拍判据从「逐位」明确为「相对差 ≤ 2e-6」（FMA 收缩跨设备）
+
+- **受影响特性**：`gpu.wavefront_path` 浏览器 golden 判据（`qa_wavefront_golden.rs`
+  的 CPU 侧生成器与 `web/abi.rs` 的 `c_gpu_wavefront_path`）。
+- **变化原因**：SwiftShader（Dawn/WebGPU）与 naga→SPIR-V→llvmpipe 对**同一条
+  WGSL** 的 FMA 收缩点不同，逐位判据在跨设备场景 46/256 采样点出现 1–3 ULP
+  偏差——非实现错误，是后端编译器优化点的合法分歧（W2 跨设备判据同先例）。
+- **视觉影响描述**：无（判据口径变化；相对差 ≤ 2e-6 远低于 8 bit 量化的 1 LSB），
+  判据同时检查符号与有限性一致性。
+- **是否有开关**：无。
+
 ### R-2026-xx-09：修复 `rt_wavefront` 路径模式的 NEE 口径（入射方向翻了两次 ⇒ 直接光恒为 0；`cos` 乘了两次）
 
 - **受影响特性**：`prism-gpu` 的 **wavefront 五段式路径模式**（`rt_wavefront.wgsl` 的
@@ -372,6 +393,26 @@
   详见 `docs/v2.5-W0-算法选型报告.md` §14。
 
 ## 能力扩容清单（非 C15：特性扩容——此前被拒场景现在可渲染）
+
+### F-2026-xx-05：V2.5 能力扩容 T9（R-13 自适应采样接产品路径 + 浏览器 wavefront 运行时腿）
+
+- **扩容内容**：①`prism-app render --adaptive <TOTAL>` 新档——
+  `prism-postfx::AdaptiveRtBackend`（同一 `prism-rt` 渲染核 + A5/C2 逐像素预算
+  分配；与均匀档共用 `translate_scene`/相机/aesthetic 全部实现；预算不足
+  结构化报错不静默降级）；②浏览器 WebGPU wavefront 运行时腿全通
+  （realgpu 21/21）：`gpu.wavefront_path` golden 对拍、`gpu.scene_frame_v3`
+  V3 剖面（含实例表 + 实例 TLAS）、`gpu.rt_wavefront_multi`——期间修复
+  `BG_CAP` 越界、`layout:"auto"` 稀疏绑定（`u32::MAX` 哨兵 + 宿主跳过）、
+  `WF_STAGE_GROUPS` 组前缀、`Material.kind@40` 打包、槽位 pixel-major 映射
+  五处接线缺陷（详见报告 §29.3）；③`wavefront_path_golden.bin`（WPG1，
+  15,580 B，三配置）与 `qa_wavefront_parity` / `qa_wavefront_r10` /
+  `qa_wavefront_golden` 三套判据入库。
+- **为何非 C15**：全部为新增能力/接线；既有可渲染工程输出逐字节不变。
+- **是否有开关**：`--adaptive` 为显式 CLI 档位（默认档不变）；浏览器腿无开关。
+- **验收**：`cargo test -p prism-gpu --test qa_wavefront_parity`（R-1/R-6 逐位）、
+  `qa_wavefront_r10`（白炉 |L−1|≤1e-2 @1024 样本 + 无偏 ≤5e-3 @8192 样本 + GPU↔CPU 逐位）、
+  `qa_wavefront_golden`（三配置）、`cargo test -p prism-postfx`（C2 回路 9 条）、
+  `node crates/prism-gpu/web/ci_wasm_verify.mjs`（realgpu 21/21）。
 
 ### F-2026-xx-04：V2.5 能力扩容 W3（几何实例化，C1 两级 BVH）
 
