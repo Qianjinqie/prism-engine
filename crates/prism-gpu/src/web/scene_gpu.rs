@@ -1116,6 +1116,13 @@ fn wavefront_guard(
             cap: MAX_FRAME_H,
         });
     }
+    // G-8①：实例描述符与 Vulkan 派发走**同一个**校验函数（跨后端单一真源）。
+    // 绑定剖面不变（仍是 14 条 / 4 组前缀），但实例字节确实经
+    // `build_resources` 的 group(2) b2 `prim_mat` 到达本后端；若描述符的
+    // 偏移越界，这里在 create_buffer 之前就结构化拒绝，而不是让 shader 读
+    // 到邻居的逆矩阵。
+    crate::vulkan::wavefront::validate_instance_tail(req)
+        .map_err(|_| SceneDispatchError::step("instance_tail", NO_BINDING))?;
     Ok(())
 }
 
@@ -1810,6 +1817,88 @@ mod tests {
             STAGES.iter().map(|(e, _)| *e).collect::<Vec<_>>(),
             vec!["generate", "shade", "connect", "extend", "accumulate"]
         );
+    }
+
+    /// **G-8① 双后端同步门（无设备、纯数据）**：实例字节必须经共享资源表
+    /// 同时到达 Vulkan 与 WebGPU，且**绑定剖面一个字都不变**。
+    ///
+    /// 这条盯的是「不许只改一个后端」：`build_resources` 是跨后端单一真源，
+    /// group(2) b2 `prim_mat` 的初始字节里必须含完整的 112 B 实例表与尾部
+    /// 描述符；`wavefront_guard`（WebGPU 侧）与 `validate_instance_tail`
+    /// （Vulkan 派发侧）用同一个函数校验。零新增绑定 ⇒ 资源表仍是 14 条、
+    /// 分组仍是 `[3,2,8,1]`、5 段前缀表不动。
+    #[test]
+    fn wavefront_instance_table_reaches_both_backends() {
+        use crate::instance::{InstanceReq, INSTANCE_MAT_FROM_GEOM, INSTANCE_SLOTS};
+        use crate::vulkan::wavefront::{
+            append_instance_table, build_resources, validate_instance_tail, WavefrontMode,
+            WavefrontRequest, WavefrontTri, WF_INST_MAGIC, WF_INST_TAIL_WORDS,
+        };
+        use prism_math::Vec3;
+
+        let base = crate::vulkan::wavefront::WavefrontRequest::compat_from_scene(&small_request());
+        let mut req = WavefrontRequest {
+            mode: WavefrontMode::Path,
+            triangles: vec![WavefrontTri {
+                a: Vec3::new(-1.0, 0.0, 0.0),
+                b: Vec3::new(1.0, 0.0, 0.0),
+                c: Vec3::new(0.0, 1.0, 0.0),
+            }],
+            prim_mat: vec![0u32],
+            ..base
+        };
+        // 2 个实例：identity + 镜像（det < 0）；2 个原型（多原型 geom_id）。
+        let instances = vec![
+            InstanceReq::identity(0, INSTANCE_MAT_FROM_GEOM),
+            InstanceReq::scale_translate(
+                Vec3::new(-1.0, 1.0, 1.0),
+                Vec3::new(3.0, 0.0, 0.0),
+                1,
+                INSTANCE_MAT_FROM_GEOM,
+            )
+            .expect("镜像仿射可逆"),
+        ];
+        let tri = |x: f32| WavefrontTri {
+            a: Vec3::new(x - 0.5, -0.5, 0.0),
+            b: Vec3::new(x + 0.5, -0.5, 0.0),
+            c: Vec3::new(x, 0.5, 0.0),
+        };
+        let geoms = vec![vec![tri(0.0)], vec![tri(0.0), tri(1.0)]];
+        append_instance_table(&mut req.triangles, &mut req.prim_mat, &instances, &geoms, &[0, 0])
+            .expect("实例表编码必须成功");
+        assert!(instances[1].is_mirrored(), "第二个实例必须是镜像（det<0）");
+
+        // ① 两端共用同一份校验。
+        validate_instance_tail(&req).expect("Vulkan 侧描述符校验");
+        wavefront_guard(&req).expect("WebGPU 侧 wavefront_guard 必须接受同一份数据");
+
+        // ② 实例表确实进了 group(2) b2（= 资源表第 8 条，g0 3 + g1 2 + g2 前 3）。
+        let res = build_resources(&req);
+        assert_eq!(res.len(), WF_BINDINGS_TOTAL, "零新增绑定：资源表仍是 14 条");
+        let prim = res
+            .iter()
+            .find(|r| r.group == 2 && r.binding == 2)
+            .expect("group(2) b2 prim_mat 必须存在");
+        let mut want = Vec::with_capacity(req.prim_mat.len() * 4);
+        for &w in &req.prim_mat {
+            want.extend_from_slice(&w.to_le_bytes());
+        }
+        assert_eq!(prim.bytes, want, "prim_mat 初始字节必须逐字含实例表/描述符");
+        assert_eq!(prim.bytes.len(), req.prim_mat.len() * 4);
+        let words = req.prim_mat.len();
+        assert_eq!(req.prim_mat[words - WF_INST_TAIL_WORDS], WF_INST_MAGIC);
+        assert_eq!(req.prim_mat[words - WF_INST_TAIL_WORDS + 1], 2, "2 个实例");
+        assert_eq!(req.prim_mat[words - WF_INST_TAIL_WORDS + 2], 2, "2 个原型");
+        assert_eq!(INSTANCE_SLOTS, 28, "112 B / 4 = 28 槽");
+
+        // ③ 分组形状与前缀表不变（连续前缀约束没有被实例改动破坏）。
+        let mut per_group = [0usize; 4];
+        for r in &res {
+            per_group[r.group as usize] += 1;
+        }
+        assert_eq!(per_group, [3, 2, 8, 1]);
+        assert_eq!(WF_STAGE_GROUPS[1], &[(0, 2), (1, 1), (2, 8)]);
+        assert_eq!(WF_STAGE_GROUPS[3], &[(0, 2), (1, 1), (2, 4)]);
     }
 
     /// **静态门（无设备）**：native 目标下 wavefront 提交必须**如实报**「本目标无

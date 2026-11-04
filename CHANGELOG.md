@@ -8,6 +8,33 @@
 
 ## 渲染行为变化清单
 
+### R-2026-xx-12：`MaterialKind::Hair` 续弹改走按 f 的 Marschner sampler（旧 Disney 提案退役）
+
+- **受影响特性**：`prism-rt` 路径积分（`integrator.rs`）与 CPU wavefront
+  （`wavefront.rs`）里毛发材质的间接续弹方向 / pdf / throughput。
+- **变化原因**：R-6② 治本——旧实现方向用 Disney 提案、取值用 Marschner，
+  估计量无偏但 pdf 不贴 f；新 sampler 按三瓣权重选瓣、纵向高斯采角、方位
+  偏移采角，pdf 与 `eval_full` 同源并传入 MIS / throughput。f 数学零改动。
+- **视觉影响描述**：**旧值 → 新值**，毛发场景间接光方向分布与收敛速度改变；
+  `t10_marschner_sampler` S5 单股 4×4 spp=2 旧实现帧 vs 新 sampler 帧
+  `differing_pixels = 16/16`、最大通道差 1.597087e0；S2 白炉相对差由
+  2.472e-4 降到 8.181e-5，S1 ∫pdf dω = 0.999999955，两跑逐字节一致。
+- **是否有开关**：无（`MaterialKind::Hair` 单一路径；非毛发材质输出逐位不变）。
+
+### R-2026-xx-13：wavefront 求交接入 112 B 实例层级（Vulkan + WebGPU 双后端）
+
+- **受影响特性**：`prism-gpu` wavefront 路径模式的 `shade` / `extend` /
+  `shadow_ray` 求交（`rt_scene.wgsl::scene_intersect`）；含实例的场景帧。
+- **变化原因**：G-8① 治本——此前 wavefront 只线性扫描 `tris`，实例表不进求交。
+  现按 `prim_mat` 尾部 `W8I1` 描述符逐条逆仿射射线、按 `geom_id` 扫局部
+  BLAS、法线 `det(A)·A⁻ᵀ·n` 回世界；`vulkan/wavefront.rs` 与
+  `web/scene_gpu.rs` 同步消费同一份 112 B 编码与描述符校验。
+- **视觉影响描述**：**旧值 → 新值**，实例场景从渲染错误变为与 CPU 权威
+  逐位一致：I1 llvmpipe `0/256`、I2 浏览器 WebGPU `0/256`、I3 双跑 `0/256`；
+  故意改错仿射 `13/256` 必 FAIL。无实例场景 `plain == n`，与改动前逐位相同。
+- **是否有开关**：有——仅当 `prim_mat` 尾部存在 `W8I1` 描述符时进入实例分支；
+  无实例的请求走原线性扫描，字节不变。
+
 ### R-2026-xx-10：`rt_wavefront.wgsl` 补环境光 NEE 腿（此前只有逃逸臂 ⇒ 环境直接光整条缺失）
 
 - **受影响特性**：`prism-gpu` wavefront 路径模式 `shade` 段的环境光贡献。

@@ -947,6 +947,319 @@ fn det_atan2(y: f32, x: f32) -> f32 {
 }
 
 // ---------------------------------------------------------------------------
+// 全链路 Marschner 方向采样器（R-6②：按 f 抽样，pdf 进 MIS / throughput）
+// ---------------------------------------------------------------------------
+//
+// # 与 f 的关系（不复制第二份 f 实现）
+//
+// `eval_full` / `components_full` 的 R/TT/TRT 三瓣共享纵向 M(θ_i,θ_o)、
+// 各自的方位分布 N(φ_o−φ_i−δ_p) 与只依赖 θ_i 的衰减 A_p(θ_i)。本采样器把
+// `dω_i = cosθ_i·dθ_i·dφ_i = d(sinθ_i)·dφ_i` 当测度（s = sinθ_i ∈ [−1,1]、
+// φ_i ∈ [−π,π)），把 f 的**纵向边缘**与**方位条件分布**各做成确定性分段常数
+// CDF 表：
+//
+// ```text
+//   q_long(s) ∝ eval_full(asin(s), φ_o, θ_o, φ_o)        ← 直接复用 f（Δφ=0）
+//   q_azim(φ) ∝ n_azimuth(φ)                             ← 直接复用 N
+//   pdf(s,φ_i) = q_long(s) · [P_R·q_azim(φ_o−φ_i)
+//                           + P_T·q_azim(φ_o−φ_i−shift)]
+//   P_R = w_r/wsum, P_T = (w_tt+w_trt)/wsum
+// ```
+//
+// 采样过程（按三瓣权重选瓣 → 纵向反演采 θ_i → 方位偏移反演采 φ_i → 组装
+// ω_i）的联合密度**恰好等于**上式：纵向表与瓣无关，瓣只决定方位偏移 δ_p；
+// 故 `throughput = f·max(0, n·ω_i)/pdf` 是严格无偏估计量（pdf > 0 处处，
+// 因为 M 与 I₀ 恒正）。`shift = 0`（默认）时 pdf 与 f 同形，方差最低。
+//
+// 两张表都只调本文件公开函数（`eval_full` / `n_azimuth`），没有第二份 M/N/A
+// 公式；`pdf_incident` 与 `sample_incident` 共用同一张表与同一套常量，故采样
+// 点上的 `f/pdf` 与直接求值逐位自洽（S3）。
+//
+// # 确定性（D-29）
+//
+// 表是纯函数（±×÷ + `det_exp`/`cos_sin` 确定性件）；随机量只取调用方已有的
+// 三个 Sobol 分量 `(u_lobe, u_long, u_azim)`——零新随机源、零 libm、零线程，
+// 同输入逐位可复现。所有公共入口对非有限/退化参数做兜底（C18，不 panic）。
+
+/// 纵向 CDF 表的格数（s = sinθ_i ∈ [−1,1]；格宽 2/256）。
+pub const HAIR_LONG_BINS: usize = 256;
+/// 方位 CDF 表的格数（φ ∈ [−π,π)；格宽 2π/256）。
+pub const HAIR_AZIM_BINS: usize = 256;
+
+/// 角度域采样结果（纤维局部系）。
+///
+/// `theta_i` / `phi_i` 是**采样出的续弹方向**（f 的入射侧参数），
+/// `theta_o` / `phi_o` 由调用方固定为来路（视点）方向。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HairSample {
+    /// 采样出的纵向倾角（弧度）。
+    pub theta_i: f32,
+    /// 采样出的方位角（弧度，已环绕到 [−π,π)）。
+    pub phi_i: f32,
+    /// 该方向的散射值 `f = eval_full(theta_i, phi_i, theta_o, phi_o)`。
+    pub f: f32,
+    /// 立体角 pdf（关于 `dω_i = ds·dφ_i`）。
+    pub pdf: f32,
+}
+
+/// 世界空间续弹采样结果（积分器直接消费）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HairBounce {
+    /// 续弹方向（世界空间单位向量）。
+    pub dir: Vec3,
+    /// 采样出的纵向角（与 `dir` 同源，供 pdf 判据精确复用）。
+    pub theta_i: f32,
+    /// 采样出的方位角（与 `dir` 同源）。
+    pub phi_i: f32,
+    /// 该方向的散射值 f（与 [`HairSample::f`] 同位）。
+    pub f: f32,
+    /// 立体角 pdf（写入 `prev_pdf_dir`，供 MIS 使用）。
+    pub pdf: f32,
+    /// 吞吐乘子 `f·max(0, n·dir)/pdf`。
+    pub weight: f32,
+}
+
+/// 相位角环绕到 [−π,π)（`floor` 是 IEEE 精确舍入运算，非超越函数）。
+#[inline]
+fn hair_wrap_pi(x: f32) -> f32 {
+    if !x.is_finite() {
+        return 0.0;
+    }
+    let two_pi = 2.0 * PI;
+    x - two_pi * ((x + PI) / two_pi).floor()
+}
+
+/// 固定格 CDF 反演：`cdf` 长度 = `bins+1`，`cdf[0]=0`，`cdf[bins]=total`。
+/// 返回 `(格号, 格内比例 ∈ [0,1])`；`total ≤ 0` 时给均匀分布兜底（C18）。
+#[inline]
+fn hair_cdf_invert(cdf: &[f32], total: f32, u: f32) -> (usize, f32) {
+    let bins = cdf.len() - 1;
+    if total <= 0.0 || !total.is_finite() {
+        let f = u.clamp(0.0, 1.0);
+        let scaled = f * bins as f32;
+        let i = (scaled as usize).min(bins - 1);
+        return (i, scaled - i as f32);
+    }
+    let target = u.clamp(0.0, 1.0) * total;
+    // 二分找最后一个 `cdf[i] <= target` 的格。
+    let (mut lo, mut hi) = (0usize, bins);
+    while lo + 1 < hi {
+        let mid = (lo + hi) / 2;
+        if cdf[mid] <= target {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let w = cdf[lo + 1] - cdf[lo];
+    let frac = if w > 0.0 {
+        ((target - cdf[lo]) / w).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (lo, frac)
+}
+
+/// 分段常数密度在 `x ∈ [lo, lo+span)` 处的值（∫q dx = 1）。
+#[inline]
+fn hair_bin_density(cdf: &[f32], total: f32, bins: usize, lo: f32, span: f32, x: f32) -> f32 {
+    if total <= 0.0 || !total.is_finite() {
+        return 1.0 / span;
+    }
+    let t = ((x - lo) / span * bins as f32).floor();
+    let i = if t.is_finite() {
+        t.clamp(0.0, (bins - 1) as f32) as usize
+    } else {
+        0
+    };
+    let width = span / bins as f32;
+    ((cdf[i + 1] - cdf[i]).max(0.0)) / (total * width)
+}
+
+/// 给定来路 `(θ_o,φ_o)` 的两张 CDF 表（构建一次、多次求值）。
+///
+/// 公开是**判据需要**：S1 的 ∫pdf dω 求积与 S4 的负控都要在固定来路上对
+/// 上万/十万级方向求 pdf，每次重建 2×256 格会让判据慢到不可用。表是纯值，
+/// 只含 f32，跨调用逐位稳定。
+#[derive(Debug, Clone)]
+pub struct HairPdfTable {
+    long_cdf: [f32; HAIR_LONG_BINS + 1],
+    long_total: f32,
+    azim_cdf: [f32; HAIR_AZIM_BINS + 1],
+    azim_total: f32,
+    phi_o: f32,
+}
+
+impl HairScatter {
+    /// 构建纵向 / 方位 CDF 表（纯函数；密度值直接取自 `eval_full` 与 `n_azimuth`）。
+    pub fn pdf_table(&self, theta_o: f32, phi_o: f32) -> HairPdfTable {
+        let ds = 2.0 / HAIR_LONG_BINS as f32;
+        let mut long_cdf = [0.0f32; HAIR_LONG_BINS + 1];
+        for i in 0..HAIR_LONG_BINS {
+            let s = -1.0 + (i as f32 + 0.5) * ds;
+            let theta_i = det_asin(s);
+            // Δφ = 0（phi_i 取 phi_o）：纵向边缘密度正比于 f 在该行的求值。
+            let d = self.eval_full(theta_i, phi_o, theta_o, phi_o);
+            long_cdf[i + 1] = long_cdf[i] + if d.is_finite() { d.max(0.0) } else { 0.0 };
+        }
+        let dphi = 2.0 * PI / HAIR_AZIM_BINS as f32;
+        let mut azim_cdf = [0.0f32; HAIR_AZIM_BINS + 1];
+        for j in 0..HAIR_AZIM_BINS {
+            let phi = -PI + (j as f32 + 0.5) * dphi;
+            let d = self.n_azimuth(phi);
+            azim_cdf[j + 1] = azim_cdf[j] + if d.is_finite() { d.max(0.0) } else { 0.0 };
+        }
+        HairPdfTable {
+            long_cdf,
+            long_total: long_cdf[HAIR_LONG_BINS],
+            azim_cdf,
+            azim_total: azim_cdf[HAIR_AZIM_BINS],
+            phi_o,
+        }
+    }
+
+    /// 三瓣选瓣概率 `(P_R, P_TT, P_TRT)`（权重归一，与 `eval_full` 同口径）。
+    #[inline]
+    fn lobe_probs(&self) -> (f32, f32, f32) {
+        let wsum = (self.w_r + self.w_tt + self.w_trt).max(1e-6);
+        (self.w_r / wsum, self.w_tt / wsum, self.w_trt / wsum)
+    }
+
+    /// 用已有表算立体角 pdf（[`HairScatter::pdf_incident`] 的内部件）。
+    ///
+    /// `shift` 取 `self.phi_tt_shift`（不存进表），故"故意改错方位偏移"的
+    /// 负控只要换一个 `HairScatter` 就会在 pdf 上真实体现。
+    pub fn pdf_with_table(&self, t: &HairPdfTable, theta_i: f32, phi_i: f32) -> f32 {
+        if !theta_i.is_finite() || !phi_i.is_finite() {
+            return 0.0;
+        }
+        let s = cos_sin(theta_i).1.clamp(-1.0, 1.0);
+        let q_long = hair_bin_density(
+            &t.long_cdf, t.long_total, HAIR_LONG_BINS, -1.0, 2.0, s,
+        );
+        let (pr, ptt, ptrt) = self.lobe_probs();
+        let dphi = t.phi_o - phi_i;
+        let span = 2.0 * PI;
+        let q_r = hair_bin_density(
+            &t.azim_cdf, t.azim_total, HAIR_AZIM_BINS, -PI, span, hair_wrap_pi(dphi),
+        );
+        let q_t = hair_bin_density(
+            &t.azim_cdf, t.azim_total, HAIR_AZIM_BINS, -PI, span,
+            hair_wrap_pi(dphi - self.phi_tt_shift),
+        );
+        let pdf = q_long * (pr * q_r + (ptt + ptrt) * q_t);
+        if pdf.is_finite() && pdf > 0.0 {
+            pdf
+        } else {
+            0.0
+        }
+    }
+
+    /// **公开 pdf**：给定来路 `(theta_o,phi_o)`，返回按 f 采样到
+    /// `(theta_i,phi_i)` 的立体角密度（NEE 的 `surface_pdf` 与续弹的
+    /// `prev_pdf_dir` 共用这一把尺，MIS 两侧自洽）。
+    ///
+    /// ∫pdf dω_i = 1（两张表各自按格宽归一，方位是凸组合）。
+    pub fn pdf_incident(
+        &self,
+        theta_o: f32,
+        phi_o: f32,
+        theta_i: f32,
+        phi_i: f32,
+    ) -> f32 {
+        if !theta_o.is_finite() || !phi_o.is_finite()
+            || !theta_i.is_finite() || !phi_i.is_finite()
+        {
+            return 0.0;
+        }
+        let t = self.pdf_table(theta_o, phi_o);
+        self.pdf_with_table(&t, theta_i, phi_i)
+    }
+
+    /// **按 f 采样续弹方向**（角度域）。
+    ///
+    /// `u_lobe` 选瓣、`u_long` 反演纵向、`u_azim` 反演方位偏移；三者取自
+    /// 积分器已有的两个 `sample_2d`（`(u_lobe, _)` 与 `(u1,u2)`），不新增维度。
+    /// 返回 `(θ_i, φ_i, f, pdf)`，其中 f 与 pdf 都是公开求值函数的直接结果。
+    pub fn sample_incident(
+        &self,
+        theta_o: f32,
+        phi_o: f32,
+        u_lobe: f32,
+        u_long: f32,
+        u_azim: f32,
+    ) -> HairSample {
+        if !theta_o.is_finite() || !phi_o.is_finite() {
+            return HairSample { theta_i: 0.0, phi_i: 0.0, f: 0.0, pdf: 0.0 };
+        }
+        let t = self.pdf_table(theta_o, phi_o);
+        // ① 按三瓣权重选瓣；TT/TRT 共用 `phi_tt_shift` 方位偏移。
+        let (pr, ptt, _ptrt) = self.lobe_probs();
+        let lobe = if u_lobe < pr { 0u32 } else if u_lobe < pr + ptt { 1u32 } else { 2u32 };
+        let delta = if lobe == 0 { 0.0 } else { self.phi_tt_shift };
+        // ② 纵向：分段常数 CDF 反演 → s = sinθ_i → θ_i = asin(s)。
+        let (li, lf) = hair_cdf_invert(&t.long_cdf, t.long_total, u_long);
+        let ds = 2.0 / HAIR_LONG_BINS as f32;
+        let s = (-1.0 + (li as f32 + lf) * ds).clamp(-1.0, 1.0);
+        let theta_i = det_asin(s);
+        // ③ 方位：从 N(φ_p) 反演 φ_p，再按瓣偏角组装 φ_i = φ_o − δ_p − φ_p。
+        let (ai, af) = hair_cdf_invert(&t.azim_cdf, t.azim_total, u_azim);
+        let dphi = 2.0 * PI / HAIR_AZIM_BINS as f32;
+        let phi_p = -PI + (ai as f32 + af) * dphi;
+        let phi_i = hair_wrap_pi(phi_o - delta - phi_p);
+        // ④ f 与 pdf 都走公开函数，采样密度与 pdf 精确同源（无偏 + 自洽）。
+        let f = self.eval_full(theta_i, phi_i, theta_o, phi_o);
+        let pdf = self.pdf_with_table(&t, theta_i, phi_i);
+        HairSample { theta_i, phi_i, f, pdf }
+    }
+}
+
+impl HairGeometry {
+    /// `(θ, φ)` → 世界单位方向（[`HairGeometry::longitudinal`] /
+    /// [`HairGeometry::azimuth`] 的逆映射；W5 V4 反投影判据同一棵树）。
+    ///
+    /// `d = u·sinθ + (v·cosφ + w·sinφ)·cosθ`，其中 `w = u × v`。
+    pub fn dir_from_angles(&self, theta: f32, phi: f32) -> Vec3 {
+        let (cph, sph) = cos_sin(phi);
+        let (cth, sth) = cos_sin(theta);
+        let u = self.tangent;
+        let v = self.normal_ref;
+        let w = u.cross(&v);
+        (u * sth + (v * cph + w * sph) * cth).normalize()
+    }
+}
+
+/// **积分器入口**：给定来路 `wo`、着色法线 `n` 与三个已有 Sobol 分量，
+/// 采样一个 Marschner 续弹方向并给出 `(dir, f, pdf, weight)`。
+///
+/// `weight = f·max(0, n·dir)/pdf`（与 `Bsdf::sample` 的 `cos_i` 口径相同），
+/// `pdf` 写 `prev_pdf_dir`，`dir` 作下一段射线方向。
+pub fn sample_hair_bounce(
+    scatter: &HairScatter,
+    geometry: &HairGeometry,
+    wo: Vec3,
+    n: Vec3,
+    u_lobe: f32,
+    u_long: f32,
+    u_azim: f32,
+) -> HairBounce {
+    let theta_o = geometry.longitudinal(wo);
+    let phi_o = geometry.azimuth(wo);
+    let s = scatter.sample_incident(theta_o, phi_o, u_lobe, u_long, u_azim);
+    let dir = geometry.dir_from_angles(s.theta_i, s.phi_i);
+    let cos_surf = dir.dot(&n).max(0.0);
+    let weight = if s.pdf > 0.0 { s.f * cos_surf / s.pdf } else { 0.0 };
+    HairBounce {
+        dir,
+        theta_i: s.theta_i,
+        phi_i: s.phi_i,
+        f: s.f,
+        pdf: if s.pdf.is_finite() { s.pdf } else { 0.0 },
+        weight: if weight.is_finite() && weight > 0.0 { weight } else { 0.0 },
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 测试
 // ---------------------------------------------------------------------------
 

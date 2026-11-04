@@ -567,25 +567,24 @@ pub(crate) fn material_bsdf(m: &MaterialKind) -> Option<Bsdf> {
             Some(Bsdf::new(Vec3::splat(1.0), 1.0, 0.0, 1.5, 0.0, 0.0, Vec3::splat(0.3)))
         }
         MaterialKind::Emissive { .. } => None,
-        // 毛发：Marschner 模型**没有解析抽样器**（`hair_scatter.rs` 本轮一行不改），
-        // 故这里返回一个 Disney 等价形充当**方向提案分布**：采样方向、pdf、
-        // 续弹吞吐都由它给出，而 BRDF **取值**由 [`surface_brdf`] 用
-        // `HairScatter::eval_full` 覆盖（见 [`hair_proposal_bsdf`] 的推导）。
+        // 毛发：续弹已改走 [`crate::hair_scatter::sample_hair_bounce`]（按 f
+        // 抽样，R-6②），NEE 的 f / pdf 由 `surface_brdf` / `surface_pdf` 的
+        // Hair 臂用 `eval_full` / `pdf_incident` 覆盖。这里保留 Disney 等价形
+        // 只供非续弹的 Disney 侧求值（如 MNEE 焦散），**不再**决定方向或 pdf。
         MaterialKind::Hair { scatter, .. } => Some(hair_proposal_bsdf(&scatter)),
     }
 }
 
-/// 毛发材质的**方向提案** `Bsdf`（Disney 等价形）。
+/// 毛发材质的 Disney 等价形（**仅非续弹路径使用**，见下）。
 ///
-/// # 为什么需要它，以及它会带来什么
+/// # 历史与现状（R-6② 已治本）
 ///
-/// 路径追踪的续弹要"抽一个方向 + 算 pdf"。Marschner 三分量模型没有解析抽样器
-/// （它的方位分量是 I₀ 形状，纵向是高斯，联合逆变换不闭式），而
-/// `hair_scatter.rs` 是 R-5 已对齐的资产，**本轮不许改**（任务红线）。
-/// 所以续弹方向从 Disney 瓣抽、pdf 用 Disney 的 pdf、BRDF 取值用 Marschner 的
-/// ——这是一个**有效**（无偏）的重要性采样：`f/p` 的期望仍是 `∫f`，只是方差
-/// 比"按 Marschner 形状抽样"大。MIS 的两侧（NEE 的 `surface_pdf` 与续弹的
-/// `prev_pdf_dir`）都用同一个提案 pdf，故权重仍自洽（不会双重计数/漏计）。
+/// R-5/T6 时期 Marschner 没有按 f 的抽样器，续弹方向、pdf、吞吐都从这个
+/// Disney 提案取，BRDF 取值另用 `eval_full` —— 无偏但 pdf 不贴 f。R-6② 起
+/// `hair_scatter.rs` 新增 [`crate::hair_scatter::sample_hair_bounce`]：按三瓣
+/// 权重选瓣 → 纵向高斯采 θ → 方位偏移采 φ → 组装方向，pdf 与 f 同源；
+/// 续弹与 NEE 的 pdf 都改走 `pdf_incident`。本函数因此**只**保留给
+/// `material_bsdf_at` 的 Disney 侧求值（MNEE 焦散等），不参与毛发续弹。
 ///
 /// # 参数映射（固定，不随场景变）
 ///
@@ -812,11 +811,22 @@ pub(crate) fn wrap_delta(d: f32) -> f32 {
     d - (d + 0.5).floor()
 }
 
-/// 反射域 pdf（解析）：Lambert = cosθ/π；Mirror = 0（δ）；Pbr = Disney pdf。
+/// 反射域 pdf（解析）：Lambert = cosθ/π；Mirror = 0（δ）；Pbr = Disney pdf；
+/// 毛发 = [`HairScatter::pdf_incident`]（与续弹 `prev_pdf_dir` 同一把尺）。
 pub(crate) fn surface_pdf(mat: &MaterialKind, bsdf: &Bsdf, wo: Vec3, wi: Vec3, nv: Vec3) -> f32 {
     match *mat {
         MaterialKind::Lambert { .. } => wi.dot(&nv).max(0.0) * FRAC_1_PI,
         MaterialKind::Mirror => 0.0,
+        // 全链路 Marschner：NEE 的备择 pdf 必须等于续弹 sampler 的 pdf，
+        // 否则 power heuristic 两侧不同尺 ⇒ MIS 有偏。参数顺序与
+        // `surface_brdf` 的 `eval_full(theta_i(wi), …, theta_o(wo), …)` 一致。
+        MaterialKind::Hair { scatter, geometry } => {
+            let theta_i = geometry.longitudinal(wi);
+            let phi_i = geometry.azimuth(wi);
+            let theta_o = geometry.longitudinal(wo);
+            let phi_o = geometry.azimuth(wo);
+            scatter.pdf_incident(theta_o, phi_o, theta_i, phi_i)
+        }
         _ => bsdf.pdf(wo, wi, nv),
     }
 }
@@ -4101,6 +4111,28 @@ fn trace_one(
                 break;
             }
             ray = Ray { origin: p + n * SURFACE_EPS, dir, time: ray.time };
+        } else if let MaterialKind::Hair { scatter, geometry } = mat {
+            // 全链路 Marschner（R-6②）：续弹方向按 f 采样，pdf 进 MIS /
+            // throughput。不再走 Disney 提案；`wo` 是来路（f 的出射侧），
+            // 采样结果 `hb.dir` 是 f 的入射侧，与 `surface_brdf` 逐式同源。
+            let hb = crate::hair_scatter::sample_hair_bounce(
+                scatter, geometry, wo, n, u_lobe, u1, u2,
+            );
+            st.throughput = hadamard(st.throughput, Vec3::splat(hb.weight));
+            st.prev_pdf_dir = hb.pdf;
+            st.prev_specular = false;
+            // 瓣宽 = 纵向粗糙度（与 Disney 的 roughness² 锥角增量同量级）。
+            let alpha = scatter.beta_m;
+            st.spread = (st.spread * st.spread + alpha * alpha).sqrt().max(st.spread);
+            if !rr_survive(&mut st, stream, ev + 1) {
+                break;
+            }
+            let eps = if hb.dir.dot(&n) > 0.0 {
+                SURFACE_EPS
+            } else {
+                -SURFACE_EPS
+            };
+            ray = Ray { origin: p + n * eps, dir: hb.dir, time: ray.time };
         } else {
             let sctx = SampleCtx {
                 psr_rough: if bsdf.roughness < 1e-3 { 1e-3 } else { 0.0 },

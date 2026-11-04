@@ -37,6 +37,16 @@ use prism_gpu::vulkan::VulkanBackend;
 use prism_rt::camera::Camera;
 use prism_math::Vec3;
 
+// G-8① 判据 I1–I4 的额外导入（模块级；与上面的 R-1 判据共用同一份场景基座）。
+use prism_core::EvalCtx;
+use prism_gpu::instance::{InstanceReq, INSTANCE_MAT_FROM_GEOM as GPU_MAT_FROM_GEOM};
+use prism_gpu::vulkan::wavefront::{
+    append_instance_table, validate_instance_tail, WavefrontTri,
+};
+use prism_rt::instance::{Instance, INSTANCE_MAT_FROM_GEOM as CPU_MAT_FROM_GEOM};
+use prism_rt::integrator::{MaterialKind, RenderParams, Scene};
+use prism_rt::light::Light;
+
 /// **R-1 主判据**：spp=2、max_bounces=3 的全路径逐位对拍（覆盖相机抖动、
 /// NEE/MIS、Lambert 续弹、RR 存活、逃逸背景、spp 固定形状归约全链）。
 #[test]
@@ -209,5 +219,321 @@ fn r6_curve_via_tessellation_wavefront_parity() {
         "[R-6] 曲线三角化（{} 三角，tol={tol}）进 wavefront：differing_pixels = 0/{}",
         req.triangles.len(),
         w * h
+    );
+}
+
+// ---------------------------------------------------------------------------
+// G-8① 收口：wavefront 腿几何实例层级（I1 / I3 / I4）
+// ---------------------------------------------------------------------------
+//
+// CPU 权威 = `prism_rt::wavefront::render_frame(&Scene-with-instances, ...)`：
+// `Scene::instance_nearest` 做「世界射线 → 逆仿射 → 局部 BLAS → 世界 t」，
+// `normal_at` 的 Instance 臂用 `det(A)·A⁻ᵀ·n`。GPU 被测 =
+// `rt_scene.wgsl::scene_intersect` 的实例族（同一套算术、同一条 112 B 记录）。
+// 判据仍是逐像素 `to_bits()` 全等，不放宽任何尺子。
+//
+// 实例数据经现有 group(2) b2 `prim_mat` / b3 `tris` 承载（零绑定变更），
+// 由 `append_instance_table` 复用 `crate::instance::encode_instances` 编码；
+// Vulkan 与 WebGPU 消费同一张 `build_resources` 资源表。
+
+/// 3 个实例的仿射（行主序 3×4）：纯平移 / **镜像 det<0** + 平移 / 恒等。
+///
+/// 整数平移与轴向镜像在 f32 下逐位精确（`-1.0` 与整数坐标都不引入舍入），
+/// 这是 CPU 权威与 GPU 实例遍历能给出 `differing_pixels = 0` 的数值条件——
+/// 选的是条件数好的场景，不是把阈值放宽。
+const I_AFFINES: [[f32; 12]; 3] = [
+    [1.0, 0.0, 0.0, -0.9, 0.0, 1.0, 0.0, 0.6, 0.0, 0.0, 1.0, 0.2],
+    [-1.0, 0.0, 0.0, 0.9, 0.0, 1.0, 0.0, 0.6, 0.0, 0.0, 1.0, 0.4],
+    [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+];
+/// 每个实例的 `geom_id`（2 个原型 ⇒ 多原型 BLAS 索引真的被遍历）。
+const I_GEOMS: [u32; 3] = [0, 1, 0];
+
+/// 2 个原型的局部三角形（+Z 朝向方板；尺寸不同 ⇒ 多原型可辨）。
+fn i_geom_tris() -> Vec<Vec<WavefrontTri>> {
+    let board = |s: f32| -> Vec<WavefrontTri> {
+        let p0 = Vec3::new(-s, -s, 0.0);
+        let p1 = Vec3::new(s, -s, 0.0);
+        let p2 = Vec3::new(s, s, 0.0);
+        let p3 = Vec3::new(-s, s, 0.0);
+        vec![
+            WavefrontTri { a: p0, b: p1, c: p2 },
+            WavefrontTri { a: p0, b: p2, c: p3 },
+        ]
+    };
+    vec![board(0.45), board(0.30)]
+}
+
+/// CPU 侧实例（与 GPU 侧**同一组仿射**，分别过两个 crate 的 `from_affine`）。
+fn i_cpu_instances() -> Vec<Instance> {
+    I_AFFINES
+        .iter()
+        .zip(I_GEOMS)
+        .map(|(a, g)| {
+            Instance::from_affine(*a, g, CPU_MAT_FROM_GEOM).expect("可逆仿射")
+        })
+        .collect()
+}
+
+/// GPU 侧实例（112 B 编码的唯一事实源是 `crate::instance`）。
+fn i_gpu_instances() -> Vec<InstanceReq> {
+    I_AFFINES
+        .iter()
+        .zip(I_GEOMS)
+        .map(|(a, g)| {
+            InstanceReq::from_affine(*a, g, GPU_MAT_FROM_GEOM).expect("可逆仿射")
+        })
+        .collect()
+}
+
+/// CPU 权威场景：2 原型 + 3 实例（含镜像）+ Sphere 灯（不注册为几何）。
+fn i_cpu_scene() -> Scene {
+    let mut scene = Scene::default();
+    let albedos = [Vec3::new(0.72, 0.71, 0.69), Vec3::new(0.2, 0.5, 0.3)];
+    for (g, tris) in i_geom_tris().iter().enumerate() {
+        let mut pos: Vec<Vec3> = Vec::new();
+        let mut idx: Vec<u32> = Vec::new();
+        for t in tris {
+            let b = pos.len() as u32;
+            pos.extend_from_slice(&[t.a, t.b, t.c]);
+            idx.extend_from_slice(&[b, b + 1, b + 2]);
+        }
+        let gid = scene.add_instance_geom(
+            pos,
+            idx,
+            MaterialKind::Lambert { albedo: albedos[g] },
+        );
+        assert_eq!(gid, g as u32, "原型注册序必须等于 geom_id");
+    }
+    scene.add_instances(i_cpu_instances());
+    scene.lights = vec![Light::Sphere {
+        center: Vec3::new(0.0, 1.6, 0.3),
+        radius: 0.3,
+        radiance: Vec3::new(14.0, 12.0, 9.0),
+    }];
+    scene
+}
+
+/// 与 `parity_request` 逐位同源的相机（seed/node_id/frame 亦同源）。
+fn i_camera() -> Camera {
+    Camera::new(
+        Vec3::new(0.0, 0.8, -2.5),
+        Vec3::new(0.0, 0.4, 0.5),
+        Vec3::new(0.0, 1.0, 0.0),
+        55.0,
+        0.0,
+        3.1,
+        0.0,
+        0.0,
+    )
+}
+
+fn i_cpu_reference(w: u32, h: u32, spp: u32, bounces: u32) -> Vec<[f32; 4]> {
+    let scene = i_cpu_scene();
+    let ctx = EvalCtx::new(2026, 7, 3);
+    let mut params = RenderParams::new(spp, bounces);
+    params.clamp_indirect = None;
+    prism_rt::wavefront::render_frame(&scene, &i_camera(), &ctx, (w, h), &params)
+}
+
+/// 与 `parity_request` 同一基座（相机 uniform / Sobol 表 / 灯 / 2 个 Lambert
+/// 材质逐位同源），把普通三角形换成「2 原型 + 3 实例」的实例表。
+fn i_request(
+    w: u32,
+    h: u32,
+    spp: u32,
+    bounces: u32,
+) -> prism_gpu::vulkan::wavefront::WavefrontRequest {
+    let mut req = parity_request(w, h, spp, bounces);
+    req.triangles.clear();
+    req.prim_mat.clear();
+    let geoms = i_geom_tris();
+    let instances = i_gpu_instances();
+    append_instance_table(&mut req.triangles, &mut req.prim_mat, &instances, &geoms, &[0, 1])
+        .expect("实例表编码必须成功");
+    validate_instance_tail(&req).expect("实例描述符必须自洽");
+    req
+}
+
+fn i_differing(cpu: &[[f32; 4]], gpu: &[[f32; 4]]) -> usize {
+    cpu.iter()
+        .zip(gpu.iter())
+        .filter(|(a, b)| {
+            a[0].to_bits() != b[0].to_bits()
+                || a[1].to_bits() != b[1].to_bits()
+                || a[2].to_bits() != b[2].to_bits()
+        })
+        .count()
+}
+
+/// **I1**：3 实例（含镜像 `det<0`）+ 2 原型，llvmpipe 上 wavefront ≡ CPU 权威，
+/// `differing_pixels = 0`。
+#[test]
+fn i1_wavefront_instances_match_cpu_authority_bitwise() {
+    let backend = VulkanBackend::new();
+    if !device_ready(&backend) {
+        return;
+    }
+    let (w, h, spp, bounces) = (16u32, 16u32, 2u32, 3u32);
+    let cpu = i_cpu_reference(w, h, spp, bounces);
+    let max_l = cpu
+        .iter()
+        .map(|p| p[0] + p[1] + p[2])
+        .fold(0.0f32, f32::max);
+    assert!(max_l > 0.01, "CPU 参考无能量（max_luma={max_l}）：实例场景构造失效");
+    assert!(i_gpu_instances()[1].is_mirrored(), "判据必须含 det<0 镜像实例");
+    assert_eq!(i_gpu_instances().len(), 3, "2~3 个实例");
+
+    let req = i_request(w, h, spp, bounces);
+    let rep = backend.render_wavefront_frame(&req);
+    assert_eq!(
+        rep.status,
+        prism_gpu::vulkan::compute::DispatchStatus::Ok,
+        "{}",
+        rep.detail
+    );
+    let diff = i_differing(&cpu, &rep.hdr);
+    println!(
+        "[I1] llvmpipe 3 实例/2 原型/含镜像：differing_pixels = {diff}/{}（{} 三角，{} 实例字）",
+        w * h,
+        req.triangles.len(),
+        req.prim_mat.len()
+    );
+    assert_bitwise_equal(w, h, &cpu, &rep.hdr, "I1 wavefront 实例 vs CPU 权威");
+}
+
+/// 从 `--instance-parity --json` 报告里按顶层字段名取整数（纯 ASCII 数值，
+/// 无需引入 JSON 库；顶层字段排在 `results` 之前，故 `find` 命中顶层）。
+fn i2_json_i64(report: &str, key: &str) -> i64 {
+    let pat = format!("\"{key}\":");
+    let at = report
+        .find(&pat)
+        .unwrap_or_else(|| panic!("[I2] 报告缺少字段 {key}：\n{report}"))
+        + pat.len();
+    let rest = report[at..].trim_start();
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit() && c != '-')
+        .unwrap_or(rest.len());
+    rest[..end].parse::<i64>().unwrap_or_else(|e| {
+        panic!("[I2] 字段 {key} 不是整数：{e}；片段 `{}`", &rest[..end])
+    })
+}
+
+/// **I2**：浏览器 WebGPU（复用上一轮既有的 Xvfb + 系统 Chromium +
+/// SwiftShader 真机 harness，零新建 harness）上，同一份 112 B 实例表驱动的
+/// `rt_scene.wgsl::scene_intersect` 与 CPU 权威逐位一致，`differing_pixels = 0`；
+/// 故意改错一个实例逆仿射的负控与正控参考必须非 0 差（判别力前置）。
+#[test]
+fn i2_browser_webgpu_instances_match_cpu_authority_bitwise() {
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/web/wgsl_lib_compile.mjs");
+    let proc = std::process::Command::new("node")
+        .args([script, "--instance-parity", "--json"])
+        .output()
+        .unwrap_or_else(|e| panic!("[I2] 无法启动 node 复用既有 WebGPU harness：{e}"));
+    let stdout = String::from_utf8_lossy(&proc.stdout);
+    let stderr = String::from_utf8_lossy(&proc.stderr);
+    let at = stdout.find('{').unwrap_or(0);
+    let report = &stdout[at..];
+    assert!(
+        proc.status.success() && report.contains("\"i2_ok\": true"),
+        "[I2] 浏览器 WebGPU 实例对拍失败（exit={:?}）：\n{report}\n{stderr}",
+        proc.status.code()
+    );
+    let total = i2_json_i64(report, "dispatch");
+    let pos = i2_json_i64(report, "positive_differing_pixels");
+    let neg = i2_json_i64(report, "negative_differing_pixels");
+    let tamper = i2_json_i64(report, "tamper_vs_positive_differing_pixels");
+    println!(
+        "[I2] 浏览器 WebGPU（SwiftShader）3 实例/2 原型/含镜像：differing_pixels = {pos}/{total}"
+    );
+    println!(
+        "[I2] 负控自身 differing_pixels = {neg}/{total}；负控 vs 正控 = {tamper}/{total}（必须 > 0）"
+    );
+    assert_eq!(pos, 0, "[I2] 浏览器 WebGPU 实例场景必须 0 差");
+    assert_eq!(
+        neg, 0,
+        "[I2] 负控与改坏后的 CPU 权威也必须 0 差（证明 GPU 真消费实例表）"
+    );
+    assert!(tamper > 0, "[I2] 改错逆仿射必须产生非 0 差，否则判据无判别力");
+}
+
+/// **I3**：实例帧双跑逐字节一致。
+#[test]
+fn i3_instance_frame_two_pass_bitwise_identical() {
+    let backend = VulkanBackend::new();
+    if !device_ready(&backend) {
+        return;
+    }
+    let req = i_request(16, 16, 2, 3);
+    let a = backend.render_wavefront_frame(&req);
+    let b = backend.render_wavefront_frame(&req);
+    assert_eq!(
+        a.status,
+        prism_gpu::vulkan::compute::DispatchStatus::Ok,
+        "{}",
+        a.detail
+    );
+    assert_eq!(
+        b.status,
+        prism_gpu::vulkan::compute::DispatchStatus::Ok,
+        "{}",
+        b.detail
+    );
+    let diff = a
+        .hdr
+        .iter()
+        .zip(b.hdr.iter())
+        .filter(|(x, y)| x.map(f32::to_bits) != y.map(f32::to_bits))
+        .count();
+    println!("[I3] 实例帧双跑 differing_pixels = {diff}/{}", a.hdr.len());
+    assert_eq!(diff, 0, "实例帧两次派发必须逐位一致");
+}
+
+/// **I4 判别力前置**：故意改错一个实例的逆仿射（shader 真消费的
+/// `inverse[3]` 平移字）必须 FAIL；正控必须 `differing_pixels = 0`。
+/// 这条排除「根本没消费实例表」的假绿。
+#[test]
+fn i4_tampered_instance_affine_must_fail() {
+    let backend = VulkanBackend::new();
+    if !device_ready(&backend) {
+        return;
+    }
+    let (w, h, spp, bounces) = (16u32, 16u32, 2u32, 3u32);
+    let cpu = i_cpu_reference(w, h, spp, bounces);
+
+    // 正控：正确实例表 ⇒ 0 差。
+    let ok_rep = backend.render_wavefront_frame(&i_request(w, h, spp, bounces));
+    assert_eq!(
+        ok_rep.status,
+        prism_gpu::vulkan::compute::DispatchStatus::Ok,
+        "{}",
+        ok_rep.detail
+    );
+    let ok_diff = i_differing(&cpu, &ok_rep.hdr);
+    assert_eq!(ok_diff, 0, "I4 正控必须 0 差");
+
+    // 负控：篡改第 1 条实例的逆平移字（inverse 起点 12 + 平移槽 3）。
+    let mut bad = i_request(w, h, spp, bounces);
+    let words = bad.prim_mat.len();
+    let ib = bad.prim_mat[words - 5] as usize; // 描述符 [3] = instance_base
+    let off = ib + 12 + 3;
+    let v = f32::from_bits(bad.prim_mat[off]);
+    bad.prim_mat[off] = (v + 0.75).to_bits();
+    let bad_rep = backend.render_wavefront_frame(&bad);
+    assert_eq!(
+        bad_rep.status,
+        prism_gpu::vulkan::compute::DispatchStatus::Ok,
+        "{}",
+        bad_rep.detail
+    );
+    let bad_diff = i_differing(&cpu, &bad_rep.hdr);
+    println!(
+        "[I4] 正控 differing_pixels = {ok_diff}/{}；改错一个实例逆仿射 → {bad_diff}/{}",
+        w * h,
+        w * h
+    );
+    assert!(
+        bad_diff > 0,
+        "改错仿射必须 FAIL：仍是 0 差说明实例表根本没被消费（假绿）"
     );
 }

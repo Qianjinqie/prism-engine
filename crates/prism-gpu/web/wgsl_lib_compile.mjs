@@ -868,6 +868,387 @@ function buildLibShader(item) {
 }
 
 // ---------------------------------------------------------------------------
+// G-8① I2：wavefront 实例层级在真 WebGPU 上的 CPU/GPU 逐位对拍
+// ---------------------------------------------------------------------------
+//
+// 【为什么并进本文件而不是另起一个 harness】上一轮已建好的 Xvfb + Chromium +
+// SwiftShader 真机链路就在这里；I2 复用 `runOnGpu`（真 createShaderModule +
+// 真 dispatch + validation error scope + mapAsync 回读），只换一份合成入口与
+// 一组缓冲数据。判据口径与 `qa_wavefront_parity.rs` 的 I1/I3/I4 一致：按 f32
+// 位模式逐字比较，正控 differing_pixels = 0；故意改错一个实例的逆仿射平移，
+// 负控自身与「改坏后的 CPU 权威」也 0 差，但与正控参考必须非 0 差（防「根本
+// 没消费实例表」的假绿）。
+//
+// 【为什么能逐位对拍而不是放宽阈值】所有坐标 / 仿射 / 射线方向都取 2 的幂或
+// 5/8 这类 f32 精确值；Möller–Trumbore 的 det = -4 或 -1、inv_det = -0.25 或 -1、
+// t = 4 全部精确，法线归一化 sqrt(16) = 4 也精确。JS 侧 CPU 权威逐式用
+// Math.fround 复刻 WGSL 的运算顺序，位模式可直接对齐，不需要容差、不改尺子。
+//
+// 【判别力来自哪里】本场景 plain_tri_count = 0：`tris` 里两个三角形**只能**经
+// 实例表到达。若 shader 没走实例分支，8 条射线全部 miss，输出必与 CPU 权威
+// 非 0 差。故「0 差」本身就证明了实例表被真消费。
+
+/** 实例表尾描述符（与 `vulkan::wavefront::append_instance_table` 同源）。 */
+const IP_MAGIC = 0x57384931;
+const IP_INST_STRIDE = 28;
+const IP_TAIL = 8;
+/** I2 的射线网格：16×16 = 256 像素，与 I1 的 16×16 帧同口径。 */
+const IP_DISPATCH = 256;
+/** 每条射线回写 5 个 f32：t / normal.xyz / prim。 */
+const IP_OUT_FLOATS = 5;
+
+/** 合成入口：8 条射线各求一次 `scene_intersect`，把命中记录逐字回写。 */
+const IP_WGSL = `
+@group(0) @binding(0) var<storage, read_write> lib_out: array<f32>;
+@group(2) @binding(5) var<storage, read> env_blob: array<f32>;
+
+@compute @workgroup_size(1)
+fn lib_compile_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i = gid.x;
+  // 16×16 网格：x/y 步长都是 2 的幂（9/32、1/32），f32 精确可表示。
+  // 三个实例的世界 x 区间互不重叠（[-0.5,0.5] / [1.5,2.5] / [3.75,4.25]），
+  // 故命中能区分 identity / 平移 / 镜像三种变换与两个原型。
+  let x = -0.25 + f32(i % 16u) * 0.28125;
+  let y = -0.25 + f32(i / 16u) * 0.03125;
+  let o = vec3<f32>(x, y, -4.0);
+  let d = vec3<f32>(0.0, 0.0, 1.0);
+  let h = scene_intersect(o, d, 1e30);
+  let base = i * 5u;
+  // b1/b4/b5/b6/b7 显式真读：layout:"auto" 只保留被静态引用的绑定，
+  // 缺读会让引用集不再是连续前缀 {0..7} → createBindGroup 验证失败。
+  let filler = materials[0].roughness * 1e-30 + lights[0].radius * 1e-30
+    + env_blob[0] * 1e-30 + spheres[0] * 1e-30 + dir_lights[0] * 1e-30;
+  lib_out[base + 0u] = h.t + filler;
+  lib_out[base + 1u] = h.normal.x;
+  lib_out[base + 2u] = h.normal.y;
+  lib_out[base + 3u] = h.normal.z;
+  lib_out[base + 4u] = f32(h.prim);
+}
+`;
+
+/** f32 → 位模式（小端），供逐位比较与 prim_mat 编码共用。 */
+function ipBits(v) {
+  const dv = new DataView(new ArrayBuffer(4));
+  dv.setFloat32(0, v, true);
+  return dv.getUint32(0, true) >>> 0;
+}
+
+/** 位模式 → f32。 */
+function ipFloat(w) {
+  const dv = new DataView(new ArrayBuffer(4));
+  dv.setUint32(0, w >>> 0, true);
+  return dv.getFloat32(0, true);
+}
+
+/** 两个局部 BLAS 原型：各一个 z=0 平面三角形（Tri: a@0 b@16 c@32，48 B）。 */
+function ipGeoms() {
+  const geoms = [
+    { a: [-1, -1, 0], b: [1, -1, 0], c: [0, 1, 0] },
+    { a: [-0.5, -0.5, 0], b: [0.5, -0.5, 0], c: [0, 0.5, 0] },
+  ];
+  const ab = new ArrayBuffer(geoms.length * 48);
+  const dv = new DataView(ab);
+  geoms.forEach((g, k) => {
+    const put3 = (off, v) => v.forEach((x, j) => dv.setFloat32(off + j * 4, x, true));
+    put3(k * 48 + 0, g.a);
+    put3(k * 48 + 16, g.b);
+    put3(k * 48 + 32, g.c);
+  });
+  return { bytes: ab, tris: geoms, count: geoms.length };
+}
+
+/**
+ * 3 个实例：identity / 平移 / 镜像（det<0），2 个原型。
+ * 112 B 记录的槽序与 `crates/prism-gpu/src/instance.rs::encode_instances` 一致：
+ *   0..12 affine（行主序 3×4） / 12..24 inverse / 24 geom_id / 25 mat_id /
+ *   26 flags / 27 node_base。
+ */
+function ipInstances(tamper) {
+  const aff = [
+    [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0],
+    [1, 0, 0, 2, 0, 1, 0, 0, 0, 0, 1, 0],
+    [-1, 0, 0, 4, 0, 1, 0, 0, 0, 0, 1, 0],
+  ];
+  const inv = [
+    [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0],
+    [1, 0, 0, -2, 0, 1, 0, 0, 0, 0, 1, 0],
+    [-1, 0, 0, 4, 0, 1, 0, 0, 0, 0, 1, 0],
+  ];
+  // I4 同形态负控：把第 1 个实例的 inverse 平移从 -2.0 改成 -1.25。
+  if (tamper) inv[1][3] = -1.25;
+  const geomId = [0, 0, 1];
+  const flags = [1, 0, 2]; // IDENTITY / 普通 / MIRRORED
+  const words = [];
+  for (let k = 0; k < 3; k += 1) {
+    for (const v of aff[k]) words.push(ipBits(v));
+    for (const v of inv[k]) words.push(ipBits(v));
+    words.push(geomId[k], 0, flags[k], 0);
+  }
+  return { words, aff, inv, geomId, flags, count: 3 };
+}
+
+/** 组装整份实例场景（prim_mat 尾描述符 + tris 局部 BLAS）。 */
+function ipScene(tamper) {
+  const inst = ipInstances(tamper);
+  const geo = ipGeoms();
+  const instanceBase = 0;
+  const geomBase = inst.words.length;
+  const geomRows = [[0, 1, 0, 0], [1, 1, 0, 0]];
+  const words = [...inst.words];
+  for (const row of geomRows) words.push(...row);
+  const blasTriBase = 0;
+  const plainTriCount = 0;
+  const tail = [
+    IP_MAGIC, inst.count, geomRows.length, instanceBase, geomBase,
+    plainTriCount, blasTriBase, geo.count,
+  ];
+  if (tail.length !== IP_TAIL || inst.words.length !== inst.count * IP_INST_STRIDE) {
+    throw new Error("I2 实例表槽数与 WF_INST_TAIL / WF_INST_STRIDE 契约不一致");
+  }
+  words.push(...tail);
+  return {
+    primMat: u32buf(words),
+    tris: geo.bytes,
+    scene: {
+      inst, geo, geomRows, instanceBase, geomBase, blasTriBase,
+      plainTriCount, totalTriCount: geo.count, words,
+    },
+  };
+}
+
+/** 该 job 的 9 个绑定缓冲（内容逐字节对齐 WGSL struct 布局）。 */
+function ipBuffers(built) {
+  const sp = new ArrayBuffer(32);
+  const sd = new DataView(sp);
+  sd.setUint32(0, 1, true);                                  // material_count
+  sd.setUint32(4, 1, true);                                  // light_count
+  sd.setUint32(8, built.scene.totalTriCount, true);          // prim_count
+  sd.setUint32(12, 7, true);                                 // node_id
+  sd.setFloat32(16, 0.1, true);
+  sd.setFloat32(20, 0.2, true);
+  sd.setFloat32(24, 0.3, true);
+  sd.setUint32(28, 0, true);                                 // sphere_count
+  const mats = new ArrayBuffer(64);
+  new DataView(mats).setFloat32(12, 0.5, true);              // roughness
+  const lights = new ArrayBuffer(32);
+  new DataView(lights).setFloat32(12, 0.5, true);            // radius
+  return [
+    { group: 0, binding: 0, kind: "out", data: new ArrayBuffer(IP_DISPATCH * IP_OUT_FLOATS * 4) },
+    { group: 2, binding: 0, kind: "sceneParams", uniform: true, data: sp },
+    { group: 2, binding: 1, kind: "materials", data: mats },
+    { group: 2, binding: 2, kind: "primMat", data: built.primMat },
+    { group: 2, binding: 3, kind: "sceneTris", data: built.tris },
+    { group: 2, binding: 4, kind: "lights", data: lights },
+    { group: 2, binding: 5, kind: "envBlob", data: new ArrayBuffer(4) },
+    { group: 2, binding: 6, kind: "spheresFlat", data: new ArrayBuffer(32) },
+    { group: 2, binding: 7, kind: "dirLightsFlat", data: new ArrayBuffer(32) },
+  ];
+}
+
+/** 组装一个真机 job；`outFloats` 让 `runOnGpu` 回读全部 5×DISPATCH 个 f32。 */
+function ipJob(label, built) {
+  return {
+    file: label,
+    entry: "lib_compile_main",
+    code: `${expandIncludes("rt_scene.wgsl")}\n${IP_WGSL}`,
+    groups: [0, 2],
+    dispatch: IP_DISPATCH,
+    outFloats: IP_DISPATCH * IP_OUT_FLOATS,
+    buffers: ipBuffers(built).map((b) => ({
+      group: b.group,
+      binding: b.binding,
+      kind: b.kind,
+      uniform: b.uniform === true,
+      bytes: b.data.byteLength,
+      data: Array.from(new Uint8Array(b.data)),
+    })),
+  };
+}
+
+/**
+ * JS 侧 CPU 权威：逐式复刻 `rt_scene.wgsl::scene_intersect` 的实例遍历，
+ * 返回每条射线 5 个 f32 的**位模式**数组。独立实现，不调用页面内 WGSL。
+ */
+function ipCpuReference(built) {
+  const f = Math.fround;
+  const s = built.scene;
+  const words = s.words;
+  const cross = (a, b) => [
+    f(f(a[1] * b[2]) - f(a[2] * b[1])),
+    f(f(a[2] * b[0]) - f(a[0] * b[2])),
+    f(f(a[0] * b[1]) - f(a[1] * b[0])),
+  ];
+  const dot = (a, b) => f(f(f(a[0] * b[0]) + f(a[1] * b[1])) + f(a[2] * b[2]));
+  const sub = (a, b) => [f(a[0] - b[0]), f(a[1] - b[1]), f(a[2] - b[2])];
+  const unit = (n) => {
+    const l2 = dot(n, n);
+    if (!(l2 > 1e-24)) return [0, 0, 0];
+    const k = f(1 / Math.sqrt(l2));
+    return [f(n[0] * k), f(n[1] * k), f(n[2] * k)];
+  };
+  /** 与 `wf_tri_hit` 同树；命中返回 t，否则 null。 */
+  const triHit = (g, ro, rd, tMax) => {
+    const e1 = sub(g.b, g.a);
+    const e2 = sub(g.c, g.a);
+    const pvec = cross(rd, e2);
+    const det = dot(e1, pvec);
+    if (!(Math.abs(det) >= 1e-12)) return null;
+    const invDet = f(1 / det);
+    const tvec = sub(ro, g.a);
+    const u = f(dot(tvec, pvec) * invDet);
+    if (!(u >= 0 && u <= 1)) return null;
+    const qvec = cross(tvec, e1);
+    const v = f(dot(rd, qvec) * invDet);
+    if (!(v >= 0 && f(u + v) <= 1)) return null;
+    const t = f(dot(e2, qvec) * invDet);
+    if (!(t >= 1e-4 && t <= tMax)) return null;
+    return t;
+  };
+  /** 与 `wf_inst_local_point` / `wf_inst_local_dir` 同式。 */
+  const invOf = (k) => {
+    const b = s.instanceBase + k * IP_INST_STRIDE + 12;
+    return words.slice(b, b + 12).map(ipFloat);
+  };
+  const localPoint = (m, p) => [
+    f(f(f(f(m[0] * p[0]) + f(m[1] * p[1])) + f(m[2] * p[2])) + m[3]),
+    f(f(f(f(m[4] * p[0]) + f(m[5] * p[1])) + f(m[6] * p[2])) + m[7]),
+    f(f(f(f(m[8] * p[0]) + f(m[9] * p[1])) + f(m[10] * p[2])) + m[11]),
+  ];
+  const localDir = (m, p) => [
+    f(f(f(m[0] * p[0]) + f(m[1] * p[1])) + f(m[2] * p[2])),
+    f(f(f(m[4] * p[0]) + f(m[5] * p[1])) + f(m[6] * p[2])),
+    f(f(f(m[8] * p[0]) + f(m[9] * p[1])) + f(m[10] * p[2])),
+  ];
+  /** 与 `wf_inst_world_normal` 同式：A⁻ᵀ 用 inverse 3×3 的转置，det<0 反号。 */
+  const worldNormal = (m, n, mirrored) => {
+    const o = [
+      f(f(f(m[0] * n[0]) + f(m[4] * n[1])) + f(m[8] * n[2])),
+      f(f(f(m[1] * n[0]) + f(m[5] * n[1])) + f(m[9] * n[2])),
+      f(f(f(m[2] * n[0]) + f(m[6] * n[1])) + f(m[10] * n[2])),
+    ];
+    return mirrored ? [f(-o[0]), f(-o[1]), f(-o[2])] : o;
+  };
+  const rawNormal = (g) => cross(sub(g.b, g.a), sub(g.c, g.a));
+
+  const out = [];
+  for (let i = 0; i < IP_DISPATCH; i += 1) {
+    const x = f(-0.25 + f((i % 16) * 0.28125));
+    const y = f(-0.25 + f(Math.floor(i / 16) * 0.03125));
+    const ro = [x, y, -4];
+    const rd = [0, 0, 1];
+    let t = 1e30;
+    let prim = 0xFFFFFFFF;
+    let normal = [0, 0, 0];
+    // ---- 普通三角形（本场景 plain_tri_count = 0；保留循环以复刻同序）----
+    for (let j = 0; j < s.plainTriCount; j += 1) {
+      const ht = triHit(s.geo.tris[j], ro, rd, t);
+      if (ht !== null && (ht < t || prim === 0xFFFFFFFF)) {
+        t = ht; prim = j; normal = unit(rawNormal(s.geo.tris[j]));
+      }
+    }
+    // ---- 实例族：每条实例只遍历自己 geom_id 指向的 BLAS ----
+    for (let k = 0; k < s.inst.count; k += 1) {
+      const base = s.instanceBase + k * IP_INST_STRIDE;
+      if (base + IP_INST_STRIDE > words.length) continue;
+      const flags = words[base + 26];
+      const identity = (flags & 1) !== 0;
+      const mirrored = (flags & 2) !== 0;
+      const m = invOf(k);
+      const roL = identity ? ro : localPoint(m, ro);
+      const rdL = identity ? rd : localDir(m, rd);
+      const gi = s.geomBase + words[base + 24] * 4;
+      if (gi + 2 > words.length) continue;
+      const tStart = words[gi];
+      const tCount = words[gi + 1];
+      for (let j = 0; j < tCount; j += 1) {
+        const slot = tStart + j;
+        if (slot >= s.totalTriCount) continue;
+        const ht = triHit(s.geo.tris[slot], roL, rdL, t);
+        if (ht !== null && (ht < t || prim === 0xFFFFFFFF)) {
+          t = ht;
+          prim = slot;
+          const nl = rawNormal(s.geo.tris[slot]);
+          normal = identity ? unit(nl) : unit(worldNormal(m, nl, mirrored));
+        }
+      }
+    }
+    out.push(ipBits(t), ipBits(normal[0]), ipBits(normal[1]), ipBits(normal[2]), ipBits(prim));
+  }
+  return out;
+}
+
+/** GPU 回读的 f32 数组 vs CPU 权威位模式数组 → differing_pixels。 */
+function ipDiffering(gpu, cpu) {
+  if (!Array.isArray(gpu) || gpu.length < IP_DISPATCH * IP_OUT_FLOATS) return -1;
+  let diff = 0;
+  for (let i = 0; i < IP_DISPATCH; i += 1) {
+    let bad = false;
+    for (let c = 0; c < IP_OUT_FLOATS; c += 1) {
+      const at = i * IP_OUT_FLOATS + c;
+      if (ipBits(gpu[at]) !== cpu[at]) bad = true;
+    }
+    if (bad) diff += 1;
+  }
+  return diff;
+}
+
+/** I2 主流程：正控 + 负控两个真 dispatch，各自与自己的 CPU 权威比对。 */
+async function runInstanceParity(asJson) {
+  const pos = ipScene(false);
+  const neg = ipScene(true);
+  const jobs = [
+    ipJob("rt_scene.wgsl [实例正控]", pos),
+    ipJob("rt_scene.wgsl [实例负控]", neg),
+  ];
+  const { adapter, results, gpuErrs } = await runOnGpu(jobs, []);
+  if (gpuErrs?.length) {
+    if (asJson) console.log(JSON.stringify({ ok: false, why: gpuErrs.join(" | ") }, null, 2));
+    else console.error(`WebGPU 运行时错误：${gpuErrs.join(" | ")}`);
+    process.exit(1);
+  }
+  const cpuPos = ipCpuReference(pos);
+  const cpuNeg = ipCpuReference(neg);
+  const posDiff = ipDiffering(results[0]?.out, cpuPos);
+  const negDiff = ipDiffering(results[1]?.out, cpuNeg);
+  const tamperVsPos = ipDiffering(results[1]?.out, cpuPos);
+  const dispatchOk = results.every((r) => r?.ok === true && r.stage === "ok" &&
+    !r.submitError && (r.nonFinite || []).length === 0 && (r.errors || []).length === 0);
+  const ok = dispatchOk && posDiff === 0 && negDiff === 0 && tamperVsPos > 0;
+  const report = {
+    ok,
+    // 顶层专属字段：Rust `qa_wavefront_parity::i2_*` 按名取值，不与
+    // `results[].ok` 混淆（后者是逐 job 的编译/dispatch 结果）。
+    i2_ok: ok,
+    adapter,
+    dispatch: IP_DISPATCH,
+    positive_differing_pixels: posDiff,
+    negative_differing_pixels: negDiff,
+    tamper_vs_positive_differing_pixels: tamperVsPos,
+    instance_count: pos.scene.inst.count,
+    geom_count: pos.scene.geomRows.length,
+    instance_words: pos.scene.words.length,
+    dispatch_ok: dispatchOk,
+    results: results.map((r) => ({
+      file: r?.file, ok: r?.ok, stage: r?.stage,
+      submitError: r?.submitError ?? "", errors: r?.errors ?? [],
+      nonFinite: r?.nonFinite ?? [], out: r?.out ?? [],
+    })),
+  };
+  if (asJson) {
+    console.log(JSON.stringify(report, null, 2));
+  } else {
+    console.log("== G-8① I2 浏览器 WebGPU 实例层级逐位对拍（真 dispatch + 回读）==");
+    console.log(`adapter = ${adapter}；${pos.scene.inst.count} 实例 / ${pos.scene.geomRows.length} 原型 / 含镜像 det<0；prim_mat ${pos.scene.words.length} 字`);
+    console.log(`[I2 正控] CPU 权威 vs WebGPU：differing_pixels = ${posDiff}/${IP_DISPATCH}`);
+    console.log(`[I2 负控] 改坏逆仿射后自身 CPU 权威 vs WebGPU：differing_pixels = ${negDiff}/${IP_DISPATCH}`);
+    console.log(`[I2 判别力] 负控输出 vs 正控 CPU 权威：differing_pixels = ${tamperVsPos}/${IP_DISPATCH}（必须 > 0）`);
+    console.log(`[I2 提交] dispatch 0 验证错误、0 error、0 非有限：${dispatchOk}`);
+    console.log(ok ? "==> I2 通过。" : "==> I2 FAIL。");
+  }
+  process.exit(ok ? 0 : 1);
+}
+
+// ---------------------------------------------------------------------------
 // 前置检查（与 realgpu_check.mjs / hair_parity_gpu.mjs 同纪律）
 // ---------------------------------------------------------------------------
 
@@ -1178,7 +1559,9 @@ async function runOnGpu(jobs, injectedJobs) {
 
           // 回读合成输出缓冲（dispatch 个 float），校验全为有限数。
           const outBuf = created.find((b) => b.kind === "out").buf;
-          const readFloats = job.dispatch * 4;
+          // 默认每条 workgroup 回读 1 个 f32；I2 实例对拍 job 用 `outFloats`
+          // 指定 5 个 f32/射线（t + normal.xyz + prim），其余库件行为不变。
+          const readFloats = (job.outFloats ?? job.dispatch) * 4;
           const readBuf = device.createBuffer({
             size: readFloats,
             usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
@@ -1299,6 +1682,12 @@ async function main() {
   }
   const AS_JSON = argv.includes("--json");
   const DO_PROVE = !argv.includes("--no-prove");
+  // G-8① I2：复用同一条真机链路，只换成「实例场景 + 逐位对拍」的两个 job。
+  // 默认路径（host_test.mjs 的 7c 节）完全不变，不新增任何门禁项或 harness。
+  if (argv.includes("--instance-parity")) {
+    await runInstanceParity(AS_JSON);
+    return;
+  }
   // 调试用：--only=rt_bvh.wgsl 只跑一份库件（定位"哪一份把浏览器压垮"时用）。
   // 门禁与 host_test 一律跑全量——**绝不允许**在正式路径里按份跳过（那等于
   // 把"这份库件编不过"藏起来，正是本任务要消灭的那类盲区）。

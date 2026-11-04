@@ -353,6 +353,26 @@ pub const CAMERA_BYTES: usize = 96;
 /// 平铺球 / 灯的每元素 f32 槽数。
 pub const FLAT_ELEM_SLOTS: usize = 8;
 
+// ---------------------------------------------------------------------------
+// G-8①：wavefront 腿实例层级的宿主侧常量（与 `rt_scene.wgsl` 逐格对账）
+// ---------------------------------------------------------------------------
+//
+// 布局与编码的**唯一事实源**是 `crate::instance`（112 B / 28 槽）。这里只放
+// 「描述符」的形状常量，绝不另写一份 3×4 仿射/逆矩阵编码：`append_instance_table`
+// 直接调 `crate::instance::encode_instances` 拿字节流，再按 u32 字追加。
+
+/// `prim_mat` 尾部描述符的 magic（`"W8I1"`；0/不匹配 ⇒ 无实例）。
+pub const WF_INST_MAGIC: u32 = 0x5738_4931;
+/// 描述符字数（尾部 8 个 u32）。
+pub const WF_INST_TAIL_WORDS: usize = 8;
+/// 原型表每条的字数（`tri_start / tri_count / mat_id / pad`）。
+pub const WF_GEOM_WORDS: u32 = 4;
+
+// 编译期断言：112 B 剖面一个字都不许漂（改了就要同步 WGSL 常量与 .spv）。
+const _: () = assert!(crate::instance::INSTANCE_BYTES == 112);
+const _: () = assert!(crate::instance::INSTANCE_SLOTS == 28);
+const _: () = assert!(crate::instance::INSTANCE_SLOTS as usize * 4 == crate::instance::INSTANCE_BYTES);
+
 /// f32 → little-endian 字节。
 fn put_f32(out: &mut [u8], off: usize, v: f32) {
     out[off..off + 4].copy_from_slice(&v.to_bits().to_le_bytes());
@@ -568,9 +588,130 @@ impl Resource {
 
 /// 全部资源（顺序即 `Resource` 表的顺序；descriptor 写入按此顺序）。
 ///
+/// **G-8① 唯一编码入口**：把实例层级追加到 `WavefrontRequest` 的两条既有缓冲。
+///
+/// 复用 [`crate::instance::encode_instances`] 的 112 B 布局（不复制实现、不新造
+/// ABI）：`prim_mat` 尾部追加「实例表 → 原型表 → 8 字描述符」，`tris` 尾部追加
+/// 各 BLAS 的局部三角形。`geom_id` 索引原型表 ⇒ 支持多原型。
+///
+/// 这是**零绑定变更**方案的一半：描述符落在已经同时被 `shade`/`extend`
+/// 静态引用的 group(2) b2 `prim_mat` 上，故 `layout:"auto"` 的连续前缀不变，
+/// Vulkan 描述符表与 WebGPU bind group 前缀表都不动。另一半在
+/// `rt_scene.wgsl::scene_intersect`（真实例遍历）。
+///
+/// `Result` 只挡构造期错误（`geom_id` 越界 / 原型与材质表长度不符）；shader
+/// 侧另有运行期越界守卫，双重防护。
+pub fn append_instance_table(
+    triangles: &mut Vec<WavefrontTri>,
+    prim_mat: &mut Vec<u32>,
+    instances: &[crate::instance::InstanceReq],
+    geoms: &[Vec<WavefrontTri>],
+    geom_materials: &[u32],
+) -> Result<(), String> {
+    if instances.is_empty() {
+        return Ok(());
+    }
+    if geoms.is_empty() || geoms.len() != geom_materials.len() {
+        return Err(format!(
+            "实例原型表与材质表长度不符：geoms={} materials={}",
+            geoms.len(),
+            geom_materials.len()
+        ));
+    }
+    for (i, inst) in instances.iter().enumerate() {
+        if inst.geom_id as usize >= geoms.len() {
+            return Err(format!(
+                "instances[{i}].geom_id = {} 越界（原型表有 {} 条）",
+                inst.geom_id,
+                geoms.len()
+            ));
+        }
+    }
+    let plain_tri_count = triangles.len() as u32;
+    // 前缀补齐：每个三角形（含普通几何）都要有材质映射。
+    prim_mat.resize(triangles.len(), 0);
+    // ① 各原型的局部三角形按 `geom_id` 顺序拼到 `tris` 尾部。
+    let mut geom_rows: Vec<[u32; 4]> = Vec::with_capacity(geoms.len());
+    for (g, mesh) in geoms.iter().enumerate() {
+        let tri_start = triangles.len() as u32;
+        for t in mesh {
+            triangles.push(WavefrontTri { a: t.a, b: t.b, c: t.c });
+            prim_mat.push(geom_materials[g]);
+        }
+        geom_rows.push([tri_start, mesh.len() as u32, geom_materials[g], 0]);
+    }
+    let blas_tri_base = plain_tri_count;
+    let total_tri_count = triangles.len() as u32;
+    // ② 实例表：直接复用 `instance.rs` 的 112 B 编码，按 u32 字追加。
+    let instance_base = prim_mat.len() as u32;
+    let bytes = crate::instance::encode_instances(instances);
+    debug_assert_eq!(bytes.len(), instances.len() * crate::instance::INSTANCE_BYTES);
+    for c in bytes.chunks_exact(4) {
+        prim_mat.push(u32::from_le_bytes([c[0], c[1], c[2], c[3]]));
+    }
+    // ③ 原型表（4 字/条：`tri_start / tri_count / mat_id / pad`）。
+    let geom_base = prim_mat.len() as u32;
+    for row in &geom_rows {
+        prim_mat.extend_from_slice(row);
+    }
+    // ④ 尾部描述符（8 字）；`WF_INST_MAGIC` 是 shader 的开关。
+    prim_mat.extend_from_slice(&[
+        WF_INST_MAGIC,
+        instances.len() as u32,
+        geoms.len() as u32,
+        instance_base,
+        geom_base,
+        plain_tri_count,
+        blas_tri_base,
+        total_tri_count,
+    ]);
+    Ok(())
+}
+
+/// 纯数据守卫：校验 `prim_mat` 尾部实例描述符的偏移/长度自洽。
+///
+/// `web::scene_gpu::wavefront_guard`（WebGPU）与 Vulkan 派发都调它，是
+/// 「不许只改一个后端」的可执行契约：两端对同一份 [`build_resources`]
+/// 资源表做同一份校验。无实例（magic 不匹配）⇒ 直接通过。
+pub fn validate_instance_tail(req: &WavefrontRequest) -> Result<(), String> {
+    let p = &req.prim_mat;
+    if p.len() < WF_INST_TAIL_WORDS || p[p.len() - WF_INST_TAIL_WORDS] != WF_INST_MAGIC {
+        return Ok(());
+    }
+    let tail = p.len() - WF_INST_TAIL_WORDS;
+    let d = &p[tail..];
+    let (ni, ng, ib, gb, plain, blas, total) = (
+        d[1] as usize,
+        d[2] as usize,
+        d[3] as usize,
+        d[4] as usize,
+        d[5],
+        d[6],
+        d[7],
+    );
+    let stride = crate::instance::INSTANCE_SLOTS as usize;
+    if ib.saturating_add(ni.saturating_mul(stride)) > gb {
+        return Err(format!("实例表越过原型表：ib={ib} ni={ni} gb={gb}"));
+    }
+    if gb.saturating_add(ng.saturating_mul(WF_GEOM_WORDS as usize)) > tail {
+        return Err(format!("原型表越过描述符：gb={gb} ng={ng} tail={tail}"));
+    }
+    if plain > total || blas != plain || total as usize > req.triangles.len() {
+        return Err(format!(
+            "三角形区间不自洽：plain={plain} blas={blas} total={total} tris={}",
+            req.triangles.len()
+        ));
+    }
+    Ok(())
+}
+
 /// 顺序恒为 `(group, binding)` 升序：g0{slots,params,accum} → g1{sobol,scene_buf}
 /// → g2{scene_params..dir_lights 共 8} → g3{camera}。两个后端都按「组内前 n 个」
 /// 取前缀，故顺序即契约。
+///
+/// G-8① 的实例数据**不新增绑定**：它落在 g2 b2 `prim_mat` 的尾部字节里，
+/// 由 [`append_instance_table`] 追加，两端（`run_on_device` / `emit_wavefront`）
+/// 消费同一张表 ⇒ 绑定前缀、资源条数（14）与 stage 前缀表都不变。
 pub(crate) fn build_resources(req: &WavefrontRequest) -> Vec<Resource> {
     let paths = (req.width as usize)
         .saturating_mul(req.height as usize)
@@ -583,8 +724,13 @@ pub(crate) fn build_resources(req: &WavefrontRequest) -> Vec<Resource> {
         put_u32(&mut slots, i * PATH_SLOT_BYTES + 64, 1);
     }
     // `prim_mat` 缺省按 0 填满（路径模式每个三角形都有材质）。
-    let mut prim_mat = vec![0u8; req.triangles.len().max(1) * 4];
-    for (i, &m) in req.prim_mat.iter().take(req.triangles.len()).enumerate() {
+    //
+    // G-8①：`prim_mat` 尾部可承载实例表 / 原型表 / 描述符（见
+    // `append_instance_table`），故这里必须编码**全长**而不是裁剪到三角形数。
+    // 无实例请求的 `prim_mat.len() == triangles.len()`，逐位与改动前相同。
+    let prim_words = req.prim_mat.len().max(req.triangles.len().max(1));
+    let mut prim_mat = vec![0u8; prim_words * 4];
+    for (i, &m) in req.prim_mat.iter().enumerate() {
         put_u32(&mut prim_mat, i * 4, m);
     }
 
@@ -1624,6 +1770,16 @@ pub(crate) fn dispatch(
             req.height,
             "路径模式 spp > 64：固定形状归约树缓冲（WF_MAX_SPP）超限；\
              建议：分 pass 渲染后经 AccumBuffer canonical_mean 合成",
+        );
+    }
+    // G-8①：实例描述符的纯数据守卫（WebGPU 侧 `wavefront_guard` 调同一个
+    // 函数 ⇒ 两端对同一份资源表做同一份校验，不许只改一个后端）。
+    if let Err(e) = validate_instance_tail(req) {
+        return WavefrontReport::failed(
+            DispatchStatus::BufferFailed,
+            req.width,
+            req.height,
+            &e,
         );
     }
     match ctx {

@@ -146,6 +146,155 @@ fn ambient_background() -> vec3<f32> {
 //   先达者；并列 t 是测度零事件，场景设计避开，见 parity 测试注释）；
 // * 法线 = 三角形单位几何法线，与 `triangle_unit_normal` 同一棵树：
 //   `n·n > 1e-24 ? n·(1/√(n·n)) : 0`。
+// ---------------------------------------------------------------------------
+// G-8① wavefront 腿的几何实例层级（真实例遍历，不是展平/等价路径）
+// ---------------------------------------------------------------------------
+//
+// # 为什么零新绑定
+//
+// `layout:"auto"` 的硬约束是「每个 entry 的静态引用集为连续前缀 {0..n-1}」。
+// `shade` 引用 group(2) 的 {0..7}、`extend` 引用 {0,1,2,3}；若把实例表挂到
+// 一个新的 binding 8/9/…，则 `extend` 的引用集会变成 {0,1,2,3,8,9}（稀疏）
+// ⇒ createBindGroup 必然验证失败，且 `web/abi.rs` 的多 bind group harness 与
+// `wgsl_lint.mjs` 的前缀门禁都按旧前缀硬编码。故实例数据走**已经同时被
+// shade/extend 静态引用**的两条既有缓冲：
+//
+//   * group(2) b2 `prim_mat: array<u32>` —— 尾部承载实例表 / 原型表 / 描述符；
+//   * group(2) b3 `tris: array<Tri>`     —— 尾部承载各 BLAS 的局部三角形。
+//
+// 绑定剖面一个字没变 ⇒ Vulkan 描述符表与 WebGPU bind group 前缀表都不动，
+// 两端消费同一张 `vulkan::wavefront::build_resources` 资源表（跨后端单一
+// 真源），实例字节自然同时到达两个后端（§4.4 红线 2）。
+//
+// # 数据布局（`prim_mat` 尾部 8 字 = 实例描述符；magic=0 ⇒ 无实例，
+//    下面的实例段一行都不执行，既有线性三角形路径**逐位不变**）
+//
+// ```text
+//   prim_mat[0 .. total_tri)                 三角形 → 材质索引（普通 + BLAS）
+//   prim_mat[instance_base + 28*i + slot]    实例记录（112 B / 28 字；与
+//                                           instance.rs::to_bytes 逐字相同）
+//        槽 0..12 affine / 12..24 inverse（行主序 3×4）
+//        槽 24 geom_id / 25 mat_id / 26 flags / 27 node_base
+//   prim_mat[geom_base + 4*g + {0,1,2,3}]    原型表：tri_start / tri_count /
+//                                           mat_id / pad
+//   prim_mat[W-8 .. W)                       描述符（W = arrayLength）：
+//        [0] WF_INST_MAGIC  [1] instance_count  [2] geom_count
+//        [3] instance_base  [4] geom_base        [5] plain_tri_count
+//        [6] blas_tri_base  [7] total_tri_count
+// ```
+//
+// # 三条与 CPU 权威（`prism_rt::Scene::instance_nearest`）逐式相同的纪律
+//
+// 1. **`t` 不换算**：局部射线 `o_l = A⁻¹o`、`d_l = A⁻¹d`（方向**不归一化**），
+//    于是 `o_l + t·d_l ≡ A⁻¹(o + t·d)` 对同一个 `t` 成立 ⇒ `T_MIN` 与
+//    `t_max` 都是世界量，直接当局部查询的界用。identity 实例一次乘法都不做。
+// 2. **法线 `det(A)·A⁻ᵀ·n`**：`A⁻ᵀ` 就是 `inverse` 3×3 块的转置（宿主已算好
+//    逆，绝不在 shader 里求逆）；`det<0` 由 flags bit1 决定是否反号。归一化
+//    与翻到来光侧的口径与 `Scene::normal_at` 的 Instance 臂一致。
+// 3. **多原型**：`geom_id` 索引原型表取该实例自己的 `[tri_start, tri_count)`，
+//    每条实例只遍历自己那一个 BLAS；最近命中按世界 `t` 严格择优。
+
+const WF_INST_MAGIC: u32 = 0x57384931u;   // "W8I1"（0 ⇒ 无实例）
+const WF_INST_TAIL: u32 = 8u;              // 描述符字数
+const WF_INST_STRIDE: u32 = 28u;           // == instance::INSTANCE_SLOTS（112 B）
+const WF_INST_INVERSE: u32 = 12u;          // 逆矩阵在记录内的槽偏移
+const WF_INST_GEOM: u32 = 24u;             // geom_id 槽
+const WF_INST_FLAGS: u32 = 26u;            // flags 槽
+const WF_INST_FLAG_IDENTITY: u32 = 1u;
+const WF_INST_FLAG_MIRRORED: u32 = 2u;
+const WF_GEOM_STRIDE: u32 = 4u;            // 原型表 4 字/条
+
+fn wf_inst_active() -> bool {
+  let w = arrayLength(&prim_mat);
+  return w >= WF_INST_TAIL && prim_mat[w - WF_INST_TAIL] == WF_INST_MAGIC;
+}
+
+/// 读尾部描述符的第 `slot` 字（只在 `wf_inst_active()` 为真时调用）。
+fn wf_tail(slot: u32) -> u32 {
+  return prim_mat[arrayLength(&prim_mat) - WF_INST_TAIL + slot];
+}
+
+/// 世界点 → 局部点（`A⁻¹p + t⁻¹`；调用点已排除 identity）。
+fn wf_inst_local_point(base: u32, p: vec3<f32>) -> vec3<f32> {
+  let b = base + WF_INST_INVERSE;
+  return vec3<f32>(
+    bitcast<f32>(prim_mat[b]) * p.x + bitcast<f32>(prim_mat[b + 1u]) * p.y
+      + bitcast<f32>(prim_mat[b + 2u]) * p.z + bitcast<f32>(prim_mat[b + 3u]),
+    bitcast<f32>(prim_mat[b + 4u]) * p.x + bitcast<f32>(prim_mat[b + 5u]) * p.y
+      + bitcast<f32>(prim_mat[b + 6u]) * p.z + bitcast<f32>(prim_mat[b + 7u]),
+    bitcast<f32>(prim_mat[b + 8u]) * p.x + bitcast<f32>(prim_mat[b + 9u]) * p.y
+      + bitcast<f32>(prim_mat[b + 10u]) * p.z + bitcast<f32>(prim_mat[b + 11u]));
+}
+
+/// 世界方向 → 局部方向（只乘线性块，**不归一化** ⇒ `t` 保持世界参数）。
+fn wf_inst_local_dir(base: u32, d: vec3<f32>) -> vec3<f32> {
+  let b = base + WF_INST_INVERSE;
+  return vec3<f32>(
+    bitcast<f32>(prim_mat[b]) * d.x + bitcast<f32>(prim_mat[b + 1u]) * d.y
+      + bitcast<f32>(prim_mat[b + 2u]) * d.z,
+    bitcast<f32>(prim_mat[b + 4u]) * d.x + bitcast<f32>(prim_mat[b + 5u]) * d.y
+      + bitcast<f32>(prim_mat[b + 6u]) * d.z,
+    bitcast<f32>(prim_mat[b + 8u]) * d.x + bitcast<f32>(prim_mat[b + 9u]) * d.y
+      + bitcast<f32>(prim_mat[b + 10u]) * d.z);
+}
+
+/// 局部绕序法线 → 世界法线（`A⁻ᵀ`，镜像反号），未归一化。
+fn wf_inst_world_normal(base: u32, n: vec3<f32>) -> vec3<f32> {
+  let b = base + WF_INST_INVERSE;
+  let out = vec3<f32>(
+    bitcast<f32>(prim_mat[b]) * n.x + bitcast<f32>(prim_mat[b + 4u]) * n.y
+      + bitcast<f32>(prim_mat[b + 8u]) * n.z,
+    bitcast<f32>(prim_mat[b + 1u]) * n.x + bitcast<f32>(prim_mat[b + 5u]) * n.y
+      + bitcast<f32>(prim_mat[b + 9u]) * n.z,
+    bitcast<f32>(prim_mat[b + 2u]) * n.x + bitcast<f32>(prim_mat[b + 6u]) * n.y
+      + bitcast<f32>(prim_mat[b + 10u]) * n.z);
+  if ((prim_mat[base + WF_INST_FLAGS] & WF_INST_FLAG_MIRRORED) != 0u) {
+    return -out;
+  }
+  return out;
+}
+
+/// 三角形求交（Möller–Trumbore，逐式照抄原 `scene_intersect` 内联块）。
+/// 返回 `(t, hit)`：`hit = 1` 表示 `T_MIN ≤ t ≤ t_max`，否则 `hit = 0`。
+fn wf_tri_hit(slot: u32, ro: vec3<f32>, rd: vec3<f32>, t_max: f32) -> vec2<f32> {
+  let tr = tris[slot];
+  let e1 = tr.b - tr.a;
+  let e2 = tr.c - tr.a;
+  let pvec = cross(rd, e2);
+  let det = vdot(e1, pvec);
+  if (abs(det) >= 1e-12) {
+    let inv_det = 1.0 / det;
+    let tvec = ro - tr.a;
+    let u = vdot(tvec, pvec) * inv_det;
+    if (u >= 0.0 && u <= 1.0) {
+      let qvec = cross(tvec, e1);
+      let v = vdot(rd, qvec) * inv_det;
+      if (v >= 0.0 && u + v <= 1.0) {
+        let t = vdot(e2, qvec) * inv_det;
+        if (t >= T_MIN && t <= t_max) {
+          return vec2<f32>(t, 1.0);
+        }
+      }
+    }
+  }
+  return vec2<f32>(t_max, 0.0);
+}
+
+/// 三角形**未归一化**绕序法线 `cross(b−a, c−a)`（与 `triangle_unit_normal` 同树）。
+fn wf_tri_raw_normal(slot: u32) -> vec3<f32> {
+  let tr = tris[slot];
+  return cross(tr.b - tr.a, tr.c - tr.a);
+}
+
+/// 单位化（`n·n > 1e-24` 才归一；否则零向量，与 CPU 同口径）。
+fn wf_unit_normal(n: vec3<f32>) -> vec3<f32> {
+  let len2 = vdot(n, n);
+  if (len2 > 1e-24) {
+    return n * (1.0 / sqrt(len2));
+  }
+  return vec3<f32>(0.0, 0.0, 0.0);
+}
+
 fn scene_intersect(ro: vec3<f32>, rd: vec3<f32>, t_max: f32) -> Hit {
   var out: Hit;
   out.t = t_max;
@@ -154,42 +303,72 @@ fn scene_intersect(ro: vec3<f32>, rd: vec3<f32>, t_max: f32) -> Hit {
   out._pad1 = 0u;
   out.normal = vec3<f32>(0.0, 0.0, 0.0);
   out._pad2 = 0.0;
+  // 既有上界表达式**原样保留**（`wgsl_lint` 的 min 三参负控锚在这一行）。
   let n = min(scene_params.prim_count, arrayLength(&tris));
+  // 实例模式下 `tris` 尾部是各 BLAS 的局部三角形，只能经实例到达 ⇒ 线性
+  // 扫描上界收窄到"普通三角形数"（描述符 [5]），否则局部几何会被当世界
+  // 几何画出来。无实例时 `plain == n`，与改动前逐位相同。
+  var plain = n;
+  if (wf_inst_active()) {
+    plain = wf_tail(5u);
+  }
   var i = 0u;
-  while (i < n) {
-    let tr = tris[i];
-    let e1 = tr.b - tr.a;
-    let e2 = tr.c - tr.a;
-    let pvec = cross(rd, e2);
-    let det = vdot(e1, pvec);
-    if (abs(det) >= 1e-12) {
-      let inv_det = 1.0 / det;
-      let tvec = ro - tr.a;
-      let u = vdot(tvec, pvec) * inv_det;
-      if (u >= 0.0 && u <= 1.0) {
-        let qvec = cross(tvec, e1);
-        let v = vdot(rd, qvec) * inv_det;
-        if (v >= 0.0 && u + v <= 1.0) {
-          let t = vdot(e2, qvec) * inv_det;
-          if (t >= T_MIN && t <= out.t) {
-            if (t < out.t || out.prim == 0xFFFFFFFFu) {
-              out.t = t;
-              out.prim = i;
-              // 三角形单位几何法线（绕序 a→b→c 右手；与
-              // `triangle_unit_normal` 同树：n·n > 1e-24 才归一化）。
-              let un = cross(e1, e2);
-              let len2 = vdot(un, un);
-              if (len2 > 1e-24) {
-                out.normal = un * (1.0 / sqrt(len2));
-              } else {
-                out.normal = vec3<f32>(0.0, 0.0, 0.0);
+  while (i < plain) {
+    let h = wf_tri_hit(i, ro, rd, out.t);
+    if (h.y > 0.0 && (h.x < out.t || out.prim == 0xFFFFFFFFu)) {
+      out.t = h.x;
+      out.prim = i;
+      out.normal = wf_unit_normal(wf_tri_raw_normal(i));
+    }
+    i = i + 1u;
+  }
+  // ---- 实例族（末族；与 `Scene::intersect_impl` 同序：running best 作上界）----
+  if (wf_inst_active()) {
+    let ni = wf_tail(1u);
+    let ib = wf_tail(3u);
+    let gb = wf_tail(4u);
+    let words = arrayLength(&prim_mat);
+    let ntris = arrayLength(&tris);
+    var k = 0u;
+    while (k < ni) {
+      let base = ib + k * WF_INST_STRIDE;
+      // 越界守卫：叶子里存的下标必须落在表内，绝不让越界读变成"读到
+      // 邻居的逆矩阵"（与 `scene_frame_v3.wgsl::instance_nearest` 同纪律）。
+      if (base + WF_INST_STRIDE <= words) {
+        let identity = (prim_mat[base + WF_INST_FLAGS] & WF_INST_FLAG_IDENTITY) != 0u;
+        var ro_l = ro;
+        var rd_l = rd;
+        if (!identity) {
+          ro_l = wf_inst_local_point(base, ro);
+          rd_l = wf_inst_local_dir(base, rd);
+        }
+        let gi = gb + prim_mat[base + WF_INST_GEOM] * WF_GEOM_STRIDE;
+        if (gi + 2u <= words) {
+          let t_start = prim_mat[gi];
+          let t_count = prim_mat[gi + 1u];
+          var j = 0u;
+          while (j < t_count) {
+            let slot = t_start + j;
+            if (slot < ntris) {
+              let h = wf_tri_hit(slot, ro_l, rd_l, out.t);
+              if (h.y > 0.0 && (h.x < out.t || out.prim == 0xFFFFFFFFu)) {
+                out.t = h.x;
+                out.prim = slot;
+                let nl = wf_tri_raw_normal(slot);
+                if (identity) {
+                  // identity 与展平版**同一条**归一化路径（零多余运算）。
+                  out.normal = wf_unit_normal(nl);
+                } else {
+                  out.normal = wf_unit_normal(wf_inst_world_normal(base, nl));
+                }
               }
             }
+            j = j + 1u;
           }
         }
       }
+      k = k + 1u;
     }
-    i = i + 1u;
   }
   return out;
 }

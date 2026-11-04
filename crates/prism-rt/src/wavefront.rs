@@ -521,6 +521,22 @@ fn advance_one(
         }
         stats.extended += 1;
         st.ray = Ray { origin: p + n * SURFACE_EPS, dir, time: st.ray.time };
+    } else if let MaterialKind::Hair { scatter, geometry } = mat {
+        // 全链路 Marschner（R-6②）：与 integrator 同一 sampler / 同一 pdf，
+        // 保证 wavefront 与路径积分的估计量一致、MIS 两侧同尺。
+        let hb = crate::hair_scatter::sample_hair_bounce(
+            scatter, geometry, wo, n, u_lobe, u1, u2,
+        );
+        st.throughput = hadamard(st.throughput, prism_math::Vec3::splat(hb.weight));
+        st.prev_pdf_dir = hb.pdf;
+        st.prev_specular = false;
+        if !rr_survive(st, stream, ev + 1) {
+            stats.terminated += 1;
+            return false;
+        }
+        stats.extended += 1;
+        let eps = if hb.dir.dot(&n) > 0.0 { SURFACE_EPS } else { -SURFACE_EPS };
+        st.ray = Ray { origin: p + n * eps, dir: hb.dir, time: st.ray.time };
     } else {
         let sctx = SampleCtx { psr_rough: if bsdf.roughness < 1e-3 { 1e-3 } else { 0.0 } };
         if let Some(bs) = bsdf.sample(wo, n, from_inside, &sctx, u_lobe, u1, u2) {
