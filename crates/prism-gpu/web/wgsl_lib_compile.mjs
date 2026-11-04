@@ -293,38 +293,34 @@ fn lib_compile_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     ],
   },
 
-  // ---- rt_scene.wgsl：自带 @group(2) @binding(0..4) ----
+  // ---- rt_scene.wgsl：自带 @group(2) @binding(0..4) + b6 spheres / b7 dir_lights ----
   "rt_scene.wgsl": {
     outBinding: 0,
     extraWgsl: `
 @group(0) @binding(0) var<storage, read_write> lib_out: array<f32>;
 // @group(2) @binding(0..4)（scene_params / materials / prim_mat / tris / lights）
-// 由 rt_scene.wgsl 自带，合成入口只负责把它们读一遍。
+// 与 b6 spheres / b7 dir_lights（兼容模式专用表）由 rt_scene.wgsl 自带；
+// b5 env_blob 由 wavefront 引用方（rt_wavefront.wgsl）声明——本合成入口按
+// 同一布局替它声明一次并真读，让引用集成为连续前缀 {0..7}
+//（layout:"auto" 会剔除未引用的绑定，缺读即前缀断裂）。
+@group(2) @binding(5) var<storage, read> env_blob: array<f32>;
 
 @compute @workgroup_size(1)
 fn lib_compile_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let f = f32(gid.x) * 0.1 + 0.05;
   let o = vec3<f32>(0.0, 0.0, -2.0);
-  let d = normalize(vec3<f32>(f - 0.1, 0.05 + f, 1.0));
+  let d = vnorm(vec3<f32>(f - 0.1, 0.05 + f, 1.0));
   let n = vec3<f32>(0.0, 0.0, 1.0);
   let mat = load_material(0u);
-  let hit = scene_intersect(o, d, 1e30, 0u, 0u);
+  let hit = scene_intersect(o, d, 1e30);
   let vis = shadow_ray(o, d, 1e30);
-  let ls = sample_light(0u, vec3<f32>(0.0, 0.0, 0.0), f, 0.5);
   let bs = eval_bsdf(mat, -d, d, n);
   var acc = luminance(ambient_background());
   acc = acc + mat.roughness + f32(load_light_count());
-  acc = acc + f32(sample_index_seed(0u, 1u, SLOT_BSDF)) * 1e-9;
-  acc = acc + luminance(clamp_indirect(vec3<f32>(2.0, 3.0, 4.0), 4u));
-  acc = acc + luminance(bs) + vis + ls.dist * 1e-3 + ls.pdf_w * 1e-3;
-  acc = acc + luminance(ls.radiance) + vdot(ls.wi, d);
-  acc = acc + nee_mis_weight(0u, ls.pdf_w, 0.5);
-  acc = acc + emissive_weight(0u, ls.pdf_w, 0u, o);
-  acc = acc + hit.t * 1e-3 + luminance(mat.emissive) + emissive_radiance(0u).x;
+  acc = acc + luminance(bs) + vis + hit.t * 1e-3 + luminance(mat.emissive);
   acc = acc + luminance(schlick_f0(mat, f)) + pow5_local(f);
-  acc = acc + select(0.0, 1.0, should_survive(vec3<f32>(1.0), 7u, 3u, 4u));
-  acc = acc + rr_scale(vec3<f32>(0.5, 0.5, 0.5));
-  acc = acc + luminance(mnee_caustics(o, n, -d, vec3<f32>(1.0), 1u)) + PI * 1e-6;
+  // b5/b6/b7 显式各读一个字：声明与用法一致（auto 布局剔除 = 前缀断裂）。
+  acc = acc + env_blob[0] * 1e-9 + spheres[0] * 1e-9 + dir_lights[0] * 1e-9;
   lib_out[gid.x] = acc;
 }
 `,
@@ -341,6 +337,9 @@ fn lib_compile_main(@builtin(global_invocation_id) gid: vec3<u32>) {
       { group: 2, binding: 2, kind: "primMat" },
       { group: 2, binding: 3, kind: "sceneTris" },
       { group: 2, binding: 4, kind: "lights" },
+      { group: 2, binding: 5, kind: "envBlob" },
+      { group: 2, binding: 6, kind: "spheresFlat" },
+      { group: 2, binding: 7, kind: "dirLightsFlat" },
     ],
   },
 
@@ -349,35 +348,45 @@ fn lib_compile_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     outBinding: 0,
     extraWgsl: `
 @group(0) @binding(0) var<storage, read_write> lib_out: array<f32>;
-// @group(1) sobol_dir / scene_buf 与 @group(2) 场景绑定分别由 rt_shade.wgsl
-// 与 rt_scene.wgsl（//!include 带入）声明。
+// @group(1) sobol_dir / scene_buf 与 @group(2) 场景绑定（0..4 + b6/b7）分别由
+// rt_shade.wgsl 与 rt_scene.wgsl（//!include 带入）声明；b5 env_blob 同
+// rt_scene 配方：替引用方声明一次并真读（前缀 {0..7}）。
+@group(2) @binding(5) var<storage, read> env_blob: array<f32>;
 
 @compute @workgroup_size(1)
 fn lib_compile_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let f = f32(gid.x) * 0.05 + 0.05;
   let n = vec3<f32>(0.0, 0.0, 1.0);
-  let w_in = normalize(vec3<f32>(0.2, 0.1, -1.0));
-  let o = -w_in;
-  let bd = bounce_dim(1u, SLOT_LIGHT);
-  let si = sample_index(u32(gid.x), 0u, 1u, 0u);
-  let s1 = sample_1d(si, bounce_dim(1u, SLOT_BSDF));
-  let s2 = sample_2d(si, bd);
-  let aux = aux_1d(si, SLOT_AUX, 1u);
+  let w_in = vnorm(vec3<f32>(0.2, 0.1, -1.0));
+  // T-B 路径模式采样流：64 位 PCG 仿真 → Sobol 索引/掩码 → 维度取值。
+  let st = wf_stream(3u, 1u, 7u, gid.x, 0u, 0u);
+  let s1 = wf_sample_1d(st, 5u);
+  let s2 = wf_sample_2d(st, 6u);
+  let mat = load_material(0u);
+  let bs = bsdf_sample(mat, w_in, n, 1u, st);
+  let h = sample_vndf(-w_in, 0.25, s1, s2.x);
+  // g2 前缀 {0..7} 要求 b0/b3/b4 也被静态引用：scene_intersect 真读 tris(b3)+
+  // scene_params(b0)、load_light_count 真读 scene_params、lights(b4) 显式读一条。
+  let o2 = vec3<f32>(0.0, 0.0, -2.0);
+  let d2 = vnorm(vec3<f32>(f - 0.1, 0.05 + f, 1.0));
+  let hit = scene_intersect(o2, d2, 1e30);
+  let nl = load_light_count();
+  let l0 = lights[0];
   // 【为什么显式读 scene_buf】该绑定在 rt_shade.wgsl 里声明但**库件内无函数消费**。
   // 若入口也不读它，layout:"auto" 会把它从绑定布局里剔掉，createBindGroup 便不再
   // 校验它 —— 声明与实际用法脱节就查不出来。故显式读一次并计入结果。
   let sb = f32(scene_buf[0]) * 1e-9;
-  let bs = bsdf_sample(0u, w_in, n, 1u);
-  let nee = nee_surface(vec3<f32>(0.0, 0.0, 0.0), n, w_in, vec3<f32>(1.0), 1u, 0u);
-  let h = sample_vndf(o, 0.25, 0.3, 0.7);
-  var acc = s1 + s2.x + s2.y + aux + sb;
-  acc = acc + f32(si) * 1e-9 + power_heuristic(s1, s2.x);
-  acc = acc + ggx_d(0.25, o.z) + smith_g1(0.25, o.z) + pow5(f);
+  var acc = s1 + s2.x + s2.y + sb;
+  acc = acc + power_heuristic(s1, s2.x);
+  acc = acc + ggx_d(0.25, f) + smith_g1(0.25, f) + pow5(f);
   acc = acc + luminance(schlick(vec3<f32>(0.04), f));
   acc = acc + vdot(refract_dir(w_in, n, 0.5), w_in) + vdot(h, h);
   acc = acc + luminance(bs.weight) + bs.pdf * 1e-3;
   acc = acc + f32(bs.specular) * 1e-3 + f32(bs.entered) * 1e-3;
-  acc = acc + vdot(bs.dir, n) + luminance(nee) + f32(bd) * 1e-6;
+  acc = acc + vdot(bs.dir, n);
+  acc = acc + hit.t * 1e-3 + f32(nl) * 1e-6 + luminance(l0.color) * 1e-6
+    + l0.radius * 1e-6;
+  acc = acc + env_blob[0] * 1e-9 + spheres[0] * 1e-9 + dir_lights[0] * 1e-9;
   lib_out[gid.x] = acc;
 }
 `,
@@ -391,7 +400,40 @@ fn lib_compile_main(@builtin(global_invocation_id) gid: vec3<u32>) {
       { group: 2, binding: 2, kind: "primMat" },
       { group: 2, binding: 3, kind: "sceneTris" },
       { group: 2, binding: 4, kind: "lights" },
+      { group: 2, binding: 5, kind: "envBlob" },
+      { group: 2, binding: 6, kind: "spheresFlat" },
+      { group: 2, binding: 7, kind: "dirLightsFlat" },
     ],
+  },
+
+  // ---- rt_u64.wgsl：64 位 PCG 的 (lo,hi) u32 仿真库（T-B / R-1）----
+  // 无绑定无入口；合成入口真调 u64 加/乘/移位/异或与整条 hash 链并回写。
+  // 【判据意义】u64_mul 的 16 位 limb 进位传播是 R-1 逐位对拍里修掉的真缺陷
+  // （进位加回同一 limb ⇒ 2000/2000 hash 全错）；本配方保证该库件永远过真编译。
+  "rt_u64.wgsl": {
+    outBinding: 0,
+    extraWgsl: `
+@group(0) @binding(0) var<storage, read_write> lib_out: array<f32>;
+
+@compute @workgroup_size(1)
+fn lib_compile_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let g = gid.x + 1u;
+  let a = u64_add(0x12345678u, 0x9abcdef0u, g, g << 1u);
+  let m = u64_mul(a.x, a.y, 0x4c957f2du, 0x5851f42du);
+  let sh = u64_shr(m.x, m.y, 17u);
+  let x = u64_xor(sh.x, sh.y, g, 0u);
+  let h1 = pcg_hash1(x.x, x.y, g, 0u);
+  let hp = pcg_hash2_prefix(x.x, x.y, g, 0u);
+  let h2 = pcg_hash2_finish(hp.x, hp.y, g, 0u);
+  let h4 = pcg_hash4(x.x, x.y, g, 0u, 1u, 0u, 2u, 0u, 3u, 0u);
+  let h3 = pcg_hash3(x.x, x.y, g, 0u, 1u, 0u, 2u, 0u);
+  var acc = pcg_unit_f32(h1.x, h1.y);
+  acc = acc + pcg_unit_f32(h2.x, h2.y) + pcg_unit_f32(h4.x, h4.y) + pcg_unit_f32(h3.x, h3.y);
+  acc = acc + f32(pcg_permute(g, 0u).x) * 2.3283064e-10;
+  lib_out[gid.x] = acc;
+}
+`,
+    buffers: [{ group: 0, binding: 0, kind: "out" }],
   },
 
   // ---- hair_scatter.wgsl：上一波事故现场（a_r/a_tt/a_trt 形参实参不匹配）----
@@ -437,6 +479,10 @@ fn lib_compile_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   "rt_env.wgsl": {
     outBinding: 1,
     extraWgsl: `
+@group(0) @binding(0) var<storage, read> env_blob: array<f32>;
+// 【W2 剩余后的声明面】rt_env.wgsl 的函数体共享、绑定声明**移出**（改由引用方
+// 各自声明 env_blob）。本合成入口按 wavefront 引用方的同一布局替它声明一次，
+// 让 env_u/env_f 的取数有真缓冲可读（否则整条 CDF/采样链读到的是未定义绑定）。
 @group(0) @binding(1) var<storage, read_write> lib_out: array<f32>;
 
 @compute @workgroup_size(1)
@@ -461,8 +507,7 @@ fn lib_compile_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 `,
     buffers: [
-      { group: 0, binding: 0, kind: "envBlob" },
-      { group: 0, binding: 1, kind: "out" },
+      { group: 0, binding: 0, kind: "envBlob" },      { group: 0, binding: 1, kind: "out" },
     ],
   },
 };
@@ -524,6 +569,16 @@ const INJECTIONS = {
       "fn env_acos(x: f32) -> f32 {",
       "fn env_acos(x: f32, extra: f32) -> f32 {"),
     expect: /env_acos/,
+  },
+  "rt_u64.wgsl": {
+    mustApply: true,
+    // 进位传播链断裂（T-B 真实缺陷的注入形态）：u64_mul 的 limb 进位多加一次，
+    // 语义错但语法合法 ⇒ 只有"合成入口真调 + 回读有限"之外的**语义判据**能抓；
+    // 这里注入的是编译层自证：多传一个实参 → 真编译器必拒。
+    apply: (s) => s.replace(
+      "fn u64_add(al: u32, ah: u32, bl: u32, bh: u32) -> vec2<u32> {",
+      "fn u64_add(al: u32, ah: u32, bl: u32, bh: u32, extra: u32) -> vec2<u32> {"),
+    expect: /u64_add/,
   },
   "hair_scatter.wgsl": {
     mustApply: true,
@@ -669,7 +724,8 @@ function buildBuffer(kind) {
       f(0, 0.8); f(4, 0.8); f(8, 0.8); f(12, 0.5);          // base_color, roughness
       f(16, 0.04); f(20, 0.04); f(24, 0.04); f(28, 0.0);     // f0, metalness
       f(32, 0.0); f(36, 1.5);                                // transmission, ior
-      f(40, 0.0); f(44, 0.0); f(48, 0.0); f(52, 0.0);        // emissive, _pad0
+      dv.setUint32(40, 0, true);                             // kind（T-B：材质判别式）
+      f(48, 0.0); f(52, 0.0); f(56, 0.0);                    // emissive（@48 对齐 16）
       return dv.buffer;
     }
     // Light: position@0 radius@12 color@16 _pad@28 → size 32
@@ -744,6 +800,11 @@ function buildBuffer(kind) {
       return u32buf([7, 0, 0, 0]);
     case "primMat":
       return u32buf([0, 0, 0, 0]);
+    // 兼容模式的球表 / 方向光表（平铺 8 f32/条，rt_scene.wgsl b6/b7）。
+    // 全零即可：合成入口只验证"可读且有限"，不消费数值。
+    case "spheresFlat":
+    case "dirLightsFlat":
+      return new ArrayBuffer(8 * 4);
     default:
       throw new Error(`buildBuffer: 未知缓冲种类 ${kind}`);
   }
@@ -983,7 +1044,14 @@ async function runOnGpu(jobs, injectedJobs) {
         await new Promise((r) => setTimeout(r, 500));
       }
       if (!adapter) return { ok: false, why: "requestAdapter() 返回 null（无可用适配器）" };
-      const device = await adapter.requestDevice();
+      // 【requiredLimits 为什么必须显式要】rt_shade 展开后的合成单体引用 10 个
+      // storage buffer（g0 out + g1 两表 + g2 场景 7 表），超过 WebGPU 默认保证
+      // 值 8 —— 不申请则 createComputePipeline 直接 Invalid（本链路真机实测）。
+      // 按适配器实际上报值取 min(10, adapter)，低上限硬件自动降级。
+      const wantBufs = Math.min(10, adapter.limits?.maxStorageBuffersPerShaderStage ?? 8);
+      const device = await adapter.requestDevice({
+        requiredLimits: { maxStorageBuffersPerShaderStage: wantBufs },
+      });
       if (!device) return { ok: false, why: "requestDevice() 返回 null" };
 
       // WebGPU 异步错误捕获。

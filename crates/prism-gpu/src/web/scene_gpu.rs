@@ -136,8 +136,12 @@ const TRI_BYTES: usize = TRIANGLE_SLOTS as usize * 4 * MAX_TRIS;
 const NODE_BYTES: usize = NODE_SLOTS as usize * 4 * MAX_NODES;
 /// `prism_create_bind_group` 的句柄数组容量（V3 剖面 9 个，留余量）。
 const HANDLE_CAP: usize = 16;
-/// `prism_dispatch` 的 bind group 数组容量（本路径恒为 1 个 group）。
-const BG_CAP: usize = 1;
+/// `prism_dispatch` 的 bind group 数组容量。**wavefront 的 generate 段一次要
+/// 挂 4 组**（g0 slots/params、g1 sobol、g2 scene_params、g3 camera）——
+/// 曾按"本路径恒为 1 个 group"写成 1，真机（SwiftShader）上
+/// `gpu.wavefront_path` 因 `bgs[bg_count]` 越界 panic（wasm abort =
+/// RuntimeError: unreachable）。D-14 真机缺陷 3。
+const BG_CAP: usize = 4;
 
 /// V3 参数块字节数（V3 剖面 = `PARAMS_WORDS_V3` 个字，比 V2 多 2 字）。
 const V3_PARAMS_BYTES: usize = PARAMS_WORDS_V3 * 4;
@@ -963,10 +967,15 @@ fn emit_frame(
 /// `connect` 只搬槽位与读 `params`（MIS 权重在 `shade` 内已算），`accumulate` 多
 /// 一个输出 `accum`——两者都是「不给就不会被读」的最小集。
 pub(crate) const WF_STAGE_GROUPS: [&[(u32, u32)]; 5] = [
-    &[(0, 2), (1, 1), (2, 1), (3, 1)],
+    // generate：g0{slots,params} g1{sobol} g2{}（**空组**——generate 不读
+    // scene_params，layout:"auto" 给空布局，绑 1 项即 Invalid；D-14 真机缺陷 5）
+    // g3{camera}
+    &[(0, 2), (1, 1), (2, 0), (3, 1)],
     &[(0, 2), (1, 1), (2, 8)],
     &[(0, 2)],
-    &[(0, 2), (1, 1), (2, 5)],
+    // extend：g2{scene_params,materials,prim_mat,tris}（不引用 lights/env/占位表
+    // ——与 naga 静态引用审计一致；曾写 5 导致 entries[4] 落在 4 绑定布局外）
+    &[(0, 2), (1, 1), (2, 4)],
     &[(0, 3)],
 ];
 
@@ -1268,6 +1277,28 @@ pub(crate) fn with_settled_pixels<R>(frame: SceneFrame, f: impl FnOnce(&[u8]) ->
         }
         wf_convert(&mut a, frame.slot, meta.wf, n / 4);
         Some(f(&a.pixels[frame.slot][..n]))
+    })
+}
+
+/// 在**已落盘**时把 wavefront 帧的**原始 accum 字节**（`npix × 16 B` 的
+/// `vec4<f32>` 位模式）交给 `f`；未落盘 / 非 wavefront 帧 ⇒ `None`。
+///
+/// `gpu.wavefront_path` 的逐位对拍必须拿 **f32 位模式**：`wf_convert` 量化到
+/// RGBA8 的那一步是有损的（1 ulp 的 HDR 差异在 8bit 上不可见），而 R-1 的
+/// 浏览器判据与 native 侧同口径——`to_bits()` 全等。所以这里不做任何换算，
+/// 交出的是 `accumulate` 直写的原字节。
+pub(crate) fn with_settled_accum<R>(frame: SceneFrame, f: impl FnOnce(&[u8]) -> R) -> Option<R> {
+    ARENA.with(|a| {
+        let accum_len = wf_accum_len(frame.width, frame.height);
+        let a = a.borrow_mut();
+        let meta = a.meta[frame.slot];
+        if !meta.used || meta.wf == WfKind::None {
+            return None;
+        }
+        if is_canary(&a.wf_accum[frame.slot][..accum_len]) {
+            return None;
+        }
+        Some(f(&a.wf_accum[frame.slot][..accum_len]))
     })
 }
 
@@ -1670,6 +1701,16 @@ fn emit_frame_v3(
     let bufs_ptr = ARENA.with(|a| {
         let mut a = a.borrow_mut();
         a.handles[..n_bound].copy_from_slice(&bufs[..n_bound]);
+        // 稀疏绑定（D-14 真机缺陷 4）：`cdf` 槽在 scene_main 的静态引用集之外
+        // （本 kernel 不消费环境 CDF——env 采样/探针是独立 kernel 的职责），
+        // layout:"auto" 会把未引用的 binding 7 从布局里剔除 ⇒ 句柄槽传**空洞
+        // 哨兵**（0xFFFFFFFF），宿主 `prism_create_bind_group` 跳过该 entry，
+        // binding 号仍取槽位号。哨兵约定见 index.html 的同名注释。
+        let cdf_slot = crate::scene_abi::V3_BINDINGS
+            .iter()
+            .position(|b| b.name == "cdf")
+            .expect("V3_BINDINGS 必含 cdf 槽");
+        a.handles[cdf_slot] = u32::MAX;
         // 句柄数组的线性内存地址：胶水按 `n × 4` 字节、每 4 字节一个 u32 读取。
         a.handles.as_ptr() as usize as u32
     });

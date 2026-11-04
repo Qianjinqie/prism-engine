@@ -150,7 +150,7 @@ const ST_NAME = ["PASS","FAIL","PENDING","SKIP","BAD_ARG"];
 // 构建后用 wasm 的 sha256 前 8 位替换下面的 `__WASM_VER__` 占位符（幂等），
 // 内容一变小 URL 就变，缓存自然失效。未跑过 build.sh 时占位符原样保留，
 // 仍可正常加载（只是不做缓存破坏）。
-const WASM_URL = "prism_gpu.wasm?v=e7aa942c";
+const WASM_URL = "prism_gpu.wasm?v=489ab3cc";
 
 // 句柄表在 wasm 线性内存里的元素宽度：句柄是 u32 ⇒ 4 字节。
 // 命名常量而非字面量：bind group 那段要把 n 个句柄的数组整段读出来，
@@ -287,7 +287,18 @@ async function acquireDevice(){
     if (ad) {
       try {
         adapterInfo = ad.info || (ad.requestAdapterInfo ? await ad.requestAdapterInfo() : {});
-        const dev = await ad.requestDevice({ label:"prism-harness" });
+        // 【requiredLimits 为什么必须显式要】rt_wavefront 的 shade 段静态引用
+        // 10 个 storage buffer（slots/params + sobol_dir + 场景 7 表），超过
+        // WebGPU 默认保证值 maxStorageBuffersPerShaderStage = 8 —— 不申请时
+        // createComputePipeline 直接 Invalid（wgsl_lib_compile 真机实测抓到）。
+        // 按**适配器实际上报值**取 min(10, adapter)：低上限硬件自动降级
+        // （wavefront 项会 FAIL/SKIP，但 harness 其它项照常跑），不支持
+        // requiredLimits 的老实现也不炸。
+        const wantBufs = Math.min(10, ad.limits?.maxStorageBuffersPerShaderStage ?? 8);
+        const dev = await ad.requestDevice({
+          label:"prism-harness",
+          requiredLimits: { maxStorageBuffersPerShaderStage: wantBufs },
+        });
         if (dev) {
           device = dev;
           deviceLostFlag = false;
@@ -443,11 +454,18 @@ const glue = {
     const view = new DataView(mem.buffer, bufs_ptr, n * BYTES_PER_U32);
     const entries = [];
     for (let i = 0; i < n; i += 1) {
-      entries.push({ binding: i, resource: { buffer: get(view.getUint32(i * BYTES_PER_U32, true)) } });
+      // 稀疏绑定（D-14 真机缺陷 4）：句柄值 0xFFFFFFFF = 「该 binding 不在本
+      // entry 的静态引用集里」（layout:"auto" 会剔除未引用的 binding，而声明
+      // 剖面里可能存在"为 ABI 完整性而声明、kernel 未消费"的槽，如 V3 的
+      // cdf）。空洞槽跳过 entry，binding 号仍取槽位号 i——与剔除后的布局
+      // {0..k, ...} 精确对齐。
+      const hnd = view.getUint32(i * BYTES_PER_U32, true);
+      if (hnd === 0xFFFFFFFF) continue;
+      entries.push({ binding: i, resource: { buffer: get(hnd) } });
     }
     // group 索引由参数给出（多 bind group 解锁：generate 用 group 0/1/2/3）。
     // layout:"auto" 只为被 dispatch 的 entry 静态引用的 binding 生成布局，
-    // 故该 entry 的引用集合必须是连续前缀 {0..n-1}——与 group 索引无关。
+    // 故该 entry 的引用集合去掉空洞后必须与槽位号一一对应——与 group 索引无关。
     return reg(d.createBindGroup({ layout: pipe.getBindGroupLayout(group), entries }));
   },
   prism_dispatch: (h, pipeline, bgs_ptr, n, gx, gy, gz) => {

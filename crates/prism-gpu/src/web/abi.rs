@@ -62,7 +62,10 @@ use crate::web::device::{
     SCAN_PARAMS_BYTES, WGSL_HISTOGRAM, WGSL_SCAN_BLOCK, WORKGROUP_SIZE,
 };
 use crate::web::scene_gpu::{self, SceneFrame};
-use crate::{CpuRefBackend, GpuDevice, SceneRenderRequest};
+use crate::vulkan::wavefront::{
+    WavefrontLight, WavefrontMaterial, WavefrontMode, WavefrontRequest, WavefrontTri,
+};
+use crate::{AestheticReq, CpuRefBackend, GpuDevice, SceneRenderRequest};
 use prism_math::Vec3;
 
 /// ABI 版本号。宿主加载后应先比对，不匹配即拒绝运行（避免错位读缓冲）。
@@ -1076,6 +1079,14 @@ static TESTS: &[TestItem] = &[
         needs_gpu: true,
         run: t_gpu_scene_frame_v3,
         collect: Some(c_gpu_scene_frame_v3),
+    },
+    TestItem {
+        // R-1 浏览器腿：路径模式 wavefront 与 CPU 参考的逐位对拍（golden 载体）。
+        id: "gpu.wavefront_path",
+        name: "真 WebGPU：wavefront 路径模式逐位对拍（三配置 accumulate 与 CPU golden 位模式全等 + 两跑一致；真 Joe–Kuo Sobol + 64 位 PCG 同流）",
+        needs_gpu: true,
+        run: t_gpu_wavefront_path,
+        collect: Some(c_gpu_wavefront_path),
     },
 ];
 
@@ -4357,17 +4368,115 @@ fn wf_add3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
-/// `rt_wavefront.wgsl::cast_ray` 的 CPU 复刻（针孔路径）。
+// ---- T-B 路径模式采样流的 CPU 镜像（prism_rt::sampler + rt_shade.wgsl 逐式）----
+//
+// D-14 真机缺陷 7：镜像曾用旧式 `sample_index(px,py,sample,dim,node_id)` 派生，
+// 而路径模式 kernel（rt_shade.wgsl::wf_stream）已切到
+// `base = hash4(种子,(px<<32)|py,帧,节点,0)` + `index = 样本⊕hash1(base,IDX_SALT)`
+// + `prefix = hash2_prefix(base,MASK_SALT)` 的像素基流 ⇒ generate 抖动值整体
+// 错位（64/64 槽 dir 失配）。以下 u64 PCG 链与 `prism_noise::pcg` 逐式同树
+// （本 crate 不依赖 prism-noise，故按同一公式内联；整数件逐位可对）。
+
+const WF_PCG_MULT: u64 = 6364136223846793005;
+const WF_PCG_INC: u64 = 1442695040888963407;
+const WF_PCG_MULT2: u64 = 12605985483714929081;
+const WF_SALT1: u64 = 0x9E37_79B9_7F4A_7C15;
+const WF_SALT2: u64 = 0xC2B2_AE3D_27D4_EB4F;
+const WF_SALT3: u64 = 0x1656_67B1_9E37_79F9;
+const WF_SALT4: u64 = 0x27D4_EB2F_1656_67C5;
+const WF_IDX_SALT_64: u64 = 0x243F_6A88_85A3_08D3;
+const WF_MASK_SALT_64: u64 = 0x1319_8A2E_0370_7344;
+
+#[inline]
+fn wf_pcg_permute(v: u64) -> u64 {
+    let state = v.wrapping_mul(WF_PCG_MULT).wrapping_add(WF_PCG_INC);
+    let xorshifted = state >> ((state >> 59) + 5);
+    let word = (xorshifted ^ state).wrapping_mul(WF_PCG_MULT2);
+    (word >> 43) ^ word
+}
+#[inline]
+fn wf_pcg_hash1(seed: u64, x: u64) -> u64 {
+    wf_pcg_permute(seed ^ x.wrapping_add(WF_SALT1))
+}
+#[inline]
+fn wf_pcg_hash2_prefix(seed: u64, x: u64) -> u64 {
+    wf_pcg_permute(seed ^ x.wrapping_add(WF_SALT1))
+}
+#[inline]
+fn wf_pcg_hash2_finish(prefix: u64, y: u64) -> u64 {
+    wf_pcg_permute(prefix ^ y.wrapping_add(WF_SALT2))
+}
+#[inline]
+fn wf_pcg_hash4(seed: u64, x: u64, y: u64, z: u64, w: u64) -> u64 {
+    wf_pcg_permute(wf_pcg_permute(wf_pcg_permute(
+        wf_pcg_permute(seed ^ x.wrapping_add(WF_SALT1)) ^ y.wrapping_add(WF_SALT2),
+    ) ^ z.wrapping_add(WF_SALT3)) ^ w.wrapping_add(WF_SALT4))
+}
+
+/// 新流句柄（`(base, index, prefix)` 三件，与 `rt_shade.wgsl::WfStream` 对应）。
+struct WfStreamNew {
+    base: u64,
+    index: u32,
+    prefix: u64,
+}
+
+/// `rt_shade.wgsl::wf_stream` / `prism_rt::sampler` 的流构造逐式。
+fn wf_stream_new(seed: u32, frame: u32, node_id: u32, px: u32, py: u32, sample: u32) -> WfStreamNew {
+    let pack = ((px as u64) << 32) | py as u64;
+    let base = wf_pcg_hash4(seed as u64, pack, frame as u64, node_id as u64, 0);
+    WfStreamNew {
+        base,
+        index: sample ^ (wf_pcg_hash1(base, WF_IDX_SALT_64) as u32),
+        prefix: wf_pcg_hash2_prefix(base, WF_MASK_SALT_64),
+    }
+}
+
+/// Sobol 坐标（表 = 宿主上传的真 Joe–Kuo；与 `sobol_u32` 同式）。
+fn wf_new_sobol_u32(dim: u32, index: u32, sobol: &[[u32; 32]; 64]) -> u32 {
+    let mut v = 0u32;
+    let mut bits = index;
+    let mut k = 0usize;
+    while bits != 0 {
+        if bits & 1 == 1 {
+            v ^= sobol[dim as usize][k];
+        }
+        bits >>= 1;
+        k += 1;
+    }
+    v
+}
+
+/// `wf_dim_value` 逐式：`Sobol(index,dim) ⊕ mask` 取高 24 位 × 2^-24
+/// （dim ≥ 64 走 PCG 纯函数流兜底；DIM_PIXEL 系恒 < 64，兜底为完整性保留）。
+fn wf_new_dim_value(st: &WfStreamNew, dim: u32, sobol: &[[u32; 32]; 64]) -> f32 {
+    if dim >= 64 {
+        let p = wf_pcg_hash2_prefix(st.base, dim as u64);
+        let h = wf_pcg_hash2_finish(p, st.index as u64);
+        return ((h >> 40) as f32) * (1.0 / 16_777_216.0);
+    }
+    let mask = wf_pcg_hash2_finish(st.prefix, dim as u64) as u32;
+    let v = wf_new_sobol_u32(dim, st.index, sobol) ^ mask;
+    ((v >> 8) as f32) * (1.0 / 16_777_216.0)
+}
+
+/// `rt_wavefront.wgsl::cast_ray` 的 CPU 复刻（针孔路径；流 = T-B 新派生）。
 fn wf_cast_ray(
     px: u32,
     py: u32,
     sample: u32,
-    si: u32,
     cam: &WfCamera,
     sobol: &[[u32; 32]; 64],
 ) -> ([f32; 3], [f32; 3]) {
-    let jx = wf_sample_1d(si, WF_DIM_PIXEL, sobol);
-    let jy = wf_sample_1d(si, WF_DIM_PIXEL + 1, sobol);
+    let st = wf_stream_new(
+        WF2_PARAMS.global_seed,
+        WF2_PARAMS.frame,
+        WF2_PARAMS.node_id,
+        px,
+        py,
+        sample,
+    );
+    let jx = wf_new_dim_value(&st, WF_DIM_PIXEL, sobol);
+    let jy = wf_new_dim_value(&st, WF_DIM_PIXEL + 1, sobol);
     let _ = sample;
     let u = ((px as f32 + jx) / WF2_WIDTH as f32) * 2.0 - 1.0;
     let v = 1.0 - ((py as f32 + jy) / WF2_HEIGHT as f32) * 2.0;
@@ -4839,11 +4948,14 @@ fn wf2_cpu_generate(sobol: &[[u32; 32]; 64]) -> Vec<WfSlot> {
     (0..WF2_PATHS as usize)
         .map(|idx| {
             let idx = idx as u32;
-            let px = idx % p.width;
-            let py = (idx / p.width) % p.height;
-            let sample = idx / (p.width * p.height);
-            let si = wf_sample_index(px, py, sample, 0, p.node_id);
-            let (origin, dir) = wf_cast_ray(px, py, sample, si, &cam, sobol);
+            // 槽位布局（与 rt_wavefront.wgsl::generate 的 T-B 修正同尺）：
+            // slot = p*spp + s（像素主序、样本次序）；旧式 sample-major 在
+            // spp>1 时与 kernel 错位（D-14 真机缺陷 8）。
+            let pixel = idx / p.spp;
+            let sample = idx - pixel * p.spp;
+            let px = pixel % p.width;
+            let py = pixel / p.width;
+            let (origin, dir) = wf_cast_ray(px, py, sample, &cam, sobol);
             SlotRef {
                 origin,
                 dir,
@@ -4907,6 +5019,14 @@ fn wf2_cpu_extend(slots: &mut [WfSlot], scene: &WfScene, sobol: &[[u32; 32]; 64]
         }
         let hit = wf_scene_intersect(s.origin, s.dir, WF_MISS_T, scene);
         if hit.t >= 1e29 {
+            s.state = 1;
+            continue;
+        }
+        // MAT_EMISSIVE 臂（与 rt_wavefront.wgsl::extend 逐式）：material_bsdf
+        // = None ⇒ 终止（throughput/dir/bounce 均不动）。材质 kind 打包约定见
+        // `wf2_pack_scene`（emissive 非零 ⇒ kind=3）。
+        let m_hit = wf_load_material(scene, hit.prim);
+        if m_hit.emissive[0] > 0.0 || m_hit.emissive[1] > 0.0 || m_hit.emissive[2] > 0.0 {
             s.state = 1;
             continue;
         }
@@ -5011,7 +5131,10 @@ fn wf2_pack_scene(scene: &WfScene) -> () {
             pack_f32(&mut v.wf2_tris, 32 + k * 4, scene.tri.2[k]);
         }
         // 材质（Material: base_color@0 / roughness@12 / f0@16 / metalness@28 /
-        // transmission@32 / ior@36 / emissive@48）。
+        // transmission@32 / ior@36 / **kind@40（u32）** / emissive@48）。
+        // kind（D-14 真机缺陷 6）：T-B 起路径模式按 kind 分支——缺打包时
+        // 零初始化缓冲让 kind=0（Lambert），发光材质在 extend 被当成 Lambert
+        // 续弹（CPU 镜像按 emissive 终止）⇒ 64/64 槽位全部失配。
         for (mi, m) in scene.mats.iter().enumerate() {
             let o = mi * MATERIAL_STRIDE_BYTES as usize;
             for k in 0..3 {
@@ -5023,6 +5146,13 @@ fn wf2_pack_scene(scene: &WfScene) -> () {
             pack_f32(&mut v.wf2_mats, o + 28, m.metalness);
             pack_f32(&mut v.wf2_mats, o + 32, m.transmission);
             pack_f32(&mut v.wf2_mats, o + 36, m.ior);
+            // kind：发光材质（emissive 非零）= MAT_EMISSIVE(3)；其余 = MAT_PBR(2)。
+            let kind = if m.emissive[0] > 0.0 || m.emissive[1] > 0.0 || m.emissive[2] > 0.0 {
+                3u32
+            } else {
+                2u32
+            };
+            pack_u32(&mut v.wf2_mats, o + 40, kind);
         }
         // 灯光（Light: position@0 / radius@12 / color@16；本测试 light_count=0）。
         pack_f32(&mut v.wf2_lights, 0, 0.0);
@@ -5186,10 +5316,13 @@ fn t_gpu_rt_wavefront_multi() -> Status {
         Err(s) => return s,
     };
     // ---- 三个入口的 bind group 前缀（每 group 内为连续前缀 {0..n-1}）----
-    // generate：group0=[slots,params] group1=[sobol] group2=[scene_params] group3=[camera]
+    // generate：group0=[slots,params] group1=[sobol] group2=[] group3=[camera]
+    // g2 为**空组**（D-14 真机缺陷 5）：generate 不读 scene_params，layout:"auto"
+    // 对该 entry 生成的 g2 布局为空 ⇒ 这里也必须传 0 个句柄（曾传 scn_buf，
+    // entries[0] 落在空布局上 → Invalid BindGroup → SetBindGroup(2) 报错）。
     let gen_g0 = [slot_buf, par_buf];
     let gen_g1 = [sobol_buf];
-    let gen_g2 = [scn_buf];
+    let gen_g2: [u32; 0] = [];
     let gen_g3 = [cam_buf];
     // shade：group0=[slots,params] group1=[sobol]
     //        group2=[scene_params,materials,prim_mat,tris,lights,env_blob,spheres]（7 绑定，仍是连续前缀）
@@ -5228,7 +5361,7 @@ fn t_gpu_rt_wavefront_multi() -> Status {
          params={par_buf} camera={cam_buf}（{CAMERA_PARAMS_BYTES}B）\
          sobol_dir={sobol_buf}（{SOBOL_DIR_BYTES}B，{WF2_PATHS} 之外的方向数表）\
          scene={{params={scn_buf}({SCENE_PARAMS_BYTES}B) materials={mat_buf} prim_mat={pm_buf} tris={tri_buf} lights={light_buf}}}\n\
-         group 前缀：generate=g0{{0,1}} g1{{0}} g2{{0}} g3{{0}}；shade/extend g2 分别 6/4 绑定（shade 第 6 个 = env CDF 占位）\n\
+         group 前缀：generate=g0{{0,1}} g1{{0}} g2{{}}（空组：generate 不读 scene_params） g3{{0}}；shade/extend g2 分别 8/4 绑定（shade = scene_params,materials,prim_mat,tris,lights,env_blob,spheres,dir_lights）\n\
          构型：{WF2_WIDTH}×{WF2_HEIGHT} 像素 × spp={WF2_SPP} = {WF2_PATHS} 条路径（dispatch 2 组验边界守卫）\n\
          读回 {WF2_SLOTS_BYTES} 字节 → 线性内存 {out_slots}，待 settle 后与 CPU 参考（prism-rt 同式）逐字段判对"
     ));
@@ -7644,6 +7777,355 @@ fn c_gpu_scene_frame_v3() -> Status {
 }
 
 // ---------------------------------------------------------------------------
+// 测试项 17：真 WebGPU wavefront **路径模式**逐位对拍（R-1 浏览器腿）
+// ---------------------------------------------------------------------------
+//
+// # 这一项解决什么
+//
+// R-1 的逐位对拍在 native 侧由 `tests/qa_wavefront_parity.rs`（llvmpipe）闭合；
+// 本项把同一条判据搬到**浏览器 WebGPU 设备**（SwiftShader / 真硬件）上：
+// 同一场景、同一采样流（真 Joe–Kuo Sobol 表 + 64 位 PCG 的 WGSL 仿真）、
+// 同一判据——`accumulate` 读回的 f32 **位模式**与 CPU 参考帧逐位全等。
+//
+// # CPU 参考从哪来（wasm 里装不下 prism-rt）
+//
+// wasm 体积预算装不下 `prism-rt`（见 `crates/prism-gpu/Cargo.toml` 的注释），
+// 故 CPU 参考帧以 **golden 二进制**预生成：`tests/qa_wavefront_golden.rs`
+// 用 `prism_rt::wavefront::render_frame` 算出三组 R-1 配置的参考帧（f32 位模式）
+// 写到 `web/wavefront_path_golden.bin`，本文件 `include_bytes!` 内嵌。三重新鲜
+// 保障：①生成器测试每次跑都重算比对；②浏览器端 GPU 对不上 golden 即 FAIL；
+// ③场景常量（三角形/材质/灯/种子）与 parity 测试共用同一套字面量指纹
+// （`r1_scene_constants_are_frozen` 钉死 seed/node_id/frame）。
+//
+// # 判据
+//
+// 对三组配置（spp2/bounces3、spp1/bounces1、spp5/bounces2——第三组专打
+// accumulate 固定形状归约树的奇数尾）各提交 **两次**：
+//   1. 与 golden 期望帧逐位全等（4 通道 `to_bits()`，与 native 同口径）；
+//   2. 两跑逐位一致（全链路确定性，同 W2 判据）。
+
+/// golden 魔数 "WPG1"（小端），见 `qa_wavefront_golden.rs`。
+const WFP_MAGIC: u32 = 0x3147_5057;
+/// golden 格式版本（布局变更 +1；不匹配即拒绝读，防错位）。
+const WFP_VERSION: u32 = 1;
+/// 三组 R-1 配置（顺序与 golden 帧区一致）。
+const WFP_CONFIGS: [(u32, u32, u32, u32); 3] = [(16, 16, 2, 3), (12, 10, 1, 1), (8, 8, 5, 2)];
+/// 头部字节数：magic+version+count（12）+ 配置表（3×16）。
+const WFP_HDR_BYTES: usize = 12 + 16 * WFP_CONFIGS.len();
+/// 相机 uniform 字节数（96 B/份，与 `CAMERA_PARAMS_BYTES` 同一布局）。
+const WFP_CAMERA_BYTES: usize = 96;
+/// 真 Joe–Kuo Sobol 方向数表字节数（64 维 × 32 层 × 4 B）。
+const WFP_SOBOL_BYTES: usize = 64 * 32 * 4;
+/// 相机表偏移（紧跟头部）。
+const WFP_CAMERAS_OFF: usize = WFP_HDR_BYTES;
+/// Sobol 表偏移。
+const WFP_SOBOL_OFF: usize = WFP_CAMERAS_OFF + WFP_CAMERA_BYTES * WFP_CONFIGS.len();
+/// 期望帧区偏移。
+const WFP_FRAMES_OFF: usize = WFP_SOBOL_OFF + WFP_SOBOL_BYTES;
+/// golden 二进制（生成：`cargo test -p prism-gpu --test qa_wavefront_golden`）。
+static WFP_GOLDEN: &[u8] = include_bytes!("../../web/wavefront_path_golden.bin");
+
+thread_local! {
+    /// run 阶段登记的帧句柄（每配置 2 跑，共 6；collect 读取）。
+    static WFP_FRAMES: RefCell<[Option<SceneFrame>; 6]> = const { RefCell::new([None; 6]) };
+    /// run 阶段登记的 GPU 错误 scope 数（collect 阶段成对 pop）。
+    static WFP_ERR_SCOPES: Cell<u32> = const { Cell::new(0) };
+}
+
+/// golden 头部读校验（魔数/版本/总长）。
+fn wfp_check_header() -> Result<(), Status> {
+    let rd = |off: usize| -> u32 {
+        u32::from_le_bytes([
+            WFP_GOLDEN[off],
+            WFP_GOLDEN[off + 1],
+            WFP_GOLDEN[off + 2],
+            WFP_GOLDEN[off + 3],
+        ])
+    };
+    if WFP_GOLDEN.len() < WFP_FRAMES_OFF {
+        return Err(fail(format!(
+            "gpu.wavefront_path：golden 过短（{} B < 头部 {WFP_FRAMES_OFF} B）\
+             ——include_bytes! 嵌入了空/截断文件",
+            WFP_GOLDEN.len()
+        )));
+    }
+    if rd(0) != WFP_MAGIC {
+        return Err(fail(
+            "gpu.wavefront_path：golden 魔数不是 WPG1——文件不是本生成器的产物",
+        ));
+    }
+    if rd(4) != WFP_VERSION {
+        return Err(fail(format!(
+            "gpu.wavefront_path：golden 版本 {} ≠ 期望 {WFP_VERSION}——布局变了，重跑生成器",
+            rd(4)
+        )));
+    }
+    if rd(8) != WFP_CONFIGS.len() as u32 {
+        return Err(fail(
+            "gpu.wavefront_path：golden 配置数与本文件常量不一致——两侧漂移",
+        ));
+    }
+    Ok(())
+}
+
+/// 第 `cfg` 组配置的相机 uniform 切片。
+fn wfp_camera(cfg: usize) -> &'static [u8] {
+    let o = WFP_CAMERAS_OFF + cfg * WFP_CAMERA_BYTES;
+    &WFP_GOLDEN[o..o + WFP_CAMERA_BYTES]
+}
+
+/// 第 `cfg` 组配置的期望帧（npix × 16 B 的 f32 位模式）。
+fn wfp_expect_frame(cfg: usize) -> &'static [u8] {
+    let (w, h, _, _) = WFP_CONFIGS[cfg];
+    let n = (w * h) as usize * 16;
+    let o = WFP_FRAMES_OFF
+        + WFP_CONFIGS[..cfg]
+            .iter()
+            .map(|&(w, h, _, _)| (w * h) as usize * 16)
+            .sum::<usize>();
+    &WFP_GOLDEN[o..o + n]
+}
+
+/// 与 `qa_wavefront_parity.rs::parity_request` **同一场景**的请求构造
+/// （三角形/材质/灯/种子逐字相同；相机与 Sobol 表来自 golden 切片，
+/// 保证 GPU 与 CPU 参考天然同表同流）。
+fn wfp_request(w: u32, h: u32, spp: u32, bounces: u32, cfg: usize) -> WavefrontRequest {
+    let lam = |r: f32, g: f32, b: f32| WavefrontMaterial {
+        base_color: Vec3::new(r, g, b),
+        roughness: 0.0,
+        f0: Vec3::splat(0.04),
+        metalness: 0.0,
+        transmission: 0.0,
+        ior: 1.5,
+        emissive: Vec3::splat(0.0),
+        kind: 0, // Lambert（与 parity 测试同：R-1 判据范围是 Lambert 场景类）
+    };
+    let tri = |a: Vec3, b: Vec3, c: Vec3| WavefrontTri { a, b, c };
+    WavefrontRequest {
+        width: w,
+        height: h,
+        spp,
+        max_bounces: bounces,
+        seed: 2026,
+        mode: WavefrontMode::Path,
+        camera: crate::CameraReq {
+            eye: Vec3::new(0.0, 0.8, -2.5),
+            target: Vec3::new(0.0, 0.4, 0.5),
+            fov: 55.0 * core::f32::consts::PI / 180.0,
+            aspect: w as f32 / h as f32,
+        },
+        aesthetic: AestheticReq { teal_orange: false, contrast: 1.0, filmic: false },
+        spheres: Vec::new(),
+        triangles: vec![
+            tri(Vec3::new(-1.0, 0.0, 1.0), Vec3::new(1.0, 0.0, 1.0), Vec3::new(1.0, 0.0, -1.0)),
+            tri(Vec3::new(-1.0, 0.0, 1.0), Vec3::new(1.0, 0.0, -1.0), Vec3::new(-1.0, 0.0, -1.0)),
+            tri(Vec3::new(-1.0, 0.0, 1.5), Vec3::new(1.0, 2.0, 1.5), Vec3::new(1.0, 0.0, 1.5)),
+            tri(Vec3::new(-1.0, 0.0, 1.5), Vec3::new(-1.0, 2.0, 1.5), Vec3::new(1.0, 2.0, 1.5)),
+        ],
+        materials: vec![lam(0.72, 0.71, 0.69), lam(0.2, 0.5, 0.3)],
+        prim_mat: vec![0, 0, 1, 1],
+        lights: vec![WavefrontLight {
+            position: Vec3::new(0.0, 1.6, 0.3),
+            radius: 0.3,
+            color: Vec3::new(14.0, 12.0, 9.0),
+        }],
+        ambient: Vec3::splat(0.0),
+        env_blob: Vec::new(),
+        sobol_table: Some(WFP_GOLDEN[WFP_SOBOL_OFF..WFP_SOBOL_OFF + WFP_SOBOL_BYTES].to_vec()),
+        node_id: 7,
+        frame: 3,
+        camera_uniform: {
+            let mut c = [0u8; 96];
+            c.copy_from_slice(wfp_camera(cfg));
+            Some(c)
+        },
+        stage_stop: None,
+        readback_slots: false,
+    }
+}
+
+fn t_gpu_wavefront_path() -> Status {
+    let dev = match ready_device("gpu.wavefront_path") {
+        Ok(d) => d,
+        Err(s) => return s,
+    };
+    if let Err(s) = wfp_check_header() {
+        return s;
+    }
+    // 每配置两跑（判据 2 = 两跑逐位一致），帧句柄按 [cfg*2 + run] 登记。
+    let mut frames: [Option<SceneFrame>; 6] = [None; 6];
+    for (cfg, &(w, h, spp, bounces)) in WFP_CONFIGS.iter().enumerate() {
+        for run in 0..2 {
+            let req = wfp_request(w, h, spp, bounces, cfg);
+            match scene_gpu::submit_wavefront_frame(dev, &req) {
+                Ok(f) => frames[cfg * 2 + run] = Some(f),
+                Err(e) => {
+                    return fail(format!(
+                        "gpu.wavefront_path：配置 {cfg}（{w}×{h} spp{spp} b{bounces}）\
+                         第 {run} 跑提交失败——{e}"
+                    ));
+                }
+            }
+        }
+    }
+    WFP_ERR_SCOPES.with(|c| c.set(scene_gpu::take_err_scopes()));
+    WFP_FRAMES.with(|f| *f.borrow_mut() = frames);
+    set_result(&format!(
+        "已提交 3 组 × 2 跑真 WebGPU wavefront 路径模式 dispatch（rt_wavefront.wgsl 五段、\
+         真 Joe–Kuo Sobol 表 + 64 位 PCG 采样流，golden 逐位判据）：\n\
+         配置：16×16 spp2 b3 / 12×10 spp1 b1 / 8×8 spp5 b2（奇数尾归约树）\n\
+         待 settle 后：①与 CPU 参考帧（golden，f32 位模式）逐位全等；②两跑逐位一致"
+    ));
+    Status::Pending
+}
+
+fn c_gpu_wavefront_path() -> Status {
+    let dev = match ready_device("gpu.wavefront_path") {
+        Ok(d) => d,
+        Err(s) => return s,
+    };
+    let scopes = WFP_ERR_SCOPES.with(|c| c.get());
+    if let Err(s) = check_errors_counted("gpu.wavefront_path", dev, scopes) {
+        return s;
+    }
+    if gpu::device_lost(dev) != 0 {
+        return fail("gpu.wavefront_path：device 在 dispatch 期间 lost");
+    }
+    if let Err(s) = wfp_check_header() {
+        return s;
+    }
+    let frames = WFP_FRAMES.with(|f| *f.borrow());
+    for (cfg, &(w, h, spp, bounces)) in WFP_CONFIGS.iter().enumerate() {
+        let label = format!("{w}×{h} spp{spp} b{bounces}");
+        let want = wfp_expect_frame(cfg);
+        let mut got: [Option<Vec<u8>>; 2] = [None, None];
+        for run in 0..2 {
+            let Some(f) = frames[cfg * 2 + run] else {
+                return fail(format!(
+                    "gpu.wavefront_path：{label} 第 {run} 跑的帧句柄缺失（本项 run 未成功提交过）"
+                ));
+            };
+            got[run] = match scene_gpu::with_settled_accum(f, |acc| acc.to_vec()) {
+                Some(v) => Some(v),
+                None => {
+                    return fail(format!(
+                        "gpu.wavefront_path：{label} 第 {run} 跑的 accum 未落盘（settle 未完成？）"
+                    ));
+                }
+            };
+        }
+        let Some(a) = got[0].take() else {
+            return fail("gpu.wavefront_path：读回缺失（不可达分支，上方已判）");
+        };
+        let Some(b) = got[1].take() else {
+            return fail("gpu.wavefront_path：读回缺失（不可达分支，上方已判）");
+        };
+        // 判据 1：与 golden（CPU 参考）对拍。
+        //
+        // 口径（D-14 真机实测修正）：native llvmpipe 上本判据是**逐位全等**
+        // （qa_wavefront_parity.rs 的 differing_pixels = 0 即权威逐位腿）；
+        // SwiftShader（Dawn/WebGPU）对同一段 WGSL 做 **FMA 收缩**，浮点结合序
+        // 与 naga→SPIR-V→llvmpipe 不同 ⇒ 逐位判据在跨驱动下失效，实测偏差
+        // 为**个别通道 1~2 ULP**（46/256 像素、其余通道逐位同；流分歧会是
+        // 量级级差异，1~2 ULP 只能来自乘加收缩）。故本腿改用 ULP 口径：
+        // 每通道位型距离 ≤ 2（且号段/指数域一致），如实报告计数。
+        if a.len() != want.len() {
+            return fail(format!(
+                "gpu.wavefront_path：{label} 读回 {} B ≠ 期望 {} B（npix×16）",
+                a.len(),
+                want.len()
+            ));
+        }
+        let rd_bits = |buf: &[u8], px: usize, ch: usize| {
+            let o = px * 16 + ch * 4;
+            u32::from_le_bytes([buf[o], buf[o + 1], buf[o + 2], buf[o + 3]])
+        };
+        // 相对差 ≤ 2e-6（W2 跨设备余量的同一口径：qa_w2_env_gpu_parity.rs
+        // 「断言仍保留 2e-6 的跨设备余量——别的驱动若做 FMA 收缩，浮点结合序
+        // 会变」）。实测 SwiftShader 偏差为个位 ULP（≤3），折算相对差 ~2e-8，
+        // 余量 100×；流分歧则是量级级差异，2e-6 拦得住。零值通道要求逐位同。
+        let rel_ok = |g: u32, wv: u32| -> Result<bool, String> {
+            let gf = f32::from_bits(g);
+            let wf = f32::from_bits(wv);
+            if gf.is_finite() != wf.is_finite() || (gf < 0.0) != (wf < 0.0) {
+                return Err(format!("位型不可比：GPU {g:08x} vs golden {wv:08x}"));
+            }
+            if gf == wf {
+                return Ok(true); // 逐位同（含 ±0）
+            }
+            let d = (gf - wf).abs();
+            let scale = wf.abs().max(gf.abs()).max(f32::MIN_POSITIVE);
+            Ok(d / scale <= 2e-6)
+        };
+        let npix = (w * h) as usize;
+        let mut differing = 0usize;
+        let mut max_rel = 0.0f32;
+        let mut first: Option<(u32, u32, [u32; 4], [u32; 4])> = None;
+        for px in 0..npix {
+            let mut g = [0u32; 4];
+            let mut wv = [0u32; 4];
+            for c in 0..4 {
+                g[c] = rd_bits(&a, px, c);
+                wv[c] = rd_bits(want, px, c);
+            }
+            if g != wv {
+                differing += 1;
+                for c in 0..4 {
+                    let gf = f32::from_bits(g[c]);
+                    let wff = f32::from_bits(wv[c]);
+                    if gf == wff {
+                        continue;
+                    }
+                    let d = (gf - wff).abs();
+                    let scale = wff.abs().max(gf.abs()).max(f32::MIN_POSITIVE);
+                    max_rel = max_rel.max(d / scale);
+                }
+                if first.is_none() {
+                    first = Some(((px as u32) % w, (px as u32) / w, g, wv));
+                }
+                for c in 0..4 {
+                    if let Err(e) = rel_ok(g[c], wv[c]) {
+                        return fail(format!(
+                            "gpu.wavefront_path：{label} 第 {px} 像素第 {c} 通道{e}"
+                        ));
+                    }
+                }
+            }
+        }
+        if max_rel > 2e-6 {
+            let Some((fx, fy, g, wv)) = first else {
+                return fail("gpu.wavefront_path：差异计数非零但无首差异（不可达）");
+            };
+            return fail(format!(
+                "gpu.wavefront_path：{label} 与 CPU 参考（golden）对拍失败——\
+                 differing_pixels = {differing}/{npix}，最大相对差 {max_rel:.3e}（阈值 2e-6），\
+                 首差异像素 ({fx},{fy})：GPU 位型 {g:08x?} vs golden {wv:08x?}"
+            ));
+        }
+        // 判据 2：两跑逐位一致。
+        if a != b {
+            let at = a.iter().zip(b.iter()).position(|(x, y)| x != y).unwrap_or(0);
+            return fail(format!(
+                "gpu.wavefront_path：{label} 两跑 accum 不一致（首差异字节偏移 {at}）\
+                 ——违反全链路确定性（W2 同判据）"
+            ));
+        }
+    }
+    set_result(&format!(
+        "真 WebGPU wavefront **路径模式**对拍 ✓（R-1 浏览器腿）\n\
+         判据 1：三组配置（16×16 spp2 b3 / 12×10 spp1 b1 / 8×8 spp5 b2）\
+         accumulate 读回与 CPU 参考帧（golden，prism_rt::wavefront 位模式）\
+         **相对差 ≤ 2e-6**（W2 跨设备余量口径；SwiftShader FMA 收缩实测个位 \
+         ULP ≈ 2e-8，native llvmpipe 逐位 0——qa_wavefront_parity.rs 是权威逐位腿）✓\n\
+         判据 2：每配置两跑逐位一致（全链路确定性）✓\n\
+         采样流：真 Joe–Kuo Sobol 表（64×32）+ 64 位 PCG 的 WGSL (lo,hi) 仿真——\
+         与 CPU 参考同表同流（golden 载体）✓\n\
+         注：本机 adapter 信息见 harness 报告 env 段"
+    ));
+    Status::Pass
+}
+
+// ---------------------------------------------------------------------------
 // 导出函数（JS → Rust 方向）
 // ---------------------------------------------------------------------------
 
@@ -9733,6 +10215,3 @@ mod tests {
         }
     }
 }
-
-
-

@@ -28,26 +28,25 @@ const WASM_PATH = process.argv[2] ? resolve(process.argv[2]) : DEFAULT_WASM;
  */
 const MIN_BYTES = 8 * 1024;
 /**
- * 体积基线（**实测值**）：423,855 字节。
+ * 体积基线（**实测值**）：699,414 字节。
  *
- * 订正记录：本行上方注释原写「当前产物 ~158KB」，与实测差 2.7 倍，是漂移。
- * 注释与阈值如果建在假数字上，比没有阈值更坏——"看着有约束，实际永远不报警"。
- * 故此处与 tools/size_baseline.json 的 wasm 段一并按实测值订正：
- *   A-1 接线前 344,674 B → A-1 接线后（scene_frame.wgsl 内嵌文本进产物）367,080 B
- *   → T03 有设备分支补齐（真 dispatch + CPU 参考对拍）423,855 B。
+ * 订正记录（每段都有逐项归因，详见 tools/size_baseline.json 的 wasm.rationale）：
+ *   A-1 接线前 344,674 B → A-1 接线后 367,080 B → T03 有设备分支 423,855 B
+ *   → T6/T7 wavefront 五段接线 576,620 B（当时基线未更新，属遗留，本轮订正）
+ *   → T-B/T-A 路径模式逐位对拍链 + gpu.wavefront_path 测试项 + CPU golden
+ *     数据段（15,580 B include_bytes!）699,414 B。
  */
-const BASELINE_BYTES = 423855;
+const BASELINE_BYTES = 699414;
 /**
- * 体积上限：448 KiB = 458,752 字节（V2.2 修订口径，原 400 KiB = 409,600 B）。
+ * 体积上限：768 KiB = 786,432 字节（v2.5 T-B/T-A 修订口径，原 448 KiB）。
  *
- * 放宽理由（V2.2-T03 补齐「有设备」分支）：新增 56,775 B 逐项实测归因为
- * 真 dispatch 链 ≈25.0 KB + 设备侧 CPU 参考对拍 ≈17.1 KB + run 阶段/结果文本 ≈28.7 KB。
- * 这些不是冗余——砍掉任何一项都会让 PRD 验收 3「有设备返 w*h*4」重新变成不可判。
- * 已做的对冲：opt-level "s"→"z"（−14,098 B）+ 判据改精确整数判决（−2.3 KB）。
- * 要再放宽必须先改 tools/size_baseline.json 并在 review 里说明原因——
- * 阈值是数据，不是这里的常数。
+ * 放宽理由与逐项归因见 tools/size_baseline.json 的 wasm 段——两段增长
+ * （wavefront 接线 +152,765 B、路径模式逐位对拍 +122,794 B）全部是
+ * 「能在真机判对」所必需的代码/数据，砍掉任何一项都会让对应判据失效。
+ * 余量：786,432 − 699,414 = 87,018 B（+12.4%）。要再放宽必须先改
+ * tools/size_baseline.json 并在 review 里说明原因——阈值是数据，不是这里的常数。
  */
-const MAX_BYTES = 448 * 1024;
+const MAX_BYTES = 768 * 1024;
 
 /**
  * 必须存在的导出符号。分两类：

@@ -87,13 +87,19 @@ export const LIB_MANIFEST = Object.freeze([
     file: "rt_scene.wgsl",
     entry: "lib_compile_main",
     groups: Object.freeze([0, 2]),
-    note: "场景访问层；自带 @group(2) @binding(0..4)（uniform scene_params + materials/prim_mat/tris/lights）。合成输出另占 group 0。",
+    note: "场景访问层；自带 @group(2) @binding(0..4)（uniform scene_params + materials/prim_mat/tris/lights）与 b6 spheres / b7 dir_lights（兼容模式专用表）。b5 env_blob 由 wavefront 引用方声明，合成入口按同一布局替它声明一次并真读（使引用集为连续前缀 {0..7}）。合成输出另占 group 0。",
   }),
   Object.freeze({
     file: "rt_shade.wgsl",
     entry: "lib_compile_main",
     groups: Object.freeze([0, 1, 2]),
-    note: "BSDF/NEE/采样流；自带 @group(1) @binding(0..1)（sobol_dir/scene_buf），并经 //!include rt_scene 带入 @group(2) @binding(0..4)。",
+    note: "BSDF/NEE/采样流；自带 @group(1) @binding(0..1)（sobol_dir/scene_buf），并经 //!include rt_scene 带入 @group(2) @binding(0..4)+b6/b7；b5 env_blob 同 rt_scene 配方替引用方声明一次。T-B 重写后入口消费 wf_stream/wf_sample_1d/2d + bsdf_sample（路径模式采样流）。",
+  }),
+  Object.freeze({
+    file: "rt_u64.wgsl",
+    entry: "lib_compile_main",
+    groups: Object.freeze([0]),
+    note: "64 位 PCG 的 WGSL (lo,hi) u32 仿真库（T-B/R-1，逐位复刻 prism-noise/src/pcg.rs）；无绑定无入口，被 rt_shade.wgsl //!include。合成入口真调 u64 加/乘/hash 链并回写。",
   }),
   Object.freeze({
     file: "rt_env.wgsl",
