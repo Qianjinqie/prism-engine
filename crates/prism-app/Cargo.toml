@@ -30,3 +30,10 @@ prism-mux = { path = "../prism-mux" }
 # `--adaptive` 档（R-13 产品路径接线）：AdaptiveRtBackend 在 postfx
 # （依赖方向 postfx → render 已存在，无法反向）。
 prism-postfx = { path = "../prism-postfx" }
+
+# V3.0 W2（D-28）：七族既有求值器接线。prism-app 是依赖图顶层（无 crate
+# 依赖它），可单向下达到全部七族；particles / postfx 依赖 render，故接线
+# 不能反向压进 render（会成环）。三条都是 workspace path 依赖，零第三方。
+prism-particles = { path = "../prism-particles" }
+prism-physics = { path = "../prism-physics" }
+prism-audio = { path = "../prism-audio" }

@@ -150,6 +150,21 @@ pub fn run(args: &[String]) -> i32 {
         }
     };
 
+    // ---- 3.5 V3.0 W2：七族既有求值器接线（生成源头，非帧后节点）--------
+    // 旧文件 `wiring` 为空 ⇒ 凭证为空 ⇒ 不打印，stdout 与 W1 逐字节一致
+    // （零损失）。新文件声明了 cap 块 ⇒ 逐帧解算的参数按族交给既有 crate
+    // 求值器，凭证摘要随 CLI 输出，可端到端断言。
+    let receipts: Vec<prism_app::w2_eval::W2Receipt> =
+        prism_app::w2_eval::evaluate(&compile, 0);
+    if !receipts.is_empty() {
+        let param_total: usize = receipts.iter().map(|r| r.param_keys.len()).sum();
+        println!(
+            "接线凭证   : {} 族 / {} 参数（生成源头逐帧解算）",
+            receipts.len(),
+            param_total
+        );
+    }
+
     // ---- 4. render_movie 直达路径（R5xxx 三段式，绝不静默）-------------------
     // D-19 双轨：默认 prism-rt 完整路径追踪；`--fast` 走 CpuRefBackend（Lambert）。
     // 两档都是 `&mut dyn GpuDevice`，`render_movie` 一行不改。

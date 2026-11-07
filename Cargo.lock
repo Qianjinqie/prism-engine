@@ -51,6 +51,7 @@ version = "0.1.0"
 dependencies = [
  "prism-aesthetic",
  "prism-ai",
+ "prism-audio",
  "prism-core",
  "prism-dsl",
  "prism-gpu",
@@ -58,6 +59,8 @@ dependencies = [
  "prism-io",
  "prism-math",
  "prism-mux",
+ "prism-particles",
+ "prism-physics",
  "prism-postfx",
  "prism-render",
 ]
