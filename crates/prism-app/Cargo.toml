@@ -2,6 +2,22 @@
 name = "prism-app"
 version = "0.1.0"
 edition = "2021"
+# W4：显式声明两个 bin，禁用自动发现，避免同一 src/main.rs 被自动 bin 与
+# 别名 bin 重复发现产生 "multiple build targets" 歧义。两 bin 完全同源。
+autobins = false
+
+# W4 统一顶层入口：`prism render <file.prism>`（作者契约 §5.3 W4 / §7 #9 字面）。
+# `prism-app` 保持不变——W1/W2/W3 全部端到端测试用 `CARGO_BIN_EXE_prism-app`，
+# 别名 bin 不改动任何既有行为，零损失。
+[[bin]]
+name = "prism-app"
+path = "src/main.rs"
+
+# `prism` 是薄入口：同一份 `cmd_render.rs`（唯一出片实现），只做 `render` 分发。
+# 独立源文件 ⇒ 无 "multiple build targets" 警告；不挂进 lib ⇒ 不污染 wasm cdylib。
+[[bin]]
+name = "prism"
+path = "src/prism.rs"
 
 [lib]
 # cdylib：产出 `prism_editor.wasm`（交互式编辑器页面加载）。

@@ -1605,6 +1605,11 @@ pub fn wiring_frame_values(compile: &CompileV2Output, frame: u64) -> WiringFrame
     if prism_dsl::signals_of(&wf).crafted {
         wf.values.insert("w3.frame".to_string(), (frame as f32).to_bits());
     }
+    // ---- V3.0 W4：统一命名时序通道的渲染前覆盖层（A7 / 生成源头，非帧后）----
+    // 只认 compile.channels 里带 `w4.drive.` 前缀的通道（由 `compile_film` 降级
+    // 注入）；无驱动通道时 `apply_timed_channels` 恒等返回 ⇒ 旧文件 / analytic /
+    // W1-W3 全部样例逐字节零损失。六族痕迹强度经此层可随时间/关键帧变化。
+    prism_dsl::apply_timed_channels(&mut wf, &channels, t, frame);
     wf
 }
 

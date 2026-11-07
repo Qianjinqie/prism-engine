@@ -31,14 +31,18 @@ use prism_postfx::adaptive_backend::AdaptiveRtBackend;
 use prism_render::{render_movie, RtBackend};
 
 /// render 子命令用法。
-pub const RENDER_USAGE: &str = r#"prism-app render — DSL v2 成片直达（整段渲染为 MP4）
+pub const RENDER_USAGE: &str = r#"prism render — 统一顶层入口：一部片子 = 一个 .prism 文件，一条命令出片
+（工程二进制名 `prism-app`，`prism` 为同源别名；两者行为逐字节一致）
 
 用法:
-  prism-app render <file.prism> [--out <FILE>] [--codec <h264|mjpeg>]
-                  [--fast] [--adaptive <TOTAL>] [--ocio <CONFIG.OCIO>]
+  prism render <file.prism> [--out <FILE>] [--codec <h264|mjpeg>]
+              [--fast] [--adaptive <TOTAL>] [--ocio <CONFIG.OCIO>]
 
 参数:
-  <file.prism>   DSL v2 场景源文件（首行须为 // prism-dsl 1 版本头）
+  <file.prism>   单文件片子源文件：`// prism-dsl 1`（旧档，零损失）/
+                 `// prism-dsl 2`（V3.0：finish 双一等档 + asset 内容哈希锁定
+                 + channel 命名时序通道）。冷启动到成片无中间手工步骤、
+                 无外部依赖目录；无 ffmpeg / 无 GPU 走内置 MJPEG 降级仍出片。
 
 选项:
   --out <FILE>   输出文件路径（默认 output/render.mp4）
@@ -132,10 +136,12 @@ pub fn run(args: &[String]) -> i32 {
     };
 
     // ---- 3. DSL 编译（语法错误带行号 + 出错行原文回显）----------------------
-    // `compile_auto` 按版本头分派：无头 / `// prism-dsl 1` 走既有 `compile_v2`
-    // （逐字节零损失），`// prism-dsl 2` 走 V3.0 语言前端并降级成同一份
-    // `CompileV2Output`。分派层不改变旧文件的任何行为。
-    let compile = match prism_dsl::compile_auto(&source).map(|out| out.into_v2_output()) {
+    // `compile_film` 是 W4 统一顶层入口的编译侧：按版本头分派（无头 /
+    // `// prism-dsl 1` 走既有 `compile_v2`，逐字节零损失；`// prism-dsl 2` 走
+    // V3.0 前端），叠加单文件形态声明（资产内容哈希锁定 + 命名时序通道降级）。
+    // 对未声明 `asset`/`channel` 的文件，`plan` 为空、`channels` 零追加，产物
+    // 与 `compile_auto(...).into_v2_output()` 逐字节相同（D-24 / W1-W3 不退化）。
+    let film_compile = match prism_dsl::compile_film(&source) {
         Ok(out) => out,
         Err(err) => {
             eprintln!(
@@ -149,6 +155,49 @@ pub fn run(args: &[String]) -> i32 {
             return 1;
         }
     };
+    let compile = film_compile.compile;
+
+    // ---- 3.4a V3.0 W4：外部资产内容哈希锁定校验（D-27，缺失即结构化报错）----
+    // 解析根 = 片子文件所在目录（不是 cwd）⇒ 资产路径不成隐式环境状态；
+    // 缺文件 / 内容哈希不符 ⇒ P9508 / P9509 三段式带声明行号，绝不静默降级、
+    // 不取默认。内嵌（inline）与纯哈希（HashOnly）声明无外部引用 ⇒ 校验计数 0，
+    // 空环境 / 无外部依赖目录冷启动仍出片（§7 #9）。
+    let asset_root: std::path::PathBuf = cfg
+        .file
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let resolver = prism_dsl::DirResolver::new(&asset_root);
+    let verified_assets = match prism_dsl::verify_external_assets(&film_compile.plan.assets, &resolver) {
+        Ok(n) => n,
+        Err(err) => {
+            eprintln!(
+                "prism-app render: 在哪：`{file_display}` 第 {} 行\n  什么事：{}",
+                err.line, err.message
+            );
+            if let Some(line_text) = source.lines().nth(err.line.saturating_sub(1)) {
+                eprintln!("  {lineno:>4} | {line_text}", lineno = err.line);
+            }
+            eprintln!("  建议：按上方消息补齐资产或改用 inline 内嵌（缺资产不静默降级、不取默认）");
+            return 1;
+        }
+    };
+
+    // ---- 3.4b V3.0 W4：单文件形态凭证（资产内容哈希锁定 / 命名时序通道）------
+    // 仅当文件显式声明了 asset / channel 时打印；旧文件 / W1-W3 样例 plan 为空
+    // ⇒ 不打印任何一行，stdout 逐字节一致（零损失）。
+    if !film_compile.plan.is_empty() {
+        println!(
+            "单文件凭证 : {} 资产（内容哈希锁定 / {} 外部已校验）/ {} 命名时序通道（渲染前逐帧解算）",
+            film_compile.plan.assets.len(),
+            verified_assets,
+            film_compile.plan.channels.len()
+        );
+        for c in &film_compile.plan.channels.channels {
+            println!("  {:<24} 第 {} 行", c.target, c.line);
+        }
+    }
 
     // ---- 3.5 V3.0 W2：七族既有求值器接线（生成源头，非帧后节点）--------
     // 旧文件 `wiring` 为空 ⇒ 凭证为空 ⇒ 不打印，stdout 与 W1 逐字节一致
