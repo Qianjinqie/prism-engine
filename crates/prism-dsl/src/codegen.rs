@@ -3311,3 +3311,68 @@ fn geo_instance(
     let off: Vec3 = geo_vec3(g, "offset").unwrap_or(Vec3::new(0.0, 0.0, 0.0));
     Ok((idx, prism_core::InstanceDesc::translated(0, off)))
 }
+
+// ---------------------------------------------------------------------------
+// V3.0 W1：v3 前端降级装配层
+//
+// 语言层**不重建节点图、不重实现任何数学或渲染**（§6 红线 1）：`emit` 展开出的
+// v2 块文本直接交给既有 `compile_v2_with_diagnostics`，产物就是 `CompileV2Output`。
+// 这同时给出「语言产物 ≡ 直接调引擎 API」的同源对拍基准。
+// ---------------------------------------------------------------------------
+
+/// V3.0 语言前端的降级装配产物。
+pub mod v3 {
+    use std::collections::BTreeMap;
+
+    use crate::ast::v3::Program3;
+    use crate::eval::{self, EvalEvent, EvalOutcome, Value3};
+    use crate::{v3_err, CompileV2Output, DslError};
+
+    /// 一次 `compile_v3` 的完整产物。
+    #[derive(Debug, Clone)]
+    pub struct CompileV3Output {
+        /// 降级到既有 `compile_v2` 得到的引擎装配产物（同源对拍基准）。
+        pub base: CompileV2Output,
+        /// 含首行 `// prism-dsl 1` 的完整 v2 文本（可直接独立编译）。
+        pub lowered_source: String,
+        /// v2 文本每行对应的 v3 源行（不含版本头行）。
+        pub lowered_lines: Vec<usize>,
+        /// 一等字段 seed。
+        pub seed: u64,
+        /// F-8 产物哈希（seed + 展开文本 + 求值轨迹）。
+        pub artifact_hash: u64,
+        /// F-5 求值轨迹。
+        pub trace: Vec<EvalEvent>,
+        /// 最终变量绑定（诊断与对拍用）。
+        pub bindings: BTreeMap<String, Value3>,
+    }
+
+    /// 执行程序 → 拼接 `emit` → 降级为 v2 文本 → 既有 `compile_v2` 装配。
+    pub fn codegen_v3(program: &Program3) -> Result<CompileV3Output, DslError> {
+        let outcome: EvalOutcome = eval::eval_program(program)?;
+        let mut lowered: String = String::from("// prism-dsl 1\n");
+        lowered.push_str(&outcome.lowered_source);
+        let (base, _diagnostics): (CompileV2Output, Vec<crate::Diagnostic>) =
+            crate::compile_v2_with_diagnostics(&lowered).map_err(|e| {
+                // v2 文本第 1 行是版本头，第 2 行起是 emit 内容 ⇒ 索引 = line - 2。
+                let index: usize = e.line.saturating_sub(2);
+                let v3_line: usize =
+                    outcome.lowered_lines.get(index).copied().unwrap_or(1);
+                v3_err(
+                    v3_line,
+                    "P7002",
+                    &format!("emit 展开的 v2 块文本编译失败：{}", e.message),
+                    "检查 emit 模板里的 v2 块语法与插值结果；报错行号已折算回 v3 源文件",
+                )
+            })?;
+        Ok(CompileV3Output {
+            base,
+            lowered_source: lowered,
+            lowered_lines: outcome.lowered_lines,
+            seed: outcome.seed,
+            artifact_hash: outcome.artifact_hash,
+            trace: outcome.trace,
+            bindings: outcome.bindings,
+        })
+    }
+}

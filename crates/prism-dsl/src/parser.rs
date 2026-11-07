@@ -2057,3 +2057,752 @@ impl Parser {
 fn is_bare_flag_field(name: &str) -> bool {
     matches!(name, "arpeggio")
 }
+
+// ---------------------------------------------------------------------------
+// V3.0 W1：v3 前端解析器（D-22 自研 LL(1) + Pratt）
+//
+// 语句层是 LL(1)：每个语句的首 token 唯一决定产生式；表达式层是 Pratt
+// （绑定力表见 `infix_bp`）。与 v1/v2 的 `Parser` 完全分离，旧解析器一行未改。
+// 冻结依据：`docs/v3.0-语言规格.md` §2 / §4。
+// ---------------------------------------------------------------------------
+
+/// V3.0 语言前端解析器与行内表达式解析入口。
+pub mod v3 {
+    use crate::ast::v3::{
+        BinOp3, Expr3, ForRange3, InterpPart3, Literal3, Program3, Stmt3, UnOp3,
+    };
+    use crate::lexer::v3::{describe, tokenize_inline3, Tok3, Token3};
+    use crate::{v3_err, DslError};
+
+    /// LL(1) 语句 + Pratt 表达式解析器。
+    pub struct Parser3 {
+        toks: Vec<Token3>,
+        pos: usize,
+    }
+
+    impl Parser3 {
+        pub fn new(toks: Vec<Token3>) -> Self {
+            Self { toks, pos: 0 }
+        }
+
+        fn peek(&self) -> Option<&Tok3> {
+            self.toks.get(self.pos).map(|t| &t.tok)
+        }
+
+        fn peek_line(&self) -> usize {
+            self.toks.get(self.pos).map_or_else(
+                || self.toks.last().map_or(1, |t| t.line),
+                |t| t.line,
+            )
+        }
+
+        fn bump(&mut self) -> Option<Token3> {
+            let t: Option<Token3> = self.toks.get(self.pos).cloned();
+            if t.is_some() {
+                self.pos += 1;
+            }
+            t
+        }
+
+        fn at_ident(&self, word: &str) -> bool {
+            matches!(self.peek(), Some(Tok3::Ident(s)) if s == word)
+        }
+
+        fn take_ident(&mut self) -> Result<(String, usize), DslError> {
+            let line: usize = self.peek_line();
+            match self.bump().map(|t| t.tok) {
+                Some(Tok3::Ident(s)) => Ok((s, line)),
+                Some(got) => Err(v3_err(
+                    line,
+                    "P6004",
+                    &format!("期望标识符，却遇到 {}", describe(&got)),
+                    "检查语句关键字与变量名的拼写",
+                )),
+                None => Err(v3_err(
+                    line,
+                    "P6004",
+                    "期望标识符，却到达文件末尾",
+                    "补全该语句",
+                )),
+            }
+        }
+
+        fn expect_tok(&mut self, want: Tok3, what: &str) -> Result<(), DslError> {
+            let line: usize = self.peek_line();
+            match self.peek().cloned() {
+                Some(got) if got == want => {
+                    self.bump();
+                    Ok(())
+                }
+                Some(got) => Err(v3_err(
+                    line,
+                    "P6004",
+                    &format!("期望 {}，却遇到 {}", what, describe(&got)),
+                    "按语法补齐该符号；每行只写一条语句",
+                )),
+                None => Err(v3_err(
+                    line,
+                    "P6004",
+                    &format!("期望 {}，却到达文件末尾", what),
+                    "按语法补齐该符号",
+                )),
+            }
+        }
+
+        fn expect_ident(&mut self, word: &str) -> Result<(), DslError> {
+            let line: usize = self.peek_line();
+            if self.at_ident(word) {
+                self.bump();
+                Ok(())
+            } else {
+                Err(v3_err(
+                    line,
+                    "P6004",
+                    &format!("期望关键字 '{}'", word),
+                    "检查关键字拼写与语句结构",
+                ))
+            }
+        }
+
+        fn expect_newline(&mut self) -> Result<(), DslError> {
+            self.expect_tok(Tok3::Newline, "行尾")
+        }
+
+        /// 解析整份程序。
+        pub fn parse_program(&mut self) -> Result<Program3, DslError> {
+            let mut stmts: Vec<Stmt3> = Vec::new();
+            while self.pos < self.toks.len() {
+                if self.peek() == Some(&Tok3::Newline) {
+                    self.bump();
+                    continue;
+                }
+                stmts.push(self.parse_stmt()?);
+            }
+            let line_count: usize = self.toks.last().map_or(1, |t| t.line);
+            Ok(Program3 { stmts, line_count })
+        }
+
+        fn parse_stmt(&mut self) -> Result<Stmt3, DslError> {
+            if self.at_ident("seed") {
+                return self.parse_seed();
+            }
+            if self.at_ident("def") {
+                return self.parse_def();
+            }
+            if self.at_ident("for") {
+                return self.parse_for();
+            }
+            if self.at_ident("if") {
+                return self.parse_if();
+            }
+            if self.at_ident("elif") || self.at_ident("else") {
+                let line: usize = self.peek_line();
+                return Err(v3_err(
+                    line,
+                    "P6108",
+                    "'elif' / 'else' 没有配对的 'if'",
+                    "'elif' 必须紧跟在同级 'if' 分支之后，'else' 必须是最后一个分支",
+                ));
+            }
+            if self.at_ident("emit") {
+                return self.parse_emit();
+            }
+            if self.at_ident("return") {
+                return self.parse_return();
+            }
+            if matches!(self.peek(), Some(Tok3::Ident(_)))
+                && matches!(self.toks.get(self.pos + 1).map(|t| &t.tok), Some(Tok3::Assign))
+            {
+                return self.parse_assign();
+            }
+            // 裸表达式语句：让 `now()` / `write_file(...)` 这类调用进入
+            // 统一的静态拒绝面（P6101），而不是在语句层被含糊地吃掉。
+            if self.can_start_expr() {
+                let line: usize = self.peek_line();
+                let expr: Expr3 = self.parse_expr(0)?;
+                self.expect_newline()?;
+                return Ok(Stmt3::Expr { expr, line });
+            }
+            let line: usize = self.peek_line();
+            let got: String = self
+                .peek()
+                .map(describe)
+                .unwrap_or_else(|| "文件末尾".to_string());
+            Err(v3_err(
+                line,
+                "P6004",
+                &format!("无法识别的语句开头 {}", got),
+                "顶层只允许 seed / 赋值 / def / for / if / emit；块内另允许 return",
+            ))
+        }
+
+        fn can_start_expr(&self) -> bool {
+            matches!(
+                self.peek(),
+                Some(Tok3::Ident(_))
+                    | Some(Tok3::Num(_))
+                    | Some(Tok3::Str(_))
+                    | Some(Tok3::Interp { .. })
+                    | Some(Tok3::LParen)
+                    | Some(Tok3::LBracket)
+                    | Some(Tok3::LBrace)
+                    | Some(Tok3::Minus)
+            )
+        }
+
+        fn parse_seed(&mut self) -> Result<Stmt3, DslError> {
+            let line: usize = self.peek_line();
+            self.bump(); // 'seed'
+            self.expect_tok(Tok3::Assign, "'='")?;
+            let value: String = match self.bump().map(|t| t.tok) {
+                Some(Tok3::Num(s)) => s,
+                Some(got) => {
+                    return Err(v3_err(
+                        line,
+                        "P6112",
+                        &format!("seed 必须是非负整数字面量，却遇到 {}", describe(&got)),
+                        "写成 seed = 20261106 这样的十进制整数",
+                    ));
+                }
+                None => {
+                    return Err(v3_err(
+                        line,
+                        "P6112",
+                        "seed 缺少整数字面量",
+                        "写成 seed = 20261106 这样的十进制整数",
+                    ));
+                }
+            };
+            self.expect_newline()?;
+            Ok(Stmt3::Seed { value, line })
+        }
+
+        fn parse_assign(&mut self) -> Result<Stmt3, DslError> {
+            let (name, line): (String, usize) = self.take_ident()?;
+            self.expect_tok(Tok3::Assign, "'='")?;
+            let expr: Expr3 = self.parse_expr(0)?;
+            self.expect_newline()?;
+            Ok(Stmt3::Assign { name, expr, line })
+        }
+
+        fn parse_return(&mut self) -> Result<Stmt3, DslError> {
+            let line: usize = self.peek_line();
+            self.bump(); // 'return'
+            let expr: Expr3 = self.parse_expr(0)?;
+            self.expect_newline()?;
+            Ok(Stmt3::Return { expr, line })
+        }
+
+        fn parse_emit(&mut self) -> Result<Stmt3, DslError> {
+            let line: usize = self.peek_line();
+            self.bump(); // 'emit'
+            let template: Expr3 = self.parse_expr(0)?;
+            self.expect_newline()?;
+            Ok(Stmt3::Emit { template, line })
+        }
+
+        /// 缩进块：`:` + 换行 + INDENT + 语句* + DEDENT。
+        fn parse_suite(&mut self) -> Result<Vec<Stmt3>, DslError> {
+            self.expect_tok(Tok3::Colon, "':'")?;
+            self.expect_newline()?;
+            self.expect_tok(Tok3::Indent, "缩进块（4 空格）")?;
+            let mut body: Vec<Stmt3> = Vec::new();
+            loop {
+                match self.peek() {
+                    Some(Tok3::Dedent) => {
+                        self.bump();
+                        break;
+                    }
+                    None => {
+                        let line: usize = self.peek_line();
+                        return Err(v3_err(
+                            line,
+                            "P6001",
+                            "缩进块未闭合就到达文件末尾",
+                            "所有块内语句保持同一级 4 空格缩进",
+                        ));
+                    }
+                    _ => body.push(self.parse_stmt()?),
+                }
+            }
+            if body.is_empty() {
+                let line: usize = self.peek_line();
+                return Err(v3_err(
+                    line,
+                    "P6001",
+                    "缩进块内没有任何语句",
+                    "至少写一条语句；空块请删掉该分支",
+                ));
+            }
+            Ok(body)
+        }
+
+        fn parse_def(&mut self) -> Result<Stmt3, DslError> {
+            let line: usize = self.peek_line();
+            self.bump(); // 'def'
+            let (name, _): (String, usize) = self.take_ident()?;
+            self.expect_tok(Tok3::LParen, "'('")?;
+            let mut params: Vec<String> = Vec::new();
+            if self.peek() != Some(&Tok3::RParen) {
+                loop {
+                    let (p, pline): (String, usize) = self.take_ident()?;
+                    if params.contains(&p) {
+                        return Err(v3_err(
+                            pline,
+                            "P6103",
+                            &format!("def '{}' 的参数 '{}' 重名", name, p),
+                            "参数名在同一函数的形参表里必须唯一",
+                        ));
+                    }
+                    params.push(p);
+                    if self.peek() == Some(&Tok3::Comma) {
+                        self.bump();
+                        continue;
+                    }
+                    break;
+                }
+            }
+            self.expect_tok(Tok3::RParen, "')'")?;
+            let body: Vec<Stmt3> = self.parse_suite()?;
+            Ok(Stmt3::Def { name, params, body, line })
+        }
+
+        fn parse_for(&mut self) -> Result<Stmt3, DslError> {
+            let line: usize = self.peek_line();
+            self.bump(); // 'for'
+            let (var, _): (String, usize) = self.take_ident()?;
+            self.expect_ident("in")?;
+            let range: ForRange3 = match self.peek().cloned() {
+                Some(Tok3::Num(lo)) => {
+                    let rline: usize = self.peek_line();
+                    self.bump();
+                    self.expect_tok(Tok3::Range, "'..'")?;
+                    let hi: String = match self.bump().map(|t| t.tok) {
+                        Some(Tok3::Num(s)) => s,
+                        Some(got) => {
+                            return Err(v3_err(
+                                rline,
+                                "P6106",
+                                &format!("for 区间上界必须是整数字面量，却遇到 {}", describe(&got)),
+                                "写成 for i in 0..4: 这样的字面量区间",
+                            ));
+                        }
+                        None => {
+                            return Err(v3_err(
+                                rline,
+                                "P6106",
+                                "for 区间缺少上界",
+                                "写成 for i in 0..4: 这样的字面量区间",
+                            ));
+                        }
+                    };
+                    ForRange3::Range { lo, hi, line: rline }
+                }
+                Some(Tok3::LBracket) => {
+                    let items: Vec<Expr3> = self.parse_list_items()?;
+                    ForRange3::List { items, line }
+                }
+                Some(got) => {
+                    return Err(v3_err(
+                        line,
+                        "P6106",
+                        &format!("for 的迭代源必须是字面量区间或字面量列表，却遇到 {}", describe(&got)),
+                        "写成 for i in 0..4: 或 for x in [1, 2, 3]:",
+                    ));
+                }
+                None => {
+                    return Err(v3_err(
+                        line,
+                        "P6106",
+                        "for 缺少迭代源",
+                        "写成 for i in 0..4: 或 for x in [1, 2, 3]:",
+                    ));
+                }
+            };
+            let body: Vec<Stmt3> = self.parse_suite()?;
+            Ok(Stmt3::For { var, range, body, line })
+        }
+
+        fn parse_if(&mut self) -> Result<Stmt3, DslError> {
+            let line: usize = self.peek_line();
+            self.bump(); // 'if'
+            let cond: Expr3 = self.parse_expr(0)?;
+            let first: Vec<Stmt3> = self.parse_suite()?;
+            let mut branches: Vec<(Expr3, Vec<Stmt3>)> = vec![(cond, first)];
+            let mut else_body: Vec<Stmt3> = Vec::new();
+            loop {
+                if self.at_ident("elif") {
+                    self.bump();
+                    let c: Expr3 = self.parse_expr(0)?;
+                    let b: Vec<Stmt3> = self.parse_suite()?;
+                    branches.push((c, b));
+                    continue;
+                }
+                if self.at_ident("else") {
+                    self.bump();
+                    else_body = self.parse_suite()?;
+                }
+                break;
+            }
+            Ok(Stmt3::If { branches, else_body, line })
+        }
+
+        /// `[` 已消费前的辅助：消费 `[`、元素、`]`；尾逗号判 P6201。
+        fn parse_list_items(&mut self) -> Result<Vec<Expr3>, DslError> {
+            let line: usize = self.peek_line();
+            self.expect_tok(Tok3::LBracket, "'['")?;
+            let mut items: Vec<Expr3> = Vec::new();
+            if self.peek() == Some(&Tok3::RBracket) {
+                self.bump();
+                return Ok(items);
+            }
+            loop {
+                items.push(self.parse_expr(0)?);
+                match self.peek() {
+                    Some(Tok3::Comma) => {
+                        self.bump();
+                        if self.peek() == Some(&Tok3::RBracket) {
+                            return Err(v3_err(
+                                line,
+                                "P6201",
+                                "列表字面量出现尾逗号",
+                                "删掉最后一个逗号，或在后面补一个元素",
+                            ));
+                        }
+                    }
+                    Some(Tok3::RBracket) => {
+                        self.bump();
+                        break;
+                    }
+                    Some(got) => {
+                        return Err(v3_err(
+                            line,
+                            "P6004",
+                            &format!("列表元素后期望 ',' 或 ']'，却遇到 {}", describe(got)),
+                            "用逗号分隔元素，用 ']' 收尾",
+                        ));
+                    }
+                    None => {
+                        return Err(v3_err(
+                            line,
+                            "P6004",
+                            "列表字面量缺少 ']'",
+                            "补上 ']'",
+                        ));
+                    }
+                }
+            }
+            Ok(items)
+        }
+
+        fn parse_dict(&mut self) -> Result<Expr3, DslError> {
+            let line: usize = self.peek_line();
+            self.expect_tok(Tok3::LBrace, "'{'")?;
+            let mut entries: Vec<(String, Expr3)> = Vec::new();
+            if self.peek() == Some(&Tok3::RBrace) {
+                self.bump();
+                return Ok(Expr3::Dict { entries, line });
+            }
+            loop {
+                let key: String = match self.bump().map(|t| t.tok) {
+                    Some(Tok3::Str(s)) => s,
+                    Some(got) => {
+                        return Err(v3_err(
+                            line,
+                            "P6004",
+                            &format!("字典键必须是字符串字面量，却遇到 {}", describe(&got)),
+                            "写成 {{\"albedo\": 0.5}} 这样的形式",
+                        ));
+                    }
+                    None => {
+                        return Err(v3_err(
+                            line,
+                            "P6004",
+                            "字典缺少键",
+                            "写成 {\"key\": value} 的形式",
+                        ));
+                    }
+                };
+                if entries.iter().any(|(k, _)| k == &key) {
+                    return Err(v3_err(
+                        line,
+                        "P6202",
+                        &format!("字典键 '{}' 重复", key),
+                        "同一字典里每个键只能出现一次；删掉重复项",
+                    ));
+                }
+                self.expect_tok(Tok3::Colon, "':'")?;
+                let value: Expr3 = self.parse_expr(0)?;
+                entries.push((key, value));
+                match self.peek() {
+                    Some(Tok3::Comma) => {
+                        self.bump();
+                        if self.peek() == Some(&Tok3::RBrace) {
+                            return Err(v3_err(
+                                line,
+                                "P6201",
+                                "字典字面量出现尾逗号",
+                                "删掉最后一个逗号，或在后面补一个键值项",
+                            ));
+                        }
+                    }
+                    Some(Tok3::RBrace) => {
+                        self.bump();
+                        break;
+                    }
+                    Some(got) => {
+                        return Err(v3_err(
+                            line,
+                            "P6004",
+                            &format!("字典项后期望 ',' 或 '}}'，却遇到 {}", describe(got)),
+                            "用逗号分隔键值项，用 '}' 收尾",
+                        ));
+                    }
+                    None => {
+                        return Err(v3_err(
+                            line,
+                            "P6004",
+                            "字典字面量缺少 '}'",
+                            "补上 '}'",
+                        ));
+                    }
+                }
+            }
+            Ok(Expr3::Dict { entries, line })
+        }
+
+        /// 插值字符串：单个 `{` / `}` 是字面量（v2 块语法用），`{{expr}}` 才是插值。
+        fn parse_interp(
+            &mut self,
+            text: &str,
+            start_line: usize,
+            line: usize,
+        ) -> Result<Expr3, DslError> {
+            let mut parts: Vec<InterpPart3> = Vec::new();
+            let mut buf = String::new();
+            let mut line_offset: usize = 0;
+            let chars: Vec<char> = text.chars().collect();
+            let mut i: usize = 0;
+            while i < chars.len() {
+                let c: char = chars[i];
+                if c == '\n' {
+                    buf.push(c);
+                    line_offset += 1;
+                    i += 1;
+                    continue;
+                }
+                if c == '{' && chars.get(i + 1) == Some(&'{') {
+                    if !buf.is_empty() {
+                        parts.push(InterpPart3::Text(std::mem::take(&mut buf)));
+                    }
+                    i += 2;
+                    let mut frag = String::new();
+                    let mut closed = false;
+                    while i < chars.len() {
+                        if chars[i] == '}' && chars.get(i + 1) == Some(&'}') {
+                            i += 2;
+                            closed = true;
+                            break;
+                        }
+                        if chars[i] == '\n' {
+                            return Err(v3_err(
+                                start_line + line_offset,
+                                "P6205",
+                                "插值表达式不能跨行",
+                                "把 {{...}} 写成单行表达式",
+                            ));
+                        }
+                        frag.push(chars[i]);
+                        i += 1;
+                    }
+                    if !closed {
+                        return Err(v3_err(
+                            start_line + line_offset,
+                            "P6205",
+                            "插值表达式缺少 '}}' 收尾",
+                            "补上 '}}'；v2 块语法的单个 '{' 会原样保留，不需要转义",
+                        ));
+                    }
+                    let expr: Expr3 = parse_expr_text(&frag, start_line + line_offset)?;
+                    parts.push(InterpPart3::Expr(expr));
+                    continue;
+                }
+                buf.push(c);
+                i += 1;
+            }
+            if !buf.is_empty() {
+                parts.push(InterpPart3::Text(buf));
+            }
+            Ok(Expr3::Interp { parts, start_line, line })
+        }
+
+        /// Pratt 表达式解析（F-1 左→右优先级，绑定力表固定）。
+        pub fn parse_expr(&mut self, min_bp: u8) -> Result<Expr3, DslError> {
+            let mut lhs: Expr3 = self.parse_prefix()?;
+            loop {
+                // 后缀下标 `[]`（绑定力 11）。
+                if self.peek() == Some(&Tok3::LBracket) {
+                    if 11 < min_bp {
+                        break;
+                    }
+                    let line: usize = self.peek_line();
+                    self.bump();
+                    let index: Expr3 = self.parse_expr(0)?;
+                    self.expect_tok(Tok3::RBracket, "']'")?;
+                    lhs = Expr3::Index {
+                        target: Box::new(lhs),
+                        index: Box::new(index),
+                        line,
+                    };
+                    continue;
+                }
+                let (l_bp, r_bp, op): (u8, u8, BinOp3) = match self.infix_bp() {
+                    Some(v) => v,
+                    None => break,
+                };
+                if l_bp < min_bp {
+                    break;
+                }
+                let line: usize = self.peek_line();
+                self.bump();
+                let rhs: Expr3 = self.parse_expr(r_bp)?;
+                lhs = Expr3::Binary {
+                    op,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                    line,
+                };
+            }
+            Ok(lhs)
+        }
+
+        fn infix_bp(&self) -> Option<(u8, u8, BinOp3)> {
+            let bp: (u8, u8, BinOp3) = match self.peek() {
+                Some(Tok3::Ident(s)) if s == "or" => (1, 2, BinOp3::Or),
+                Some(Tok3::Ident(s)) if s == "and" => (3, 4, BinOp3::And),
+                Some(Tok3::Eq) => (5, 6, BinOp3::Eq),
+                Some(Tok3::Ne) => (5, 6, BinOp3::Ne),
+                Some(Tok3::Lt) => (5, 6, BinOp3::Lt),
+                Some(Tok3::Le) => (5, 6, BinOp3::Le),
+                Some(Tok3::Gt) => (5, 6, BinOp3::Gt),
+                Some(Tok3::Ge) => (5, 6, BinOp3::Ge),
+                Some(Tok3::Plus) => (7, 8, BinOp3::Add),
+                Some(Tok3::Minus) => (7, 8, BinOp3::Sub),
+                Some(Tok3::Star) => (9, 10, BinOp3::Mul),
+                Some(Tok3::Slash) => (9, 10, BinOp3::Div),
+                Some(Tok3::Percent) => (9, 10, BinOp3::Mod),
+                _ => return None,
+            };
+            Some(bp)
+        }
+
+        fn parse_prefix(&mut self) -> Result<Expr3, DslError> {
+            let line: usize = self.peek_line();
+            let tok: Tok3 = match self.bump().map(|t| t.tok) {
+                Some(t) => t,
+                None => {
+                    return Err(v3_err(
+                        line,
+                        "P6003",
+                        "表达式不完整：期望字面量 / 变量 / 左括号",
+                        "补全表达式的右操作数",
+                    ));
+                }
+            };
+            match tok {
+                Tok3::Num(s) => Ok(Expr3::Lit { value: Literal3::Num(s), line }),
+                Tok3::Str(s) => Ok(Expr3::Lit { value: Literal3::Str(s), line }),
+                Tok3::Interp { text, start_line } => {
+                    self.parse_interp(&text, start_line, line)
+                }
+                Tok3::Ident(s) if s == "true" => {
+                    Ok(Expr3::Lit { value: Literal3::Bool(true), line })
+                }
+                Tok3::Ident(s) if s == "false" => {
+                    Ok(Expr3::Lit { value: Literal3::Bool(false), line })
+                }
+                Tok3::Ident(s) if s == "not" => Ok(Expr3::Unary {
+                    op: UnOp3::Not,
+                    rhs: Box::new(self.parse_expr(12)?),
+                    line,
+                }),
+                Tok3::Ident(s) => {
+                    if self.peek() == Some(&Tok3::LParen) {
+                        self.bump();
+                        let mut args: Vec<Expr3> = Vec::new();
+                        if self.peek() != Some(&Tok3::RParen) {
+                            loop {
+                                args.push(self.parse_expr(0)?);
+                                if self.peek() == Some(&Tok3::Comma) {
+                                    self.bump();
+                                    continue;
+                                }
+                                break;
+                            }
+                        }
+                        self.expect_tok(Tok3::RParen, "')'")?;
+                        Ok(Expr3::Call { name: s, args, line })
+                    } else {
+                        Ok(Expr3::Var { name: s, line })
+                    }
+                }
+                Tok3::Minus => Ok(Expr3::Unary {
+                    op: UnOp3::Neg,
+                    rhs: Box::new(self.parse_expr(12)?),
+                    line,
+                }),
+                Tok3::LParen => {
+                    let inner: Expr3 = self.parse_expr(0)?;
+                    self.expect_tok(Tok3::RParen, "')'")?;
+                    Ok(inner)
+                }
+                Tok3::LBracket => {
+                    // `parse_list_items` 自己消费 '['，这里把刚吃掉的 '[' 退回去。
+                    self.pos -= 1;
+                    let items: Vec<Expr3> = self.parse_list_items()?;
+                    Ok(Expr3::List { items, line })
+                }
+                Tok3::LBrace => {
+                    self.pos -= 1;
+                    self.parse_dict()
+                }
+                got => Err(v3_err(
+                    line,
+                    "P6003",
+                    &format!("表达式开头不能是 {}", describe(&got)),
+                    "用数字 / 字符串 / 变量名 / 左括号开头",
+                )),
+            }
+        }
+    }
+
+    /// 解析插值片段（单行、无缩进 token），供 `parse_interp` 与执行器复用。
+    pub fn parse_expr_text(text: &str, line: usize) -> Result<Expr3, DslError> {
+        let trimmed: &str = text.trim();
+        if trimmed.is_empty() {
+            return Err(v3_err(
+                line,
+                "P6204",
+                "插值表达式为空",
+                "在 '{{' 与 '}}' 之间写一个表达式，例如 {{radius}}",
+            ));
+        }
+        let toks: Vec<Token3> = tokenize_inline3(trimmed, line)?;
+        let mut parser = Parser3::new(toks);
+        let expr: Expr3 = parser.parse_expr(0)?;
+        if parser.pos != parser.toks.len() {
+            let rest: String = parser
+                .toks
+                .get(parser.pos)
+                .map(|t| describe(&t.tok))
+                .unwrap_or_else(|| "未知符号".to_string());
+            return Err(v3_err(
+                line,
+                "P6204",
+                &format!("插值表达式末尾有多余内容 {}", rest),
+                "'{{...}}' 内只写一个完整表达式",
+            ));
+        }
+        Ok(expr)
+    }
+}

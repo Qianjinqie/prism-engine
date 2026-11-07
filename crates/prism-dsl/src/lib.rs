@@ -40,6 +40,7 @@
 
 mod ast;
 mod codegen;
+mod eval;
 mod lexer;
 mod packs;
 mod parser;
@@ -244,6 +245,141 @@ pub use crate::combinators::{
     expand_title_card, CombinatorArgs, CombinatorError, NodeGraph,
 };
 pub use crate::codegen::COMBINATOR_TABLE;
+
+// ---------------------------------------------------------------------------
+// 公开 API（v3，V3.0 W1：LL(1)+Pratt 前端 + 确定性受限子集执行器）
+// ---------------------------------------------------------------------------
+
+pub use crate::codegen::v3::CompileV3Output;
+pub use crate::eval::{EvalEvent, EvalOutcome, Fixed3, Value3, MAX_EXPAND, SCALE};
+
+/// v3 错误统一构造：三段式（`[Pxxxx]` + 在哪/什么事 + `建议：`），全部带行号。
+/// 码段 P6xxx = 词法/语法/静态语义/求值，P7xxx = 降级装配，P1024 = 版本头。
+pub(crate) fn v3_err(line: usize, code: &str, what: &str, fix: &str) -> DslError {
+    err_at(
+        line,
+        format!("[{code}] 第 {line} 行：{what}\n  建议：{fix}"),
+    )
+}
+
+/// v3 版本头检查结论（与旧 [`detect_version_head`] 物理隔离，旧函数一行未改）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VersionHeadV3 {
+    /// 首行 `// prism-dsl 1`：走旧 `compile_v2`，零损失。
+    V1,
+    /// 首行 `// prism-dsl 2`：走 v3 前端。
+    V2,
+    /// 全文无版本头：走旧 `compile_v2`（W1001 警告，零损失）。
+    Missing,
+    /// 版本 1 头不在首行：走旧 `compile_v2`（W1001 警告，零损失）。
+    Misplaced(usize),
+}
+
+/// P1024 硬错（v3 入口）：版本头声明了未知版本或版本 2 头未置于首行。
+fn p1024_unsupported_version(line: usize, version: &str) -> DslError {
+    v3_err(
+        line,
+        "P1024",
+        &format!(
+            "版本头 '// prism-dsl {version}' 不被 v3 入口接受（v3 只接受首行的 '// prism-dsl 2'）"
+        ),
+        "把版本头写作 '// prism-dsl 2' 并置于文档首行；版本 1 / 无头文件请走 compile_v2",
+    )
+}
+
+/// 检查 v3 版本头。旧 [`detect_version_head`] 的既有行为与既有测试逐字不变
+/// （含 `// prism-dsl 2` 在旧入口触发 P1023 的断言），D-24 双解析器共存。
+pub fn detect_version_head_v3(source: &str) -> Result<VersionHeadV3, DslError> {
+    fn head_version(raw: &str) -> Option<&str> {
+        let line: &str = raw.trim_start();
+        let rest: &str = line.strip_prefix("//")?;
+        let version: &str = rest.trim().strip_prefix("prism-dsl")?;
+        Some(version.trim())
+    }
+
+    let mut lines = source.lines().enumerate();
+    if let Some((_, first)) = lines.next() {
+        if let Some(version) = head_version(first) {
+            return match version {
+                "1" => Ok(VersionHeadV3::V1),
+                "2" => Ok(VersionHeadV3::V2),
+                other => Err(p1024_unsupported_version(1, other)),
+            };
+        }
+    }
+    for (idx, raw) in lines {
+        if let Some(version) = head_version(raw) {
+            return match version {
+                "1" => Ok(VersionHeadV3::Misplaced(idx + 1)),
+                // 版本 2 头必须首行：非首行不静默当缺头，直接硬错。
+                other => Err(p1024_unsupported_version(idx + 1, other)),
+            };
+        }
+    }
+    Ok(VersionHeadV3::Missing)
+}
+
+/// 把 `// prism-dsl 2` 源码编译为 v3 产物（AST → 静态校验 → 执行 → 降级装配）。
+///
+/// # Errors
+/// 词法 / 语法 / 静态语义 / 求值 / 降级任一环节失败都返回 [`DslError`]（带行号 + 三段式）。
+pub fn compile_v3(source: &str) -> Result<CompileV3Output, DslError> {
+    match detect_version_head_v3(source)? {
+        VersionHeadV3::V2 => {}
+        VersionHeadV3::Missing => {
+            return Err(v3_err(
+                1,
+                "P1024",
+                "缺少 v3 版本头",
+                "在文档首行写 '// prism-dsl 2'；版本 1 / 无头文件请走 compile_v2",
+            ));
+        }
+        VersionHeadV3::V1 => {
+            return Err(v3_err(
+                1,
+                "P1024",
+                "版本头是 '// prism-dsl 1'，不是 v3",
+                "v3 文件首行须写 '// prism-dsl 2'；旧文件请走 compile_v2",
+            ));
+        }
+        VersionHeadV3::Misplaced(line) => {
+            return Err(p1024_unsupported_version(line, "1"));
+        }
+    }
+    let toks: Vec<lexer::v3::Token3> = lexer::v3::tokenize3(source)?;
+    let program: ast::v3::Program3 = parser::v3::Parser3::new(toks).parse_program()?;
+    codegen::v3::codegen_v3(&program)
+}
+
+/// 自动分派的编译产物：v1/v2 文本走旧路径，v3 文本走新前端。
+#[derive(Debug)]
+pub enum AutoCompile {
+    /// 旧 `compile_v2` 产物（无头 / 版本 1，含 W1001 警告语义，逐字节零损失）。
+    V2(CompileV2Output),
+    /// v3 前端产物。
+    V3(CompileV3Output),
+}
+
+impl AutoCompile {
+    /// 取出 `CompileV2Output`（v3 产物即其降级 `base`），供渲染出口统一消费。
+    pub fn into_v2_output(self) -> CompileV2Output {
+        match self {
+            AutoCompile::V2(out) => out,
+            AutoCompile::V3(out) => out.base,
+        }
+    }
+}
+
+/// 按版本头分派编译。对「无版本头 / 版本 1 / 版本 1 头错位」与旧
+/// [`compile_v2`] **完全等价**（同一函数、同一诊断），零损失契约成立。
+pub fn compile_auto(source: &str) -> Result<AutoCompile, DslError> {
+    match detect_version_head_v3(source)? {
+        VersionHeadV3::V2 => compile_v3(source).map(AutoCompile::V3),
+        VersionHeadV3::V1 | VersionHeadV3::Missing | VersionHeadV3::Misplaced(_) => {
+            compile_v2(source).map(AutoCompile::V2)
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // 测试

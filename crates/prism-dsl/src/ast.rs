@@ -485,3 +485,170 @@ pub(crate) struct DocumentV2Ast {
     pub(crate) formulas: Vec<FormulaAst>,
     pub(crate) output: Option<OutputAst>,
 }
+
+// ---------------------------------------------------------------------------
+// V3.0 W1：v3 前端 AST（A1 语法特性的节点模型）
+//
+// 与 v1/v2 的 `DocumentAst` / `DocumentV2Ast` 完全分离，旧模型一行未改。
+// 每个表达式 / 语句都带 `line`，供 §4 A6 的四类错误域给出精确行号。
+// 冻结依据：`docs/v3.0-语言规格.md` §2 / §4。
+// ---------------------------------------------------------------------------
+
+/// V3.0 语言前端的 AST 节点。
+pub mod v3 {
+    /// 字面量。数字保留十进制原文，执行期精确转 Q32.32 定点（词法层零浮点舍入）。
+    #[derive(Debug, Clone, PartialEq)]
+    pub enum Literal3 {
+        Num(String),
+        Bool(bool),
+        Str(String),
+    }
+
+    /// 一元运算符。
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum UnOp3 {
+        Neg,
+        Not,
+    }
+
+    /// 二元运算符（Pratt 绑定力见 `parser::v3`）。
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum BinOp3 {
+        Add,
+        Sub,
+        Mul,
+        Div,
+        Mod,
+        Eq,
+        Ne,
+        Lt,
+        Le,
+        Gt,
+        Ge,
+        And,
+        Or,
+    }
+
+    /// 插值字符串的一个片段。
+    #[derive(Debug, Clone, PartialEq)]
+    pub enum InterpPart3 {
+        Text(String),
+        Expr(Expr3),
+    }
+
+    /// 表达式节点。
+    #[derive(Debug, Clone, PartialEq)]
+    pub enum Expr3 {
+        Lit { value: Literal3, line: usize },
+        Var { name: String, line: usize },
+        Unary {
+            op: UnOp3,
+            rhs: Box<Expr3>,
+            line: usize,
+        },
+        Binary {
+            op: BinOp3,
+            lhs: Box<Expr3>,
+            rhs: Box<Expr3>,
+            line: usize,
+        },
+        Call {
+            name: String,
+            args: Vec<Expr3>,
+            line: usize,
+        },
+        Index {
+            target: Box<Expr3>,
+            index: Box<Expr3>,
+            line: usize,
+        },
+        List {
+            items: Vec<Expr3>,
+            line: usize,
+        },
+        Dict {
+            entries: Vec<(String, Expr3)>,
+            line: usize,
+        },
+        Interp {
+            parts: Vec<InterpPart3>,
+            start_line: usize,
+            line: usize,
+        },
+    }
+
+    impl Expr3 {
+        /// 节点所在源码行（全部错误都要带行号）。
+        pub fn line(&self) -> usize {
+            match self {
+                Expr3::Lit { line, .. }
+                | Expr3::Var { line, .. }
+                | Expr3::Unary { line, .. }
+                | Expr3::Binary { line, .. }
+                | Expr3::Call { line, .. }
+                | Expr3::Index { line, .. }
+                | Expr3::List { line, .. }
+                | Expr3::Dict { line, .. }
+                | Expr3::Interp { line, .. } => *line,
+            }
+        }
+    }
+
+    /// `for` 的迭代源：区间（编译期可判定上界）或字面量列表（按声明序）。
+    #[derive(Debug, Clone, PartialEq)]
+    pub enum ForRange3 {
+        Range { lo: String, hi: String, line: usize },
+        List { items: Vec<Expr3>, line: usize },
+    }
+
+    /// 语句节点。
+    #[derive(Debug, Clone, PartialEq)]
+    pub enum Stmt3 {
+        Seed { value: String, line: usize },
+        Assign { name: String, expr: Expr3, line: usize },
+        Def {
+            name: String,
+            params: Vec<String>,
+            body: Vec<Stmt3>,
+            line: usize,
+        },
+        For {
+            var: String,
+            range: ForRange3,
+            body: Vec<Stmt3>,
+            line: usize,
+        },
+        If {
+            branches: Vec<(Expr3, Vec<Stmt3>)>,
+            else_body: Vec<Stmt3>,
+            line: usize,
+        },
+        Emit { template: Expr3, line: usize },
+        Return { expr: Expr3, line: usize },
+        /// 裸表达式语句（用于让非法语义调用走到统一的静态拒绝面）。
+        Expr { expr: Expr3, line: usize },
+    }
+
+    impl Stmt3 {
+        pub fn line(&self) -> usize {
+            match self {
+                Stmt3::Seed { line, .. }
+                | Stmt3::Assign { line, .. }
+                | Stmt3::Def { line, .. }
+                | Stmt3::For { line, .. }
+                | Stmt3::If { line, .. }
+                | Stmt3::Emit { line, .. }
+                | Stmt3::Return { line, .. }
+                | Stmt3::Expr { line, .. } => *line,
+            }
+        }
+    }
+
+    /// 一份 v3 程序（顶层语句序列）。
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct Program3 {
+        pub stmts: Vec<Stmt3>,
+        /// 源码总行数（诊断与行号映射用）。
+        pub line_count: usize,
+    }
+}
