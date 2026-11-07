@@ -134,6 +134,7 @@ fn base_compile(scenes: Vec<SceneV2>, graph: Graph) -> CompileV2Output {
         theme: None,
         fonts: Vec::new(),
         formulas: Vec::new(),
+        wiring: prism_dsl::WiringPlan::default(),
     }
 }
 

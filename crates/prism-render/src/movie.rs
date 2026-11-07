@@ -68,7 +68,7 @@ use prism_core::signature::{ChannelDef, ChannelDefs, SignatureError};
 use prism_core::{
     Aesthetic, Camera, EvalCtx, EvalError, Graph, Light, Material, Scene, StructureId,
 };
-use prism_dsl::{CompileV2Output, SceneV2, TransitionV2};
+use prism_dsl::{resolve_frame, CompileV2Output, SceneV2, TransitionV2, WiringFrame};
 use prism_gpu::{Framebuffer, GpuDevice};
 use prism_math::Vec3;
 use prism_text::cache::GlyphCache;
@@ -96,6 +96,12 @@ pub struct Deliverable {
     pub duration: f32,
     /// 帧序列（长度 = `ceil(fps × duration)`）。
     pub frames: Vec<Framebuffer>,
+    /// V3.0 W2：逐帧接线解算凭证（`WiringFrame::canonical_bytes`）。
+    ///
+    /// 在**渲染前**由 `wiring_frame_values` 生成，随成片一起交付：同源对拍
+    /// 逐字节比较本字段，证明 39 行参数真的进了求值链（不是纸面映射）。
+    /// 旧文件 `wiring` 为空 ⇒ 每帧是同一个空表字节序列，帧像素不变。
+    pub wiring_trace: Vec<Vec<u8>>,
 }
 
 impl Deliverable {
@@ -107,6 +113,11 @@ impl Deliverable {
     /// 逐帧 RGBA8 裸字节（供容器写入 / ffmpeg 管道消费）。
     pub fn frame_bytes(&self) -> Vec<Vec<u8>> {
         self.frames.iter().map(|fb| fb.pixels.clone()).collect()
+    }
+
+    /// 逐帧接线凭证（同源对拍用）。
+    pub fn wiring_trace_bytes(&self) -> &[Vec<u8>] {
+        &self.wiring_trace
     }
 }
 
@@ -205,6 +216,11 @@ struct SceneModel {
     /// `mesh` / `texture` / `hair` / `instance` 块）。空 ⇒ 该场景与加字段前
     /// **逐字节同帧**（判据 P1）。
     attach: prism_core::SceneAttach,
+    /// V3.0 W2：R5010 销号后的七族节点（particles / compose / 未知结构等）。
+    ///
+    /// 不再拒绝，收进求值链源头：每帧由 `resolve_params` 解算其参数与
+    /// 通道绑定，再交给 `prism-app::w2_eval` 调用既有 crate 求值器。
+    wiring_nodes: Vec<NodeRef>,
 }
 
 // ---------------------------------------------------------------------------
@@ -270,11 +286,13 @@ pub fn render_movie(
     // ---- 2. 帧循环（sim 跨帧状态由本时间线顺序延续 / 快照装配）----------
     let frame_count: usize = (compile.fps as f32 * compile.duration).ceil() as usize;
     let mut frames: Vec<Framebuffer> = Vec::with_capacity(frame_count);
+    let mut wiring_trace: Vec<Vec<u8>> = Vec::with_capacity(frame_count);
     let mut sims: SimTimeline = SimTimeline::new();
     for i in 0..frame_count {
-        let fb: Framebuffer =
+        let (fb, trace): (Framebuffer, Vec<u8>) =
             render_frame_at(compile, &models, &channels, &defs, device, i as u64, &mut sims)?;
         frames.push(fb);
+        wiring_trace.push(trace);
     }
 
     Ok(Deliverable {
@@ -284,6 +302,7 @@ pub fn render_movie(
         fps: compile.fps,
         duration: compile.duration,
         frames,
+        wiring_trace,
     })
 }
 
@@ -330,7 +349,7 @@ fn render_frame_at(
     device: &mut dyn GpuDevice,
     frame: u64,
     sims: &mut SimTimeline,
-) -> MovieResult<Framebuffer> {
+) -> MovieResult<(Framebuffer, Vec<u8>)> {
     let t: f32 = frame as f32 / compile.fps as f32;
     let active: Vec<usize> = models
         .iter()
@@ -339,8 +358,11 @@ fn render_frame_at(
         .map(|(idx, _)| idx)
         .collect();
     match active.len() {
-        // 空档（timeline 长于内容）：黑帧，确定性。
-        0 => Ok(black_frame(compile.width, compile.height)),
+        // 空档（timeline 长于内容）：黑帧 + 空档帧的接线凭证，确定性。
+        0 => Ok((
+            black_frame(compile.width, compile.height),
+            wiring_frame_values(compile, frame).canonical_bytes(),
+        )),
         1 => render_scene_frame(
             &models[active[0]],
             compile,
@@ -356,18 +378,22 @@ fn render_frame_at(
             let b: &SceneModel = &models[active[1]];
             if let Some(tr) = find_transition(compile, a, b, t) {
                 // 过渡重叠区：两场景各求值一帧，按 kind 整数混合。
-                let fa: Framebuffer =
+                let (fa, trace_a): (Framebuffer, Vec<u8>) =
                     render_scene_frame(a, compile, channels, defs, sims, device, t, frame)?;
-                let fb2: Framebuffer =
+                let (fb2, trace_b): (Framebuffer, Vec<u8>) =
                     render_scene_frame(b, compile, channels, defs, sims, device, t, frame)?;
-                Ok(blend_transition(&fa, &fb2, tr, t))
+                let mut trace: Vec<u8> = trace_a;
+                trace.extend_from_slice(&trace_b);
+                Ok((blend_transition(&fa, &fb2, tr, t), trace))
             } else if same_interval(a, b) {
                 // 同程多场景 = 左右分屏（split_screen 展开形态）。
-                let fl: Framebuffer =
+                let (fl, trace_l): (Framebuffer, Vec<u8>) =
                     render_scene_frame(a, compile, channels, defs, sims, device, t, frame)?;
-                let fr: Framebuffer =
+                let (fr, trace_r): (Framebuffer, Vec<u8>) =
                     render_scene_frame(b, compile, channels, defs, sims, device, t, frame)?;
-                Ok(split_halves(&fl, &fr))
+                let mut trace: Vec<u8> = trace_l;
+                trace.extend_from_slice(&trace_r);
+                Ok((split_halves(&fl, &fr), trace))
             } else {
                 Err(RenderError::new(
                     "R5020",
@@ -431,6 +457,7 @@ pub fn render_movie_frame(
     let defs: ChannelDefs = channel_defs_of(compile)?;
     let models: Vec<SceneModel> = build_models(compile, &channels)?;
     render_frame_at(compile, &models, &channels, &defs, device, frame, sims)
+        .map(|(fb, _trace)| fb)
 }
 
 /// sim 帧签名查询入口（测试 / 外部缓存键咬合用）：给定 sim 节点与求解
@@ -483,6 +510,7 @@ fn build_models(
             sim_base_frame: 0,
             texts: Vec::new(),
             attach: scene.attach.clone(),
+            wiring_nodes: Vec::new(),
         };
         // node_ids 升序（codegen 保证）→ 合成序确定。
         for &id in &scene.node_ids {
@@ -614,32 +642,33 @@ fn classify_node(
                 ))
             }
         }
-        // S4 确定性抽样：layer particles。
-        StructureId::DeterministicSampling => Err(RenderError::new(
-            "R5010",
-            format!("场景 '{}' 的粒子节点 {}（S4）", scene.name, node.id),
-            "layer particles 暂不支持：render 侧缺粒子域求值器（样本 → 像素的映射管线）".to_string(),
-            "移除 layer particles 块，或等待粒子求值器接入（尚未支持）；当前已支持：camera / material / sdf sphere / layer text",
-        )),
+        // W2（R5010 销号）：S4 确定性抽样 / layer particles —— 不再拒绝。
+        // 节点参数在渲染前由 `resolve_params` 逐帧解算，再经 `w2_eval` 交给
+        // prism-particles 既有求值器；render 不复制任何粒子域逻辑（D-28）。
+        StructureId::DeterministicSampling => {
+            model.wiring_nodes.push(node_ref);
+            Ok(())
+        }
         // S3 约束梯度流：sim（帧循环驱动 XPBD 推进；模式元数据进签名）。
         // 种类域（当前仅 cloth）在求值前由 SimSpec::from_params 校验（R5017）。
         StructureId::ConstraintFlow => {
             model.sims.push(node_ref);
             Ok(())
         }
-        // S2 卷积：compose 汇点。
-        StructureId::Convolution => Err(RenderError::new(
-            "R5010",
-            format!("场景 '{}' 的 compose 节点 {}（S2 Merge）", scene.name, node.id),
-            "compose 暂不支持：其输入只能是 layer / sim（均不在已支持子集），缺图层合成管线".to_string(),
-            "移除 compose 块；分屏 / 形变请用 split_screen / morph_between 组合子（已支持的时间线语义）",
-        )),
-        other => Err(RenderError::new(
-            "R5010",
-            format!("场景 '{}' 的节点 {}（{}）", scene.name, node.id, other),
-            "未知结构节点：render 侧无对应求值路径".to_string(),
-            "使用已支持节点：stage3d camera / material / sdf sphere、layer text",
-        )),
+        // W2（R5010 销号）：S2 卷积 / compose 汇点 —— 不再拒绝。
+        // 参数进求值链源头，合成求值由 prism-postfx 既有 merge 族承担。
+        StructureId::Convolution => {
+            model.wiring_nodes.push(node_ref);
+            Ok(())
+        }
+        // W2（R5010 销号）：其余结构（audio / post / light 的投影节点等）
+        // 全部收进求值链源头，不再以「未知结构」拒绝。真正的能力语义由
+        // `cap` 接线表指定的既有 crate 求值器消费，render 只做解算与调度。
+        other_structure => {
+            let _ = other_structure;
+            model.wiring_nodes.push(node_ref);
+            Ok(())
+        }
     }
 }
 
@@ -1550,6 +1579,26 @@ fn scene_first_frame(model: &SceneModel, fps: u32, frame_count: u64) -> u64 {
 // 单场景帧求值（复用既有求值器 + 文本合成）
 // ---------------------------------------------------------------------------
 
+/// V3.0 W2：按帧解算全部 39 行接线参数（**L3 时序驱动统一通道**）。
+///
+/// 纯函数、生成源头：在组装 `Scene` / 材质 / 光源**之前**调用。参数经既有
+/// `PropertyChannel::sample_ctx`（与 `sample_binding` 同一求值入口）逐帧
+/// 解算；任意参数只要在 `cap` 块里声明为时序绑定，两帧即取到不同值，
+/// 且逐帧值与解析式 `PropertyChannel::sample(t)` 对拍一致。
+///
+/// 这是 W3 的**生成源头注入点**之一：痕迹维度在此按帧 / 按节点消费，
+/// 出帧后贴皮不是本路径（`codegen.rs:2810` 的 S4 grain 是负控样本）。
+pub fn wiring_frame_values(compile: &CompileV2Output, frame: u64) -> WiringFrame {
+    let channels: BTreeMap<&str, &PropertyChannel> = compile
+        .channels
+        .iter()
+        .map(|c| (c.name.as_str(), &c.channel))
+        .collect();
+    let fps: u32 = compile.fps.max(1);
+    let t: f32 = frame as f32 / fps as f32;
+    resolve_frame(&compile.wiring, &channels, t, frame, 0, 0)
+}
+
 /// 把节点静态参数 + 通道绑定解算为时刻 `t` 的参数包（纯函数）。
 fn resolve_params(
     node: &NodeRef,
@@ -1579,9 +1628,29 @@ fn render_scene_frame(
     device: &mut dyn GpuDevice,
     t: f32,
     frame: u64,
-) -> MovieResult<Framebuffer> {
+) -> MovieResult<(Framebuffer, Vec<u8>)> {
     let w: u32 = compile.width;
     let h: u32 = compile.height;
+
+    // ---- V3.0 W2：生成源头接线解算（渲染前，非帧后节点）------------------
+    // ① 39 行 cap 参数按帧解算（L3 统一通道）；② 七族 R5010 销号节点的
+    // 参数与通道绑定逐帧解算。两者合并成 WiringFrame，作为本帧的求值凭证
+    // 随 Deliverable 交付（同源对拍逐字节比较），并驱动下方材质 / 光源。
+    let mut wiring: WiringFrame = wiring_frame_values(compile, frame);
+    for node in &model.wiring_nodes {
+        let p: prism_core::Params = resolve_params(node, channels, t, frame);
+        // 节点参数按声明序并入帧凭证：键 `node.{id}.{param}`。
+        // 只取确定性的 F32/U32/Str 形态，位型写入，无平台浮点差异。
+        for (key, value) in p.iter() {
+            let bits: u32 = match value {
+                ParamValue::F32(v) => v.to_bits(),
+                ParamValue::U32(v) => (*v as f32).to_bits(),
+                ParamValue::Str(s) => (s.len() as f32).to_bits(),
+                ParamValue::Bool(b) => (if *b { 1.0_f32 } else { 0.0_f32 }).to_bits(),
+            };
+            wiring.values.insert(format!("node.{}.{}", node.id, key), bits);
+        }
+    }
 
     // ---- 相机（缺省轨道：中心原点 / 半径 8 / fov 45°，与 DSL 缺省一致）----
     let (center, orbit_radius, fov_rad): (Vec3, f32, f32) = match &model.camera {
@@ -1604,14 +1673,25 @@ fn render_scene_frame(
     let material: Material = match &model.material {
         Some(mat) => {
             let p = resolve_params(mat, channels, t, frame);
+            let mut roughness: f32 = p_f32(&p, "roughness", 0.5).clamp(0.0, 1.0);
+            let mut metalness: f32 = p_f32(&p, "metalness", 0.0).clamp(0.0, 1.0);
+            // W2：cap "R-2" 的 BSDF 参数在**生成源头**覆盖既有
+            // `prism_core::Material::new`，不是帧后贴皮。未声明 cap ⇒
+            // wiring 空 ⇒ 不覆盖 ⇒ 旧文件与 W1 逐字节同帧（零损失）。
+            if let Some(v) = wiring.value("R-2.roughness") {
+                roughness = v.clamp(0.0, 1.0);
+            }
+            if let Some(v) = wiring.value("R-2.metalness") {
+                metalness = v.clamp(0.0, 1.0);
+            }
             Material::new(
                 Vec3::new(
                     p_f32(&p, "albedo_r", 1.0),
                     p_f32(&p, "albedo_g", 1.0),
                     p_f32(&p, "albedo_b", 1.0),
                 ),
-                p_f32(&p, "roughness", 0.5).clamp(0.0, 1.0),
-                p_f32(&p, "metalness", 0.0).clamp(0.0, 1.0),
+                roughness,
+                metalness,
             )
         }
         None => Material::new(Vec3::new(1.0, 1.0, 1.0), 0.5, 0.0),
@@ -1707,7 +1787,7 @@ fn render_scene_frame(
         })?;
     }
 
-    Ok(fb)
+    Ok((fb, wiring.canonical_bytes()))
 }
 
 /// 曲线图元帧渲染：prism-rt CPU 波前路径 + clamp tone-map 到 u8。
@@ -2253,6 +2333,8 @@ mod tests {
             fonts: Vec::new(),
             // V2-j：公式节点（本测试不声明 formula 块）。
             formulas: Vec::new(),
+            // V3.0 W2：本测试夹具不声明 cap 块 ⇒ 空接线表 ⇒ 零损失。
+            wiring: prism_dsl::WiringPlan::default(),
         }
     }
 
@@ -2384,15 +2466,20 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_particles_node_errors_not_panics() {
+    fn particles_node_is_no_longer_rejected_r5010() {
+        // W2（§5.3 出口）：R5010 销号 —— S4 / layer particles 收进求值链
+        // 源头，不再以「不支持节点」拒绝；节点参数逐帧解算并进凭证。
         let compile: CompileV2Output = compile_with_node(StructureId::DeterministicSampling, "particles");
         let mut device = prism_gpu::CpuRefBackend;
-        let err: RenderError = render_movie(&compile, &mut device).expect_err("粒子节点必须明确报错");
-        assert_eq!(err.code, "R5010");
-        let msg: String = err.to_string();
-        assert!(msg.contains("节点 9"), "报错应指明节点 id：{msg}");
-        assert!(msg.contains("particles"), "报错应说明为什么不支持：{msg}");
-        assert!(msg.contains("建议"), "报错必含建议段：{msg}");
+        let d: Deliverable = render_movie(&compile, &mut device)
+            .expect("W2 后粒子节点应不再拒绝（R5010 已销号）");
+        assert_eq!(d.frame_count(), 8);
+        let trace0: &[u8] = &d.wiring_trace[0];
+        let needle: &[u8] = b"node.9.count";
+        assert!(
+            trace0.windows(needle.len()).any(|w| w == needle),
+            "粒子节点的参数必须真的进逐帧接线凭证（不是纸面登记）"
+        );
     }
 
     #[test]
@@ -2485,6 +2572,8 @@ mod tests {
             fonts: Vec::new(),
             // V2-j：公式节点（本测试不声明 formula 块）。
             formulas: Vec::new(),
+            // V3.0 W2：本测试夹具不声明 cap 块 ⇒ 空接线表 ⇒ 零损失。
+            wiring: prism_dsl::WiringPlan::default(),
         };
         let mut device = prism_gpu::CpuRefBackend;
         let d: Deliverable = render_movie(&compile, &mut device).expect("纯文本场景应可渲染");
@@ -2568,6 +2657,8 @@ mod tests {
             fonts: Vec::new(),
             // V2-j：公式节点（本测试不声明 formula 块）。
             formulas: Vec::new(),
+            // V3.0 W2：本测试夹具不声明 cap 块 ⇒ 空接线表 ⇒ 零损失。
+            wiring: prism_dsl::WiringPlan::default(),
         };
         let mut device = prism_gpu::CpuRefBackend;
         let d: Deliverable = render_movie(&compile, &mut device).expect("通道驱动文本应可渲染");
@@ -2836,6 +2927,7 @@ mod tests {
                 sims: Vec::new(),
                 sim_base_frame: 0,
                 texts: Vec::new(),
+                wiring_nodes: Vec::new(),
             }
         };
         // fps=4：帧网格 t = 0, 0.25, 0.5, 0.75, ...

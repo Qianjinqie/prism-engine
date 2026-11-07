@@ -83,6 +83,8 @@ impl NodeGraph {
             fonts: Vec::new(),
             // 组合子不声明公式（formula 块是文档级声明，展开结果不带公式）。
             formulas: Vec::new(),
+            // W2：组合子是纯节点图糖，不携带能力接线声明 ⇒ 空表 ⇒ 零损失。
+            wiring: crate::wiring::WiringPlan::default(),
         }
     }
 

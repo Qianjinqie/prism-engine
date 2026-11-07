@@ -10,7 +10,7 @@
 //!   码段含义：P1xxx 防呆 / P2xxx 类型 / P3xxx 图结构 / P4xxx 资产 IO。
 
 use crate::ast::{
-    AnimAst, AudioAst, CameraV2Ast, ComposeAst, ComposeOpAst, ComposeRef, DocumentAst, DocumentV2Ast,
+    AnimAst, AudioAst, CameraV2Ast, CapAst, ComposeAst, ComposeOpAst, ComposeRef, DocumentAst, DocumentV2Ast,
     ExprDefAst, FieldValue, FontDecl, FormulaAst, ImportPacksAst, KeyAst, LayerAst, LightV2Ast,
     MaterialV2Ast,
     MorphRefAst, MovieAst, NamedField, NoteAst, OutputAst, PostAst, SceneItem, SceneV2Ast, SdfAst,
@@ -928,6 +928,8 @@ impl Parser {
                 "anim" => doc.anims.push(self.parse_anim(line)?),
                 "expr" => doc.exprs.push(self.parse_expr_def(line)?),
                 "formula" => doc.formulas.push(self.parse_formula(line)?),
+                // V3.0 W2：顶层能力接线声明（39 行规格表的运行时入口）。
+                "cap" => doc.caps.push(self.parse_cap(line)?),
                 "output" => {
                     if doc.output.is_some() {
                         return Err(err_at(
@@ -950,7 +952,7 @@ impl Parser {
                     return Err(err_at(
                         line,
                         format!(
-                            "[P1002] 未知顶层块 '{}'（允许：movie / timeline / theme / import packs / font / scene / transition / anim / expr / formula / output）\n  建议：检查块名拼写；audio 与 post 应写在 scene 块内",
+                            "[P1002] 未知顶层块 '{}'（允许：movie / timeline / theme / import packs / font / scene / transition / anim / expr / formula / cap / output）\n  建议：检查块名拼写；audio 与 post 应写在 scene 块内；cap 能力块可写在顶层或 scene 内",
                             other
                         ),
                     ));
@@ -1148,11 +1150,13 @@ impl Parser {
                 "media" | "mesh" | "texture" | "hair" | "instance" => {
                     items.push(SceneItem::Geo(self.parse_geo(kw, line)?))
                 }
+                // V3.0 W2：场景内能力接线（按节点 / 按帧的声明入口）。
+                "cap" => items.push(SceneItem::Cap(self.parse_cap(line)?)),
                 other => {
                     return Err(err_at(
                         line,
                         format!(
-                            "[P1002] scene 块中未知条目 '{}'（允许：stage3d / layer / sim / compose / audio / note / post / media / mesh / texture / hair / instance）\n  建议：检查条目名拼写",
+                            "[P1002] scene 块中未知条目 '{}'（允许：stage3d / layer / sim / compose / audio / note / post / media / mesh / texture / hair / instance / cap）\n  建议：检查条目名拼写",
                             other
                         ),
                     ));
@@ -1837,6 +1841,24 @@ impl Parser {
 
     /// 通用字段循环（开放参数集块）：`(名 值)*`，遇 '}' 结束。
     /// 未知字段**不在 parser 拦截**——白名单校验在 codegen（按块种类给出针对性建议）。
+    /// V3.0 W2：`cap "编号" { 名 值 ... }`。
+    ///
+    /// 语法层只做「编号 + 通用字段流」的读取，字段全集 / 类型 / 值域 /
+    /// 时序绑定全部交给 `wiring::build_wiring` 校验（P8xxx 三段式 + 行号），
+    /// 解析器不发明任何能力语义（红线 1）。
+    fn parse_cap(&mut self, kw_line: usize) -> Result<CapAst, DslError> {
+        let (row_id, _) = self.expect_str("cap 能力编号")?;
+        if row_id.is_empty() {
+            return Err(err_at(
+                kw_line,
+                "[P8005] cap 块的能力编号为空\n  建议：写成 cap \"R-1\" { ... }，编号取规格表 39 行之一",
+            ));
+        }
+        self.expect_punct(Tok::LBrace, "{")?;
+        let fields: Vec<NamedField> = self.parse_named_fields("cap")?;
+        Ok(CapAst { row_id, fields, line: kw_line, scene_index: None })
+    }
+
     fn parse_named_fields(&mut self, block: &str) -> Result<Vec<NamedField>, DslError> {
         let mut fields: Vec<NamedField> = Vec::new();
         loop {

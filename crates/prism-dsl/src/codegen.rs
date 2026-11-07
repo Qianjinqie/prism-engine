@@ -37,7 +37,7 @@ use prism_core::node::{ChannelRef, Composition, MergeOp, NodeBinding, ParamValue
 use prism_math::Vec3;
 
 use crate::ast::{
-    AngleUnit, AudioAst, CameraV2Ast, ComposeAst, ComposeRef, DocumentAst, DocumentV2Ast,
+    AngleUnit, AudioAst, CameraV2Ast, CapAst, ComposeAst, ComposeRef, DocumentAst, DocumentV2Ast,
     FieldValue, FormulaAst, GeoAst, LayerAst, LightV2Ast, MaterialV2Ast, NamedField, NoteAst,
     OutputFormatAst, PostAst, SceneItem, SdfAst, SimAst, Stage3dAst, TimeVal, TimeUnit,
     TransitionAst,
@@ -45,6 +45,7 @@ use crate::ast::{
 };
 use crate::{DslError, err_at};
 use crate::packs::PackManifest;
+use crate::wiring::{build_wiring, WiringPlan};
 use crate::OutputFormat;
 
 // ---------------------------------------------------------------------------
@@ -386,6 +387,12 @@ pub struct CompileV2Output {
     pub fonts: Vec<FontSlotSpec>,
     /// 公式节点列表（V2-j `formula` 块；按声明顺序）。
     pub formulas: Vec<FormulaNode>,
+    /// V3.0 W2：39 项能力接线声明（顶层 + 场景内 `cap` 块的编译产物）。
+    ///
+    /// 旧文件不声明 `cap` ⇒ 恒为空 ⇒ 逐字节零损失（D-24 / F-10 版本契约）。
+    /// 求值链在**渲染前**逐帧解算本表（`prism-render::movie::wiring_frame_values`），
+    /// 不建任何帧后效果节点；W3 的痕迹注入钩子即此表的 `Channel` 绑定。
+    pub wiring: WiringPlan,
 }
 
 /// `FontSet` 构造序列的一项。
@@ -628,7 +635,7 @@ fn easing_from_name(name: &str, line: usize) -> Result<EasingKind, DslError> {
 
 /// 关键帧序列 → `prism_anim::Track`（时间归一化到秒 + 乱序防呆 P1020 +
 /// easing 名映射 P2103）。返回 (track, 末帧时间)。
-fn build_track(keys: &[crate::ast::KeyAst], fps: u32, desc: &str) -> Result<(Track, f32), DslError> {
+pub(crate) fn build_track(keys: &[crate::ast::KeyAst], fps: u32, desc: &str) -> Result<(Track, f32), DslError> {
     let mut prev_t: Option<f32> = None;
     let mut kfs: Vec<Keyframe> = Vec::with_capacity(keys.len());
     for k in keys {
@@ -653,7 +660,7 @@ fn build_track(keys: &[crate::ast::KeyAst], fps: u32, desc: &str) -> Result<(Tra
 }
 
 /// 关键帧序列（+ 可选 loop 模式）→ 属性通道。loop 需要 ≥2 个不同时间的 key。
-fn build_channel(
+pub(crate) fn build_channel(
     keys: &[crate::ast::KeyAst],
     loop_mode: Option<&str>,
     fps: u32,
@@ -1074,6 +1081,25 @@ pub(crate) fn codegen_v2(doc: &DocumentV2Ast) -> Result<CompileV2Output, DslErro
 
     // ---- 5. 节点图构建（逐场景；compose 递归建点 + 连边） ----
     let mut b: V2Builder = V2Builder::new(fps);
+
+    // ---- 5.1 V3.0 W2：39 项能力接线（顶层 + 场景内 cap 块统一编译） ----
+    // 全部校验在 build_wiring：漏必填 / 未知字段 / 非法值 / 超范围 / 未知
+    // 编号 / 重复声明 / 平台域 / 时序通道，一律 P8xxx 三段式 + 行号。
+    // 时序绑定经既有 `build_channel` 登记为 PropertyChannel（求值链源头），
+    // 不建帧后节点；产物 `wiring` 随 CompileV2Output 交给 render 逐帧解算。
+    let mut all_caps: Vec<CapAst> = doc.caps.clone();
+    for (si, scene) in doc.scenes.iter().enumerate() {
+        for item in &scene.items {
+            if let SceneItem::Cap(c) = item {
+                let mut bound: CapAst = c.clone();
+                bound.scene_index = Some(si);
+                all_caps.push(bound);
+            }
+        }
+    }
+    let (wiring, wiring_channels): (WiringPlan, Vec<NamedChannel>) = build_wiring(&all_caps, fps)?;
+    b.channels.extend(wiring_channels);
+
     let mut scenes_v2: Vec<SceneV2> = Vec::new();
     for (si, scene) in doc.scenes.iter().enumerate() {
         b.scene_name = scene.name.clone();
@@ -1143,6 +1169,8 @@ pub(crate) fn codegen_v2(doc: &DocumentV2Ast) -> Result<CompileV2Output, DslErro
                 // 几何/材质声明，不是求值面节点）。先收集，循环后统一构建
                 // （`instance` / `displacement` 按名引用其它块）。
                 SceneItem::Geo(g) => geo_blocks.push(g),
+                // W2：cap 块已在 5.1 统一编译（含场景下标），此处不重复建点。
+                SceneItem::Cap(_) => {}
             }
         }
         build_geo_all(&mut attach, &geo_blocks)?;
@@ -1233,6 +1261,7 @@ pub(crate) fn codegen_v2(doc: &DocumentV2Ast) -> Result<CompileV2Output, DslErro
         theme,
         fonts,
         formulas,
+        wiring,
     })
 }
 

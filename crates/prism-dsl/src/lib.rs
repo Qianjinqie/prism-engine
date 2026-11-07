@@ -44,6 +44,8 @@ mod eval;
 mod lexer;
 mod packs;
 mod parser;
+/// V3.0 W2：39 项能力接线注册表 + 校验 + 时序通道（只搬运，不重实现）。
+mod wiring;
 // 组合子库（高层语义 → 等价 v2 节点图展开）。公开模块：展开函数经
 // `codegen::COMBINATOR_TABLE` 注册面查表，Rust 侧构造入口在 prism-author。
 pub mod combinators;
@@ -236,6 +238,13 @@ pub fn compile_v2_with_diagnostics(
 pub use crate::codegen::{
     AudioInfo, CameraOrbit, CompileV2Output, FontSlotSpec, FormulaAlign, FormulaNode, LayerInfo,
     NamedChannel, NoteInfo, PostInfo, SceneV2, SimInfo, ThemeInfo, TransitionV2,
+};
+// V3.0 W2：能力接线公开面（render / app / 静态门禁 / 同源对拍共用同一张表）。
+pub use crate::wiring::{
+    example_cap_block, expected_ids, full_declaration_blocks, param_kind, platform_ids,
+    range_rule, resolve_frame, row_by_id, total_param_count, CapFamily, CapabilityRow,
+    ParamKind, RangeRule, WiringEntry, WiringFrame, WiringParam, WiringPlan, WiringValue,
+    CAPABILITY_ROWS, RANGE_RULES,
 };
 pub use crate::packs::{PackManifest, SemVer};
 // 组合子库公开面（展开函数 / 入参 / 产物 / 注册表）。

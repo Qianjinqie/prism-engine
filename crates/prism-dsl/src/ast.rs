@@ -214,6 +214,26 @@ pub(crate) enum SceneItem {
     Post(PostAst),
     /// T0 产品路径接线：几何 / 介质 / 纹理 / 毛发 / 实例块。
     Geo(GeoAst),
+    /// V3.0 W2：39 项能力接线声明（场景内形态，带场景下标）。
+    Cap(CapAst),
+}
+
+/// V3.0 W2：一个能力接线声明块。
+///
+/// `cap "R-1" { spp 16 max_bounces 4 ... }`。字段名必须与
+/// `wiring::CAPABILITY_ROWS` 对应行的 `api_params` 全集逐项一致；校验由
+/// `wiring::build_wiring` 完成（漏填 / 未知 / 非法值 / 超范围一律 P8xxx
+/// 三段式 + 行号），本结构只承载原始字段流。
+#[derive(Debug, Clone)]
+pub(crate) struct CapAst {
+    /// 能力编号（规格表 R-1…P-6）。
+    pub(crate) row_id: String,
+    /// `名 值` 字段流（时序字段可用 `{ key ... }` / `{ expr "..." }`）。
+    pub(crate) fields: Vec<NamedField>,
+    /// `cap` 关键字所在行。
+    pub(crate) line: usize,
+    /// 场景内声明时由 codegen 填 Some(场景下标)；顶层声明为 None。
+    pub(crate) scene_index: Option<usize>,
 }
 
 /// T0 的附加能力块（`media` / `mesh` / `texture` / `hair` / `instance`）。
@@ -483,6 +503,8 @@ pub(crate) struct DocumentV2Ast {
     pub(crate) exprs: Vec<ExprDefAst>,
     /// formula 块（V2-j；按声明顺序，重名报错）。
     pub(crate) formulas: Vec<FormulaAst>,
+    /// V3.0 W2：顶层能力接线声明（39 行规格表）。缺省为空 ⇒ 旧文件零损失。
+    pub(crate) caps: Vec<CapAst>,
     pub(crate) output: Option<OutputAst>,
 }
 
