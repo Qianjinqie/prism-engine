@@ -454,6 +454,43 @@ pub fn payload_from_bytes(bytes: &[u8]) -> Option<Payload> {
 }
 
 // ---------------------------------------------------------------------------
+// 确定性随机源（V3.0 W1：从测试模块提升为生产 API，算法逐字不变）
+// ---------------------------------------------------------------------------
+
+/// splitmix64 终化函数（纯整数运算，跨平台逐位一致）。
+///
+/// `SampleSpec::sample` 原先内嵌在测试模块里的同一份实现提升为生产可见 API，
+/// 供 `prism-dsl` 的确定性受限子集执行器复用：语言层**不新造随机源**。
+/// 常量与运算顺序一字未改（`0xbf58_476d_1ce4_e5b9` / `0x94d0_49bb_1331_11eb`）。
+/// 依据 `docs/v3.0-语言规格.md` §5 F-7。
+pub fn hash_mix(seed: u64, x: u64) -> u64 {
+    let mut z = seed ^ x;
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
+/// 把字节流按 `hash_mix` 链混入已有状态（V3.0 产物哈希的规范步骤）。
+///
+/// 每字节单独混入，混入顺序即输入顺序；换序必然改变结果。
+pub fn hash_mix_bytes(mut h: u64, bytes: &[u8]) -> u64 {
+    for &b in bytes {
+        h = hash_mix(h, u64::from(b));
+    }
+    h
+}
+
+/// `hash_mix` 链的高 24 位 → `[0, 1)` 的 f32（与 `SampleSpec::sample` 同口径）。
+pub fn hash_mix_unit_f32(h: u64) -> f32 {
+    (h >> 40) as f32 / 16_777_216.0
+}
+
+/// `hash_mix` 链的高 24 位 → `[0, 1)` 的 f64（语言执行器 `rand(tag)` 的取值口径）。
+pub fn hash_mix_unit_f64(h: u64) -> f64 {
+    (h >> 40) as f64 / 16_777_216.0
+}
+
+// ---------------------------------------------------------------------------
 // 测试
 // ---------------------------------------------------------------------------
 
@@ -588,13 +625,8 @@ mod tests {
         }
     }
 
-    /// splitmix64 终化函数（整数运算跨平台逐位一致）。
-    fn hash_mix(seed: u64, x: u64) -> u64 {
-        let mut z = seed ^ x;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^ (z >> 31)
-    }
+    // `hash_mix` 已提升为生产 API（`super::hash_mix`），测试模块经
+    // `use super::*` 复用同一份实现，避免两份算法漂移。
 
     impl MathStructure for SampleSpec {
         fn meta(&self) -> &StructureMeta {

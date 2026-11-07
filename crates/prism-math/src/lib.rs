@@ -7,6 +7,9 @@
 //!
 //! # 色彩与 HDR 子模块（C2）
 //! - [`det_pow`] — D-29 确定性幂/指/对数件（无 libm）；
+//! - [`det_scalar`] — V3.0 W1 确定性标量族补齐（`abs` / `min` / `max` / `clamp` /
+//!   `floor` / `ceil` / `trunc` / `round` / `sqrt` / `log10` / `asin` / `atan` / `lerp` / `fmod`，
+//!   零 libm；见 `docs/v3.0-语言规格.md` §6）；
 //! - [`pq`] — PQ（SMPTE ST 2084）HDR 传输函数；
 //! - [`hlg`] — HLG（ITU-R BT.2100）传输函数；
 //! - [`colorspace`] — 线性 sRGB ↔ ACEScg（AP1）矩阵与色彩空间枚举；
@@ -20,6 +23,7 @@ pub mod aces;
 pub mod colorspace;
 pub mod colorspace_registry;
 pub mod det_pow;
+pub mod det_scalar;
 pub mod det_trig;
 pub mod hlg;
 pub mod ocio;
