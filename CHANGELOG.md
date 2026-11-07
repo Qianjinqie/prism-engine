@@ -636,3 +636,36 @@
   `v3_homologous` 4 条（`render_movie` 同源对拍逐字节）全绿。
   覆盖率实录：结构 39/39 = 100.00%，DSL 字段映射行 15/39 = 38.46%，
   参数级全名 0/225 = 0.00% / 末段 18/225 = 8.00%（W1 如实输出，不设阈值）。
+
+### V3.0-W2-01：求值链贯通 + 39 项能力触达（W2 收口）
+
+- **扩容内容**：
+  - `prism-dsl` 新增 `cap "编号" { 参数全集 }` 通用声明块（顶层 / scene 内
+    双入口）与 `src/wiring.rs` 39 行运行时唯一事实源 `CAPABILITY_ROWS`；
+    `CompileV2Output` 新增 `wiring` 装配字段（W1 的 14 个 pub 字段 / 分母 225
+    → W2 的 15 个 / 分母 226，如实登记，非迁就代码改判据）。
+  - `prism-render::movie` 的 R5010 拒绝点改为七族节点接入求值链源头；
+    `Deliverable` 新增 `wiring_trace` 逐帧凭证，`wiring_frame_values` 在
+    渲染前逐帧解算任意时序参数。
+  - `prism-app::w2_eval` 单向下达七族既有求值器（`prism-rt` / `prism-core` /
+    `prism-particles` / `prism-physics` / `prism-audio` / `prism-postfx` /
+    `prism-geometry` / `prism-text` 的公开 API），只接线不重实现；
+    `prism-app` 新增 3 条 workspace path 依赖，零第三方。
+  - `coverage_gate` 扩到 15 条；新增 `w2_wiring`（9 条）与
+    `w2_end_to_end`（8 条）运行时对拍 / 错误注入 / L3 / 零损失测试；
+    新建 `docs/v3.0-W2-实录.md`，回填 `docs/v3.0-触达规格表.md` 的
+    `dsl_fields`、第 8 列 `wiring_ruling` 与覆盖率实录。
+- **为何非 C15**：旧 `.prism` 不声明 `cap` ⇒ `wiring` 恒空 ⇒ 求值凭证为空、
+  CLI 不打印新字段、材质 / 光源不被覆盖 ⇒ 既有可渲染工程输出帧
+  **无任何字节变化**。三个黄金 `.prism` md5 对账一致，同文件同种子两跑
+  成片逐字节一致，换序反例可检出。故不进《渲染行为变化清单》。
+- **确定性口径**：接线值全整数 / f32 位型，`BTreeMap` 固定序，零 libm、
+  零线程；节点通道解算走既有 `sample_binding` → `PropertyChannel::sample_ctx`，
+  随机源仍为 `eval.rs:592` 的 `hash_mix`，未新造种子。
+- **是否有开关**：有——仅文档显式声明 `cap` 块时启用接线通路；旧文件与
+  无 `cap` 的新文件永久走零损失路径。
+- **验收**：`cargo build --workspace` 通过；受影响 5 crate 共 **929 passed /
+  0 failed / 0 ignored**（W1 基线 906 → +23，只增不减）；`coverage_gate`
+  15 条输出 39/39、226/226 = 100.00%；七族端到端样例 7/7、R5010 销号 7/7；
+  同源对拍 0 差异；L3 六类核心项两帧值与解析式逐位一致；删任意一行 /
+  拆任意单个字段（33 行 / 198 参数）全部判红。详见 `docs/v3.0-W2-实录.md`。
