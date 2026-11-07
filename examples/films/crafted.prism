@@ -1,0 +1,37 @@
+// prism-dsl 2
+// V3.0 W4 观感样例库 · crafted 档（像人搓的，用户显式选档，编译器不代选）
+// 一部 3 分钟片子 = 一个文件：无外部依赖目录、冷启动一条命令出片。
+//   prism render examples/films/crafted.prism --fast --codec mjpeg
+// 六族痕迹在生成源头注入（W3）；命名时序通道让六族痕迹强度随时间变化（W4/A7）。
+// 资产内容哈希锁定 + inline 内嵌，空环境自洽、路径不成为隐式环境状态。
+seed = 42
+finish = crafted {
+    motion enabled true strength 620
+    geometry enabled false strength 0
+    material_light enabled true strength 400
+    time_camera enabled true strength 300
+    composition_color enabled true strength 250
+    edit_audio enabled true strength 500
+}
+asset "lut" kind exr hash "d76e986531f947bc" inline "0a1b2c3d"
+asset "title_font" kind font hash "71cac37448049ce4" inline "00010000"
+asset "score" kind audio hash "096a7bdcc0344023" inline "52494646"
+channel "w3.motion.strength" key 0s 0.20 linear key 180s 0.80 linear
+channel "w3.material_light.strength" expr "0.30 + 0.001 * t"
+channel "R-2.roughness" key 0s 0.20 linear key 180s 0.80 linear
+asset_ref "lut"
+asset_ref "title_font"
+asset_ref "score"
+emit f"""
+movie "crafted-3min" { duration 180s fps 1 resolution 32x24 format png }
+scene "s" {
+    duration 180s
+    stage3d {
+        camera main { orbit { center 0,0,0 radius 4.5 } fov 55 }
+        sdf ball { kind sphere radius 0.75 }
+        material hero { albedo #c0392b roughness 0.4 metalness 0.1 }
+        light key { direction(0.4,-1,-0.6) color #ffffff intensity 3.2 }
+    }
+}
+output { resolution 32x24 format png }
+"""

@@ -1,0 +1,31 @@
+// prism-dsl 2
+// V3.0 W4 观感样例库 · analytic 档（纯净匀质，用户显式选档，编译器不代选）
+// 一部 3 分钟片子 = 一个文件：无外部依赖目录、冷启动一条命令出片。
+//   prism render examples/films/analytic.prism --fast --codec mjpeg
+// 资产以内容哈希锁定（EXR / 字体 / 音频）；inline 内嵌保证空环境自洽。
+// 命名时序通道驱动任意参数：W2 L3 核心项 + 自定义参数，逐帧值可断言。
+// K-4：3 分钟形态（180s × 1fps = 180 帧）用 32×24 低分辨率确定性档验证
+//      形态与出片链路（帧数 / 尺寸 / 退出码），不是全质量渲 4320 帧。
+seed = 42
+finish = analytic
+asset "lut" kind exr hash "d76e986531f947bc" inline "0a1b2c3d"
+asset "title_font" kind font hash "71cac37448049ce4" inline "00010000"
+asset "score" kind audio hash "096a7bdcc0344023" inline "52494646"
+channel "R-2.roughness" key 0s 0.20 linear key 180s 0.80 linear
+channel "R-2.metalness" expr "0.10 + 0.02 * t"
+asset_ref "lut"
+asset_ref "title_font"
+asset_ref "score"
+emit f"""
+movie "analytic-3min" { duration 180s fps 1 resolution 32x24 format png }
+scene "s" {
+    duration 180s
+    stage3d {
+        camera main { orbit { center 0,0,0 radius 4.5 } fov 55 }
+        sdf ball { kind sphere radius 0.75 }
+        material hero { albedo #c0392b roughness 0.4 metalness 0.1 }
+        light key { direction(0.4,-1,-0.6) color #ffffff intensity 3.2 }
+    }
+}
+output { resolution 32x24 format png }
+"""
