@@ -669,3 +669,69 @@
   15 条输出 39/39、226/226 = 100.00%；七族端到端样例 7/7、R5010 销号 7/7；
   同源对拍 0 差异；L3 六类核心项两帧值与解析式逐位一致；删任意一行 /
   拆任意单个字段（33 行 / 198 参数）全部判红。详见 `docs/v3.0-W2-实录.md`。
+
+### V3.0-W3-01：观感体系独立波（`finish` 双一等档 + 六族生成源头注入）（W3 收口）
+
+- **扩容内容**：
+  - `prism-dsl` 新增 `finish = analytic | crafted { ... }` **一等字段**（D-30）：
+    `src/finish.rs` 承载行式扫描 + 等长遮罩（保 W1 前端行号不变）、六族
+    `TraceFamily`/`TraceDim`（每族独立 `enabled` + `strength 0..1000`，均可设 0）、
+    `FinishPlan` 规范字节序列、`RubricPlan`（f32 位型还原 critic 五维 `Target`）、
+    P9001–P9012 九类三段式带行号错误。`WiringPlan.finish` 挂到 W2 唯一事实源，
+    `canonical_bytes()` 扩 `0xF3 + FinishPlan`；F-8 产物哈希经
+    `mix_artifact_hash` 扩链、F-5 求值轨迹经 `trace_event` 插入首事件。
+    诊断行号不进产物，保证「语言声明 ≡ 直接调引擎 API 构造同一观感配置」
+    逐字节同源（V5、禁止两端同错）。
+  - **生成源头逐帧注入**（§3.4）：`wiring.rs::resolve_frame` →
+    `finish::inject_frame_values` → `movie.rs::wiring_frame_values` →
+    `render_scene_frame` 渲染前链路写入六族 `w3.<族>.signal`，在组装
+    `Material`/`Light`/`Scene`/`Camera` **之前**消费（轨道半径 / fov / 构图中心 /
+    球体半径 / 粗糙度 / 金属度 / 光源 / 对比度 / 不等长呼吸）。每族独立开关，
+    关闭族连 `signal=0` 键都不写（绝对匀质）。种子化确定性噪声只走
+    `prism_core::eval::hash_mix`（五族）与 `prism_noise::pcg::hash2_f32`
+    （几何族，与 `generators.rs:145` 同源）。
+  - **六族现有 crate 只接线、不重实现**（D-32 / 红线 1）：`prism-app::w3_eval`
+    把 `w3.<族>.signal` 作为实参交给 `prism-author`（easing）/`prism-genart`
+    （Voronoi）/`prism-postfx`（film/dof）/`prism-aesthetic`（critic 五维）/
+    `prism-audio`（score/beats/harmony/reactive）既有 API，真实返回值进
+    `digest`；`prism-app::w3_blind` 用确定性可计算判官（三条解析性指标）
+    做成对盲测，`prism-aesthetic::critic` 五维只作画质不退化侧证、不进胜率。
+  - **两条治本禁令 → 静态门禁**（§3.3）：`posthoc_gate`（帧后贴皮 `P9011`）/
+    `true_random_gate`（真随机 `P9012`）编译期全文检查，接在 `codegen_v3`
+    之后、与选档无关；`analytic` 同样判红。旧 `post { grain }` 帧后节点保留
+    不删（零损失），仅作 §3.3 负控样本，非 W3 通路。
+  - 新增 `docs/v3.0-痕迹维度表.md`（§3.4 逐行冻结）、`docs/v3.0-盲测协议.md`
+    （冻结样本池 64 对 / 门槛 0.75 / 判官逐对输出）、`docs/v3.0-W3-实录.md`、
+    `scripts/w3_blind.sh` 与 `--example w3_blind` 可复现脚本；`prism-app`
+    新增 3 条 + `prism-dsl` 新增 1 条 workspace path 依赖，零第三方。
+- **为何非 C15**：**受影响特性** = `// prism-dsl 2` 文档的观感档位声明与
+  六族渲染前信号，以及 `prism-app render` 的「观感凭证」stdout；
+  **变化原因** = 作者指令「塑料感在生成逻辑太解析、太完美、无介质，
+  加 CSS 也没用」，须把痕迹注入渲染前生成源头，而非帧后贴皮。
+  **视觉影响描述**：**旧值 → 新值仅当显式声明 `finish = crafted`** 时发生
+  （六族有界微扰改变轨道/材质/光源/相机/时长 ⇒ 出片帧按声明强度变化）；
+  `// prism-dsl 1` / 无头旧文件按 D-24 恒等 `analytic`（非取默认，
+  `wiring.finish = None`、求值链零变化），`finish = analytic` 不降级为 v2
+  块、`lowered_source` 与 W1 逐字节一致、六族注入恒 0 ⇒ 既有可渲染工程
+  输出帧**无任何字节变化**，三份黄金 `.prism` md5 对账一致、两跑成片
+  逐字节同帧。V4 明确「匀质同样是能力」，`analytic` 不因「不够搓」判失败。
+  故与 W1/W2 同口径**不进《渲染行为变化清单》**。
+- **确定性口径**：六族信号全整数 / f32 位型，`BTreeMap` 固定序，零 libm、
+  零线程、零系统时间、零真随机；随机源沿用 `hash_mix` / `pcg::hash2_f32`
+  未新造；`finish` 规范字节 / `receipts_bytes` / 盲测 `canonical_bytes` /
+  成片 MP4 两跑逐字节一致；盲测门槛 0.75 与 critic 容差 0.25 定桩于跑测之前，
+  不事后调整。
+- **是否有开关**：有——`// prism-dsl 2` 文档**必须显式**写
+  `finish = analytic | crafted`（漏填即 `P9001` 报错，编译器不替用户默认选档）；
+  仅 `crafted` 启用六族注入与观感凭证，`analytic` 与旧文件永久走零损失路径。
+  每族另有独立 `enabled` / `strength`（可设 0），用户要「只有运动带呼吸、
+  几何绝对匀质」可直接表达。
+- **验收**：`cargo build --workspace` 通过（仅 2 条既有无关警告）；受影响
+  5 crate 共 **965 passed / 0 failed / 0 ignored**（W2 基线 929 → +36，只增不减，
+  W3 净新增 36 条测试）；`coverage_gate` 15 条输出 **39/39、226/226 = 100.00%**
+  不退化；V1 档位忠实 / V2 五负控全 FAIL 带行号 / V4 匀质一等 /
+  V5 同源逐字节 / V6 零损失全绿；错误注入集 17 例逐码判红；**V3 成对盲测
+  64/64 = 1.0000 ≥ 冻结门槛 0.75**、两跑逐字节一致、反假绿负控 0.4375、
+  critic 五维 0 退化（`sharpness` 单维 Δ −0.524983 如实披露，总分 −0.099999
+  在容差 0.25 内）。未跑 `cargo test --workspace --release`（按 §5.4 留给 W4）。
+  详见 `docs/v3.0-W3-实录.md`。
