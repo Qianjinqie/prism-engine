@@ -37,3 +37,11 @@ prism-postfx = { path = "../prism-postfx" }
 prism-particles = { path = "../prism-particles" }
 prism-physics = { path = "../prism-physics" }
 prism-audio = { path = "../prism-audio" }
+
+# V3.0 W3（D-32）：六族现有 crate 接线，只接线不重实现。六族求值器分属
+# author / genart / postfx / aesthetic / audio，prism-app 是依赖图顶层，
+# 可单向下达；prism-noise 是几何族 hash2_f32 的确定性基元（零依赖）。
+# 四条全是 workspace path，零第三方，方向单向无环。
+prism-author = { path = "../prism-author" }
+prism-genart = { path = "../prism-genart" }
+prism-noise = { path = "../prism-noise" }

@@ -165,6 +165,23 @@ pub fn run(args: &[String]) -> i32 {
         );
     }
 
+    // ---- 3.6 V3.0 W3：六族观感凭证（生成源头逐帧注入，非帧后贴皮）--------
+    // `analytic` 档与旧文件 ⇒ `compile.wiring.finish = None` ⇒ 空凭证 ⇒
+    // **不打印任何一行**，stdout 与 W1/W2 逐字节一致（D-24 零损失）。
+    // 仅显式声明 `finish = crafted` 时才打印六族既有 crate 的接线摘要。
+    let w3: Vec<prism_app::w3_eval::W3Receipt> = prism_app::w3_eval::evaluate(&compile, 0);
+    if !w3.is_empty() {
+        let param_total: usize = w3.iter().map(|r| r.param_keys.len()).sum();
+        println!(
+            "观感凭证   : finish = crafted / {} 族 / {} 参数（渲染前逐帧注入）",
+            w3.len(),
+            param_total
+        );
+        for r in &w3 {
+            println!("  {:<20} {}", r.family, r.engine_api);
+        }
+    }
+
     // ---- 4. render_movie 直达路径（R5xxx 三段式，绝不静默）-------------------
     // D-19 双轨：默认 prism-rt 完整路径追踪；`--fast` 走 CpuRefBackend（Lambert）。
     // 两档都是 `&mut dyn GpuDevice`，`render_movie` 一行不改。

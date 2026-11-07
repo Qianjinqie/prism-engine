@@ -52,13 +52,16 @@ dependencies = [
  "prism-aesthetic",
  "prism-ai",
  "prism-audio",
+ "prism-author",
  "prism-core",
  "prism-dsl",
+ "prism-genart",
  "prism-gpu",
  "prism-infra",
  "prism-io",
  "prism-math",
  "prism-mux",
+ "prism-noise",
  "prism-particles",
  "prism-physics",
  "prism-postfx",
@@ -111,6 +114,7 @@ dependencies = [
  "prism-anim",
  "prism-core",
  "prism-math",
+ "prism-noise",
 ]
 
 [[package]]
