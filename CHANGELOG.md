@@ -735,3 +735,60 @@
   critic 五维 0 退化（`sharpness` 单维 Δ −0.524983 如实披露，总分 −0.099999
   在容差 0.25 内）。未跑 `cargo test --workspace --release`（按 §5.4 留给 W4）。
   详见 `docs/v3.0-W3-实录.md`。
+
+### V3.0-W4-01：单文件形态 + 统一顶层入口 + 收官（W4 收口 / V3.0 终态）
+
+- **扩容内容**：
+  - `prism-dsl/src/film.rs`（新增）：`asset` 一等声明（`exr` / `font` / `audio`
+    三类，内容哈希 `hash_mix_bytes` 锁定、产物哈希只混入 `(name,kind,hash,inline)`、
+    **永不混入路径**）、`AssetSource`（外部引用为主 / 内嵌可选 / 纯哈希声明）、
+    `AssetResolver`（`NullResolver` / `DirResolver` 注入式外部校验）、`asset_ref`
+    引用闭环、`ChannelPlan`（`expr` 解析式 / `key` 关键帧，复用既有
+    `PropertyChannel::sample_ctx`）与 `apply_timed_channels` 渲染前覆盖层。
+    `P9501`–`P9514` 三段式带行号错误。行式扫描 + 空行遮罩（与 W3 `scan_finish`
+    同款），W1 冻结的 LL(1)+Pratt 前端一行未改。
+  - `compile_film` 统一编译侧：按版本头分派，旧文件 `FilmPlan` 恒空（零损失），
+    命名通道降级进既有 `CompileV2Output.channels`（`w4.drive.<target>`，
+    **不新增任何结构字段**，E-8 覆盖率门禁 226 分母恒定）；`compile_v3` 把
+    单文件声明规范字节扩链进 F-8 产物哈希（空 plan 恒等）。
+  - `prism-render/movie.rs::wiring_frame_values` 渲染前覆盖层：命名通道逐帧值
+    写进 `WiringFrame`，六族 `w3.<族>.strength` 同步按 W3 同一公式重算 `signal`
+    （生成源头，非帧后贴皮）；无 `w4.drive.*` 时立即恒等返回。
+  - `prism-app`：`[[bin]] prism` 统一顶层入口（`prism render <file.prism>`，
+    复用唯一 `cmd_render::run`）；`cmd_render` 接 `compile_film` + 外部资产
+    内容哈希校验（缺文件 `P9508` / 篡改 `P9509` 三段式带行号）+ 单文件凭证。
+  - `examples/films/{analytic,crafted}.prism` 双档样例（3 分钟形态低分辨率
+    确定性档，K-4）、`scripts/w4_cold.sh` 可复现脚本、`w4_film.rs` /
+    `w4_end_to_end.rs` 判据测试、`docs/v3.0-W4-收官实录.md`。
+- **为何非 C15**：**受影响特性** = `// prism-dsl 2` 文档的单文件声明面、
+  `prism render` 的统一入口与「单文件凭证」stdout、以及显式声明了命名时序通道
+  的 v3 片子；**变化原因** = 作者契约 A5/A6/A7、D-27、§5.3 W4 行「一部片子 =
+  一个文件、资产内容哈希锁定、一条命令出片、任意参数时序驱动、报错质量全量
+  注入」。
+  **视觉影响描述**：**旧值 → 新值仅当显式声明 `asset` / `channel`** 的 v3
+  文件发生（命名通道在渲染前驱动参数 / 六族痕迹强度）；`// prism-dsl 1` /
+  无头旧文件走 `compile_v2`、根本不经过 `film`，不声明 `asset`/`channel` 的
+  v3 文件 `FilmPlan` 空 ⇒ 遮罩源码逐字节相同、产物哈希混入恒等、
+  `base.channels` 零追加 ⇒ **既有可渲染工程输出帧无任何字节变化**，三份黄金
+  `.prism` md5 对账一致、两跑成片逐字节同帧。`analytic` 档编译期门禁
+  `gate_analytic_trace_drives` 判红任何 `w3.*` 驱动（不许偷加噪）。
+  故与 W1/W2/W3 同口径**不进《渲染行为变化清单》**。
+- **是否有开关**：有——`// prism-dsl 2` 文档必须**显式**声明 `asset` / `channel`
+  （漏必填即 `P95xx` 报错，不取默认、不静默降级）；`finish = analytic | crafted`
+  仍由 W3 强制显式（漏填 `P9001`）；外部资产缺失 / 内容哈希不符由
+  `verify_external_assets` 结构化报错，不静默替换。双档样例 3 资产全 `inline`
+  自包含，空环境（无 ffmpeg / 无 GPU）`prism render` 退出码 0。
+- **验收**：`cargo build --workspace` 通过（仅 2 条 V2.5 既有无关警告）；
+  **`cargo test --workspace --release` 4580 passed / 0 failed / 0 ignored /
+  exit 0**（基线 4456 → +124，只增不减；237 组 test result 行逐行 0 failed /
+  0 ignored；全仓唯一一次，按 §5.4 在 W4 跑）；`coverage_gate` 15 条 **39/39、226/226 =
+  100.00%** 不退化；W4 新增 `film.rs` 7 单测 + `w4_film.rs` 8 + `w4_end_to_end.rs` 6
+  + `w4_probe.rs` 1 全绿；四类错误域 **28 条注入 × 5 项断言 = 140 项全绿**；
+  双档两跑逐字节一致（92,192 B / 92,063 B）、空环境冷启动退出码 0、
+  3 个 `.prism` md5 未变、`Cargo.lock source=` 0、`spv_freshness` 5/5。
+  **D-26**：实测 W1–W4 语言层新增后 `prism_gpu.wasm` = **713,309 B**，对照
+  V2.5 收官源码同口径重编同为 713,309 B ⇒ 语言层增量 **0 B**；相对 §8 D-26
+  旧口径 458,752 B 超 254,557 B（如实给数字），该超出全部来自 V2.5 期间
+  wavefront 对拍链（V2.5 已按 §27 正式重新议定上限 786,432 B 并落档），
+  本波**不改任何上限数字、不删功能、不砍判据、不软化阈值**，按 §27 写正式
+  裁定条目显式落档。详见 `docs/v3.0-W4-收官实录.md` §8。
