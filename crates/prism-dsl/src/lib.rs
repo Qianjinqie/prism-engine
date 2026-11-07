@@ -49,6 +49,9 @@ mod wiring;
 /// V3.0 W3：观感档位 `finish` 与六族痕迹维度（一等字段 + 生成源头注入）。
 /// 公开模块：`prism-render` / `prism-app` / 静态门禁 / 同源对拍共用同一份声明面。
 pub mod finish;
+/// V3.0 W4：单文件形态（资产内容哈希锁定）+ 统一命名时序通道（A7）+ 四类错误域注入面。
+/// 公开模块：`compile_v3` 接线、`prism-render` 渲染前覆盖层、`prism-app render` 凭证共用。
+pub mod film;
 // 组合子库（高层语义 → 等价 v2 节点图展开）。公开模块：展开函数经
 // `codegen::COMBINATOR_TABLE` 注册面查表，Rust 侧构造入口在 prism-author。
 pub mod combinators;
@@ -258,6 +261,13 @@ pub use crate::finish::{
     FORBIDDEN_RANDOM_TOKENS, POSTHOC_BLOCK_MARKERS, RUBRIC_DIMS, STRENGTH_MAX, W3_INJECTION_KEYS,
     W3_TAG,
 };
+// V3.0 W4：单文件形态公开面（资产内容哈希锁定 / 命名时序通道 / 三段式错误 / 渲染前覆盖）。
+pub use crate::film::{
+    apply_timed_channels, film_err, film_summary, gate_analytic_trace_drives, scan_film,
+    verify_external_assets, AssetDecl, AssetKind, AssetPlan, AssetResolver, AssetSource,
+    ChannelDecl, ChannelPlan, DirResolver, FilmPlan, FilmScan, FilmSummary, NullResolver,
+    DRIVE_PREFIX, FILM_TAG,
+};
 pub use crate::packs::{PackManifest, SemVer};
 // 组合子库公开面（展开函数 / 入参 / 产物 / 注册表）。
 pub use crate::combinators::{
@@ -350,6 +360,10 @@ pub fn compile_v3(source: &str) -> Result<CompileV3Output, DslError> {
     // 的行为逐字不变。非法值在扫描阶段即三段式判红；「漏填」推迟到其余
     // 编译环节成功后统一判红，保证 W1 的 P1024/P6110/P7002 等负控不退化。
     let scan: finish::FinishScan = finish::scan_finish(source)?;
+    // ---- W4：单文件形态声明扫描（叠加在 finish 遮罩之上，等长空格行，行号逐字不变）----
+    // 未声明 `asset` / `channel` 的 v3 文件 ⇒ FilmPlan 为空 ⇒ 遮罩后源码与 W3 收口
+    // 逐字节相同、产物哈希混入恒等、base.channels 零追加（D-24 零损失）。
+    let film_scan: film::FilmScan = film::scan_film(&scan.masked_source)?;
     match detect_version_head_v3(source)? {
         VersionHeadV3::V2 => {}
         VersionHeadV3::Missing => {
@@ -372,7 +386,7 @@ pub fn compile_v3(source: &str) -> Result<CompileV3Output, DslError> {
             return Err(p1024_unsupported_version(line, "1"));
         }
     }
-    let toks: Vec<lexer::v3::Token3> = lexer::v3::tokenize3(&scan.masked_source)?;
+    let toks: Vec<lexer::v3::Token3> = lexer::v3::tokenize3(&film_scan.masked_source)?;
     let program: ast::v3::Program3 = parser::v3::Parser3::new(toks).parse_program()?;
     let mut out: CompileV3Output = codegen::v3::codegen_v3(&program)?;
 
@@ -417,6 +431,13 @@ pub fn compile_v3(source: &str) -> Result<CompileV3Output, DslError> {
     // W3 对 F-8 的正式扩链：finish 进产物哈希 + F-5 求值轨迹（一等字段先于语句）。
     out.artifact_hash = finish::mix_artifact_hash(out.artifact_hash, &plan);
     out.trace.insert(0, finish::trace_event(&plan));
+    // ---- W4：单文件形态的内容哈希锁定 + 命名通道规范字节进 F-8 产物哈希 ----
+    // 空 FilmPlan 时 mix 恒等返回（旧文件 / 不声明 asset|channel 的 v3 文件逐字节零损失）。
+    // W4 声明不进 lowered_source / base.channels / trace（保持 W1 同源对拍与 W3 判据）。
+    // 红线 4：analytic 档不得声明 w3.* 痕迹时序驱动（不许给匀质档偷加噪）。
+    let crafted = out.base.wiring.finish_plan().map(|f| f.is_crafted()).unwrap_or(false);
+    film::gate_analytic_trace_drives(&film_scan.plan, crafted)?;
+    out.artifact_hash = film_scan.plan.mix_artifact_hash(out.artifact_hash);
     Ok(out)
 }
 
@@ -448,6 +469,53 @@ pub fn compile_auto(source: &str) -> Result<AutoCompile, DslError> {
             compile_v2(source).map(AutoCompile::V2)
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// W4：单文件形态顶层编译入口（统一顶层入口 `prism render <file>` 的编译侧）
+// ---------------------------------------------------------------------------
+
+/// `compile_film` 的产物：可直接送 `render_movie` 的装配产物 + 单文件声明计划。
+#[derive(Debug)]
+pub struct FilmCompile {
+    /// 引擎装配产物（`render_movie` / 凭证求值的唯一消费入口）。
+    /// 命名时序通道已降级进既有 `channels` 字段（`w4.drive.<target>`），
+    /// 由 `wiring_frame_values` 渲染前覆盖层消费，不新增任何结构字段。
+    pub compile: CompileV2Output,
+    /// 单文件声明计划（资产内容哈希锁定 + 命名时序通道），供 CLI 凭证与对拍。
+    pub plan: film::FilmPlan,
+}
+
+/// 单文件片子的统一编译入口（W4 / A5）：从一份 `.prism` 源码到可直接渲染的
+/// `CompileV2Output`，含资产内容哈希锁定校验与命名时序通道降级。
+///
+/// # 零损失（D-24）
+/// `// prism-dsl 1` / 无头旧文件走 `compile_v2`，`plan` 恒为空、`channels` 零追加，
+/// 产物与 W1 之前逐字节相同；v3 文件未声明 `asset`/`channel` 时 `plan` 亦为空。
+///
+/// # 红线 1（不成为第二事实源）
+/// 通道求值走既有 `PropertyChannel::sample_ctx`；本函数只把声明降级成既有
+/// `NamedChannel` 追加进 `compile.channels`，不重实现任何求值数学。
+pub fn compile_film(source: &str) -> Result<FilmCompile, DslError> {
+    let head = detect_version_head_v3(source)?;
+    let mut compile = compile_auto(source)?.into_v2_output();
+    let plan = match head {
+        // `compile_v3` 内部已用「finish 遮罩后再 scan_film」的口径完成校验并混入
+        // 产物哈希；此处用同一口径重扫一次拿声明计划（纯静态、确定性、无副作用）。
+        VersionHeadV3::V2 => {
+            let finish_scan = finish::scan_finish(source)?;
+            film::scan_film(&finish_scan.masked_source)?.plan
+        }
+        // 旧文件：单文件声明不可达 ⇒ 空计划、零通道追加（零损失）。
+        VersionHeadV3::V1 | VersionHeadV3::Missing | VersionHeadV3::Misplaced(_) => {
+            film::FilmPlan::default()
+        }
+    };
+    // 红线 4 编译期门禁（与 compile_v3 同一道闸，防止任何绕过路径）。
+    let crafted = compile.wiring.finish_plan().map(|f| f.is_crafted()).unwrap_or(false);
+    film::gate_analytic_trace_drives(&plan, crafted)?;
+    compile.channels.extend(plan.channels.into_named_channels());
+    Ok(FilmCompile { compile, plan })
 }
 
 // ---------------------------------------------------------------------------
