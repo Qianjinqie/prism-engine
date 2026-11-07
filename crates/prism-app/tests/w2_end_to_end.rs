@@ -104,7 +104,7 @@ fn direct_plan() -> WiringPlan {
             params,
         });
     }
-    WiringPlan { entries }
+    WiringPlan { entries, finish: None }
 }
 
 /// 起 CLI 子进程跑 `prism-app render`。
