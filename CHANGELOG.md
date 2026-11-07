@@ -600,3 +600,39 @@
 验收：`crates/prism-render/tests/movie_sim_timeline.rs`（帧循环出图 /
 确定性 / seek 等价 / 冷 seek P3012 / 模式元数据进签名与缓存键）+
 `crates/prism-render/src/movie.rs` 单测。
+
+---
+
+## 语言前端与门禁（非 C15：新增 v3 前端，既有渲染字节不变）
+
+### V3.0-W1-01：定桩 + 语言内核 + 确定性求值（W1 收口）
+
+- **扩容内容**：
+  - 定桩先行：`docs/v3.0-语言规格.md` 在解析器动工前冻结求值顺序 F-1~F-5
+    与种子方案 F-6~F-10；`docs/v3.0-触达规格表.md` 39 行逐行填实
+    `api_path:line` 与引擎侧公开参数全集（门禁逐行回读源码复核）。
+  - `prism-dsl` 新增 `// prism-dsl 2` 前端：独立词法面（缩进栈 / 三引号 /
+    插值）、AST、LL(1) 语句 + Pratt 表达式、确定性受限子集执行器
+    （`src/eval.rs`）、降级装配（`codegen::v3`）。`emit` 把计算结果展开为
+    **v2 块文本**后交既有 `compile_v2`，语言层不重建节点图、不重实现数学。
+  - `prism-app render` 的编译入口改走 `compile_auto` 分派：无头 / 版本 1
+    与旧 `compile_v2` 完全等价；版本 2 走 v3 并降级成同一份 `CompileV2Output`。
+  - `prism-core::eval::hash_mix` 由测试模块提升为生产 API（算法逐字不变），
+    新增 `hash_mix_bytes` / `hash_mix_unit_f32` / `hash_mix_unit_f64`；
+    `prism-math::det_scalar` 补齐 15 个零 libm 标量函数（含固定 6 步牛顿 `det_sqrt`）。
+- **为何非 C15**：旧 `.prism`（v1 / 版本 1）路径一行未改，三个黄金文件 md5
+  对账一致、既有 golden 全绿；`compile_auto` 对旧文件与 `compile_v2` 逐字节等价。
+  既有可渲染工程输出帧**无任何字节变化**，故不进《渲染行为变化清单》。
+- **确定性口径**：Q32.32 定点数值域、零 libm、零线程；`rand(tag)` 唯一走
+  `hash_mix(seed, tag, eval_ordinal)`；seed 与求值轨迹 `trace` 一起进
+  `artifact_hash`；求值严格左→右深度优先、容器按声明序、`for` 上界编译期
+  可判定（上限 4096 步）；换序 / 换种子 / 换语句序三类反例均可检出。
+- **是否有开关**：有——仅首行 `// prism-dsl 2` 进入 v3 前端；版本 1 / 无头
+  文档永久走旧路径，零损失契约不变。
+- **验收**：`cargo build --workspace` 通过；受影响 5 crate 共 **906 passed /
+  0 failed / 0 ignored**；`coverage_gate` 9 条（含 6 类错误注入全判红）、
+  `v3_language` 12 条（A1 八类正例 + 逐条负控共 25 例、非法语义静态拒绝、
+  版本头 / 求值 / 降级三段式负控、两跑逐字节、换序、md5 对账）、
+  `v3_homologous` 4 条（`render_movie` 同源对拍逐字节）全绿。
+  覆盖率实录：结构 39/39 = 100.00%，DSL 字段映射行 15/39 = 38.46%，
+  参数级全名 0/225 = 0.00% / 末段 18/225 = 8.00%（W1 如实输出，不设阈值）。
