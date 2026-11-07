@@ -60,6 +60,38 @@ fn a5_content_hash_is_locked_and_path_never_enters_artifact() {
     // 路径字符串绝不进规范字节。
     let cb = b.plan.assets.canonical_bytes();
     assert!(!cb.windows(5).any(|w| w == b"other"), "路径文本不进产物哈希");
+    // §7 #3 声明顺序反例（W4 声明面直接凭证，与 W1 求值顺序反例同口径）：
+    // 资产按声明序混入 F-8 产物哈希，换声明序 ⇒ 产物哈希可检出；同序两跑恒等。
+    // inline 字节与声明内容哈希自洽（P9504 不触发），两个资产 name 不同（P9505 不触发）。
+    let ord_a = concat!(
+        "asset \"lut\" kind exr hash \"d76e986531f947bc\" inline \"0a1b2c3d\"\n",
+        "asset \"font\" kind font hash \"71cac37448049ce4\" inline \"00010000\"\n",
+    );
+    let ord_b = concat!(
+        "asset \"font\" kind font hash \"71cac37448049ce4\" inline \"00010000\"\n",
+        "asset \"lut\" kind exr hash \"d76e986531f947bc\" inline \"0a1b2c3d\"\n",
+    );
+    let pa = scan_film(ord_a).unwrap().plan;
+    let pb = scan_film(ord_b).unwrap().plan;
+    assert_ne!(pa.mix_artifact_hash(7), pb.mix_artifact_hash(7),
+               "资产声明换序必须可检出（§7 #3 换序可检出）");
+    assert_eq!(pa.mix_artifact_hash(7), scan_film(ord_a).unwrap().plan.mix_artifact_hash(7),
+               "同声明序两跑产物哈希逐字节一致");
+    // 通道声明序同理：两个不同 target（P9513 不触发），换序 ⇒ 产物哈希可检出。
+    let ch_a = concat!(
+        "channel \"R-2.roughness\" expr \"0.2 + 0.001 * t\"\n",
+        "channel \"R-2.metalness\" expr \"0.3 + 0.001 * t\"\n",
+    );
+    let ch_b = concat!(
+        "channel \"R-2.metalness\" expr \"0.3 + 0.001 * t\"\n",
+        "channel \"R-2.roughness\" expr \"0.2 + 0.001 * t\"\n",
+    );
+    let ca = scan_film(ch_a).unwrap().plan;
+    let cb = scan_film(ch_b).unwrap().plan;
+    assert_ne!(ca.mix_artifact_hash(7), cb.mix_artifact_hash(7),
+               "通道声明换序必须可检出（§7 #3 换序可检出）");
+    assert_eq!(ca.mix_artifact_hash(7), scan_film(ch_a).unwrap().plan.mix_artifact_hash(7),
+               "同通道声明序两跑产物哈希逐字节一致");
 }
 
 // ---------------------------------------------------------------------------
@@ -140,30 +172,41 @@ fn a7_analytic_has_zero_trace_drive_and_zero_unexpected_noise() {
 fn error_injection_set() -> Vec<(&'static str, &'static str, String)> {
     let emit = "\nemit f\"\"\"\nmovie \"g\" { duration 1s fps 2 resolution 32x24 format png }\nscene \"s\" { duration 1s stage3d { sdf ball { kind sphere radius 1 } } }\noutput { resolution 32x24 format png }\n\"\"\"\n";
     let wrap = |body: &str| -> String { format!("// prism-dsl 2\nseed = 42\nfinish = analytic\n{body}\n{emit}") };
+    // W1 `docs/v3.0-语言规格.md` §2 定义的四类错误域（词法 / 语法 / 静态语义 /
+    // 求值）**全部 25 个可达错误码**，逐码一条能触发它的注入样例；本波做全量覆盖，
+    // 不是「每类挑几个代表」。触发串与 W1 `v3_language.rs::expect_fail` 同源，
+    // 统一经 W4 顶层入口 `compile_film` 验证（同一份三段式，不另造错误通道）。
     vec![
-        // —— 词法域 ——
-        ("词法", "P6003", wrap("x = @\n")),
+        // —— 词法域（4 码）——
+        ("词法", "P6001", wrap("def f(x):\n  return x\n")),
         ("词法", "P6002", "// prism-dsl 2\nseed = 42\nfinish = analytic\n\t x = 1\n".to_string()),
+        ("词法", "P6003", wrap("x = @\n")),
         ("词法", "P6205", wrap("x = f\"a={{1\"\n")),
-        // —— 语法域 ——
+        // —— 语法域（6 码）——
         ("语法", "P6004", wrap("if 1 > 0:\n    x = 1\nelif 2 > 1:\n")),
         ("语法", "P6108", wrap("else:\n    x = 1\n")),
         ("语法", "P6201", wrap("x = [1, 2,]\n")),
         ("语法", "P6202", wrap("x = {\"a\": 1, \"a\": 2}\n")),
+        ("语法", "P6204", wrap("x = f\"a={{1 2}}\"\n")),
         ("语法", "P1024", "// prism-dsl 3\nseed = 1\n".to_string()),
-        // —— 静态语义域 ——
+        // —— 静态语义域（11 码）——
         ("静态语义", "P6101", wrap("t = now()\n")),
+        ("静态语义", "P6102", wrap("x = y + 1\n")),
+        ("静态语义", "P6103", wrap("def f(a, a):\n    return a\n")),
+        ("静态语义", "P6104", wrap("def f(a):\n    x = a\n")),
         ("静态语义", "P6105", wrap("def a(x):\n    return b(x)\ndef b(x):\n    return a(x)\n")),
+        ("静态语义", "P6106", wrap("for i in 0..n:\n    x = i\n")),
+        ("静态语义", "P6107", wrap("for i in 4..4:\n    x = i\n")),
         ("静态语义", "P6110", "// prism-dsl 2\nfinish = analytic\nemit f\"\"\"\nmovie \"g\" { duration 1s fps 2 resolution 32x24 format png }\n\"\"\"\n".to_string()),
         ("静态语义", "P6111", "// prism-dsl 2\nseed = 1\nseed = 2\nfinish = analytic\n".to_string()),
         ("静态语义", "P6112", "// prism-dsl 2\nseed = 1.5\nfinish = analytic\n".to_string()),
         ("静态语义", "P6113", "// prism-dsl 2\nseed = 99999999999999999999999\nfinish = analytic\n".to_string()),
-        // —— 求值域 ——
-        ("求值", "P7003", wrap("x = 1 / 0\n")),
+        // —— 求值域（4 码）——
         ("求值", "P6203", wrap("x = [1, 2][9]\n")),
         ("求值", "P7001", "// prism-dsl 2\nseed = 1\nfinish = analytic\n".to_string()),
         ("求值", "P7002", "// prism-dsl 2\nseed = 7\nfinish = analytic\nemit \"not a v2 document\"\n".to_string()),
-        // —— W4 资产/通道声明域（三段式扩展覆盖）——
+        ("求值", "P7003", wrap("x = 1 / 0\n")),
+        // —— W4 资产/通道声明域（P95xx 三段式扩展覆盖，11 码）——
         ("静态语义", "P9501", wrap("asset \"lut\" hash \"d76e986531f947bc\"\n")),
         ("静态语义", "P9502", wrap("asset \"lut\" kind png hash \"d76e986531f947bc\"\n")),
         ("静态语义", "P9503", wrap("asset \"lut\" kind exr hash \"xyz\"\n")),
@@ -174,8 +217,19 @@ fn error_injection_set() -> Vec<(&'static str, &'static str, String)> {
         ("静态语义", "P9511", wrap("channel \"x\"\n")),
         ("静态语义", "P9512", wrap("channel \"x\" expr \"1 & 2\"\n")),
         ("静态语义", "P9513", wrap("channel \"x\" expr \"t\"\nchannel \"x\" expr \"t*2\"\n")),
+        ("静态语义", "P9514", wrap("channel \"w3.motion.strength\" expr \"0.2\"\n")),
     ]
 }
+
+/// W1 `docs/v3.0-语言规格.md` §2 定义的四类错误域**全部 25 个可达错误码**。
+/// 注入集必须逐码覆盖——少一个就是「代表覆盖冒充全量覆盖」的假绿，这里硬拦。
+const W1_FOUR_DOMAIN_CODES: &[&str] = &[
+    "P6001", "P6002", "P6003", "P6205",                         // 词法 4
+    "P6004", "P6108", "P6201", "P6202", "P6204", "P1024",         // 语法 6
+    "P6101", "P6102", "P6103", "P6104", "P6105", "P6106",         // 静态语义 11
+    "P6107", "P6110", "P6111", "P6112", "P6113",
+    "P6203", "P7001", "P7002", "P7003",                         // 求值 4
+];
 
 #[test]
 fn a6_four_error_domains_100_percent_line_number_and_three_parts() {
@@ -183,6 +237,13 @@ fn a6_four_error_domains_100_percent_line_number_and_three_parts() {
     let domains = ["词法", "语法", "静态语义", "求值"];
     for d in domains {
         assert!(set.iter().any(|(dom, _, _)| *dom == d), "四类错误域必须齐全：{d}");
+    }
+    // 全量覆盖硬闸：W1 四类错误域 25 个可达码逐码都必须在注入集中有触发样例，
+    // 且每个码都 100% 带行号 + 三段式 + 可行动建议（不允许挑代表冒充 100%）。
+    assert_eq!(W1_FOUR_DOMAIN_CODES.len(), 25, "W1 四类错误域可达码全集恒为 25");
+    for code in W1_FOUR_DOMAIN_CODES {
+        assert!(set.iter().any(|(_, c, _)| c == code),
+                "W1 四类错误域可达码 {code} 未纳入全量注入集（不许代表覆盖冒充 100%）");
     }
     let total = set.len();
     let mut checked = 0usize;
