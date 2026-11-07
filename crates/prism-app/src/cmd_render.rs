@@ -4,7 +4,7 @@
 //! 单帧 PNG）不同，本子命令走 **render_movie 直达路径**：
 //!
 //! ```text
-//! 读 .prism 文件 → compile_v2（语法错误带行号）→ render_movie（R5xxx 三段式）
+//! 读 .prism 文件 → compile_auto（语法错误带行号）→ render_movie（R5xxx 三段式）
 //!   → 写容器（ffmpeg H.264 优先，不可用降级内置 MP4(MJPEG)）
 //! ```
 //!
@@ -131,8 +131,11 @@ pub fn run(args: &[String]) -> i32 {
         }
     };
 
-    // ---- 3. DSL v2 编译（语法错误带行号 + 出错行原文回显）--------------------
-    let compile = match prism_dsl::compile_v2(&source) {
+    // ---- 3. DSL 编译（语法错误带行号 + 出错行原文回显）----------------------
+    // `compile_auto` 按版本头分派：无头 / `// prism-dsl 1` 走既有 `compile_v2`
+    // （逐字节零损失），`// prism-dsl 2` 走 V3.0 语言前端并降级成同一份
+    // `CompileV2Output`。分派层不改变旧文件的任何行为。
+    let compile = match prism_dsl::compile_auto(&source).map(|out| out.into_v2_output()) {
         Ok(out) => out,
         Err(err) => {
             eprintln!(
