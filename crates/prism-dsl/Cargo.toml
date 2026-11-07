@@ -9,3 +9,7 @@ prism-core = { path = "../prism-core" }
 # v2 codegen 需要 prism-anim 的 Track / Keyframe / EasingKind / Expr / LoopMode
 # （anim / expr 块与关键帧字段的属性通道装配）。清单外新增依赖。
 prism-anim = { path = "../prism-anim" }
+# V3.0 W3：几何族痕迹走 `prism-noise::pcg::hash2_f32`（与
+# prism-genart/generators.rs:145 同一基元）。prism-noise 无依赖，方向单向、
+# 无环；workspace path，零第三方。
+prism-noise = { path = "../prism-noise" }

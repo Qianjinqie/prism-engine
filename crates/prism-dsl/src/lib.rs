@@ -46,6 +46,9 @@ mod packs;
 mod parser;
 /// V3.0 W2：39 项能力接线注册表 + 校验 + 时序通道（只搬运，不重实现）。
 mod wiring;
+/// V3.0 W3：观感档位 `finish` 与六族痕迹维度（一等字段 + 生成源头注入）。
+/// 公开模块：`prism-render` / `prism-app` / 静态门禁 / 同源对拍共用同一份声明面。
+pub mod finish;
 // 组合子库（高层语义 → 等价 v2 节点图展开）。公开模块：展开函数经
 // `codegen::COMBINATOR_TABLE` 注册面查表，Rust 侧构造入口在 prism-author。
 pub mod combinators;
@@ -246,6 +249,15 @@ pub use crate::wiring::{
     ParamKind, RangeRule, WiringEntry, WiringFrame, WiringParam, WiringPlan, WiringValue,
     CAPABILITY_ROWS, RANGE_RULES,
 };
+// V3.0 W3：观感档位公开面（六族维度 / 逐帧注入 / 帧值对拍 / 静态门禁）。
+pub use crate::finish::{
+    assert_frame_value_pairs, dim_noise, example_crafted_finish,
+    finish_block_text, finish_err, inject_frame_values, missing_finish_error, mix_artifact_hash,
+    posthoc_gate, scan_finish, signals_of, trace_event, true_random_gate, FinishMode, FinishPlan,
+    FinishScan, FrameSignals, RubricPlan, TraceDim, TraceFamily, FORBIDDEN_POSTHOC_TOKENS,
+    FORBIDDEN_RANDOM_TOKENS, POSTHOC_BLOCK_MARKERS, RUBRIC_DIMS, STRENGTH_MAX, W3_INJECTION_KEYS,
+    W3_TAG,
+};
 pub use crate::packs::{PackManifest, SemVer};
 // 组合子库公开面（展开函数 / 入参 / 产物 / 注册表）。
 pub use crate::combinators::{
@@ -333,6 +345,11 @@ pub fn detect_version_head_v3(source: &str) -> Result<VersionHeadV3, DslError> {
 /// # Errors
 /// 词法 / 语法 / 静态语义 / 求值 / 降级任一环节失败都返回 [`DslError`]（带行号 + 三段式）。
 pub fn compile_v3(source: &str) -> Result<CompileV3Output, DslError> {
+    // ---- W3：`finish` 一等字段扫描（行式，行号逐字保留）--------------------
+    // 被扫描行替换成空行交给 W1 的 LL(1)+Pratt 前端，旧语法与四类错误域
+    // 的行为逐字不变。非法值在扫描阶段即三段式判红；「漏填」推迟到其余
+    // 编译环节成功后统一判红，保证 W1 的 P1024/P6110/P7002 等负控不退化。
+    let scan: finish::FinishScan = finish::scan_finish(source)?;
     match detect_version_head_v3(source)? {
         VersionHeadV3::V2 => {}
         VersionHeadV3::Missing => {
@@ -355,9 +372,52 @@ pub fn compile_v3(source: &str) -> Result<CompileV3Output, DslError> {
             return Err(p1024_unsupported_version(line, "1"));
         }
     }
-    let toks: Vec<lexer::v3::Token3> = lexer::v3::tokenize3(source)?;
+    let toks: Vec<lexer::v3::Token3> = lexer::v3::tokenize3(&scan.masked_source)?;
     let program: ast::v3::Program3 = parser::v3::Parser3::new(toks).parse_program()?;
-    codegen::v3::codegen_v3(&program)
+    let mut out: CompileV3Output = codegen::v3::codegen_v3(&program)?;
+
+    // ---- W3 两条治本禁令的静态门禁（与用户选哪档无关，analytic 同样生效）----
+    finish::posthoc_gate(source)?;
+    finish::true_random_gate(source)?;
+
+    // ---- 一等字段完整性（红线 3 / 红线 4：不替用户默认选档）--------------
+    let mut plan: finish::FinishPlan = match scan.decl {
+        Some(p) => p,
+        None => return Err(finish::missing_finish_error(1)),
+    };
+    plan.seed = out.seed;
+
+    // ---- crafted：finish 降级为 v2 声明块，走既有 compile_v2 --------------
+    // 文本进 lowered_source ⇒ 同源对拍逐字段相等；档位 / 维度 / 种子变化都可检出。
+    // **analytic 不注入任何 v2 声明块**：它的语义就是「没有任何痕迹注入」，
+    // 降级文本与 W1 逐字节相同（F-10 / D-24 版本契约），产物 wiring 恒空 ⇒
+    // V1 / V4 的纯解析基线逐字节同帧、全帧零意外噪点。档位仍进产物哈希。
+    if plan.is_crafted() {
+        const HEAD: &str = "// prism-dsl 1\n";
+        let block: String = finish::finish_block_text(&plan);
+        let mut lowered: String = String::from(HEAD);
+        lowered.push_str(&block);
+        lowered.push('\n');
+        lowered.push_str(out.lowered_source.strip_prefix(HEAD).unwrap_or(&out.lowered_source));
+        let (base, _diagnostics): (CompileV2Output, Vec<Diagnostic>) =
+            compile_v2_with_diagnostics(&lowered).map_err(|e| {
+                v3_err(
+                    plan.line,
+                    "P7002",
+                    &format!("finish 降级文本装配失败：{}", e.message),
+                    "检查 finish 声明与 emit 展开的 v2 块语法；报错行号已折算回 finish 声明行",
+                )
+            })?;
+        out.base = base;
+        let mut lowered_lines: Vec<usize> = vec![plan.line; block.lines().count()];
+        lowered_lines.extend_from_slice(&out.lowered_lines);
+        out.lowered_lines = lowered_lines;
+        out.lowered_source = lowered;
+    }
+    // W3 对 F-8 的正式扩链：finish 进产物哈希 + F-5 求值轨迹（一等字段先于语句）。
+    out.artifact_hash = finish::mix_artifact_hash(out.artifact_hash, &plan);
+    out.trace.insert(0, finish::trace_event(&plan));
+    Ok(out)
 }
 
 /// 自动分派的编译产物：v1/v2 文本走旧路径，v3 文本走新前端。

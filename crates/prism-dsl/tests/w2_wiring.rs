@@ -84,7 +84,7 @@ fn direct_plan() -> WiringPlan {
             params,
         });
     }
-    WiringPlan { entries }
+    WiringPlan { entries, finish: None }
 }
 
 /// 编译一份完整声明文档（39 行中的 33 个非平台域行）。

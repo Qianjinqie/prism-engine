@@ -11,7 +11,7 @@
 
 use crate::ast::{
     AnimAst, AudioAst, CameraV2Ast, CapAst, ComposeAst, ComposeOpAst, ComposeRef, DocumentAst, DocumentV2Ast,
-    ExprDefAst, FieldValue, FontDecl, FormulaAst, ImportPacksAst, KeyAst, LayerAst, LightV2Ast,
+    ExprDefAst, FieldValue, FinishAst, FontDecl, FormulaAst, ImportPacksAst, KeyAst, LayerAst, LightV2Ast,
     MaterialV2Ast,
     MorphRefAst, MovieAst, NamedField, NoteAst, OutputAst, PostAst, SceneItem, SceneV2Ast, SdfAst,
     SimAst,
@@ -930,6 +930,16 @@ impl Parser {
                 "formula" => doc.formulas.push(self.parse_formula(line)?),
                 // V3.0 W2：顶层能力接线声明（39 行规格表的运行时入口）。
                 "cap" => doc.caps.push(self.parse_cap(line)?),
+                // V3.0 W3：顶层一等观感档位（只承载字段，校验在 finish 模块）。
+                "finish" => {
+                    if doc.finish.is_some() {
+                        return Err(err_at(
+                            line,
+                            "[P9005] 'finish' 块重复出现（一份文档只声明一次观感档位）\n  建议：合并两个 finish 块的字段到一处",
+                        ));
+                    }
+                    doc.finish = Some(self.parse_finish(line)?);
+                }
                 "output" => {
                     if doc.output.is_some() {
                         return Err(err_at(
@@ -952,7 +962,7 @@ impl Parser {
                     return Err(err_at(
                         line,
                         format!(
-                            "[P1002] 未知顶层块 '{}'（允许：movie / timeline / theme / import packs / font / scene / transition / anim / expr / formula / cap / output）\n  建议：检查块名拼写；audio 与 post 应写在 scene 块内；cap 能力块可写在顶层或 scene 内",
+                            "[P1002] 未知顶层块 '{}'（允许：movie / timeline / theme / import packs / font / scene / transition / anim / expr / formula / cap / finish / output）\n  建议：检查块名拼写；audio 与 post 应写在 scene 块内；cap 能力块可写在顶层或 scene 内；finish 是 // prism-dsl 2 文档降级出来的一等观感档位",
                             other
                         ),
                     ));
@@ -1857,6 +1867,17 @@ impl Parser {
         self.expect_punct(Tok::LBrace, "{")?;
         let fields: Vec<NamedField> = self.parse_named_fields("cap")?;
         Ok(CapAst { row_id, fields, line: kw_line, scene_index: None })
+    }
+
+    /// V3.0 W3：`finish { ... }` 顶层块（扁平 `名 值` 字段流）。
+    ///
+    /// 语法糖层只做 token 搬运；`mode` / `seed` / 六族 enabled|strength /
+    /// rubric_* 的全集必填、值域、全 0、贴皮与真随机门禁一律在
+    /// `finish::compile_v2_finish` 里三段式校验（红线 3 不取默认）。
+    fn parse_finish(&mut self, kw_line: usize) -> Result<FinishAst, DslError> {
+        self.expect_punct(Tok::LBrace, "{")?;
+        let fields: Vec<NamedField> = self.parse_named_fields("finish")?;
+        Ok(FinishAst { line: kw_line, fields })
     }
 
     fn parse_named_fields(&mut self, block: &str) -> Result<Vec<NamedField>, DslError> {

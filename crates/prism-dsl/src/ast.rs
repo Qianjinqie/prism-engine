@@ -236,6 +236,20 @@ pub(crate) struct CapAst {
     pub(crate) scene_index: Option<usize>,
 }
 
+/// V3.0 W3：顶层 `finish { ... }` 一等观感档位声明的原始字段流。
+///
+/// 与 `CapAst` 一样只承载字段，全部校验（漏填 / 非法值 / 全 0 / 贴皮 /
+/// 真随机）由 `wiring::finish::compile_v2_finish` 三段式完成，语言层不实现
+/// 任何质感数学。`compile_v3` 降级出的 `// prism-dsl 1` 文本也走本块，
+/// 保证同源对拍逐字段相等。
+#[derive(Debug, Clone)]
+pub(crate) struct FinishAst {
+    /// `finish` 关键字所在行。
+    pub(crate) line: usize,
+    /// 扁平字段流（`mode` / `seed` / 六族 `*_enabled|*_strength` / `rubric_*`）。
+    pub(crate) fields: Vec<NamedField>,
+}
+
 /// T0 的附加能力块（`media` / `mesh` / `texture` / `hair` / `instance`）。
 ///
 /// # 为什么是开放字段集（而不是每块一个强类型）
@@ -505,6 +519,8 @@ pub(crate) struct DocumentV2Ast {
     pub(crate) formulas: Vec<FormulaAst>,
     /// V3.0 W2：顶层能力接线声明（39 行规格表）。缺省为空 ⇒ 旧文件零损失。
     pub(crate) caps: Vec<CapAst>,
+    /// V3.0 W3：顶层一等观感档位声明。旧文件不声明 ⇒ `None` ⇒ 恒等 analytic。
+    pub(crate) finish: Option<FinishAst>,
     pub(crate) output: Option<OutputAst>,
 }
 

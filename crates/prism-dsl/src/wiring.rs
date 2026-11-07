@@ -517,12 +517,23 @@ pub struct WiringEntry {
 pub struct WiringPlan {
     /// 按声明序（同编号重复已被 `build_wiring` 判红）。
     pub entries: Vec<WiringEntry>,
+    /// V3.0 W3：一等观感档位声明。旧文件（`// prism-dsl 1` / 无头）恒为
+    /// `None` ⇒ 求值链零变化（D-24 版本契约，非取默认）；`analytic` 档为
+    /// `Some(analytic)` 但 `resolve_frame` 恒等不注入，帧值同样逐字节不变。
+    pub finish: Option<crate::finish::FinishPlan>,
 }
 
 impl WiringPlan {
-    /// 是否为空（零损失判据：旧文件恒空）。
+    /// 是否为空（零损失判据：旧文件恒空；`analytic` 档同样不产生 W2 凭证，
+    /// 因为它没有任何痕迹注入，语义与未声明 `finish` 恒等）。
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+            && !self.finish.as_ref().map(|f| f.is_crafted()).unwrap_or(false)
+    }
+
+    /// W3：一等观感档位声明（渲染层 / `w3_eval` 的唯一读取入口）。
+    pub fn finish_plan(&self) -> Option<&crate::finish::FinishPlan> {
+        self.finish.as_ref()
     }
 
     /// 按编号取条目。
@@ -575,6 +586,14 @@ impl WiringPlan {
                     }
                 }
             }
+        }
+        // W3：finish 一等字段进规范字节序列 ⇒ 换档 / 换维度 / 换种子都可检出。
+        // `None`（旧文件）不追加任何字节，W2 的 canonical_bytes 逐字节不变。
+        if let Some(f) = &self.finish {
+            out.push(0xF3);
+            let bytes: Vec<u8> = f.canonical_bytes();
+            out.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+            out.extend_from_slice(&bytes);
         }
         out
     }
@@ -643,6 +662,14 @@ pub fn resolve_frame(
             };
             out.values.insert(key, bits);
         }
+    }
+    // ---- V3.0 W3：六族痕迹在**生成源头**逐帧注入（渲染前，非帧后节点）----
+    // 只走 `hash_mix` / `pcg::hash2_f32` 的种子化确定性噪声；analytic 档
+    // 恒等返回，不插入任何键 ⇒ 纯解析基线逐字节不变、全帧零意外噪点。
+    // 消费点是 `movie.rs::render_scene_frame`（组装 Material / Light / Scene
+    // 之前），不是 `codegen.rs` 的 `post { grain }` S4 帧后节点。
+    if let Some(f) = &plan.finish {
+        crate::finish::inject_frame_values(&mut out, f, frame, global_seed, node_id);
     }
     out
 }

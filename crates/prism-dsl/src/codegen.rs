@@ -1097,8 +1097,17 @@ pub(crate) fn codegen_v2(doc: &DocumentV2Ast) -> Result<CompileV2Output, DslErro
             }
         }
     }
-    let (wiring, wiring_channels): (WiringPlan, Vec<NamedChannel>) = build_wiring(&all_caps, fps)?;
+    let (mut wiring, wiring_channels): (WiringPlan, Vec<NamedChannel>) = build_wiring(&all_caps, fps)?;
     b.channels.extend(wiring_channels);
+
+    // ---- 5.2 V3.0 W3：一等观感档位声明编译成 FinishPlan ------------------
+    // 只做「字段流 → 声明表」搬运，不实现任何质感数学（红线 1）。旧文件
+    // `doc.finish = None` ⇒ `wiring.finish = None` ⇒ 求值链零变化（零损失）。
+    // 档位随后进 WiringPlan::canonical_bytes 与产物哈希；六族注入在
+    // `wiring.rs::resolve_frame`（渲染前）执行，不在本层建任何帧后节点。
+    if let Some(fa) = &doc.finish {
+        wiring.finish = Some(crate::finish::compile_v2_finish(&fa.fields, fa.line)?);
+    }
 
     let mut scenes_v2: Vec<SceneV2> = Vec::new();
     for (si, scene) in doc.scenes.iter().enumerate() {

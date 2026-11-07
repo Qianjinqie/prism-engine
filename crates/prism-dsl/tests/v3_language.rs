@@ -11,6 +11,7 @@ use prism_dsl::{compile_auto, compile_v2, compile_v3, AutoCompile, CompileV3Outp
 
 const V3_OK: &str = r#"// prism-dsl 2
 seed = 42
+finish = analytic
 
 def ease(t):
     return t * t * (3 - 2 * t)
@@ -289,6 +290,7 @@ fn seed_enters_artifact_hash() {
     // rand(tag) 的显式播种：同种子两跑逐字节，换种子结果变。
     let rand_src: String = r#"// prism-dsl 2
 seed = 99
+finish = analytic
 a = rand("grain")
 emit f"""
 movie "g" { duration 1s fps 8 resolution 160x120 format png }
@@ -324,6 +326,7 @@ fn lowered_source_equals_direct_engine_call() {
 fn det_star_functions_are_reachable_and_deterministic() {
     let src: &str = r#"// prism-dsl 2
 seed = 3
+finish = analytic
 s = sqrt(4)
 c = cos(0)
 a = asin(0.5)
