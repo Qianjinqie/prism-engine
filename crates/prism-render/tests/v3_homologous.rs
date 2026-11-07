@@ -10,6 +10,7 @@ use prism_gpu::CpuRefBackend;
 /// 小画幅（32×24、1s、2fps = 2 帧），保证逐字节对拍快速且完全确定。
 const V3_SMALL: &str = r#"// prism-dsl 2
 seed = 11
+finish = analytic
 r = 0.5 + 0.25
 emit f"""
 movie "g" { duration 1s fps 2 resolution 32x24 format png }

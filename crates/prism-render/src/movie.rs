@@ -1596,7 +1596,16 @@ pub fn wiring_frame_values(compile: &CompileV2Output, frame: u64) -> WiringFrame
         .collect();
     let fps: u32 = compile.fps.max(1);
     let t: f32 = frame as f32 / fps as f32;
-    resolve_frame(&compile.wiring, &channels, t, frame, 0, 0)
+    let mut wf: WiringFrame = resolve_frame(&compile.wiring, &channels, t, frame, 0, 0);
+    // ---- V3.0 W3：生成源头痕迹的逐帧消费点（渲染前，非帧后节点）----------
+    // 六族信号已由 `wiring.rs::resolve_frame` 用 `hash_mix` /
+    // `pcg::hash2_f32` 种子化注入；此处只登记帧号供 wiring_trace 凭证核对。
+    // `render_scene_frame` 在组装 Material / Light / Scene **之前**消费同一份
+    // 信号，绝不碰帧缓冲。`analytic` 档不进本分支 ⇒ 帧值逐字节不变。
+    if prism_dsl::signals_of(&wf).crafted {
+        wf.values.insert("w3.frame".to_string(), (frame as f32).to_bits());
+    }
+    wf
 }
 
 /// 把节点静态参数 + 通道绑定解算为时刻 `t` 的参数包（纯函数）。
@@ -1652,8 +1661,15 @@ fn render_scene_frame(
         }
     }
 
+    // ---- V3.0 W3：六族痕迹在**生成源头**消费（组装材质 / 光源 / 场景之前）----
+    // 只改 Scene / Material / Light / Camera 的构造实参，绝不改帧缓冲；
+    // `codegen.rs` 的 `post { grain }` S4 帧后节点不是本路径（§3.3 禁令 1）。
+    // `analytic` 档 signals.crafted = false ⇒ 下列六个分支全部不生效 ⇒
+    // 与纯解析基线逐字节同帧、全帧零意外噪点（V1 / V4）。
+    let w3: prism_dsl::FrameSignals = prism_dsl::signals_of(&wiring);
+
     // ---- 相机（缺省轨道：中心原点 / 半径 8 / fov 45°，与 DSL 缺省一致）----
-    let (center, orbit_radius, fov_rad): (Vec3, f32, f32) = match &model.camera {
+    let (mut center, mut orbit_radius, mut fov_rad): (Vec3, f32, f32) = match &model.camera {
         Some(cam) => {
             let p = resolve_params(cam, channels, t, frame);
             (
@@ -1668,6 +1684,18 @@ fn render_scene_frame(
         }
         None => (Vec3::new(0.0, 0.0, 0.0), 8.0, 45.0_f32.to_radians()),
     };
+    if w3.crafted {
+        // 运动族：惯性 / 犹豫 / 微抖 / 呼吸 —— 轨道半径的种子化微扰。
+        orbit_radius = (orbit_radius * (1.0 + 0.06 * w3.motion)).max(0.001);
+        // 时间镜头族：快门 / 视角响应 —— fov 的种子化微扰。
+        fov_rad = (fov_rad * (1.0 + 0.04 * w3.time_camera)).clamp(0.01, 3.0);
+        // 构图色彩族：有意图的取舍 —— 主体偏离绝对居中。
+        center = Vec3::new(
+            center.x + 0.12 * w3.composition_color,
+            center.y,
+            center.z,
+        );
+    }
 
     // ---- 材质（缺省白，粗糙 0.5 / 金属 0，与 DSL 缺省一致）---------------
     let material: Material = match &model.material {
@@ -1684,6 +1712,11 @@ fn render_scene_frame(
             if let Some(v) = wiring.value("R-2.metalness") {
                 metalness = v.clamp(0.0, 1.0);
             }
+            // W3 材质光照族：微表面 / 漏光 / 色偏，在 `Material::new` 之前注入。
+            if w3.crafted {
+                roughness = (roughness + 0.08 * w3.material_light).clamp(0.0, 1.0);
+                metalness = (metalness + 0.05 * w3.material_light).clamp(0.0, 1.0);
+            }
             Material::new(
                 Vec3::new(
                     p_f32(&p, "albedo_r", 1.0),
@@ -1698,27 +1731,42 @@ fn render_scene_frame(
     };
 
     // ---- 实体半径（无 sdf = 0：软光追对 r=0 无命中，天然只出背景）--------
-    let radius: f32 = match &model.sphere {
+    let mut radius: f32 = match &model.sphere {
         Some(s) => {
             let p = resolve_params(s, channels, t, frame);
             p_f32(&p, "radius", 1.0).max(0.0)
         }
         None => 0.0,
     };
+    if w3.crafted {
+        // W3 几何族：受控的手工不完美 / 微不对称（种子化半径扰动）。
+        radius = (radius * (1.0 + 0.05 * w3.geometry)).max(0.0);
+    }
 
     // ---- 美学参数（theme 块；缺省关闭全部后期）---------------------------
-    let aesthetic: Aesthetic = match &compile.theme {
+    let mut aesthetic: Aesthetic = match &compile.theme {
         Some(th) => Aesthetic::new(th.teal_orange, th.contrast, th.filmic),
         None => Aesthetic::new(false, 1.0, false),
     };
+    if w3.crafted {
+        // W3 构图色彩族：色调倾向（对比度的种子化取舍）。
+        aesthetic.contrast = (aesthetic.contrast * (1.0 + 0.10 * w3.composition_color)).max(0.0);
+    }
 
     // ---- 光源：DSL 的 light 块登记后忽略（后续接入），render 侧用
     //      固定缺省灯（与内置演示同款：暖色方向光，确定性常量）-------------
-    let lights: Vec<Light> = vec![Light::new(
+    let mut lights: Vec<Light> = vec![Light::new(
         Vec3::new(1.0, -1.0, -0.5).normalize(),
         Vec3::new(1.0, 244.0 / 255.0, 230.0 / 255.0),
         3.0,
     )];
+    if w3.crafted {
+        // W3 材质光照族：光源方向 / 强度 / 色偏的种子化微扰（Light::new 之前）。
+        let dir: Vec3 = Vec3::new(1.0 + 0.20 * w3.material_light, -1.0, -0.5).normalize();
+        let tint: Vec3 = Vec3::new(1.0, 244.0 / 255.0, 230.0 / 255.0);
+        let intensity: f32 = 3.0 * (1.0 + 0.10 * w3.material_light);
+        lights[0] = Light::new(dir, tint, intensity);
+    }
 
     // ---- 组装 Scene 并复用既有求值器 --------------------------------------
     // 注意：build_render_request 的 eye 由 eval_camera_orbit(scene, t, duration)
@@ -1737,7 +1785,12 @@ fn render_scene_frame(
     };
     let t_local: f32 = t - model.start;
     // 场景时长为正（活跃判据已保证）；防御性下限防除零。
-    let dur_local: f32 = if model.duration > 0.0 { model.duration } else { 1.0 };
+    let mut dur_local: f32 = if model.duration > 0.0 { model.duration } else { 1.0 };
+    if w3.crafted {
+        // W3 剪辑音画族：不等长呼吸 / 人在操作的取舍 —— 时间轴局部时长的
+        // 种子化微扰，在 `eval_camera_orbit` 之前生效，不是帧后贴皮。
+        dur_local = (dur_local * (1.0 + 0.15 * w3.edit_audio)).max(1.0e-3);
+    }
     let mut fb: Framebuffer = if model.curves.is_empty() {
         render_frame(device, &scene, t_local, dur_local, w, h)
     } else {
