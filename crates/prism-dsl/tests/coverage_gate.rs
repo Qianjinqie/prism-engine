@@ -1,4 +1,4 @@
-//! V3.0 W1 参数覆盖率门禁骨架 + 错误注入集。
+//! V3.0 W1 参数覆盖率门禁骨架 + 错误注入集；W2 追加 100% 门禁。
 //!
 //! 静态测试遍历 `docs/v3.0-触达规格表.md` 全 39 行，**逐行回读引擎源码**核对
 //! `api_path:line` 处确为公开 API 定义，且 `api_params` 全集与该定义逐项一致。
@@ -7,16 +7,24 @@
 //!   ① 缺 `api_path`  ② 参数全集为空  ③ 目标级缺失  ④ 故意删 1 行映射
 //! 另加两条判别力约束：假 exempt、参数全集与引擎源码不符。
 //!
-//! W1 口径：`dsl_fields` 按当前真实现状如实登记，**空不判红**；覆盖率支如实
-//! 输出当前百分比，不设阈值。100% / P0 ≥ L2 / 核心项 L3 是 §7 #2 与 W2/W4 出口。
+//! W2 判红集合（§5.3 W2 / §1.2 / §7 #2，在 W1 之上追加）：
+//!   ⑤ 任一非平台域行 `api_params \ dsl_fields` 非空 ⑥ 任一行缺具体裁定编号
+//!   ⑦ 裁定编号 / 求值器锚点与运行时表 `wiring::CAPABILITY_ROWS` 不一致
+//!   ⑧ 文档表与运行时表漂移 ⑨ 故意拆掉任意一行的一个字段映射 ⑩ 删任意一行
+//!
+//! W2 口径（判据升级正式落档见 `docs/v3.0-W2-实录.md` §6）：
+//! `dsl_fields` 必须覆盖 `api_params` 全集，覆盖率 **100% = 226/226**；
+//! W1 的 `< 100` 断言前提消失，改为 `== 100` 并追加变异体判别力（更严，非放宽）。
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
 
+use prism_dsl::{row_by_id, CAPABILITY_ROWS};
+
 const SPEC: &str = include_str!("../../../docs/v3.0-触达规格表.md");
 
-/// 规格表的一行（7 列）。
+/// 规格表的一行（8 列）。
 #[derive(Debug, Clone)]
 struct Row {
     id: String,
@@ -26,6 +34,8 @@ struct Row {
     dsl_fields: Vec<String>,
     target: String,
     exempt: String,
+    /// W2：逐行具体裁定编号 + 既有求值器锚点。
+    ruling: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -114,6 +124,7 @@ fn parse_rows(spec: &str) -> Vec<Row> {
             dsl_fields: backticks(cols[5]),
             target: cols[6].trim().to_string(),
             exempt: cols[7].trim().to_string(),
+            ruling: cols.get(8).map(|s| s.trim().to_string()).unwrap_or_default(),
         });
     }
     rows
@@ -302,7 +313,47 @@ fn validate(spec: &str) -> Result<Stats, Vec<String>> {
             errors.push(format!("{} 缺能力名", r.id));
         }
 
-        // 覆盖率统计（如实，不判红）。
+        // ---- W2：参数覆盖率 100%（差集必须为 0）+ 逐行具体裁定 ----
+        let field_set_all: BTreeSet<&str> = r.dsl_fields.iter().map(String::as_str).collect();
+        for p in &r.api_params {
+            if !field_set_all.contains(p.as_str()) {
+                errors.push(format!(
+                    "{} 参数 '{}' 缺 DSL 字段映射（W2 差集非 0）",
+                    r.id, p
+                ));
+            }
+        }
+        let has_ruling: bool = !r.ruling.is_empty() && r.ruling != "∅";
+        if !has_ruling {
+            errors.push(format!("{} 缺具体 wiring_ruling 裁定编号", r.id));
+        } else if let Some(rt) = row_by_id(&r.id) {
+            if !r.ruling.starts_with(rt.ruling) {
+                errors.push(format!(
+                    "{} 裁定编号与运行时表不符（应为 {}）",
+                    r.id, rt.ruling
+                ));
+            }
+            if !r.ruling.contains(rt.consumer) {
+                errors.push(format!(
+                    "{} 裁定缺少既有求值器锚点 {}",
+                    r.id, rt.consumer
+                ));
+            }
+            // 文档表 ↔ 运行时表逐项一致（防两份事实源各自演化）。
+            if r.api_path != rt.api_path {
+                errors.push(format!("{} api_path 与运行时表不符", r.id));
+            }
+            let runtime_params: Vec<String> =
+                rt.api_params.iter().map(|s| s.to_string()).collect();
+            if r.api_params != runtime_params {
+                errors.push(format!("{} api_params 与运行时表不符", r.id));
+            }
+            if r.target != rt.target {
+                errors.push(format!("{} 目标级与运行时表不符", r.id));
+            }
+        }
+
+        // 覆盖率统计（如实；W2 达标后由新门禁断言 100%）。
         stats.rows += 1;
         stats.api_params_total += r.api_params.len();
         if !r.dsl_fields.is_empty() {
@@ -388,6 +439,45 @@ fn assert_red(spec: &str, needle: &str) {
     }
 }
 
+/// W2 变异夹具：把某行 `dsl_fields` 里的一个具体字段映射拆掉。
+/// 模拟「故意拆掉任意一行的接线」，用于 §5.3 W2 的负控。
+fn drop_field(spec: &str, id: &str, token: &str) -> String {
+    let needle: String = format!("`{token}`");
+    let tag: String = format!("| {id} |");
+    let mut out: Vec<String> = Vec::new();
+    for l in spec.lines() {
+        if l.trim().starts_with("| ") && l.contains(&tag) {
+            let mut cols: Vec<String> = l.split('|').map(|s| s.to_string()).collect();
+            cols[5] = cols[5].replacen(&needle, "", 1);
+            out.push(cols.join("|"));
+        } else {
+            out.push(l.to_string());
+        }
+    }
+    out.join("\n")
+}
+
+/// 回读既有求值器锚点，确认「逐行可查」不是纸面文字。
+fn anchor_exists(anchor: &str) -> Result<(), String> {
+    let (path, line_s): (&str, &str) = anchor
+        .rsplit_once(':')
+        .ok_or_else(|| format!("锚点格式应为 path:line，实际 '{anchor}'"))?;
+    let line_no: usize = line_s
+        .parse::<usize>()
+        .map_err(|_| format!("锚点行号不是数字：'{anchor}'"))?;
+    let full: PathBuf = workspace_root().join(path);
+    let text: String = fs::read_to_string(&full)
+        .map_err(|e| format!("锚点文件不存在：{path}（{e}）"))?;
+    let lines: Vec<&str> = text.lines().collect();
+    let body: &str = *lines
+        .get(line_no.saturating_sub(1))
+        .ok_or_else(|| format!("锚点 {anchor} 行号超出 {} 行", lines.len()))?;
+    if body.trim().is_empty() {
+        return Err(format!("锚点 {anchor} 指向空行"));
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // 门禁本体
 // ---------------------------------------------------------------------------
@@ -456,7 +546,7 @@ fn coverage_report_is_honest_and_printed() {
     let rows_cov: f64 = pct(stats.mapped_rows, 39);
     let params_cov: f64 = pct(stats.params_intersection, stats.api_params_total);
     let tail_cov: f64 = pct(stats.params_tail_intersection, stats.api_params_total);
-    println!("=== V3.0 W1 覆盖率实录（如实输出当前真实现状，不设阈值）===");
+    println!("=== V3.0 W2 覆盖率实录（W1 骨架 + W2 达标门槛）===");
     println!(
         "结构覆盖率（39 行全有 api_path:line + 非空参数全集 + 目标级）：39/39 = {structure:.2}%"
     );
@@ -474,18 +564,143 @@ fn coverage_report_is_honest_and_printed() {
     );
     println!("每行差集条数（W2 接线工作量）：{:?}", stats.per_row_gap);
     assert_eq!(structure, 100.0);
-    // 如实口径：当前远未达 100%，不许用假映射 / 假 exempt 凑数。
-    assert!(rows_cov < 100.0, "W1 不应出现假绿式的 100% 映射率");
-    assert!(params_cov < 100.0, "参数级覆盖率达标是 W2/W4 出口，不是 W1");
-    assert!(tail_cov < 100.0, "末段口径同样不许在 W1 假绿");
-    assert!(
-        stats.params_tail_intersection > stats.params_intersection,
-        "末段口径必须比全名口径更有判别力"
-    );
-    // 平台域六行必须挂正式裁定，其余各行不得挂。
+    // W2 判据升级（正式落档见 W2-实录 §6）：W1 的 `< 100` 三条断言前提
+    // 在 100% 达标后消失，改为 `== 100` 并追加变异体判别力——更严，不是放宽。
+    assert_eq!(rows_cov, 100.0, "W2：39/39 行都必须有 DSL 字段映射");
+    assert_eq!(params_cov, 100.0, "W2：全名口径参数覆盖率必须 100%");
+    assert_eq!(tail_cov, 100.0, "W2：末段口径参数覆盖率必须 100%");
+    assert_eq!(stats.params_intersection, stats.api_params_total);
+    assert_eq!(stats.params_tail_intersection, stats.api_params_total);
+    assert_eq!(stats.api_params_total, 226, "W1 基线 225 + E-8 新增 wiring = 226");
+    // 判别力（保留 W1 精神）：把 R-1 整行 dsl_fields 清空，覆盖率必须下降，
+    // 且 validate 必须判红——证明「只在表里填名字」过不了门禁。
+    let mutated: String = set_cell(SPEC, "R-1", 5, "∅");
+    let mrows: Vec<Row> = parse_rows(&mutated);
+    let covered: usize = mrows
+        .iter()
+        .map(|r| {
+            let fs: BTreeSet<&str> = r.dsl_fields.iter().map(String::as_str).collect();
+            r.api_params.iter().filter(|p| fs.contains(p.as_str())).count()
+        })
+        .sum();
+    let total: usize = mrows.iter().map(|r| r.api_params.len()).sum();
+    assert!(covered < total, "拆掉 R-1 接线后覆盖率必须下降（门禁有牙）");
+    assert_red(&mutated, "缺 DSL 字段映射");
+    // 平台域六行必须挂正式裁定，其余各行不得挂（100% 不许靠 exempt 凑数）。
     let rows: Vec<Row> = parse_rows(SPEC);
     assert_eq!(
         rows.iter().filter(|r| r.exempt != "∅" && !r.exempt.is_empty()).count(),
         6
     );
+    assert_eq!(
+        rows.iter().filter(|r| r.ruling.is_empty() || r.ruling == "∅").count(),
+        0,
+        "39 行每行都要有具体裁定编号"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// W2 门禁本体（§5.3 W2 / §1.2 / §7 #2）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn w2_coverage_is_100_percent_39_of_39() {
+    let stats: Stats = validate(SPEC).unwrap_or_else(|errs| {
+        panic!("W2 规格表门禁判红：\n  {}", errs.join("\n  "));
+    });
+    assert_eq!(stats.rows, 39, "39 行映射必须齐全");
+    assert_eq!(stats.api_params_total, 226, "参数全集 226（225 + E-8.wiring）");
+    assert_eq!(stats.mapped_rows, 39, "39/39 行都要有 dsl_fields");
+    assert_eq!(stats.params_intersection, 226, "全名口径差集必须为 0");
+    assert_eq!(stats.params_tail_intersection, 226, "末段口径差集必须为 0");
+    let mut passed: usize = 0;
+    for r in parse_rows(SPEC) {
+        let fs: BTreeSet<&str> = r.dsl_fields.iter().map(String::as_str).collect();
+        let gap: Vec<&str> = r
+            .api_params
+            .iter()
+            .filter(|p| !fs.contains(p.as_str()))
+            .map(String::as_str)
+            .collect();
+        assert!(gap.is_empty(), "{} 差集非 0：{:?}", r.id, gap);
+        passed += 1;
+    }
+    println!("=== V3.0 W2 覆盖率实录 ===");
+    println!("结构覆盖率 39/39 = 100.00%");
+    println!("DSL 字段映射行覆盖率 39/39 = 100.00%");
+    println!("参数级覆盖率（全名）226/226 = 100.00%");
+    println!("参数级覆盖率（末段）226/226 = 100.00%");
+    println!("逐行差集为 0 的行数：{passed}/39");
+    assert_eq!(passed, 39, "39/39 行实证");
+}
+
+#[test]
+fn w2_delete_any_of_39_rows_is_red() {
+    for id in prism_dsl::expected_ids() {
+        assert_red(&remove_row(SPEC, &id), &id);
+    }
+}
+
+#[test]
+fn w2_drop_any_single_field_mapping_is_red() {
+    let mut checked: usize = 0;
+    for r in parse_rows(SPEC) {
+        if r.id.starts_with("P-") {
+            continue; // G5 平台域不生成 cap 块，但仍受 39 行 / 裁定约束
+        }
+        let first: &str = r.api_params.first().expect("参数全集非空");
+        let mutated: String = drop_field(SPEC, &r.id, first);
+        assert_red(&mutated, "缺 DSL 字段映射");
+        checked += 1;
+    }
+    assert_eq!(checked, 33, "33 个非平台域行逐一拆线都要判红");
+}
+
+#[test]
+fn w2_every_row_has_specific_ruling_and_real_consumer_anchor() {
+    let rows: Vec<Row> = parse_rows(SPEC);
+    assert_eq!(rows.len(), 39);
+    let mut codes: BTreeSet<String> = BTreeSet::new();
+    for r in &rows {
+        let rt = row_by_id(&r.id).unwrap_or_else(|| panic!("运行时表缺 {}", r.id));
+        assert!(r.ruling.starts_with(rt.ruling), "{} 裁定编号不具体", r.id);
+        assert!(codes.insert(rt.ruling.to_string()), "{} 裁定编号重复", r.id);
+        anchor_exists(rt.consumer).unwrap_or_else(|e| panic!("{} 求值器锚点不成立：{e}", r.id));
+    }
+    assert_eq!(codes.len(), 39, "39 个互异的具体裁定编号");
+}
+
+#[test]
+fn w2_runtime_table_matches_spec_table_exactly() {
+    let rows: Vec<Row> = parse_rows(SPEC);
+    assert_eq!(CAPABILITY_ROWS.len(), 39);
+    for rt in CAPABILITY_ROWS {
+        let r: &Row = rows
+            .iter()
+            .find(|r| r.id == rt.id)
+            .unwrap_or_else(|| panic!("文档表缺 {}", rt.id));
+        assert_eq!(r.api_path, rt.api_path, "{} api_path 漂移", rt.id);
+        let want: Vec<String> = rt.api_params.iter().map(|s| s.to_string()).collect();
+        assert_eq!(r.api_params, want, "{} api_params 漂移", rt.id);
+        assert_eq!(r.target, rt.target, "{} 目标级漂移", rt.id);
+    }
+    assert_eq!(prism_dsl::total_param_count(), 226);
+}
+
+#[test]
+fn w2_platform_exempt_is_not_used_to_pad_coverage() {
+    let rows: Vec<Row> = parse_rows(SPEC);
+    let platform: Vec<&Row> = rows.iter().filter(|r| r.id.starts_with("P-")).collect();
+    assert_eq!(platform.len(), 6);
+    for r in &platform {
+        assert!(r.exempt.contains("G5"), "{} 平台域须挂 G5 正式裁定", r.id);
+        assert_eq!(r.target, "不适用");
+    }
+    for r in rows.iter().filter(|r| !r.id.starts_with("P-")) {
+        assert_eq!(r.exempt, "∅", "{} 非平台域不得挂 exempt", r.id);
+        // 33 个非平台域行靠真实接线达 100%，不是靠豁免。
+        let fs: BTreeSet<&str> = r.dsl_fields.iter().map(String::as_str).collect();
+        assert!(r.api_params.iter().all(|p| fs.contains(p.as_str())), "{} 差集非 0", r.id);
+    }
+    assert_eq!(prism_dsl::platform_ids().len(), 6);
 }

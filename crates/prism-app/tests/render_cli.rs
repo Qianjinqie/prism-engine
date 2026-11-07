@@ -4,8 +4,8 @@
 //! 1. 合法 v2 示例 → 退出码 0 + 输出 MP4 文件非空（内置 MJPEG 出口，
 //!    不依赖外部 ffmpeg，保证任何环境可跑）；
 //! 2. 语法错误 → 退出码 1 + stderr 含行号（P 码消息）；
-//! 3. 不支持的节点（particles）→ 退出码 1 + stderr 含 R5010（明确报错，
-//!    绝不静默糊弄）。
+//! 3. V3.0 W2：`particles` 节点**不再拒绝**（R5010 全销号）→ 退出码 0 +
+//!    非空 MP4，且 stderr 不含任何 R5010；节点参数进逐帧接线凭证。
 
 use std::fs;
 use std::path::PathBuf;
@@ -95,20 +95,29 @@ fn render_cli_syntax_error_reports_line_and_exits_one() {
 }
 
 #[test]
-fn render_cli_unsupported_node_reports_r5010_and_exits_one() {
-    let bad: &str = "// prism-dsl 1\nmovie \"x\" { duration 1s fps 8 resolution 96x54 }\nscene \"s\" {\n  duration 1s\n  layer particles { count 50 speed 1 }\n}\n";
-    let prism: PathBuf = write_temp_prism("particles", bad);
+fn render_cli_particles_node_is_no_longer_rejected_r5010() {
+    // W2 §5.3 出口：旧 R5010 断言改为「不再拒绝」——particles 接进求值链
+    // 源头后照常出片，绝不静默拒绝，也不静默降级。
+    let src: &str = "// prism-dsl 1\nmovie \"x\" { duration 1s fps 8 resolution 96x54 }\nscene \"s\" {\n  duration 1s\n  layer particles { count 50 speed 1 }\n}\n";
+    let prism: PathBuf = write_temp_prism("particles", src);
     let out: PathBuf = std::env::temp_dir()
         .join("prism-render-cli-particles")
         .join("out.mp4");
+    // 上一轮失败可能留下旧文件，先清掉，保证「本次真的写出了文件」。
+    let _ = fs::remove_file(&out);
 
     let output: Output = run_render(&prism, &out);
 
-    assert!(!output.status.success(), "不支持的节点应以退出码 1 终止");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("R5010") && stderr.contains("粒子"),
-        "应明确报出 R5010 与节点类型: {stderr}"
+        output.status.success(),
+        "R5010 已销号，粒子节点应照常出片；stderr: {stderr}"
     );
-    assert!(!out.exists(), "失败时不应留下输出文件");
+    assert!(!stderr.contains("R5010"), "stderr 不应再出现 R5010：{stderr}");
+    let bytes: Vec<u8> = fs::read(&out).expect("输出 MP4 应存在");
+    assert!(!bytes.is_empty(), "输出 MP4 不应为空");
+    assert!(
+        bytes.len() >= 12 && &bytes[4..8] == b"ftyp",
+        "输出应是 MP4 容器（ftyp box）"
+    );
 }
