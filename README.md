@@ -68,14 +68,14 @@ Rust 写的程序化媒体引擎。输入 `.prism` 场景文本或 Rust 调用�
 
 | 层 | 能做什么 |
 | --- | --- |
-| **读** | PNG（8/16 bit，滤波逆运算）、基线 JPEG（定点 IDCT，跨平台逐位一致）、EXR（读写 / 压缩族 / DWA）、相机 RAW、GIF / APNG 逐帧、WAV；glTF / OBJ / USDA 导入，MaterialX 参数；TTF/OTF 装载与「内置 → 用户 → 多语种子集 → 数学符号」四级回退链 |
+| **读** | PNG（8/16 bit，滤波逆运算）、基线 JPEG（定点 IDCT，跨平台逐位一致）、EXR（读写 / 压缩族 / DWA）、相机 RAW、GIF / APNG 逐帧、WAV；glTF / OBJ / USDA 导入，USD 二进制 .usdc（Crate）与 .usdz 解包，MaterialX 节点图（21 种节点 / 45 别名 / 17 个 BSDF 槽）；TTF/OTF 装载与「内置 → 用户 → 多语种子集 → 数学符号」四级回退链 |
 | **排** | OpenType 解析、GSUB/GPOS 整形、UAX #9 双向、阿拉伯四态、竖排；公式排版（上下标 / 分式 / 根号 / 矩阵 / 大型算子）；DSL v1/v2 编译成三元组图；五个高层组合子（片头 / 人名条 / 分屏 / 肯·伯恩斯 / 场景变形）；四种转场 + morph，任意时刻可采样 |
-| **画** | 路径追踪 + 物理 BSDF（漫反射 / 镜面 / 玻璃 / 金属 / 次表面），玻璃与金属走随机逆（Neumann 级数蒙特卡洛）；Woodcock 异质体积；圆柱 / 圆锥 / 圆环 / 旋转曲面解析求交（四次方程 Ferrari 闭式解）；三角网格 + SAH-BVH（稳定排序，构建确定性）；mesh 烘焙成 SDF 后获得布尔 / 域变形 / 精确碰撞；CpuRef 一等后端 + Vulkan compute 与光追双管线 |
+| **画** | 路径追踪 + 物理 BSDF（漫反射 / 镜面 / 玻璃 / 金属 / 次表面），玻璃与金属走随机逆（Neumann 级数蒙特卡洛）；Woodcock 异质体积；圆柱 / 圆锥 / 圆环 / 旋转曲面解析求交（四次方程 Ferrari 闭式解）；三角网格 + SAH-BVH（稳定排序，构建确定性）；mesh 烘焙成 SDF 后获得布尔 / 域变形 / 精确碰撞；位图纹理管线（UV / 双线性·三线性 / 7 级 mip / 法线·粗糙度贴图 / sRGB 解码）；HDR 环境光与 IBL 重要性采样 + MIS；几何实例化（112 B 实例槽 + 共享局部 BLAS）；Catmull-Clark 细分 + 位移贴图；逐像素自适应采样；多层参与介质（互斥区域 + 优先级全序）；毛发曲线几何 + Marschner 采样；CpuRef 一等后端 + Vulkan compute 与光追双管线 |
 | **动** | XPBD 统一求解器——刚体 / 软体 / 布料 / 关节 / 流体 / 破碎是同一个约束投影循环的六组参数；FLIP 烟雾；粒子系统 + AudioReactive；毛发约束与着色；流场 / L 系统 / 元胞自动机 / 反应扩散 / 分形 / Voronoi；Spring 解析解与关键帧 |
-| **调** | 二级调色（HSL 选区 + RGB 曲线）；cinematic / film / anime 预设，草稿 / 标准 / 电影三档显式标价；blur / bloom / vignette / 色差 / sharpen / glitch / dissolve；halation 渗光 + 双尺度胶片颗粒（按像素域派生）；三合一降噪；NPR 四风格（toon / watercolor / halftone / oil）；PQ / HLG 传输函数、线性 sRGB ↔ ACEScg、ACES 输出变换 |
+| **调** | 二级调色（HSL 选区 + RGB 曲线）；cinematic / film / anime 预设，草稿 / 标准 / 电影三档显式标价；blur / bloom / vignette / 色差 / sharpen / glitch / dissolve；halation 渗光 + 双尺度胶片颗粒（按像素域派生）；三合一降噪；NPR 四风格（toon / watercolor / halftone / oil）；PQ / HLG 传输函数、线性 sRGB ↔ ACEScg、ACES 输出变换、OCIO 配置（config.ocio → Q24 定点 1D/3D LUT） |
 | **声** | PolyBLEP 防混叠振荡器 + ADSR 闭式包络 + 4 情绪预设；音阶库 + 12-TET + 和弦进行功能语法状态机 + 声部引导；琶音器 / step 鼓机 / 小节节拍网格；手写 SMF 解析、SFZ 采样器、颗粒合成；物理建模 / 空间声像 / 效果器链；多轨混音 + 峰值防削波；节拍 / onset / FFT、AudioReactive 烘焙、响度归一；WAV 16/24/32 bit 逐字节往返 |
 | **出** | 私有 PRMV 容器（v2/v3，v3 可读 v1/v2）+ I/P 帧时序编码；water-filling 率控 + qpel 子像素运动估计（实测 PSNR +2.577 dB、体积 −21.6%）；ffmpeg 运行时探测——有则 stdin 管道转 H.264/HEVC，无则自动降级 MJPEG，永远能出片；MP4 + MJPEG 容器、EXR 序列；多进程帧农场（断点续算，并行 MD5 == 串行 MD5）；NLE 时间映射 / 关键帧 / 转场 |
-| **接** | MCP stdio 三工具（`scene_check` / `render_submit` / `diagnose`）；节点 SDK 语义化版本协商 + 示例节点包；CLI（`render` / `preview` / `demo`）；交互式编辑器双档预览（Draft 几何图案 / Real 低 spp）+ 子图签名增量；batch manifest 笛卡尔积；三平台硬编探测骨架（VideoToolbox / NVENC / VAAPI，未接后端） |
+| **接** | MCP stdio 三工具（`scene_check` / `render_submit` / `diagnose`）；节点 SDK 语义化版本协商 + 示例节点包；CLI（`render` / `preview` / `demo`）；交互式编辑器双档预览（Draft 几何图案 / Real 低 spp，与出片同源、逐字节相同）+ 子图签名增量；batch manifest 笛卡尔积；三平台硬编探测骨架（VideoToolbox / NVENC / VAAPI，未接后端） |
 | **旁路** | 生成艺术：流场 / L 系统 / 元胞自动机 / 反应扩散 / Mandelbrot / Voronoi，矢量 draw-on 与图表。AI 辅助：确定性 mock 推理层（分镜 / 字幕 / 色彩提示），模型权重当数据读、乘加代码自己写，不引 ML 框架 |
 
 这张表只列能力。每项「做不到什么」写在下面的[诚实的边界](#诚实的边界)，不藏在表里。
@@ -159,7 +159,7 @@ cargo run -p prism-app --release -- render examples/w2d_showcase.prism \
     --out out/demo.mp4                                                     # 一次出成片
 ```
 
-`render` 走 v2 直达路径：编译节点图 → 逐帧求值 → 编码封装，中间不落临时帧；不支持的节点会得到明确的 `R5xxx` 错误，而不是静默跳过。
+首行写 `// prism-dsl 2` 走 V3.0 前端：单文件形态（资产按内容哈希锁定）、`seed` 与 `finish` 是一等字段、任意参数可用命名通道按时间驱动；不写版本头或写 `// prism-dsl 1` 走 v2，产物逐字节不变。`render` 编译后逐帧求值、直接编码封装，中间不落临时帧；不支持的节点会得到明确的 `R5xxx` 错误，而不是静默跳过。
 
 <p align="center">
   <img src="https://cdn.jsdelivr.net/gh/Qianjinqie/prism-engine@main/docs/assets/dsl-title.png" width="760" alt="DSL 渲染的标题帧">

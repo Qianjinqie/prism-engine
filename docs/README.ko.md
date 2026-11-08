@@ -69,14 +69,14 @@ Rust로 작성된 프로시저럴 미디어 엔진. 입력은 `.prism` 장면 �
 
 | 계층 | 무엇을 하는가 |
 | --- | --- |
-| **읽기** | PNG(8/16 bit, 필터 역연산), 베이스라인 JPEG(고정소수점 IDCT, 플랫폼 간 비트 일치), EXR(읽기/쓰기, 압축 패밀리, DWA), 카메라 RAW, GIF / APNG 프레임 단위, WAV; glTF / OBJ / USDA 가져오기, MaterialX 파라미터; TTF/OTF 로딩과 "내장 → 사용자 → 다국어 서브셋 → 수학 기호" 4단계 폴백 |
+| **읽기** | PNG(8/16 bit, 필터 역연산), 베이스라인 JPEG(고정소수점 IDCT, 플랫폼 간 비트 일치), EXR(읽기/쓰기, 압축 패밀리, DWA), 카메라 RAW, GIF / APNG 프레임 단위, WAV; glTF / OBJ / USDA 가져오기, USD 바이너리 .usdc(Crate)와 .usdz 언팩, MaterialX 노드 그래프(21종 노드 / 45개 별칭 / 17개 BSDF 슬롯); TTF/OTF 로딩과 "내장 → 사용자 → 다국어 서브셋 → 수학 기호" 4단계 폴백 |
 | **조판** | OpenType 파싱, GSUB/GPOS 셰이핑, UAX #9 양방향, 아랍어 네 형태, 세로쓰기; 수식 조판(위/아래 첨자, 분수, 근호, 행렬, 대형 연산자); DSL v1/v2를 트리플 그래프로 컴파일; 다섯 가지 고수준 컴비네이터(타이틀 / 로어서드 / 분할 화면 / 켄 번스 / 장면 간 모프); 네 가지 전환 + 모프, 임의 시점 샘플링 가능 |
-| **그리기** | 패스트레이싱 + 물리 BSDF(확산 / 거울 / 유리 / 금속 / 표면하 산란), 유리와 금속은 확률적 역변환(노이만 급수 몬테카를로); Woodcock 이질 볼륨; 원기둥 / 원뿔 / 토러스 / 회전체 해석적 교차(4차 방정식을 Ferrari 폐형식으로); 삼각 메시 + SAH-BVH(안정 정렬, 결정적 구축); 메시를 SDF로 베이크해 불리언 / 영역 변형 / 정확한 충돌; CpuRef 1급 백엔드 + Vulkan compute와 레이트레이싱 두 파이프라인 |
+| **그리기** | 패스트레이싱 + 물리 BSDF(확산 / 거울 / 유리 / 금속 / 표면하 산란), 유리와 금속은 확률적 역변환(노이만 급수 몬테카를로); Woodcock 이질 볼륨; 원기둥 / 원뿔 / 토러스 / 회전체 해석적 교차(4차 방정식을 Ferrari 폐형식으로); 삼각 메시 + SAH-BVH(안정 정렬, 결정적 구축); 메시를 SDF로 베이크해 불리언 / 영역 변형 / 정확한 충돌; 비트맵 텍스처 파이프라인(UV / 바이리니어·트라이리니어 / 7단계 mip / 노멀·러프니스 맵 / sRGB 디코드); HDR 환경광과 IBL 중요도 샘플링 + MIS; 지오메트리 인스턴싱(112 B 인스턴스 슬롯 + 공유 로컬 BLAS); Catmull-Clark 서브디비전 + 디스플레이스먼트; 픽셀 단위 적응 샘플링; 다중 영역 참여 매질(서로소 영역 + 우선순위); 모발 가닥 지오메트리 + Marschner 샘플링; CpuRef 1급 백엔드 + Vulkan compute와 레이트레이싱 두 파이프라인 |
 | **움직임** | 통합 XPBD 솔버——강체 / 연체 / 천 / 관절 / 유체 / 파괴는 하나의 제약 투영 루프에 대한 여섯 파라미터 세트; FLIP 연기; 파티클 + AudioReactive; 머리카락 제약과 셰이딩; 유동장 / L 시스템 / 세포 오토마타 / 반응-확산 / 프랙털 / Voronoi; 스프링 해석해와 키프레임 |
-| **그레이딩** | 세컨더리 그레이딩(HSL 선택 + RGB 커브); cinematic / film / anime 프리셋, 초안 / 표준 / 영화 세 단계를 명시적으로 가격 표시; blur / bloom / 비네트 / 색수차 / sharpen / glitch / dissolve; 할레이션 + 두 스케일 필름 그레인(픽셀 영역에서 유도); 삼중 디노이즈; NPR 네 스타일(toon / watercolor / halftone / oil); PQ / HLG 전달 함수, 리니어 sRGB ↔ ACEScg, ACES 출력 변환 |
+| **그레이딩** | 세컨더리 그레이딩(HSL 선택 + RGB 커브); cinematic / film / anime 프리셋, 초안 / 표준 / 영화 세 단계를 명시적으로 가격 표시; blur / bloom / 비네트 / 색수차 / sharpen / glitch / dissolve; 할레이션 + 두 스케일 필름 그레인(픽셀 영역에서 유도); 삼중 디노이즈; NPR 네 스타일(toon / watercolor / halftone / oil); PQ / HLG 전달 함수, 리니어 sRGB ↔ ACEScg, ACES 출력 변환, OCIO 설정(config.ocio → Q24 고정소수점 1D/3D LUT) |
 | **소리** | PolyBLEP 안티에일리어싱 오실레이터 + ADSR 폐형 엔벨로프 + 4가지 무드 프리셋; 음계 라이브러리 + 12-TET + 화성 진행 기능문법 상태기계 + 성부 진행; 아르페지에이터 / 스텝 드럼 머신 / 마디·박 그리드; 직접 작성한 SMF 파서, SFZ 샘플러, 그래뉼러 합성; 물리 모델링 / 공간 패닝 / 이펙트 체인; 멀티트랙 믹싱 + 피크 제한; 비트 / 온셋 / FFT, AudioReactive 베이크, 라우드니스 정규화; WAV 16/24/32 bit 바이트 단위 왕복 |
 | **출력** | 자체 PRMV 컨테이너(v2/v3, v3는 v1/v2 읽기) + I/P 프레임 시간 부호화; water-filling 레이트 제어 + qpel 서브픽셀 움직임 추정(실측 PSNR +2.577 dB, 크기 −21.6%); ffmpeg 런타임 탐지——있으면 stdin 파이프로 H.264/HEVC, 없으면 자동 MJPEG 폴백, 항상 파일이 나온다; MP4 + MJPEG 컨테이너, EXR 시퀀스; 멀티프로세스 프레임 팜(중단 재개 가능, 병렬 MD5 == 직렬 MD5); NLE 시간 매핑 / 키프레임 / 전환 |
-| **연결** | MCP stdio 세 도구(`scene_check` / `render_submit` / `diagnose`); 노드 SDK 시맨틱 버전 협상 + 예제 노드 패키지; CLI(`render` / `preview` / `demo`); 두 단계 미리보기 대화형 에디터(Draft 기하 / Real 저 spp) + 서브그래프 서명 증분; batch manifest 카티션 곱; 세 플랫폼 하드웨어 인코더 탐지 골격(VideoToolbox / NVENC / VAAPI, 백엔드 미연결) |
+| **연결** | MCP stdio 세 도구(`scene_check` / `render_submit` / `diagnose`); 노드 SDK 시맨틱 버전 협상 + 예제 노드 패키지; CLI(`render` / `preview` / `demo`); 두 단계 미리보기 대화형 에디터(Draft 기하 / Real 저 spp, 최종 출력과 동일 렌더러·바이트 일치) + 서브그래프 서명 증분; batch manifest 카티션 곱; 세 플랫폼 하드웨어 인코더 탐지 골격(VideoToolbox / NVENC / VAAPI, 백엔드 미연결) |
 | **부수 경로** | 생성 예술: 유동장 / L 시스템 / 세포 오토마타 / 반응-확산 / Mandelbrot / Voronoi, 벡터 draw-on과 차트. AI 보조: 결정론적 mock 추론 계층(스토리보드 / 자막 / 색상 힌트), 모델 가중치는 데이터로 읽고 곱셈-덧셈은 직접 작성, ML 프레임워크 없음 |
 
 표는 능력만 나열합니다. 각 능력이 못 하는 것은 [정직한 경계](#정직한-경계)에 있으며 표 안에 숨기지 않았습니다.
@@ -158,7 +158,7 @@ cargo run -p prism-app --release -- render examples/w2d_showcase.prism \
     --out out/demo.mp4                                                     # 한 번에 완성 영상
 ```
 
-`render`는 v2 직행 경로입니다. 노드 그래프 컴파일 → 프레임별 평가 → 컨테이너 인코딩까지, 중간 프레임을 디스크에 남기지 않습니다. 지원하지 않는 노드는 조용히 건너뛰지 않고 명시적인 `R5xxx` 오류를 냅니다.
+첫 줄에 `// prism-dsl 2`를 쓰면 V3.0 프런트엔드로 전환됩니다. 단일 파일 형태(에셋은 내용 해시로 고정), `seed`와 `finish`는 1급 필드, 모든 파라미터를 이름 있는 채널로 시간에 따라 구동할 수 있습니다. 버전 헤더가 없거나 `// prism-dsl 1`이면 v2 경로를 그대로 쓰며 출력은 바이트 단위로 동일합니다. `render`는 컴파일 → 프레임별 평가 → 컨테이너로 바로 인코딩하며, 중간 프레임을 디스크에 남기지 않습니다. 지원하지 않는 노드는 조용히 건너뛰지 않고 명시적인 `R5xxx` 오류를 냅니다.
 
 <p align="center">
   <img src="https://cdn.jsdelivr.net/gh/Qianjinqie/prism-engine@main/docs/assets/dsl-title.png" width="760" alt="DSL로 렌더링한 타이틀 프레임">
