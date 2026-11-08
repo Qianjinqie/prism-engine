@@ -24,11 +24,11 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License">
-  <img src="https://img.shields.io/badge/tests-4029%20passed-brightgreen.svg" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-4580%20passed-brightgreen.svg" alt="Tests">
   <img src="https://img.shields.io/badge/dependencies-zero-brightgreen.svg" alt="Dependencies">
   <img src="https://img.shields.io/badge/crates-28-blue.svg" alt="Crates">
   <img src="https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg" alt="Distribution">
-  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v2.2-blue.svg" alt="Release"></a>
+  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.0-blue.svg" alt="Release"></a>
 </p>
 
 <p align="center">
@@ -40,7 +40,7 @@
 </p>
 
 <p align="center">
-  <sub><b>664</b> 파일 · <b>29</b> crate · <b>27.3만</b> 줄의 Rust · <b>4029</b> 테스트 · 서드파티 의존성 <b>0</b> · <b>19.5 MB</b> 단일 파일</sub>
+  <sub><b>779</b> 파일 · <b>29</b> crate · <b>33.5만</b> 줄의 Rust · <b>4580</b> 테스트 · 서드파티 의존성 <b>0</b> · <b>21.9 MB</b> 단일 파일</sub>
 </p>
 
 <!-- TOC-START -->
@@ -86,17 +86,17 @@ Rust로 작성된 프로시저럴 미디어 엔진. 입력은 `.prism` 장면 �
 
 ```bash
 # 1. 단일 파일 소스 패키지를 받고 SHA-256 검증
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.2/prism-engine-v2.2-source.txt
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.2/SHA256SUMS.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0/prism-engine-v3.0-source.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0/SHA256SUMS.txt
 sha256sum -c SHA256SUMS.txt
 
 # 2. 패키지에 들어 있는 언팩 스크립트 추출 (Node 18+ 만 필요, npm install 불필요)
 awk '/^UNPACK SCRIPT BEGIN$/{f=1;next} /^UNPACK SCRIPT END$/{f=0} f' \
-  prism-engine-v2.2-source.txt > unpack.cjs
-node unpack.cjs                    # 664개 파일 복원
+  prism-engine-v3.0-source.txt > unpack.cjs
+node unpack.cjs                    # 779개 파일 복원
 
 # 3. 빌드하고 전체 테스트 실행
-cargo test --workspace --release     # 4029 passed / 0 failed
+cargo test --workspace --release     # 4580 passed / 0 failed
 
 # 4. 아무것도 쓰지 말고, 먼저 영상을 봅니다
 cargo run -p prism-app --release     # 내장 데모 장면
@@ -240,7 +240,7 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 | --- | --- | --- |
 | 서드파티 코드 의존 없음 | 런타임 110 + 테스트 20 의존성 전부 저장소 내 `path` 의존성; `build.rs` 없음, 네이티브 링크 없음, 빌드 시 네트워크 없음 | 모든 포맷, 알고리즘, 폰트, 코덱을 여기서 작성해야 한다 |
 | 바이트 단위 결정성 | 고정소수점 IDCT, 고정 샘플링 열, 4차원 설정 해시; 같은 입력이면 플랫폼 간 동일 | 부동소수점 고속 경로를 포기하고, 해시맵 순회 순서에 의존할 수 없다 |
-| 단일 파일 배포 | 29 crate·664 파일을 19.5 MB UTF-8 텍스트 하나로 합치고 `node unpack.cjs`로 복원 | GitHub에서 소스를 바로 훑어보는 편의를 포기한다 |
+| 단일 파일 배포 | 29 crate·779 파일을 21.9 MB UTF-8 텍스트 하나로 합치고 `node unpack.cjs`로 복원 | GitHub에서 소스를 바로 훑어보는 편의를 포기한다 |
 
 > ⚠️ **v2.2 배포 정정**: v2.1 단일 파일 배포(`prism-engine-v2.1-source.txt`, 2026-10-27 패키징)에는 BSDF 다중산란 보상 결함(과포화 금속의 스킴각 색 편이)이 포함되어 있었습니다; **v2.2 에서 수정됨**. v2.1 단일 파일 배포로 과포화 금속을 렌더링하는 사용자는 v2.2 로 업그레이드하세요.
 
@@ -251,7 +251,7 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 1. **서명 폐포**: 노드 그래프, 캐시 키, 스냅숏 키, 프레임 서명을 4차원 설정 해시로 통일. 파라미터가 바뀌면 키도 반드시 바뀌어 잘못된 재사용이 없다. 반복 노드 키에는 `(ε, n)`, 스트림 노드에는 프레임 번호가 들어가며, `None`이면 이전 동작으로 바이트 단위 퇴화한다.
 2. **바이트 고정점**: USD는 내보내기→가져오기→내보내기가 바이트 일치; WAV 16/24/32 bit 왕복이 일치; EXR은 공식 OpenEXR과 비트스트림 대 비트스트림으로 대조한다.
 3. **패키징 결정성**: 같은 소스를 두 번 패키징하면 SHA-256이 동일; 압축 해제 왕복에서 모든 파일을 바이트 단위로 비교한다.
-4. **테스트를 판정 기준으로**: 4029개 테스트 중 다수가 황금값을 고정(허용 오차 1e-2에서 1e-6으로, 실측 잔차 4.53e-7); 형상 충실도는 "대충 비슷하다"가 아니라 Hausdorff 거리로 상한을 정한다.
+4. **테스트를 판정 기준으로**: 4580개 테스트 중 다수가 황금값을 고정(허용 오차 1e-2에서 1e-6으로, 실측 잔차 4.53e-7); 형상 충실도는 "대충 비슷하다"가 아니라 Hausdorff 거리로 상한을 정한다.
 
 <a id="architecture"></a>
 ## 아키텍처
@@ -295,7 +295,7 @@ flowchart LR
 ## 빌드, 테스트, 게이트
 
 ```bash
-cargo test --workspace --release      # 4029 passed / 0 failed / 0 ignored
+cargo test --workspace --release      # 4580 passed / 0 failed / 0 ignored
 cargo xtest                           # 동등한 별칭
 cargo test -p prism-core --release    # 단일 crate 스모크 테스트
 
@@ -306,7 +306,7 @@ node tools/compliance_check.mjs --self-test  # 반증: 실패해야 하며, 판�
 node tools/pack_source_txt.mjs --verify      # 패키징과 언팩 왕복을 바이트 단위로 검증
 ```
 
-- 전체: **4029 passed / 0 failed / 0 ignored**, 188개 테스트 구간, 전 코어 병렬 110초(release).
+- 전체: **4580 passed / 0 failed / 0 ignored**, 188개 테스트 구간, 전 코어 병렬 110초(release).
 - CI는 여섯 job: 유령 쓰기 방어, 빌드 + 전체 테스트, wasm32 빌드, WGSL 정적 검사, 공식 OpenEXR과 비트스트림 상호 검증, Node 호스트 교차 판정.
 - 위생 스캔에는 여전히 적중이 남아 있습니다. 배포 문서 층은 정리되었고, 나머지는 소스 주석과 배포 대상이 아닌 저장소 파일에 있습니다. 스크립트의 존재는 잔여물을 **보이게 두고 하나씩 정리**하기 위함이며, 깨끗한 척하기 위함이 아닙니다.
 

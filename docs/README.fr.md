@@ -24,11 +24,11 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License">
-  <img src="https://img.shields.io/badge/tests-4029%20passed-brightgreen.svg" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-4580%20passed-brightgreen.svg" alt="Tests">
   <img src="https://img.shields.io/badge/dependencies-zero-brightgreen.svg" alt="Dependencies">
   <img src="https://img.shields.io/badge/crates-28-blue.svg" alt="Crates">
   <img src="https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg" alt="Distribution">
-  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v2.2-blue.svg" alt="Release"></a>
+  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.0-blue.svg" alt="Release"></a>
 </p>
 
 <p align="center">
@@ -40,7 +40,7 @@
 </p>
 
 <p align="center">
-  <sub><b>664</b> fichiers · <b>29</b> crates · <b>273 000</b> lignes de Rust · <b>4029</b> tests · <b>0</b> dépendance tierce · <b>19,5 Mo</b> en un seul fichier</sub>
+  <sub><b>779</b> fichiers · <b>29</b> crates · <b>335 000</b> lignes de Rust · <b>4580</b> tests · <b>0</b> dépendance tierce · <b>21,9 Mo</b> en un seul fichier</sub>
 </p>
 
 <!-- TOC-START -->
@@ -86,17 +86,17 @@ Le tableau ne liste que des capacités. Ce que chacune ne sait pas faire se trou
 
 ```bash
 # 1. Récupérer le paquet source et vérifier son SHA-256
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.2/prism-engine-v2.2-source.txt
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.2/SHA256SUMS.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0/prism-engine-v3.0-source.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0/SHA256SUMS.txt
 sha256sum -c SHA256SUMS.txt
 
 # 2. Extraire le script de dépaquetage embarqué (Node 18+ seulement, sans npm install)
 awk '/^UNPACK SCRIPT BEGIN$/{f=1;next} /^UNPACK SCRIPT END$/{f=0} f' \
-  prism-engine-v2.2-source.txt > unpack.cjs
-node unpack.cjs                    # restaure 664 fichiers
+  prism-engine-v3.0-source.txt > unpack.cjs
+node unpack.cjs                    # restaure 779 fichiers
 
 # 3. Compiler et lancer toute la suite de tests
-cargo test --workspace --release     # 4029 passed / 0 failed
+cargo test --workspace --release     # 4580 passed / 0 failed
 
 # 4. Sans rien écrire, le regarder rendre
 cargo run -p prism-app --release     # scène de démonstration intégrée
@@ -240,7 +240,7 @@ Trois contraintes, et ce que chacune coûte :
 | --- | --- | --- |
 | Zéro code tiers | Les 110 dépendances d'exécution + 20 de test sont des dépendances `path` internes au dépôt ; pas de `build.rs`, pas d'édition de liens native, pas de réseau à la compilation | Chaque format, algorithme, police et codec doit être écrit ici |
 | Déterminisme au bit près | IDCT en virgule fixe, séquences d'échantillonnage fixes, un hash de configuration à quatre dimensions ; identique entre plateformes pour une même entrée | On renonce aux raccourcis rapides en virgule flottante et à l'ordre d'itération des hashmaps |
-| Distribution en un seul fichier | 664 fichiers de 29 crates fusionnés en un texte UTF-8 de 19,5 Mo, restauré par `node unpack.cjs` | On renonce à parcourir le code directement sur GitHub |
+| Distribution en un seul fichier | 779 fichiers de 29 crates fusionnés en un texte UTF-8 de 21,9 Mo, restauré par `node unpack.cjs` | On renonce à parcourir le code directement sur GitHub |
 
 > ⚠️ **Correction de distribution v2.2** : la distribution mono-fichier v2.1 (`prism-engine-v2.1-source.txt`, empaquetée le 2026-10-27) contenait un défaut de compensation multi-diffusion BSDF (décalage de couleur des métaux sursaturés en angle rasant) ; **corrigé en v2.2**. Les utilisateurs rendant des métaux sursaturés avec la distribution mono-fichier v2.1 doivent passer à v2.2.
 
@@ -251,7 +251,7 @@ Quatre couches, des paramètres jusqu'aux octets :
 1. **Clôture de signature** : graphes de nœuds, clés de cache, clés d'instantané et signatures d'image partagent un hash de configuration à quatre dimensions. Changer un paramètre ⇒ la clé change ⇒ pas de réutilisation périmée. Les nœuds d'itération portent `(ε, n)` dans leur clé, les nœuds de flux le numéro d'image ; `None` dégénère au bit près vers l'ancien comportement.
 2. **Points fixes d'octets** : USD export→import→export est identique octet pour octet ; les allers-retours WAV 16/24/32 bits concordent ; EXR est comparé flux de bits contre flux de bits avec l'OpenEXR officiel.
 3. **Déterminisme du paquetage** : empaqueter deux fois la même source donne un SHA-256 identique ; l'aller-retour de dépaquetage compare chaque fichier octet pour octet.
-4. **Les tests comme critère** : beaucoup des 4029 tests verrouillent des valeurs d'or (tolérance resserrée de 1e-2 à 1e-6, résidu mesuré 4,53e-7) ; la fidélité de forme est bornée par distance de Hausdorff plutôt que par « ça a l'air assez proche ».
+4. **Les tests comme critère** : beaucoup des 4580 tests verrouillent des valeurs d'or (tolérance resserrée de 1e-2 à 1e-6, résidu mesuré 4,53e-7) ; la fidélité de forme est bornée par distance de Hausdorff plutôt que par « ça a l'air assez proche ».
 
 <a id="architecture"></a>
 ## Architecture
@@ -295,7 +295,7 @@ Structure après dépaquetage :
 ## Compiler, tester, portes
 
 ```bash
-cargo test --workspace --release      # 4029 passed / 0 failed / 0 ignored
+cargo test --workspace --release      # 4580 passed / 0 failed / 0 ignored
 cargo xtest                           # alias équivalent
 cargo test -p prism-core --release    # test de fumée d'un crate
 
@@ -306,7 +306,7 @@ node tools/compliance_check.mjs --self-test  # preuve inverse : doit échouer, m
 node tools/pack_source_txt.mjs --verify      # aller-retour paquetage/dépaquetage, octet par octet
 ```
 
-- Suite complète : **4029 passed / 0 failed / 0 ignored**, 188 sections de tests, 110 s sur tous les cœurs (release).
+- Suite complète : **4580 passed / 0 failed / 0 ignored**, 188 sections de tests, 110 s sur tous les cœurs (release).
 - La CI compte six jobs : défense écriture fantôme, compilation + tests complets, compilation wasm32, vérification statique WGSL, interopérabilité de flux de bits avec l'OpenEXR officiel, contre-vérification sur hôte Node.
 - Le scan d'hygiène a encore des occurrences : la couche documentaire distribuée est propre, le reste se trouve dans les commentaires de source et les fichiers propres au dépôt. Le script existe pour que le reste demeure **visible et corrigeable un par un**, pas pour prétendre que tout est propre.
 

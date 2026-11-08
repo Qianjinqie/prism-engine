@@ -24,11 +24,11 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License">
-  <img src="https://img.shields.io/badge/tests-4029%20passed-brightgreen.svg" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-4580%20passed-brightgreen.svg" alt="Tests">
   <img src="https://img.shields.io/badge/dependencies-zero-brightgreen.svg" alt="Dependencies">
   <img src="https://img.shields.io/badge/crates-28-blue.svg" alt="Crates">
   <img src="https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg" alt="Distribution">
-  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v2.2-blue.svg" alt="Release"></a>
+  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.0-blue.svg" alt="Release"></a>
 </p>
 
 <p align="center">
@@ -40,7 +40,7 @@
 </p>
 
 <p align="center">
-  <sub><b>664</b> 个文件 &nbsp;·&nbsp; <b>29</b> 个 crate &nbsp;·&nbsp; <b>27.3 万</b> 行 Rust &nbsp;·&nbsp; <b>4029</b> 条测试 &nbsp;·&nbsp; <b>0</b> 个第三方依赖 &nbsp;·&nbsp; <b>19.5 MB</b> 单文件</sub>
+  <sub><b>779</b> 个文件 &nbsp;·&nbsp; <b>29</b> 个 crate &nbsp;·&nbsp; <b>33.5 万</b> 行 Rust &nbsp;·&nbsp; <b>4580</b> 条测试 &nbsp;·&nbsp; <b>0</b> 个第三方依赖 &nbsp;·&nbsp; <b>21.9 MB</b> 单文件</sub>
 </p>
 
 <!-- TOC-START -->
@@ -85,17 +85,17 @@ Rust 写的程序化媒体引擎。输入 `.prism` 场景文本或 Rust 调用�
 
 ```bash
 # 1. 取单文件源码包，顺便校验 SHA-256
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.2/prism-engine-v2.2-source.txt
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.2/SHA256SUMS.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0/prism-engine-v3.0-source.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0/SHA256SUMS.txt
 sha256sum -c SHA256SUMS.txt
 
 # 2. 抽出包内的解包脚本（只需 Node 18+，不需要 npm install）
 awk '/^UNPACK SCRIPT BEGIN$/{f=1;next} /^UNPACK SCRIPT END$/{f=0} f' \
-  prism-engine-v2.2-source.txt > unpack.cjs
-node unpack.cjs                    # 还原 664 个文件
+  prism-engine-v3.0-source.txt > unpack.cjs
+node unpack.cjs                    # 还原 779 个文件
 
 # 3. 编译并跑全量测试
-cargo test --workspace --release     # 4029 passed / 0 failed
+cargo test --workspace --release     # 4580 passed / 0 failed
 
 # 4. 什么都不写，先看它出片
 cargo run -p prism-app --release     # 内置演示场景
@@ -241,7 +241,7 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 | --- | --- | --- |
 | 零第三方代码依赖 | 110 条运行期 + 20 条测试依赖全是仓内 `path` 依赖；无 `build.rs`、无原生链接、构建不联网 | 每种格式、每个算法、字体、编解码器全部自己写 |
 | 逐字节确定性 | 定点 IDCT、固定采样序列、四维配置哈希；同输入跨平台逐位一致 | 放弃浮点快路径，不能依赖无序容器的遍历顺序 |
-| 单文件分发 | 664 个文件、29 个 crate 合并成一个 19.5 MB 的 UTF-8 文本，`node unpack.cjs` 还原 | 放弃「在 GitHub 上直接点开看源码」的便利 |
+| 单文件分发 | 779 个文件、29 个 crate 合并成一个 21.9 MB 的 UTF-8 文本，`node unpack.cjs` 还原 | 放弃「在 GitHub 上直接点开看源码」的便利 |
 
 > ⚠️ **v2.2 分发更正**：v2.1 单文件分发（`prism-engine-v2.1-source.txt`，打包于 2026-10-27）含 BSDF 多散射补偿缺陷（高饱和金属掠射角偏色），**v2.2 已修**。使用 v2.1 单文件分发渲染高饱和金属者请升级至 v2.2。
 
@@ -252,7 +252,7 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 1. **签名闭包**：节点图、缓存键、快照键、帧签名统一为四维配置哈希。改一个参数 ⇒ 键必变 ⇒ 不会误复用；迭代节点的键含 `(ε, n)`，流节点的键含帧号，`None` 时逐字节退化到旧行为。
 2. **字节不动点**：USD 导出→导入→导出逐字节一致；WAV 16/24/32 bit 往返一致；EXR 与官方 OpenEXR 做跨实现比特流对拍。
 3. **打包确定性**：同一份源码两次打包，SHA-256 完全一致；解包回环逐文件逐字节比对。
-4. **测试即判据**：4029 条测试里大量黄金值锁定（容差从 1e-2 收到 1e-6，实测残差 4.53e-7）；形状保真度用 Hausdorff 界，而不是「看着差不多」。
+4. **测试即判据**：4580 条测试里大量黄金值锁定（容差从 1e-2 收到 1e-6，实测残差 4.53e-7）；形状保真度用 Hausdorff 界，而不是「看着差不多」。
 
 <a id="architecture"></a>
 ## 架构
@@ -296,7 +296,7 @@ flowchart LR
 ## 构建、测试与门禁
 
 ```bash
-cargo test --workspace --release      # 4029 passed / 0 failed / 0 ignored
+cargo test --workspace --release      # 4580 passed / 0 failed / 0 ignored
 cargo xtest                           # 等价别名
 cargo test -p prism-core --release    # 单 crate 冒烟
 
@@ -307,7 +307,7 @@ node tools/compliance_check.mjs --self-test  # 反向自证：应判红，证明
 node tools/pack_source_txt.mjs --verify      # 打包并解包回环校验（逐文件逐字节）
 ```
 
-- 全量：**4029 passed / 0 failed / 0 ignored**，188 个测试段，全核并行 110 秒（release）。
+- 全量：**4580 passed / 0 failed / 0 ignored**，188 个测试段，全核并行 110 秒（release）。
 - CI 六个 job：幽灵写入防御、编译 + 全量测试、wasm32 构建、WGSL 静态检查、与官方 OpenEXR 跨实现对拍、Node 宿主交叉判对。
 - 卫生扫描仍有存量命中：随包分发的文档层已清零，余下在源码注释与不随包分发的仓库文件中。脚本的存在是为了让残留**可见、可逐条清**，而不是假装干净。
 

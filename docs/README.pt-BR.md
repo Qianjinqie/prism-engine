@@ -24,11 +24,11 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License">
-  <img src="https://img.shields.io/badge/tests-4029%20passed-brightgreen.svg" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-4580%20passed-brightgreen.svg" alt="Tests">
   <img src="https://img.shields.io/badge/dependencies-zero-brightgreen.svg" alt="Dependencies">
   <img src="https://img.shields.io/badge/crates-28-blue.svg" alt="Crates">
   <img src="https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg" alt="Distribution">
-  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v2.2-blue.svg" alt="Release"></a>
+  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.0-blue.svg" alt="Release"></a>
 </p>
 
 <p align="center">
@@ -40,7 +40,7 @@
 </p>
 
 <p align="center">
-  <sub><b>664</b> arquivos · <b>29</b> crates · <b>273 mil</b> linhas de Rust · <b>4029</b> testes · <b>0</b> dependências de terceiros · <b>19,5 MB</b> em arquivo único</sub>
+  <sub><b>779</b> arquivos · <b>29</b> crates · <b>335 mil</b> linhas de Rust · <b>4580</b> testes · <b>0</b> dependências de terceiros · <b>21,9 MB</b> em arquivo único</sub>
 </p>
 
 <!-- TOC-START -->
@@ -86,17 +86,17 @@ A tabela lista apenas capacidades. O que cada uma não faz está em [Limites hon
 
 ```bash
 # 1. Baixar o pacote de código e verificar o SHA-256
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.2/prism-engine-v2.2-source.txt
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.2/SHA256SUMS.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0/prism-engine-v3.0-source.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0/SHA256SUMS.txt
 sha256sum -c SHA256SUMS.txt
 
 # 2. Extrair o script de desempacotamento embutido (só Node 18+, sem npm install)
 awk '/^UNPACK SCRIPT BEGIN$/{f=1;next} /^UNPACK SCRIPT END$/{f=0} f' \
-  prism-engine-v2.2-source.txt > unpack.cjs
-node unpack.cjs                    # restaura 664 arquivos
+  prism-engine-v3.0-source.txt > unpack.cjs
+node unpack.cjs                    # restaura 779 arquivos
 
 # 3. Compilar e rodar a suíte completa
-cargo test --workspace --release     # 4029 passed / 0 failed
+cargo test --workspace --release     # 4580 passed / 0 failed
 
 # 4. Sem escrever nada, ver renderizar
 cargo run -p prism-app --release     # cena de demonstração embutida
@@ -240,7 +240,7 @@ Três restrições e o que cada uma custa:
 | --- | --- | --- |
 | Zero código de terceiros | As 110 dependências de execução + 20 de teste são dependências `path` dentro do repositório; sem `build.rs`, sem linkedição nativa, sem rede na compilação | Todo formato, algoritmo, fonte e codec precisa ser escrito aqui |
 | Determinismo byte a byte | IDCT de ponto fixo, sequências de amostragem fixas, um hash de configuração de quatro dimensões; idêntico entre plataformas para a mesma entrada | Abre mão de atalhos rápidos em ponto flutuante e de depender da ordem de iteração de hashmaps |
-| Distribuição em arquivo único | 664 arquivos de 29 crates fundidos em um texto UTF-8 de 19,5 MB, restaurado por `node unpack.cjs` | Abre mão de folhear o código direto no GitHub |
+| Distribuição em arquivo único | 779 arquivos de 29 crates fundidos em um texto UTF-8 de 21,9 MB, restaurado por `node unpack.cjs` | Abre mão de folhear o código direto no GitHub |
 
 > ⚠️ **Correção de distribuição v2.2**: a distribuição em arquivo único v2.1 (`prism-engine-v2.1-source.txt`, empacotada em 2026-10-27) continha um defeito de compensação multidifusão BSDF (deslocamento de cor em metais supersaturados em ângulo rasante); **corrigido no v2.2**. Usuários que renderizam metais supersaturados com a distribuição v2.1 em arquivo único devem atualizar para o v2.2.
 
@@ -251,7 +251,7 @@ Quatro camadas, dos parâmetros até os bytes:
 1. **Fechamento de assinatura**: grafos de nós, chaves de cache, chaves de snapshot e assinaturas de quadro compartilham um hash de configuração de quatro dimensões. Mudar um parâmetro ⇒ a chave muda ⇒ sem reúso obsoleto. Nós de iteração carregam `(ε, n)` na chave; nós de fluxo, o número do quadro; `None` degenera byte a byte para o comportamento antigo.
 2. **Pontos fixos de bytes**: USD exportar→importar→exportar é idêntico byte a byte; round-trips WAV de 16/24/32 bits batem; EXR é comparado bitstream contra bitstream com o OpenEXR oficial.
 3. **Determinismo de empacotamento**: empacotar duas vezes a mesma fonte gera o mesmo SHA-256; o round-trip de desempacotamento compara cada arquivo byte a byte.
-4. **Testes como critério**: muitos dos 4029 testes travam valores de ouro (tolerância apertada de 1e-2 para 1e-6, resíduo medido 4,53e-7); a fidelidade de forma é limitada por distância de Hausdorff em vez de “parece próximo o bastante”.
+4. **Testes como critério**: muitos dos 4580 testes travam valores de ouro (tolerância apertada de 1e-2 para 1e-6, resíduo medido 4,53e-7); a fidelidade de forma é limitada por distância de Hausdorff em vez de “parece próximo o bastante”.
 
 <a id="architecture"></a>
 ## Arquitetura
@@ -295,7 +295,7 @@ Estrutura após desempacotar:
 ## Compilar, testar e portões
 
 ```bash
-cargo test --workspace --release      # 4029 passed / 0 failed / 0 ignored
+cargo test --workspace --release      # 4580 passed / 0 failed / 0 ignored
 cargo xtest                           # alias equivalente
 cargo test -p prism-core --release    # teste rápido de um crate
 
@@ -306,7 +306,7 @@ node tools/compliance_check.mjs --self-test  # prova reversa: deve falhar, mostr
 node tools/pack_source_txt.mjs --verify      # ida e volta de empacotamento, byte a byte
 ```
 
-- Suíte completa: **4029 passed / 0 failed / 0 ignored**, 188 seções de teste, 110 s com todos os núcleos (release).
+- Suíte completa: **4580 passed / 0 failed / 0 ignored**, 188 seções de teste, 110 s com todos os núcleos (release).
 - A CI tem seis jobs: defesa de escrita fantasma, compilação + testes completos, build wasm32, checagem estática WGSL, interoperabilidade de bitstream com o OpenEXR oficial, verificação cruzada em host Node.
 - A varredura de higiene ainda tem ocorrências: a camada de documentação distribuída está limpa, o resto está em comentários de código e arquivos só do repositório. O script existe para que o restante fique **visível e corrigível peça por peça**, não para fingir que está tudo limpo.
 
