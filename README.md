@@ -70,7 +70,7 @@ Rust 写的程序化媒体引擎。输入 `.prism` 场景文本或 Rust 调用�
 | --- | --- |
 | **读** | PNG（8/16 bit，滤波逆运算）、基线 JPEG（定点 IDCT，跨平台逐位一致）、EXR（读写 / 压缩族 / DWA）、相机 RAW、GIF / APNG 逐帧、WAV；glTF / OBJ / USDA 导入，USD 二进制 .usdc（Crate）与 .usdz 解包，MaterialX 节点图（21 种节点 / 45 别名 / 17 个 BSDF 槽）；TTF/OTF 装载与「内置 → 用户 → 多语种子集 → 数学符号」四级回退链 |
 | **排** | OpenType 解析、GSUB/GPOS 整形、UAX #9 双向、阿拉伯四态、竖排；公式排版（上下标 / 分式 / 根号 / 矩阵 / 大型算子）；DSL v1/v2 编译成三元组图；五个高层组合子（片头 / 人名条 / 分屏 / 肯·伯恩斯 / 场景变形）；四种转场 + morph，任意时刻可采样 |
-| **画** | 路径追踪 + 物理 BSDF（漫反射 / 镜面 / 玻璃 / 金属 / 次表面），玻璃与金属走随机逆（Neumann 级数蒙特卡洛）；Woodcock 异质体积；圆柱 / 圆锥 / 圆环 / 旋转曲面解析求交（四次方程 Ferrari 闭式解）；三角网格 + SAH-BVH（稳定排序，构建确定性）；mesh 烘焙成 SDF 后获得布尔 / 域变形 / 精确碰撞；位图纹理管线（UV / 双线性·三线性 / 7 级 mip / 法线·粗糙度贴图 / sRGB 解码）；HDR 环境光与 IBL 重要性采样 + MIS；几何实例化（112 B 实例槽 + 共享局部 BLAS）；Catmull-Clark 细分 + 位移贴图；逐像素自适应采样；多层参与介质（互斥区域 + 优先级全序）；毛发曲线几何 + Marschner 采样；CpuRef 一等后端 + Vulkan compute 与光追双管线 |
+| **画** | 路径追踪 + 物理 BSDF（漫反射 / 镜面 / 玻璃 / 金属 / 次表面），玻璃与金属走随机逆（Neumann 级数蒙特卡洛）；Woodcock 异质体积；圆柱 / 圆锥 / 圆环 / 旋转曲面解析求交（四次方程 Ferrari 闭式解；GPU 侧走弦高受控三角化 + SAH-BVH，四种图元 0 差异）；三角网格 + SAH-BVH（稳定排序，构建确定性）；mesh 烘焙成 SDF 后获得布尔 / 域变形 / 精确碰撞；位图纹理管线（UV / 双线性·三线性 / 7 级 mip / 法线·粗糙度贴图 / sRGB 解码）；HDR 环境光与 IBL 重要性采样 + MIS；几何实例化（112 B 实例槽 + 共享局部 BLAS）；Catmull-Clark 细分 + 位移贴图；逐像素自适应采样；多层参与介质（互斥区域 + 优先级全序）；毛发曲线几何 + Marschner 采样；CpuRef 一等后端 + Vulkan compute 与光追双管线 |
 | **动** | XPBD 统一求解器——刚体 / 软体 / 布料 / 关节 / 流体 / 破碎是同一个约束投影循环的六组参数；FLIP 烟雾；粒子系统 + AudioReactive；毛发约束与着色；流场 / L 系统 / 元胞自动机 / 反应扩散 / 分形 / Voronoi；Spring 解析解与关键帧 |
 | **调** | 二级调色（HSL 选区 + RGB 曲线）；cinematic / film / anime 预设，草稿 / 标准 / 电影三档显式标价；blur / bloom / vignette / 色差 / sharpen / glitch / dissolve；halation 渗光 + 双尺度胶片颗粒（按像素域派生）；三合一降噪；NPR 四风格（toon / watercolor / halftone / oil）；PQ / HLG 传输函数、线性 sRGB ↔ ACEScg、ACES 输出变换、OCIO 配置（config.ocio → Q24 定点 1D/3D LUT） |
 | **声** | PolyBLEP 防混叠振荡器 + ADSR 闭式包络 + 4 情绪预设；音阶库 + 12-TET + 和弦进行功能语法状态机 + 声部引导；琶音器 / step 鼓机 / 小节节拍网格；手写 SMF 解析、SFZ 采样器、颗粒合成；物理建模 / 空间声像 / 效果器链；多轨混音 + 峰值防削波；节拍 / onset / FFT、AudioReactive 烘焙、响度归一；WAV 16/24/32 bit 逐字节往返 |
@@ -78,7 +78,7 @@ Rust 写的程序化媒体引擎。输入 `.prism` 场景文本或 Rust 调用�
 | **接** | MCP stdio 三工具（`scene_check` / `render_submit` / `diagnose`）；节点 SDK 语义化版本协商 + 示例节点包；CLI（`render` / `preview` / `demo`）；交互式编辑器双档预览（Draft 几何图案 / Real 低 spp，与出片同源、逐字节相同）+ 子图签名增量；batch manifest 笛卡尔积；三平台硬编探测骨架（VideoToolbox / NVENC / VAAPI，未接后端） |
 | **旁路** | 生成艺术：流场 / L 系统 / 元胞自动机 / 反应扩散 / Mandelbrot / Voronoi，矢量 draw-on 与图表。AI 辅助：确定性 mock 推理层（分镜 / 字幕 / 色彩提示），模型权重当数据读、乘加代码自己写，不引 ML 框架 |
 
-这张表只列能力。每项「做不到什么」写在下面的诚实的边界，不藏在表里。
+这张表只列能力。每项「做不到什么」写在下面的[诚实的边界](#诚实的边界)，不藏在表里。
 
 <a id="quickstart"></a>
 ## 三分钟跑起来
@@ -322,7 +322,7 @@ node tools/pack_source_txt.mjs --verify      # 打包并解包回环校验（逐
 | --- | --- | --- | --- |
 | DNG `Compression=1/7/8`（含 32946 Deflate） | 已支持 1/7/8（含 32946 Deflate）；真实机型未经样本验证 | 无需转存；真实相机样本可追加 golden（未支持取值 6/34892/34712/52546 结构化拒绝） | `raw.rs:3282,3287`（读端分派 1/7/8/32946）+ `raw_dng_synth.rs:260`（合成支持 1/7/8/32946）+ 设计 §7.3 / Q10（真机登记表） |
 | mp3 / AAC / FLAC | 解码走外部 ffmpeg 探测；编码不自研 | 装 ffmpeg，或只用 WAV | `README.md:213`（AAC/mp3 编码不自研，走 ffmpeg 协作） |
-| 曲线图元 GPU | 仅 CPU 路径 | 三角化后走 SAH-BVH | 结构化拒绝点：无 GPU kernel（`prism-vector/src/path.rs:8` CPU 平铺；GPU 曲线为 T06 待办，设计 §6 WP-A） |
+| 2D 矢量路径 GPU 光栅 | 仅 CPU 扫描线（`prism-vector` → `prism-raster`） | 需要 GPU 时先烘焙成位图再合成 | 无 2D 路径光栅 kernel（`prism-vector` 只被 `prism-genart` 消费）。**3D 曲线图元不在此列**：弦高受控三角化 → SAH-BVH → GPU 栈式遍历，圆柱 / 圆锥 / 圆环 / 旋转曲面在 lavapipe 上 `max_channel_delta = 0` |
 | Metal | 代码就绪（不提供独立 Metal 后端，不点亮）；`is_available()` 恒 false，未实机验证 | 有 Apple 设备且立独立后端项后再接 | `prism-gpu/src/metal/mod.rs:9,192`（is_available 恒 false）+ `metal/render.rs:1`（未点亮）+ 设计 §7.2 Metal 行 |
 | WebGPU | 代码就绪（T1/T2/T3 绿），对外支持面仍限 Chrome/Edge；**4 个浏览器环境 / 2 台设备 / 2 个产物版本各 19/19**（含 Edge for Android 153），硬件适配器已确认（`isFallbackAdapter=false`）；**桌面档未实测** | 桌面 Chrome/Edge 实跑一次即可结项（约 5 分钟） | （条件可行，Chrome/Edge 优先）+ 设计 §7.2 WebGPU 行（真机 19/19） |
 | 硬件编码 | 三平台探测骨架，未接实现（绑定就绪待 C-2） | 按目标平台填 | `prism-ffi-hwenc/src/lib.rs:14`（不 link 任何平台库）+ 设计 §7.2 硬件编码行 |
