@@ -24,11 +24,11 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License">
-  <img src="https://img.shields.io/badge/tests-4029%20passed-brightgreen.svg" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-4580%20passed-brightgreen.svg" alt="Tests">
   <img src="https://img.shields.io/badge/dependencies-zero-brightgreen.svg" alt="Dependencies">
   <img src="https://img.shields.io/badge/crates-28-blue.svg" alt="Crates">
   <img src="https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg" alt="Distribution">
-  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v2.2-blue.svg" alt="Release"></a>
+  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.0-blue.svg" alt="Release"></a>
 </p>
 
 <p align="center">
@@ -40,7 +40,7 @@
 </p>
 
 <p align="center">
-  <sub><b>664</b> Dateien · <b>29</b> Crates · <b>273.000</b> Zeilen Rust · <b>4029</b> Tests · <b>0</b> Fremdabhängigkeiten · <b>19,5 MB</b> Einzeldatei</sub>
+  <sub><b>779</b> Dateien · <b>29</b> Crates · <b>335.000</b> Zeilen Rust · <b>4580</b> Tests · <b>0</b> Fremdabhängigkeiten · <b>21,9 MB</b> Einzeldatei</sub>
 </p>
 
 <!-- TOC-START -->
@@ -86,17 +86,17 @@ Die Tabelle listet nur Fähigkeiten. Was jede davon nicht kann, steht unter [Ehr
 
 ```bash
 # 1. Einzeldatei-Paket holen und per SHA-256 prüfen
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.2/prism-engine-v2.2-source.txt
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.2/SHA256SUMS.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0/prism-engine-v3.0-source.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0/SHA256SUMS.txt
 sha256sum -c SHA256SUMS.txt
 
 # 2. Das eingebettete Entpack-Skript herausziehen (nur Node 18+, kein npm install)
 awk '/^UNPACK SCRIPT BEGIN$/{f=1;next} /^UNPACK SCRIPT END$/{f=0} f' \
-  prism-engine-v2.2-source.txt > unpack.cjs
-node unpack.cjs                    # stellt 664 Dateien wieder her
+  prism-engine-v3.0-source.txt > unpack.cjs
+node unpack.cjs                    # stellt 779 Dateien wieder her
 
 # 3. Bauen und die vollständige Testsuite ausführen
-cargo test --workspace --release     # 4029 passed / 0 failed
+cargo test --workspace --release     # 4580 passed / 0 failed
 
 # 4. Nichts schreiben, einfach rendern lassen
 cargo run -p prism-app --release     # eingebaute Demo-Szene
@@ -240,7 +240,7 @@ Drei Einschränkungen und was jede kostet:
 | --- | --- | --- |
 | Keine Fremdcode-Abhängigkeiten | Alle 110 Laufzeit- + 20 Test-Abhängigkeiten sind `path`-Abhängigkeiten im Repo; kein `build.rs`, kein natives Linken, kein Netzwerk beim Build | Jedes Format, jeder Algorithmus, jede Schrift, jeder Codec muss hier geschrieben werden |
 | Bitgenauer Determinismus | Festkomma-IDCT, feste Sampling-Sequenzen, ein vierdimensionaler Konfigurationshash; identisch über Plattformen bei identischer Eingabe | Keine schnellen Gleitkomma-Abkürzungen, keine Abhängigkeit von Hashmap-Iterationsreihenfolge |
-| Einzeldatei-Verteilung | 664 Dateien aus 29 Crates zu einem 19,5 MB großen UTF-8-Text zusammengeführt, von `node unpack.cjs` wiederhergestellt | Man verliert das direkte Durchstöbern des Quellcodes auf GitHub |
+| Einzeldatei-Verteilung | 779 Dateien aus 29 Crates zu einem 21,9 MB großen UTF-8-Text zusammengeführt, von `node unpack.cjs` wiederhergestellt | Man verliert das direkte Durchstöbern des Quellcodes auf GitHub |
 
 > ⚠️ **v2.2-Verteilungskorrektur**: die v2.1-Einzdatei-Verteilung (`prism-engine-v2.1-source.txt`, gepackt am 2026-10-27) enthielt einen BSDF-Multistreu-Kompensationsfehler (Farbversatz bei übersättigten Metallen im Streifwinkel); **in v2.2 behoben**. Nutzer, die übersättigte Metalle mit der v2.1-Einzdatei-Verteilung rendern, sollten auf v2.2 upgraden.
 
@@ -251,7 +251,7 @@ Vier Schichten, von den Parametern bis zu den Bytes:
 1. **Signatur-Abschluss**: Node-Graphen, Cache-Schlüssel, Snapshot-Schlüssel und Frame-Signaturen teilen einen vierdimensionalen Konfigurationshash. Ein Parameter ändert sich ⇒ der Schlüssel muss sich ändern ⇒ keine veraltete Wiederverwendung. Iterationsknoten führen `(ε, n)` im Schlüssel, Stream-Knoten die Framenummer; `None` degradiert bitgenau zum alten Verhalten.
 2. **Byte-Fixpunkte**: USD Export→Import→Export ist byteidentisch; WAV 16/24/32 Bit Round-Trips stimmen; EXR wird Bitstrom gegen Bitstrom mit dem offiziellen OpenEXR verglichen.
 3. **Packaging-Determinismus**: zweimaliges Packen derselben Quelle ergibt identische SHA-256; der Unpack-Round-Trip vergleicht jede Datei Byte für Byte.
-4. **Tests als Kriterium**: viele der 4029 Tests fixieren Goldwerte (Toleranz von 1e-2 auf 1e-6 verschärft, gemessene Residuen 4,53e-7); Formtreue wird über Hausdorff-Abstände begrenzt statt über „sieht nah genug aus“.
+4. **Tests als Kriterium**: viele der 4580 Tests fixieren Goldwerte (Toleranz von 1e-2 auf 1e-6 verschärft, gemessene Residuen 4,53e-7); Formtreue wird über Hausdorff-Abstände begrenzt statt über „sieht nah genug aus“.
 
 <a id="architecture"></a>
 ## Architektur
@@ -295,7 +295,7 @@ Verzeichnisstruktur nach dem Entpacken:
 ## Bauen, testen, Gates
 
 ```bash
-cargo test --workspace --release      # 4029 passed / 0 failed / 0 ignored
+cargo test --workspace --release      # 4580 passed / 0 failed / 0 ignored
 cargo xtest                           # gleichwertiger Alias
 cargo test -p prism-core --release    # Smoke-Test einer einzelnen Crate
 
@@ -306,7 +306,7 @@ node tools/compliance_check.mjs --self-test  # Gegenprobe: muss rot werden und z
 node tools/pack_source_txt.mjs --verify      # Pack- und Entpack-Roundtrip, Byte für Byte
 ```
 
-- Vollsuite: **4029 passed / 0 failed / 0 ignored**, 188 Testabschnitte, 110 s mit allen Kernen (Release).
+- Vollsuite: **4580 passed / 0 failed / 0 ignored**, 188 Testabschnitte, 110 s mit allen Kernen (Release).
 - CI mit sechs Jobs: Ghost-Write-Schutz, Build + Volltests, wasm32-Build, WGSL-Statikprüfung, Bitstrom-Interop gegen offizielles OpenEXR, Node-Host-Gegenprobe.
 - Der Hygiene-Scan hat weiterhin Treffer: Die verteilte Dokumentationsebene ist sauber, der Rest steckt in Quellkommentaren und nicht verteilten Repo-Dateien. Das Skript existiert, damit Reste **sichtbar und einzeln abarbeitbar** bleiben — nicht um Sauberkeit vorzutäuschen.
 

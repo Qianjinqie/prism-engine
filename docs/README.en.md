@@ -24,11 +24,11 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License">
-  <img src="https://img.shields.io/badge/tests-4029%20passed-brightgreen.svg" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-4580%20passed-brightgreen.svg" alt="Tests">
   <img src="https://img.shields.io/badge/dependencies-zero-brightgreen.svg" alt="Dependencies">
   <img src="https://img.shields.io/badge/crates-28-blue.svg" alt="Crates">
   <img src="https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg" alt="Distribution">
-  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v2.2-blue.svg" alt="Release"></a>
+  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.0-blue.svg" alt="Release"></a>
 </p>
 
 <p align="center">
@@ -40,7 +40,7 @@
 </p>
 
 <p align="center">
-  <sub><b>664</b> files · <b>29</b> crates · <b>273k</b> lines of Rust · <b>4029</b> tests · <b>0</b> third-party dependencies · <b>19.5 MB</b> single-file package</sub>
+  <sub><b>779</b> files · <b>29</b> crates · <b>335k</b> lines of Rust · <b>4580</b> tests · <b>0</b> third-party dependencies · <b>21.9 MB</b> single-file package</sub>
 </p>
 
 <!-- TOC-START -->
@@ -86,17 +86,17 @@ The table lists capabilities only. What each one cannot do is in [Honest boundar
 
 ```bash
 # 1. Fetch the single-file source package and verify it
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.2/prism-engine-v2.2-source.txt
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v2.2/SHA256SUMS.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0/prism-engine-v3.0-source.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0/SHA256SUMS.txt
 sha256sum -c SHA256SUMS.txt
 
 # 2. Extract the unpack script embedded in the package (Node 18+ only, no npm install)
 awk '/^UNPACK SCRIPT BEGIN$/{f=1;next} /^UNPACK SCRIPT END$/{f=0} f' \
-  prism-engine-v2.2-source.txt > unpack.cjs
-node unpack.cjs                    # restores 664 files
+  prism-engine-v3.0-source.txt > unpack.cjs
+node unpack.cjs                    # restores 779 files
 
 # 3. Build and run the full test suite
-cargo test --workspace --release     # 4029 passed / 0 failed
+cargo test --workspace --release     # 4580 passed / 0 failed
 
 # 4. Write nothing, just watch it render
 cargo run -p prism-app --release     # built-in demo scene
@@ -240,7 +240,7 @@ Three constraints, and what each costs:
 | --- | --- | --- |
 | Zero third-party code | All 110 runtime + 20 test dependencies are in-repo `path` dependencies; no `build.rs`, no native linking, no network at build time | Every format, algorithm, font, and codec has to be written here |
 | Bit-for-bit determinism | Fixed-point IDCT, fixed sampling sequences, a four-dimensional configuration hash; identical across platforms for identical input | No fast floating-point shortcuts, no reliance on hash-map iteration order |
-| Single-file distribution | 664 files across 29 crates merged into one 19.5 MB UTF-8 text, restored by `node unpack.cjs` | You give up browsing the source directly on GitHub |
+| Single-file distribution | 779 files across 29 crates merged into one 21.9 MB UTF-8 text, restored by `node unpack.cjs` | You give up browsing the source directly on GitHub |
 
 > ⚠️ **v2.2 distribution correction**: the v2.1 single-file distribution (`prism-engine-v2.1-source.txt`, packaged 2026-10-27) contained a BSDF multi-scatter compensation defect (oversaturated-metal grazing-angle color shift); **fixed in v2.2**. Users rendering oversaturated metals with the v2.1 single-file distribution should upgrade to v2.2.
 
@@ -251,7 +251,7 @@ Four layers, from parameters all the way down to bytes:
 1. **Signature closure**: node graphs, cache keys, snapshot keys, and frame signatures share one four-dimensional configuration hash. Change one parameter ⇒ the key must change ⇒ no stale reuse. Iteration nodes include `(ε, n)` in their key; stream nodes include the frame number; `None` degrades bit-for-bit to the old behavior.
 2. **Byte fixed points**: USD export→import→export is byte-identical; WAV 16/24/32-bit round-trips match; EXR is compared bitstream-to-bitstream against the official OpenEXR.
 3. **Packaging determinism**: packing the same source twice yields an identical SHA-256; the unpack round-trip compares every file byte by byte.
-4. **Tests as the criterion**: many of the 4029 tests lock golden values (tolerance tightened from 1e-2 to 1e-6, measured residual 4.53e-7); shape fidelity is bounded by Hausdorff distance rather than "looks close enough".
+4. **Tests as the criterion**: many of the 4580 tests lock golden values (tolerance tightened from 1e-2 to 1e-6, measured residual 4.53e-7); shape fidelity is bounded by Hausdorff distance rather than "looks close enough".
 
 <a id="architecture"></a>
 ## Architecture
@@ -295,7 +295,7 @@ Layout after unpacking:
 ## Build, test, and gates
 
 ```bash
-cargo test --workspace --release      # 4029 passed / 0 failed / 0 ignored
+cargo test --workspace --release      # 4580 passed / 0 failed / 0 ignored
 cargo xtest                           # equivalent alias
 cargo test -p prism-core --release    # single-crate smoke test
 
@@ -306,7 +306,7 @@ node tools/compliance_check.mjs --self-test  # reverse proof: must fail, proving
 node tools/pack_source_txt.mjs --verify      # pack and unpack round-trip, byte by byte
 ```
 
-- Full suite: **4029 passed / 0 failed / 0 ignored**, 188 test binaries, 110 s using all cores (release).
+- Full suite: **4580 passed / 0 failed / 0 ignored**, 188 test binaries, 110 s using all cores (release).
 - CI has six jobs: ghost-write defense, build + full tests, wasm32 build, WGSL static check, bitstream interop against official OpenEXR, Node-host cross-check.
 - The hygiene scan still has hits: the distributed documentation layer is clean, the rest sit in source comments and repository-only files. The script exists so leftovers stay **visible and fixable one by one** — not to pretend the tree is spotless.
 
