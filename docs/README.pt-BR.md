@@ -24,11 +24,11 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License">
-  <img src="https://img.shields.io/badge/tests-4580%20passed-brightgreen.svg" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-4629%20passed-brightgreen.svg" alt="Tests">
   <img src="https://img.shields.io/badge/dependencies-zero-brightgreen.svg" alt="Dependencies">
-  <img src="https://img.shields.io/badge/crates-28-blue.svg" alt="Crates">
+  <img src="https://img.shields.io/badge/crates-29-blue.svg" alt="Crates">
   <img src="https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg" alt="Distribution">
-  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.0-blue.svg" alt="Release"></a>
+  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.0.1-blue.svg" alt="Release"></a>
 </p>
 
 <p align="center">
@@ -40,7 +40,7 @@
 </p>
 
 <p align="center">
-  <sub><b>779</b> arquivos · <b>29</b> crates · <b>335 mil</b> linhas de Rust · <b>4580</b> testes · <b>0</b> dependências de terceiros · <b>21,9 MB</b> em arquivo único</sub>
+  <sub><b>789</b> arquivos · <b>29</b> crates · <b>341 mil</b> linhas de Rust · <b>4629</b> testes · <b>0</b> dependências de terceiros · <b>22,1 MB</b> em arquivo único</sub>
 </p>
 
 <!-- TOC-START -->
@@ -71,7 +71,7 @@ Um motor de mídia procedural em Rust. A entrada é uma cena `.prism` ou uma cha
 | --- | --- |
 | **Ler** | PNG (8/16 bits, inversão de filtros), JPEG baseline (IDCT de ponto fixo, idêntico bit a bit entre plataformas), EXR (leitura/escrita, família de compressão, DWA), RAW de câmera, GIF / APNG quadro a quadro, WAV; importação glTF / OBJ / USDA, USD binário .usdc (Crate) e desempacotamento .usdz, grafos de nós MaterialX (21 tipos de nó / 45 aliases / 17 slots BSDF); carga TTF/OTF com cadeia de fallback de quatro níveis (embutida → usuário → subconjuntos multi-escrita → símbolos matemáticos) |
 | **Compor** | Análise OpenType, shaping GSUB/GPOS, bidirecional UAX #9, quatro formas árabes, composição vertical; composição de fórmulas (sub/sobrescritos, frações, radicais, matrizes, operadores grandes); DSL v1/v2 compilado em grafo de triplas; cinco combinadores de alto nível (cartela de título / faixa inferior / tela dividida / Ken Burns / morph entre cenas); quatro transições + morph, amostráveis em qualquer instante |
-| **Renderizar** | Path tracing + BSDF físico (difuso / especular / vidro / metal / subsuperfície), vidro e metal por inversão estocástica (série de Neumann, Monte Carlo); volumes heterogêneos Woodcock; interseções analíticas para cilindros / cones / toros / superfícies de revolução (quártica por Ferrari; na GPU, tesselação por tolerância de corda + SAH-BVH, as quatro primitivas com 0 diferença); malhas triangulares + SAH-BVH (ordenação estável, construção determinística); malhas assadas em SDF para booleanos / deformação de domínio / colisão exata; pipeline de texturas bitmap (UV / bilinear·trilinear / mip de 7 níveis / mapas de normal·rugosidade / decodificação sRGB); ambiente HDR e IBL com amostragem por importância + MIS; instanciação de geometria (112 B de slots de instância + BLAS locais compartilhadas); subdivisão Catmull-Clark + deslocamento; amostragem adaptativa por pixel; meios participantes multirregião (regiões disjuntas + ordem de prioridade); geometria de fios + amostragem Marschner; CpuRef como backend de primeira classe + pipelines Vulkan de computação e ray tracing |
+| **Renderizar** | Path tracing + BSDF físico (difuso / especular / vidro / metal / subsuperfície), vidro e metal por inversão estocástica (série de Neumann, Monte Carlo); volumes heterogêneos Woodcock; interseções analíticas para cilindros / cones / toros / superfícies de revolução (quártica por Ferrari; na GPU, tesselação por tolerância de corda + SAH-BVH, as quatro primitivas com 0 diferença); malhas triangulares + SAH-BVH (ordenação estável, construção determinística); malhas assadas em SDF para booleanos / deformação de domínio / colisão exata; pipeline de texturas bitmap (UV / bilinear·trilinear / mip de 7 níveis / mapas de normal·rugosidade / decodificação sRGB); ambiente HDR e IBL com amostragem por importância + MIS; instanciação de geometria (112 B de slots de instância + BLAS locais compartilhadas); subdivisão Catmull-Clark + deslocamento; amostragem adaptativa por pixel; meios participantes multirregião (regiões disjuntas + ordem de prioridade); geometria de fios + amostragem Marschner; CpuRef como backend de primeira classe + pipelines Vulkan de computação e ray tracing; rasterização de caminhos vetoriais 2D com cobertura analítica (scanline de CPU e compute Vulkan/WebGPU equivalentes, idêntico bit a bit) |
 | **Simular** | Solver XPBD unificado — rígidos / macios / tecido / juntas / fluidos / fratura são seis conjuntos de parâmetros de um mesmo laço de projeção de restrições; fumaça FLIP; partículas + AudioReactive; restrições e sombreamento de pelos; campos de fluxo / sistemas L / autômatos celulares / reação-difusão / fractais / Voronoi; solução analítica de molas e keyframes |
 | **Colorir** | Graduação secundária (seleções HSL + curvas RGB); presets cinematic / film / anime, com três níveis (rascunho / padrão / cinema) precificados explicitamente; blur / bloom / vinheta / aberração cromática / sharpen / glitch / dissolve; halation + grão de filme em duas escalas (derivado no domínio do pixel); denoising triplo; quatro estilos NPR (toon / watercolor / halftone / oil); funções de transferência PQ / HLG, sRGB linear ↔ ACEScg, transformação de saída ACES, configuração OCIO (config.ocio → LUT 1D/3D de ponto fixo Q24) |
 | **Som** | Oscilador PolyBLEP anti-aliasing + envelope ADSR fechado + 4 presets de humor; biblioteca de escalas + 12-TET + máquina de estados de progressões por gramática funcional + condução de vozes; arpejador / caixa de ritmos por passos / grade de compassos; parser SMF escrito à mão, sampler SFZ, síntese granular; modelagem física / panning espacial / cadeias de efeitos; mixagem multipista + limitação de picos; beat / onset / FFT, assamento AudioReactive, normalização de loudness; WAV 16/24/32 bits round-trip byte a byte |
@@ -86,17 +86,17 @@ A tabela lista apenas capacidades. O que cada uma não faz está em [Limites hon
 
 ```bash
 # 1. Baixar o pacote de código e verificar o SHA-256
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0/prism-engine-v3.0-source.txt
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0/SHA256SUMS.txt
-sha256sum -c SHA256SUMS.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0.1/prism-engine-v3.0.1-source.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0.1/SHA256SUMS.txt
+grep 'v3.0.1' SHA256SUMS.txt | sha256sum -c -
 
 # 2. Extrair o script de desempacotamento embutido (só Node 18+, sem npm install)
 awk '/^UNPACK SCRIPT BEGIN$/{f=1;next} /^UNPACK SCRIPT END$/{f=0} f' \
-  prism-engine-v3.0-source.txt > unpack.cjs
-node unpack.cjs                    # restaura 779 arquivos
+  prism-engine-v3.0.1-source.txt > unpack.cjs
+node unpack.cjs                    # restaura 789 arquivos
 
 # 3. Compilar e rodar a suíte completa
-cargo test --workspace --release     # 4580 passed / 0 failed
+cargo test --workspace --release     # 4629 passed / 0 failed
 
 # 4. Sem escrever nada, ver renderizar
 cargo run -p prism-app --release     # cena de demonstração embutida
@@ -240,7 +240,7 @@ Três restrições e o que cada uma custa:
 | --- | --- | --- |
 | Zero código de terceiros | As 110 dependências de execução + 20 de teste são dependências `path` dentro do repositório; sem `build.rs`, sem linkedição nativa, sem rede na compilação | Todo formato, algoritmo, fonte e codec precisa ser escrito aqui |
 | Determinismo byte a byte | IDCT de ponto fixo, sequências de amostragem fixas, um hash de configuração de quatro dimensões; idêntico entre plataformas para a mesma entrada | Abre mão de atalhos rápidos em ponto flutuante e de depender da ordem de iteração de hashmaps |
-| Distribuição em arquivo único | 779 arquivos de 29 crates fundidos em um texto UTF-8 de 21,9 MB, restaurado por `node unpack.cjs` | Abre mão de folhear o código direto no GitHub |
+| Distribuição em arquivo único | 789 arquivos de 29 crates fundidos em um texto UTF-8 de 22,1 MB, restaurado por `node unpack.cjs` | Abre mão de folhear o código direto no GitHub |
 
 > ⚠️ **Correção de distribuição v2.2**: a distribuição em arquivo único v2.1 (`prism-engine-v2.1-source.txt`, empacotada em 2026-10-27) continha um defeito de compensação multidifusão BSDF (deslocamento de cor em metais supersaturados em ângulo rasante); **corrigido no v2.2**. Usuários que renderizam metais supersaturados com a distribuição v2.1 em arquivo único devem atualizar para o v2.2.
 
@@ -251,7 +251,7 @@ Quatro camadas, dos parâmetros até os bytes:
 1. **Fechamento de assinatura**: grafos de nós, chaves de cache, chaves de snapshot e assinaturas de quadro compartilham um hash de configuração de quatro dimensões. Mudar um parâmetro ⇒ a chave muda ⇒ sem reúso obsoleto. Nós de iteração carregam `(ε, n)` na chave; nós de fluxo, o número do quadro; `None` degenera byte a byte para o comportamento antigo.
 2. **Pontos fixos de bytes**: USD exportar→importar→exportar é idêntico byte a byte; round-trips WAV de 16/24/32 bits batem; EXR é comparado bitstream contra bitstream com o OpenEXR oficial.
 3. **Determinismo de empacotamento**: empacotar duas vezes a mesma fonte gera o mesmo SHA-256; o round-trip de desempacotamento compara cada arquivo byte a byte.
-4. **Testes como critério**: muitos dos 4580 testes travam valores de ouro (tolerância apertada de 1e-2 para 1e-6, resíduo medido 4,53e-7); a fidelidade de forma é limitada por distância de Hausdorff em vez de “parece próximo o bastante”.
+4. **Testes como critério**: muitos dos 4629 testes travam valores de ouro (tolerância apertada de 1e-2 para 1e-6, resíduo medido 4,53e-7); a fidelidade de forma é limitada por distância de Hausdorff em vez de “parece próximo o bastante”.
 
 <a id="architecture"></a>
 ## Arquitetura
@@ -295,7 +295,7 @@ Estrutura após desempacotar:
 ## Compilar, testar e portões
 
 ```bash
-cargo test --workspace --release      # 4580 passed / 0 failed / 0 ignored
+cargo test --workspace --release      # 4629 passed / 0 failed / 0 ignored
 cargo xtest                           # alias equivalente
 cargo test -p prism-core --release    # teste rápido de um crate
 
@@ -306,7 +306,7 @@ node tools/compliance_check.mjs --self-test  # prova reversa: deve falhar, mostr
 node tools/pack_source_txt.mjs --verify      # ida e volta de empacotamento, byte a byte
 ```
 
-- Suíte completa: **4580 passed / 0 failed / 0 ignored**, 188 seções de teste, 110 s com todos os núcleos (release).
+- Suíte completa: **4629 passed / 0 failed / 0 ignored**, 239 seções de teste, 110 s com todos os núcleos (release).
 - A CI tem seis jobs: defesa de escrita fantasma, compilação + testes completos, build wasm32, checagem estática WGSL, interoperabilidade de bitstream com o OpenEXR oficial, verificação cruzada em host Node.
 - A varredura de higiene ainda tem ocorrências: a camada de documentação distribuída está limpa, o resto está em comentários de código e arquivos só do repositório. O script existe para que o restante fique **visível e corrigível peça por peça**, não para fingir que está tudo limpo.
 
@@ -321,7 +321,7 @@ Quatro scripts de portão sem dependências (só Node): defesa contra escrita fa
 | --- | --- | --- | --- |
 | DNG `Compression=1/7/8` (incl. 32946 Deflate) | 1/7/8 suportado (incl. 32946 Deflate) ; modelos de câmeras reais não validados por amostra | Nenhuma conversão necessária ; amostras de câmeras reais podem adicionar golden (valores não suportados 6/34892/34712/52546 rejeitados estruturalmente) | `raw.rs:3282,3287` (leitor reparte 1/7/8/32946) + `raw_dng_synth.rs:260` (synth suporta 1/7/8/32946) + 设计 §7.3 / Q10 (registro de dispositivos reais) |
 | mp3 / AAC / FLAC | Decodificação via sonda de ffmpeg externo; codificação não implementada internamente | Instalar ffmpeg, ou ficar em WAV | `README.md:213` (codificação AAC/mp3 não interna, via ffmpeg) |
-| Rasterização de caminhos vetoriais 2D na GPU | apenas scanline de CPU (`prism-vector` → `prism-raster`) | assar em bitmap antes de compor se a GPU for necessária | sem kernel de rasterização de caminhos 2D (`prism-vector` só é consumido por `prism-genart`). **Primitivas curvas 3D não entram aqui**: tesselação por tolerância de corda → SAH-BVH → travessia de pilha na GPU, cilindro / cone / toro / superfície de revolução com `max_channel_delta = 0` no lavapipe |
+| Rasterização de caminhos vetoriais 2D na GPU | Acesa: kernels compute Vulkan SPIR-V e WebGPU/WGSL equivalentes, idênticos bit a bit ao scanline de CPU | Não é preciso assar bitmap; a máscara em resolução completa por quadro usa a GPU por padrão e recorre à CPU na ausência de dispositivo | Dispositivo real llvmpipe, 9 casos com 0 bytes diferentes e repetições idênticas bit a bit, desvio máximo 1,79e-7 ante uma referência f64 de área exata; um controle negativo que altera um coeficiente do kernel faz o critério falhar e prova execução GPU real. Primitivas curvas 3D mantêm seu percurso GPU por pilha e ficam fora desta linha |
 | Metal | Código pronto (sem backend Metal independente, não ativado) ; `is_available()` sempre false, não verificado em hardware | Ligar quando houver hardware Apple e uma tarefa de backend independente | `prism-gpu/src/metal/mod.rs:9,192` (is_available sempre false) + `metal/render.rs:1` (não aceso) + 设计 §7.2 linha Metal |
 | WebGPU | Código pronto (T1/T2/T3 verdes), a superfície suportada continua apenas Chrome/Edge; **19/19 em 4 ambientes de navegador / 2 dispositivos / 2 builds** (incl. Edge for Android 153), adaptador de hardware confirmado (`isFallbackAdapter=false`); **desktop não testado** | uma execução real no Chrome/Edge de desktop encerra (cerca de 5 minutos) | (condicionalmente viável, Chrome/Edge primeiro) + 设计 §7.2 linha WebGPU (19/19 no dispositivo) |
 | Codificação em hardware | Esqueleto de sondagem para três plataformas, sem implementação (pronto para vincular aguardando C-2) | Preencher por plataforma alvo | `prism-ffi-hwenc/src/lib.rs:14` (não linka biblioteca de plataforma) + 设计 §7.2 linha 硬件编码 |

@@ -24,11 +24,11 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License">
-  <img src="https://img.shields.io/badge/tests-4580%20passed-brightgreen.svg" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-4629%20passed-brightgreen.svg" alt="Tests">
   <img src="https://img.shields.io/badge/dependencies-zero-brightgreen.svg" alt="Dependencies">
-  <img src="https://img.shields.io/badge/crates-28-blue.svg" alt="Crates">
+  <img src="https://img.shields.io/badge/crates-29-blue.svg" alt="Crates">
   <img src="https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg" alt="Distribution">
-  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.0-blue.svg" alt="Release"></a>
+  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.0.1-blue.svg" alt="Release"></a>
 </p>
 
 <p align="center">
@@ -40,7 +40,7 @@
 </p>
 
 <p align="center">
-  <sub><b>779</b> files · <b>29</b> crates · <b>335k</b> lines of Rust · <b>4580</b> tests · <b>0</b> third-party dependencies · <b>21.9 MB</b> single-file package</sub>
+  <sub><b>789</b> files · <b>29</b> crates · <b>341k</b> lines of Rust · <b>4629</b> tests · <b>0</b> third-party dependencies · <b>22.1 MB</b> single-file package</sub>
 </p>
 
 <!-- TOC-START -->
@@ -71,7 +71,7 @@ A procedural media engine in Rust. Feed it a `.prism` scene file or call the Rus
 | --- | --- |
 | **Read** | PNG (8/16-bit, filter inversion), baseline JPEG (fixed-point IDCT, bit-identical across platforms), EXR (read/write, compression family, DWA), camera RAW, GIF / APNG frame by frame, WAV; glTF / OBJ / USDA import, USD binary .usdc (Crate) and .usdz unpacking, MaterialX node graphs (21 node types / 45 aliases / 17 BSDF slots); TTF/OTF loading with a four-level fallback chain (built-in → user → multi-script subsets → math symbols) |
 | **Compose** | OpenType parsing, GSUB/GPOS shaping, UAX #9 bidirectional text, four Arabic forms, vertical layout; formula typesetting (sub/superscripts, fractions, radicals, matrices, large operators); DSL v1/v2 compiled to a triple graph; five high-level combinators (title card / lower third / split screen / Ken Burns / morph between scenes); four transitions + morph, sampleable at any instant |
-| **Render** | Path tracing + physical BSDF (diffuse / specular / glass / metal / subsurface), glass and metal via stochastic inversion (Neumann-series Monte Carlo); Woodcock heterogeneous volumes; analytic intersections for cylinders / cones / tori / surfaces of revolution (quartic via Ferrari's closed form; on GPU, chord-tolerance tessellation + SAH-BVH, all four primitives at zero difference); triangle meshes + SAH-BVH (stable sort, deterministic builds); meshes baked to SDF for booleans / domain warping / exact collision; bitmap texture pipeline (UV / bilinear·trilinear / 7-level mip / normal·roughness maps / sRGB decode); HDR environment and IBL importance sampling + MIS; geometry instancing (112 B instance slots + shared local BLAS); Catmull-Clark subdivision + displacement; per-pixel adaptive sampling; multi-region participating media (disjoint regions + priority order); hair strand geometry + Marschner sampling; CpuRef as a first-class backend + Vulkan compute and ray-tracing pipelines |
+| **Render** | Path tracing + physical BSDF (diffuse / specular / glass / metal / subsurface), glass and metal via stochastic inversion (Neumann-series Monte Carlo); Woodcock heterogeneous volumes; analytic intersections for cylinders / cones / tori / surfaces of revolution (quartic via Ferrari's closed form; on GPU, chord-tolerance tessellation + SAH-BVH, all four primitives at zero difference); triangle meshes + SAH-BVH (stable sort, deterministic builds); meshes baked to SDF for booleans / domain warping / exact collision; bitmap texture pipeline (UV / bilinear·trilinear / 7-level mip / normal·roughness maps / sRGB decode); HDR environment and IBL importance sampling + MIS; geometry instancing (112 B instance slots + shared local BLAS); Catmull-Clark subdivision + displacement; per-pixel adaptive sampling; multi-region participating media (disjoint regions + priority order); hair strand geometry + Marschner sampling; CpuRef as a first-class backend + Vulkan compute and ray-tracing pipelines; analytic-coverage 2D vector path rasterization (matching CPU scanline and Vulkan / WebGPU compute, byte-identical) |
 | **Simulate** | Unified XPBD solver — rigid bodies / soft bodies / cloth / joints / fluids / fracture are six parameter sets of one constraint-projection loop; FLIP smoke; particle systems + AudioReactive; hair constraints and shading; flow fields / L-systems / cellular automata / reaction-diffusion / fractals / Voronoi; closed-form spring solutions and keyframes |
 | **Grade** | Secondary grading (HSL selections + RGB curves); cinematic / film / anime presets, with draft / standard / film tiers priced explicitly; blur / bloom / vignette / chromatic aberration / sharpen / glitch / dissolve; halation + dual-scale film grain (derived in pixel space); three-in-one denoising; four NPR styles (toon / watercolor / halftone / oil); PQ / HLG transfer functions, linear sRGB ↔ ACEScg, ACES output transform, OCIO configs (config.ocio → Q24 fixed-point 1D/3D LUT) |
 | **Sound** | PolyBLEP anti-aliased oscillator + closed-form ADSR envelope + 4 mood presets; scale library + 12-TET + functional-grammar chord-progression state machine + voice leading; arpeggiator / step drum machine / bar-and-beat grid; hand-written SMF parsing, SFZ sampler, granular synthesis; physical modeling / spatial panning / effect chains; multitrack mixing + peak-safe limiting; beat / onset / FFT, AudioReactive baking, loudness normalization; WAV 16/24/32-bit byte-exact round-trip |
@@ -86,17 +86,17 @@ The table lists capabilities only. What each one cannot do is in [Honest boundar
 
 ```bash
 # 1. Fetch the single-file source package and verify it
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0/prism-engine-v3.0-source.txt
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0/SHA256SUMS.txt
-sha256sum -c SHA256SUMS.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0.1/prism-engine-v3.0.1-source.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0.1/SHA256SUMS.txt
+grep 'v3.0.1' SHA256SUMS.txt | sha256sum -c -
 
 # 2. Extract the unpack script embedded in the package (Node 18+ only, no npm install)
 awk '/^UNPACK SCRIPT BEGIN$/{f=1;next} /^UNPACK SCRIPT END$/{f=0} f' \
-  prism-engine-v3.0-source.txt > unpack.cjs
-node unpack.cjs                    # restores 779 files
+  prism-engine-v3.0.1-source.txt > unpack.cjs
+node unpack.cjs                    # restores 789 files
 
 # 3. Build and run the full test suite
-cargo test --workspace --release     # 4580 passed / 0 failed
+cargo test --workspace --release     # 4629 passed / 0 failed
 
 # 4. Write nothing, just watch it render
 cargo run -p prism-app --release     # built-in demo scene
@@ -240,7 +240,7 @@ Three constraints, and what each costs:
 | --- | --- | --- |
 | Zero third-party code | All 110 runtime + 20 test dependencies are in-repo `path` dependencies; no `build.rs`, no native linking, no network at build time | Every format, algorithm, font, and codec has to be written here |
 | Bit-for-bit determinism | Fixed-point IDCT, fixed sampling sequences, a four-dimensional configuration hash; identical across platforms for identical input | No fast floating-point shortcuts, no reliance on hash-map iteration order |
-| Single-file distribution | 779 files across 29 crates merged into one 21.9 MB UTF-8 text, restored by `node unpack.cjs` | You give up browsing the source directly on GitHub |
+| Single-file distribution | 789 files across 29 crates merged into one 22.1 MB UTF-8 text, restored by `node unpack.cjs` | You give up browsing the source directly on GitHub |
 
 > ⚠️ **v2.2 distribution correction**: the v2.1 single-file distribution (`prism-engine-v2.1-source.txt`, packaged 2026-10-27) contained a BSDF multi-scatter compensation defect (oversaturated-metal grazing-angle color shift); **fixed in v2.2**. Users rendering oversaturated metals with the v2.1 single-file distribution should upgrade to v2.2.
 
@@ -251,7 +251,7 @@ Four layers, from parameters all the way down to bytes:
 1. **Signature closure**: node graphs, cache keys, snapshot keys, and frame signatures share one four-dimensional configuration hash. Change one parameter ⇒ the key must change ⇒ no stale reuse. Iteration nodes include `(ε, n)` in their key; stream nodes include the frame number; `None` degrades bit-for-bit to the old behavior.
 2. **Byte fixed points**: USD export→import→export is byte-identical; WAV 16/24/32-bit round-trips match; EXR is compared bitstream-to-bitstream against the official OpenEXR.
 3. **Packaging determinism**: packing the same source twice yields an identical SHA-256; the unpack round-trip compares every file byte by byte.
-4. **Tests as the criterion**: many of the 4580 tests lock golden values (tolerance tightened from 1e-2 to 1e-6, measured residual 4.53e-7); shape fidelity is bounded by Hausdorff distance rather than "looks close enough".
+4. **Tests as the criterion**: many of the 4629 tests lock golden values (tolerance tightened from 1e-2 to 1e-6, measured residual 4.53e-7); shape fidelity is bounded by Hausdorff distance rather than "looks close enough".
 
 <a id="architecture"></a>
 ## Architecture
@@ -295,7 +295,7 @@ Layout after unpacking:
 ## Build, test, and gates
 
 ```bash
-cargo test --workspace --release      # 4580 passed / 0 failed / 0 ignored
+cargo test --workspace --release      # 4629 passed / 0 failed / 0 ignored
 cargo xtest                           # equivalent alias
 cargo test -p prism-core --release    # single-crate smoke test
 
@@ -306,7 +306,7 @@ node tools/compliance_check.mjs --self-test  # reverse proof: must fail, proving
 node tools/pack_source_txt.mjs --verify      # pack and unpack round-trip, byte by byte
 ```
 
-- Full suite: **4580 passed / 0 failed / 0 ignored**, 188 test binaries, 110 s using all cores (release).
+- Full suite: **4629 passed / 0 failed / 0 ignored**, 239 test binaries, 110 s using all cores (release).
 - CI has six jobs: ghost-write defense, build + full tests, wasm32 build, WGSL static check, bitstream interop against official OpenEXR, Node-host cross-check.
 - The hygiene scan still has hits: the distributed documentation layer is clean, the rest sit in source comments and repository-only files. The script exists so leftovers stay **visible and fixable one by one** — not to pretend the tree is spotless.
 
@@ -321,7 +321,7 @@ Four zero-dependency gate scripts (Node only): ghost-write defense (including a 
 | --- | --- | --- | --- |
 | DNG `Compression=1/7/8` (incl. 32946 Deflate) | Supported 1/7/8 (incl. 32946 Deflate); real camera models not validated by samples | No conversion needed; real-camera samples can add a golden (unsupported values 6/34892/34712/52546 are rejected structurally) | `raw.rs:3282,3287` (read path dispatches 1/7/8/32946) + `raw_dng_synth.rs:260` (synth supports 1/7/8/32946) + 设计 §7.3 / Q10 (real-device registry) |
 | mp3 / AAC / FLAC | Decoding via external ffmpeg probe; encoding not in-house | Install ffmpeg, or stay on WAV | `README.md:213` (AAC/mp3 encoding not in-house, via ffmpeg) |
-| 2D vector path rasterization on GPU | CPU scanline only (`prism-vector` → `prism-raster`) | Bake to a bitmap before compositing when the GPU is needed | No 2D path raster kernel (`prism-vector` is consumed by `prism-genart` only). **3D curved primitives are not in this category**: chord-tolerance tessellation → SAH-BVH → GPU stack traversal, with cylinder / cone / torus / surface of revolution all at `max_channel_delta = 0` on lavapipe |
+| 2D vector path rasterization on GPU | Lit: matching Vulkan SPIR-V and WebGPU/WGSL compute kernels, byte-identical to the CPU scanline | No baking needed; the per-frame full-resolution mask uses the GPU by default and falls back to CPU when no device exists | Real device llvmpipe, 9 cases with 0 differing bytes and byte-identical repeat runs, max deviation 1.79e-7 against an f64 exact-area reference; a negative control perturbing a kernel coefficient makes the criterion FAIL, proving real GPU execution. 3D curved primitives keep their existing GPU stack-traversal path and are outside this row |
 | Metal | Code-ready (no standalone Metal backend, not lit); `is_available()` always false, not verified on hardware | Wire it up once Apple hardware and a standalone backend task are available | `prism-gpu/src/metal/mod.rs:9,192` (is_available always false) + `metal/render.rs:1` (not lit) + 设计 §7.2 Metal row |
 | WebGPU | Code-ready (T1/T2/T3 green), supported surface still Chrome/Edge only; **19/19 across 4 browser environments / 2 devices / 2 artifact builds** (incl. Edge for Android 153), hardware adapter confirmed (`isFallbackAdapter=false`); **desktop untested** | one real desktop Chrome/Edge run closes it (about 5 minutes) | (conditionally feasible, Chrome/Edge first) + 设计 §7.2 WebGPU row (19/19 on device) |
 | Hardware encoding | Probe skeleton for three platforms, no implementation (binding-ready pending C-2) | Fill in per target platform | `prism-ffi-hwenc/src/lib.rs:14` (links no platform library) + 设计 §7.2 硬件编码 row |

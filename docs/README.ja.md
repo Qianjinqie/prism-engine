@@ -24,11 +24,11 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License">
-  <img src="https://img.shields.io/badge/tests-4580%20passed-brightgreen.svg" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-4629%20passed-brightgreen.svg" alt="Tests">
   <img src="https://img.shields.io/badge/dependencies-zero-brightgreen.svg" alt="Dependencies">
-  <img src="https://img.shields.io/badge/crates-28-blue.svg" alt="Crates">
+  <img src="https://img.shields.io/badge/crates-29-blue.svg" alt="Crates">
   <img src="https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg" alt="Distribution">
-  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.0-blue.svg" alt="Release"></a>
+  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.0.1-blue.svg" alt="Release"></a>
 </p>
 
 <p align="center">
@@ -40,7 +40,7 @@
 </p>
 
 <p align="center">
-  <sub><b>779</b> ファイル · <b>29</b> crate · <b>33.5 万</b> 行の Rust · <b>4580</b> テスト · サードパーティ依存 <b>0</b> · <b>21.9 MB</b> の単一ファイル</sub>
+  <sub><b>789</b> ファイル · <b>29</b> crate · <b>34.1 万</b> 行の Rust · <b>4629</b> テスト · サードパーティ依存 <b>0</b> · <b>22.1 MB</b> の単一ファイル</sub>
 </p>
 
 <!-- TOC-START -->
@@ -71,7 +71,7 @@ Rust で書かれたプロシージャル・メディアエンジン。入力は
 | --- | --- |
 | **読む** | PNG（8/16 bit、フィルタ逆演算）、ベースライン JPEG（固定小数点 IDCT、プラットフォーム間でビット一致）、EXR（読み書き / 圧縮ファミリ / DWA）、カメラ RAW、GIF / APNG のフレーム単位、WAV；glTF / OBJ / USDA の取り込み、USD バイナリ .usdc（Crate）と .usdz 展開、MaterialX ノードグラフ（21 種のノード / 45 エイリアス / 17 個の BSDF スロット）；TTF/OTF の読み込みと「内蔵 → ユーザー → 多言語サブセット → 数学記号」の四段フォールバック |
 | **組む** | OpenType 解析、GSUB/GPOS シェーピング、UAX #9 双方向、アラビア語四形態、縦組み；数式組版（上下付き / 分数 / 根号 / 行列 / 大型演算子）；DSL v1/v2 を三つ組グラフへコンパイル；五つの高水準コンビネータ（タイトル / ローワーサード / 分割画面 / ケン・バーンズ / シーン間モーフ）；四種のトランジション + モーフ、任意時刻でサンプリング可能 |
-| **描く** | パストレーシング + 物理 BSDF（拡散 / 鏡面 / ガラス / 金属 / 表面下散乱）、ガラスと金属は確率的逆変換（ノイマン級数モンテカルロ）；Woodcock 異種ボリューム；円柱 / 円錐 / トーラス / 回転体の解析的交差（四次方程式を Ferrari の閉形式で；GPU 側は弦高許容の細分割 + SAH-BVH、四図形すべて 0 差分）；三角メッシュ + SAH-BVH（安定ソート、構築が決定的）；メッシュを SDF にベイクしてブール / 領域変形 / 正確な衝突；ビットマップテクスチャパイプライン（UV / バイリニア·トライリニア / 7 段 mip / 法線·ラフネスマップ / sRGB デコード）；HDR 環境光と IBL の重点サンプリング + MIS；ジオメトリインスタンシング（112 B インスタンススロット + 共有ローカル BLAS）；Catmull-Clark サブディビジョン + ディスプレイスメント；ピクセル単位の適応サンプリング；マルチリージョン参加媒体（互斥領域 + 優先順序）；毛束ジオメトリ + Marschner サンプリング；CpuRef を一級バックエンド + Vulkan の compute とレイトレーシングの二系統 |
+| **描く** | パストレーシング + 物理 BSDF（拡散 / 鏡面 / ガラス / 金属 / 表面下散乱）、ガラスと金属は確率的逆変換（ノイマン級数モンテカルロ）；Woodcock 異種ボリューム；円柱 / 円錐 / トーラス / 回転体の解析的交差（四次方程式を Ferrari の閉形式で；GPU 側は弦高許容の細分割 + SAH-BVH、四図形すべて 0 差分）；三角メッシュ + SAH-BVH（安定ソート、構築が決定的）；メッシュを SDF にベイクしてブール / 領域変形 / 正確な衝突；ビットマップテクスチャパイプライン（UV / バイリニア·トライリニア / 7 段 mip / 法線·ラフネスマップ / sRGB デコード）；HDR 環境光と IBL の重点サンプリング + MIS；ジオメトリインスタンシング（112 B インスタンススロット + 共有ローカル BLAS）；Catmull-Clark サブディビジョン + ディスプレイスメント；ピクセル単位の適応サンプリング；マルチリージョン参加媒体（互斥領域 + 優先順序）；毛束ジオメトリ + Marschner サンプリング；CpuRef を一級バックエンド + Vulkan の compute とレイトレーシングの二系統；2D ベクターパスの解析被覆率ラスタライズ（CPU スキャンラインと Vulkan / WebGPU compute が同式、バイト一致） |
 | **動かす** | 統一 XPBD ソルバ——剛体 / 軟体 / 布 / 関節 / 流体 / 破壊は同一の制約射影ループの六組のパラメータ；FLIP 煙；パーティクル + AudioReactive；毛の制約とシェーディング；流れ場 / L システム / セルオートマトン / 反応拡散 / フラクタル / Voronoi；ばねの解析解とキーフレーム |
 | **調える** | セカンダリグレーディング（HSL 選択 + RGB カーブ）；cinematic / film / anime プリセット、下書き / 標準 / 映画の三段階を明示的に価格付け；blur / bloom / ビネット / 色収差 / sharpen / glitch / dissolve；ハレーション + 二スケールのフィルムグレイン（ピクセル領域で導出）；三者一体のデノイズ；NPR 四風格（toon / watercolor / halftone / oil）；PQ / HLG 伝達関数、リニア sRGB ↔ ACEScg、ACES 出力変換、OCIO 設定（config.ocio → Q24 固定小数点 1D/3D LUT） |
 | **鳴らす** | PolyBLEP アンチエイリアス発振器 + ADSR 閉形式エンベロープ + 4 感情プリセット；音階ライブラリ + 12-TET + 和音進行の機能文法状態機械 + 声部進行；アルペジエイター / ステップドラム / 小節・拍グリッド；手書き SMF パーサ、SFZ サンプラー、グラニュラー合成；物理モデリング / 空間パンニング / エフェクトチェーン；マルチトラックミックス + ピーク制限；ビート / オンセット / FFT、AudioReactive ベイク、ラウドネス正規化；WAV 16/24/32 bit のバイト単位往復 |
@@ -86,17 +86,17 @@ Rust で書かれたプロシージャル・メディアエンジン。入力は
 
 ```bash
 # 1. 単一ファイルのソースパッケージを取得し、SHA-256 を検証
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0/prism-engine-v3.0-source.txt
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0/SHA256SUMS.txt
-sha256sum -c SHA256SUMS.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0.1/prism-engine-v3.0.1-source.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0.1/SHA256SUMS.txt
+grep 'v3.0.1' SHA256SUMS.txt | sha256sum -c -
 
 # 2. パッケージに埋め込まれた展開スクリプトを取り出す（Node 18+ のみ、npm install 不要）
 awk '/^UNPACK SCRIPT BEGIN$/{f=1;next} /^UNPACK SCRIPT END$/{f=0} f' \
-  prism-engine-v3.0-source.txt > unpack.cjs
-node unpack.cjs                    # 779 ファイルを復元
+  prism-engine-v3.0.1-source.txt > unpack.cjs
+node unpack.cjs                    # 789 ファイルを復元
 
 # 3. ビルドして全テストを実行
-cargo test --workspace --release     # 4580 passed / 0 failed
+cargo test --workspace --release     # 4629 passed / 0 failed
 
 # 4. 何も書かずに、まず映像を出す
 cargo run -p prism-app --release     # 内蔵デモシーン
@@ -240,7 +240,7 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 | --- | --- | --- |
 | サードパーティコードへの依存ゼロ | 実行時 110 + テスト 20 の依存はすべてリポジトリ内の `path` 依存；`build.rs` なし、ネイティブリンクなし、ビルド時にネットワークなし | あらゆるフォーマット、アルゴリズム、フォント、コーデックをここで書く必要がある |
 | バイト単位の決定性 | 固定小数点 IDCT、固定サンプリング列、四次元設定ハッシュ；同一入力ならプラットフォーム間で同一 | 浮動小数点の高速経路を捨て、ハッシュマップの反復順序に依存できない |
-| 単一ファイル配布 | 29 crate・779 ファイルを 21.9 MB の UTF-8 テキスト一つにまとめ、`node unpack.cjs` で復元 | GitHub 上でソースを直接眺める便利を捨てる |
+| 単一ファイル配布 | 29 crate・789 ファイルを 22.1 MB の UTF-8 テキスト一つにまとめ、`node unpack.cjs` で復元 | GitHub 上でソースを直接眺める便利を捨てる |
 
 > ⚠️ **v2.2 配布訂正**: v2.1 単一ファイル配布（`prism-engine-v2.1-source.txt`、2026-10-27 パッケージ）には BSDF 多散乱補償の欠陥（過飽和金属の掠射角での色ずれ）が含まれていました；**v2.2 で修正済み**。v2.1 単一ファイル配布で過飽和金属をレンダリングする方は v2.2 へアップグレードしてください。
 
@@ -251,7 +251,7 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 1. **署名閉包**：ノードグラフ、キャッシュキー、スナップショットキー、フレーム署名を四次元設定ハッシュに統一。パラメータが変わればキーも必ず変わり、誤再利用が起きない。反復ノードのキーは `(ε, n)`、ストリームノードはフレーム番号を含み、`None` では旧挙動へバイト単位で退化する。
 2. **バイト不動点**：USD はエクスポート→インポート→エクスポートがバイト一致；WAV 16/24/32 bit の往復が一致；EXR は公式 OpenEXR とビットストリーム同士で突き合わせる。
 3. **パッケージングの決定性**：同じソースを二度パッケージすると SHA-256 が一致；展開の往復で全ファイルをバイト単位で比較する。
-4. **テストを判定基準にする**：4580 件のテストの多くが黄金値を固定（許容差は 1e-2 から 1e-6 へ、実測残差 4.53e-7）；形状の忠実さは「だいたい合っている」ではなく Hausdorff 距離で上限を決める。
+4. **テストを判定基準にする**：4629 件のテストの多くが黄金値を固定（許容差は 1e-2 から 1e-6 へ、実測残差 4.53e-7）；形状の忠実さは「だいたい合っている」ではなく Hausdorff 距離で上限を決める。
 
 <a id="architecture"></a>
 ## アーキテクチャ
@@ -295,7 +295,7 @@ flowchart LR
 ## ビルド・テスト・ゲート
 
 ```bash
-cargo test --workspace --release      # 4580 passed / 0 failed / 0 ignored
+cargo test --workspace --release      # 4629 passed / 0 failed / 0 ignored
 cargo xtest                           # 同等のエイリアス
 cargo test -p prism-core --release    # 単一 crate のスモークテスト
 
@@ -306,7 +306,7 @@ node tools/compliance_check.mjs --self-test  # 反証：落ちることを確認
 node tools/pack_source_txt.mjs --verify      # パッケージと展開の往復をバイト単位で検証
 ```
 
-- 全量：**4580 passed / 0 failed / 0 ignored**、188 のテスト区間、全コア並列で 110 秒（release）。
+- 全量：**4629 passed / 0 failed / 0 ignored**、239 のテスト区間、全コア並列で 110 秒（release）。
 - CI は六つのジョブ：幽霊書き込み防御、ビルド + 全テスト、wasm32 ビルド、WGSL 静的検査、公式 OpenEXR とのビットストリーム相互検証、Node ホストのクロスチェック。
 - 衛生スキャンには依然ヒットが残ります。配布物のドキュメント層はクリア済みで、残りはソースコメントと配布対象外のリポジトリ内ファイルです。スクリプトの存在は、残存を**見える形で一件ずつ片付ける**ためであり、きれいなふりをするためではありません。
 
@@ -321,7 +321,7 @@ node tools/pack_source_txt.mjs --verify      # パッケージと展開の往復
 | --- | --- | --- | --- |
 | DNG `Compression=1/7/8`（32946 Deflate 含む） | 1/7/8 対応（32946 Deflate 含む）；実機カメラモデルは未検証（サンプルなし） | 変換不要；実カメラサンプルで golden 追加可（非対応値 6/34892/34712/52546 は構造的に拒否） | `raw.rs:3282,3287`（読み側が 1/7/8/32946 を分派）+ `raw_dng_synth.rs:260`（合成は 1/7/8/32946 対応）+ 设计 §7.3 / Q10（実機登録表） |
 | mp3 / AAC / FLAC | デコードは外部 ffmpeg の探査経由、エンコードは自前実装せず | ffmpeg を入れる、または WAV のみ使う | `README.md:213`（AAC/mp3 エンコードは自前実装せず、ffmpeg 経由） |
-| 2D ベクターパスの GPU ラスタライズ | CPU スキャンラインのみ（`prism-vector` → `prism-raster`） | GPU が必要なら先にビットマップへベイク | 2D パス用ラスタカーネルなし（`prism-vector` の消費者は `prism-genart` のみ）。**3D 曲線プリミティブは該当しない**：弦高許容の細分割 → SAH-BVH → GPU スタック走査、円柱 / 円錐 / トーラス / 回転体はいずれも lavapipe で `max_channel_delta = 0` |
+| 2D ベクターパスの GPU ラスタライズ | 点灯済み：Vulkan SPIR-V と WebGPU/WGSL compute が同式、CPU スキャンラインとバイト一致 | ベイク不要；フレームごと全解像度のマスクは既定で GPU を使い、デバイス不在時は自動的に CPU へフォールバック | 実機 llvmpipe、9 ケースで差分バイト 0・再実行もバイト一致、f64 精确面積標尺との最大差 1.79e-7；kernel 係数を摂動した負制御は判定を FAIL させ、真の GPU 実行を証明する。3D 曲線プリミティブは既存の GPU スタック走査のまま、この行の対象外 |
 | Metal | コード準備済み（独立した Metal バックエンドなし、未点灯）；`is_available()` は常に false、実機未検証 | Apple 機器と独立バックエンドの項目が用意でき次第接続 | `prism-gpu/src/metal/mod.rs:9,192`（is_available は常に false）+ `metal/render.rs:1`（未点灯）+ 设计 §7.2 Metal 行 |
 | WebGPU | コード準備済み（T1/T2/T3 緑）、対応範囲は引き続き Chrome/Edge のみ；**ブラウザ環境 4 つ / 端末 2 台 / ビルド 2 種で 19/19**（Edge for Android 153 を含む）、ハードウェアアダプタ確認済み（`isFallbackAdapter=false`）；**デスクトップは未検証** | デスクトップの Chrome/Edge で 1 回実行すれば完了（約 5 分）|（条件付き実現可能、Chrome/Edge 優先）+ 设计 §7.2 WebGPU 行（実機 19/19）|
 | ハードウェアエンコード | 三プラットフォームの探査スケルトンのみ、実装なし（C-2 待ちでバインド準備済み） | 対象プラットフォームごとに実装 | `prism-ffi-hwenc/src/lib.rs:14`（プラットフォームライブラリを link しない）+ 设计 §7.2 硬件编码 行 |

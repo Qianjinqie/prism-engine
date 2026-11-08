@@ -24,11 +24,11 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License">
-  <img src="https://img.shields.io/badge/tests-4580%20passed-brightgreen.svg" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-4629%20passed-brightgreen.svg" alt="Tests">
   <img src="https://img.shields.io/badge/dependencies-zero-brightgreen.svg" alt="Dependencies">
-  <img src="https://img.shields.io/badge/crates-28-blue.svg" alt="Crates">
+  <img src="https://img.shields.io/badge/crates-29-blue.svg" alt="Crates">
   <img src="https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg" alt="Distribution">
-  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.0-blue.svg" alt="Release"></a>
+  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.0.1-blue.svg" alt="Release"></a>
 </p>
 
 <p align="center">
@@ -40,7 +40,7 @@
 </p>
 
 <p align="center">
-  <sub><b>779</b> 个文件 &nbsp;·&nbsp; <b>29</b> 个 crate &nbsp;·&nbsp; <b>33.5 万</b> 行 Rust &nbsp;·&nbsp; <b>4580</b> 条测试 &nbsp;·&nbsp; <b>0</b> 个第三方依赖 &nbsp;·&nbsp; <b>21.9 MB</b> 单文件</sub>
+  <sub><b>789</b> 个文件 &nbsp;·&nbsp; <b>29</b> 个 crate &nbsp;·&nbsp; <b>34.1 万</b> 行 Rust &nbsp;·&nbsp; <b>4629</b> 条测试 &nbsp;·&nbsp; <b>0</b> 个第三方依赖 &nbsp;·&nbsp; <b>22.1 MB</b> 单文件</sub>
 </p>
 
 <!-- TOC-START -->
@@ -70,7 +70,7 @@ Rust 写的程序化媒体引擎。输入 `.prism` 场景文本或 Rust 调用�
 | --- | --- |
 | **读** | PNG（8/16 bit，滤波逆运算）、基线 JPEG（定点 IDCT，跨平台逐位一致）、EXR（读写 / 压缩族 / DWA）、相机 RAW、GIF / APNG 逐帧、WAV；glTF / OBJ / USDA 导入，USD 二进制 .usdc（Crate）与 .usdz 解包，MaterialX 节点图（21 种节点 / 45 别名 / 17 个 BSDF 槽）；TTF/OTF 装载与「内置 → 用户 → 多语种子集 → 数学符号」四级回退链 |
 | **排** | OpenType 解析、GSUB/GPOS 整形、UAX #9 双向、阿拉伯四态、竖排；公式排版（上下标 / 分式 / 根号 / 矩阵 / 大型算子）；DSL v1/v2 编译成三元组图；五个高层组合子（片头 / 人名条 / 分屏 / 肯·伯恩斯 / 场景变形）；四种转场 + morph，任意时刻可采样 |
-| **画** | 路径追踪 + 物理 BSDF（漫反射 / 镜面 / 玻璃 / 金属 / 次表面），玻璃与金属走随机逆（Neumann 级数蒙特卡洛）；Woodcock 异质体积；圆柱 / 圆锥 / 圆环 / 旋转曲面解析求交（四次方程 Ferrari 闭式解；GPU 侧走弦高受控三角化 + SAH-BVH，四种图元 0 差异）；三角网格 + SAH-BVH（稳定排序，构建确定性）；mesh 烘焙成 SDF 后获得布尔 / 域变形 / 精确碰撞；位图纹理管线（UV / 双线性·三线性 / 7 级 mip / 法线·粗糙度贴图 / sRGB 解码）；HDR 环境光与 IBL 重要性采样 + MIS；几何实例化（112 B 实例槽 + 共享局部 BLAS）；Catmull-Clark 细分 + 位移贴图；逐像素自适应采样；多层参与介质（互斥区域 + 优先级全序）；毛发曲线几何 + Marschner 采样；CpuRef 一等后端 + Vulkan compute 与光追双管线 |
+| **画** | 路径追踪 + 物理 BSDF（漫反射 / 镜面 / 玻璃 / 金属 / 次表面），玻璃与金属走随机逆（Neumann 级数蒙特卡洛）；Woodcock 异质体积；圆柱 / 圆锥 / 圆环 / 旋转曲面解析求交（四次方程 Ferrari 闭式解；GPU 侧走弦高受控三角化 + SAH-BVH，四种图元 0 差异）；三角网格 + SAH-BVH（稳定排序，构建确定性）；mesh 烘焙成 SDF 后获得布尔 / 域变形 / 精确碰撞；位图纹理管线（UV / 双线性·三线性 / 7 级 mip / 法线·粗糙度贴图 / sRGB 解码）；HDR 环境光与 IBL 重要性采样 + MIS；几何实例化（112 B 实例槽 + 共享局部 BLAS）；Catmull-Clark 细分 + 位移贴图；逐像素自适应采样；多层参与介质（互斥区域 + 优先级全序）；毛发曲线几何 + Marschner 采样；CpuRef 一等后端 + Vulkan compute 与光追双管线；2D 矢量路径解析覆盖率光栅（CPU 扫描线与 Vulkan / WebGPU compute 同式、逐字节一致） |
 | **动** | XPBD 统一求解器——刚体 / 软体 / 布料 / 关节 / 流体 / 破碎是同一个约束投影循环的六组参数；FLIP 烟雾；粒子系统 + AudioReactive；毛发约束与着色；流场 / L 系统 / 元胞自动机 / 反应扩散 / 分形 / Voronoi；Spring 解析解与关键帧 |
 | **调** | 二级调色（HSL 选区 + RGB 曲线）；cinematic / film / anime 预设，草稿 / 标准 / 电影三档显式标价；blur / bloom / vignette / 色差 / sharpen / glitch / dissolve；halation 渗光 + 双尺度胶片颗粒（按像素域派生）；三合一降噪；NPR 四风格（toon / watercolor / halftone / oil）；PQ / HLG 传输函数、线性 sRGB ↔ ACEScg、ACES 输出变换、OCIO 配置（config.ocio → Q24 定点 1D/3D LUT） |
 | **声** | PolyBLEP 防混叠振荡器 + ADSR 闭式包络 + 4 情绪预设；音阶库 + 12-TET + 和弦进行功能语法状态机 + 声部引导；琶音器 / step 鼓机 / 小节节拍网格；手写 SMF 解析、SFZ 采样器、颗粒合成；物理建模 / 空间声像 / 效果器链；多轨混音 + 峰值防削波；节拍 / onset / FFT、AudioReactive 烘焙、响度归一；WAV 16/24/32 bit 逐字节往返 |
@@ -85,17 +85,17 @@ Rust 写的程序化媒体引擎。输入 `.prism` 场景文本或 Rust 调用�
 
 ```bash
 # 1. 取单文件源码包，顺便校验 SHA-256
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0/prism-engine-v3.0-source.txt
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0/SHA256SUMS.txt
-sha256sum -c SHA256SUMS.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0.1/prism-engine-v3.0.1-source.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0.1/SHA256SUMS.txt
+grep 'v3.0.1' SHA256SUMS.txt | sha256sum -c -
 
 # 2. 抽出包内的解包脚本（只需 Node 18+，不需要 npm install）
 awk '/^UNPACK SCRIPT BEGIN$/{f=1;next} /^UNPACK SCRIPT END$/{f=0} f' \
-  prism-engine-v3.0-source.txt > unpack.cjs
-node unpack.cjs                    # 还原 779 个文件
+  prism-engine-v3.0.1-source.txt > unpack.cjs
+node unpack.cjs                    # 还原 789 个文件
 
 # 3. 编译并跑全量测试
-cargo test --workspace --release     # 4580 passed / 0 failed
+cargo test --workspace --release     # 4629 passed / 0 failed
 
 # 4. 什么都不写，先看它出片
 cargo run -p prism-app --release     # 内置演示场景
@@ -241,7 +241,7 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 | --- | --- | --- |
 | 零第三方代码依赖 | 110 条运行期 + 20 条测试依赖全是仓内 `path` 依赖；无 `build.rs`、无原生链接、构建不联网 | 每种格式、每个算法、字体、编解码器全部自己写 |
 | 逐字节确定性 | 定点 IDCT、固定采样序列、四维配置哈希；同输入跨平台逐位一致 | 放弃浮点快路径，不能依赖无序容器的遍历顺序 |
-| 单文件分发 | 779 个文件、29 个 crate 合并成一个 21.9 MB 的 UTF-8 文本，`node unpack.cjs` 还原 | 放弃「在 GitHub 上直接点开看源码」的便利 |
+| 单文件分发 | 789 个文件、29 个 crate 合并成一个 22.1 MB 的 UTF-8 文本，`node unpack.cjs` 还原 | 放弃「在 GitHub 上直接点开看源码」的便利 |
 
 > ⚠️ **v2.2 分发更正**：v2.1 单文件分发（`prism-engine-v2.1-source.txt`，打包于 2026-10-27）含 BSDF 多散射补偿缺陷（高饱和金属掠射角偏色），**v2.2 已修**。使用 v2.1 单文件分发渲染高饱和金属者请升级至 v2.2。
 
@@ -252,7 +252,7 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 1. **签名闭包**：节点图、缓存键、快照键、帧签名统一为四维配置哈希。改一个参数 ⇒ 键必变 ⇒ 不会误复用；迭代节点的键含 `(ε, n)`，流节点的键含帧号，`None` 时逐字节退化到旧行为。
 2. **字节不动点**：USD 导出→导入→导出逐字节一致；WAV 16/24/32 bit 往返一致；EXR 与官方 OpenEXR 做跨实现比特流对拍。
 3. **打包确定性**：同一份源码两次打包，SHA-256 完全一致；解包回环逐文件逐字节比对。
-4. **测试即判据**：4580 条测试里大量黄金值锁定（容差从 1e-2 收到 1e-6，实测残差 4.53e-7）；形状保真度用 Hausdorff 界，而不是「看着差不多」。
+4. **测试即判据**：4629 条测试里大量黄金值锁定（容差从 1e-2 收到 1e-6，实测残差 4.53e-7）；形状保真度用 Hausdorff 界，而不是「看着差不多」。
 
 <a id="architecture"></a>
 ## 架构
@@ -296,7 +296,7 @@ flowchart LR
 ## 构建、测试与门禁
 
 ```bash
-cargo test --workspace --release      # 4580 passed / 0 failed / 0 ignored
+cargo test --workspace --release      # 4629 passed / 0 failed / 0 ignored
 cargo xtest                           # 等价别名
 cargo test -p prism-core --release    # 单 crate 冒烟
 
@@ -307,7 +307,7 @@ node tools/compliance_check.mjs --self-test  # 反向自证：应判红，证明
 node tools/pack_source_txt.mjs --verify      # 打包并解包回环校验（逐文件逐字节）
 ```
 
-- 全量：**4580 passed / 0 failed / 0 ignored**，188 个测试段，全核并行 110 秒（release）。
+- 全量：**4629 passed / 0 failed / 0 ignored**，239 个测试段，全核并行 110 秒（release）。
 - CI 六个 job：幽灵写入防御、编译 + 全量测试、wasm32 构建、WGSL 静态检查、与官方 OpenEXR 跨实现对拍、Node 宿主交叉判对。
 - 卫生扫描仍有存量命中：随包分发的文档层已清零，余下在源码注释与不随包分发的仓库文件中。脚本的存在是为了让残留**可见、可逐条清**，而不是假装干净。
 
@@ -322,7 +322,7 @@ node tools/pack_source_txt.mjs --verify      # 打包并解包回环校验（逐
 | --- | --- | --- | --- |
 | DNG `Compression=1/7/8`（含 32946 Deflate） | 已支持 1/7/8（含 32946 Deflate）；真实机型未经样本验证 | 无需转存；真实相机样本可追加 golden（未支持取值 6/34892/34712/52546 结构化拒绝） | `raw.rs:3282,3287`（读端分派 1/7/8/32946）+ `raw_dng_synth.rs:260`（合成支持 1/7/8/32946）+ 设计 §7.3 / Q10（真机登记表） |
 | mp3 / AAC / FLAC | 解码走外部 ffmpeg 探测；编码不自研 | 装 ffmpeg，或只用 WAV | `README.md:213`（AAC/mp3 编码不自研，走 ffmpeg 协作） |
-| 2D 矢量路径 GPU 光栅 | 仅 CPU 扫描线（`prism-vector` → `prism-raster`） | 需要 GPU 时先烘焙成位图再合成 | 无 2D 路径光栅 kernel（`prism-vector` 只被 `prism-genart` 消费）。**3D 曲线图元不在此列**：弦高受控三角化 → SAH-BVH → GPU 栈式遍历，圆柱 / 圆锥 / 圆环 / 旋转曲面在 lavapipe 上 `max_channel_delta = 0` |
+| 2D 矢量路径 GPU 光栅 | 已点亮：Vulkan SPIR-V 与 WebGPU/WGSL compute 同式，与 CPU 扫描线逐字节一致 | 无需烘焙成位图；逐帧全分辨率遮罩默认走 GPU，无设备时自动回退 CPU | llvmpipe 真机 9 用例 dispatch→fence→readback 逐字节 0 差异、两跑一致；与 f64 精确面积标尺最大差 1.79e-7；扰动 kernel 系数的负控使判据 FAIL，证明真跑 GPU。3D 曲线图元走既有 GPU 栈式遍历，不在此行口径内 |
 | Metal | 代码就绪（不提供独立 Metal 后端，不点亮）；`is_available()` 恒 false，未实机验证 | 有 Apple 设备且立独立后端项后再接 | `prism-gpu/src/metal/mod.rs:9,192`（is_available 恒 false）+ `metal/render.rs:1`（未点亮）+ 设计 §7.2 Metal 行 |
 | WebGPU | 代码就绪（T1/T2/T3 绿），对外支持面仍限 Chrome/Edge；**4 个浏览器环境 / 2 台设备 / 2 个产物版本各 19/19**（含 Edge for Android 153），硬件适配器已确认（`isFallbackAdapter=false`）；**桌面档未实测** | 桌面 Chrome/Edge 实跑一次即可结项（约 5 分钟） | （条件可行，Chrome/Edge 优先）+ 设计 §7.2 WebGPU 行（真机 19/19） |
 | 硬件编码 | 三平台探测骨架，未接实现（绑定就绪待 C-2） | 按目标平台填 | `prism-ffi-hwenc/src/lib.rs:14`（不 link 任何平台库）+ 设计 §7.2 硬件编码行 |
