@@ -228,7 +228,7 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 
 | 后端 | 状态 | 证据 |
 | --- | --- | --- |
-| **Vulkan** | 真实运行 | compute + 光追双管线；Mesa lavapipe 软件 ICD 上无 GPU 可验证；`render_scene` 出帧与 CPU 参考**逐字节 0 差异**；`is_available()` 是 compute ∧ render 双自检 |
+| **Vulkan** | 真实运行 | compute + 光追双管线；Mesa lavapipe 软件 ICD 上无 GPU 可验证；`render_scene` 出帧与 CPU 参考**逐字节 0 差异**；`is_available()` 是 compute ∧ render 双自检。另有 wavefront 五段式路径追踪（`render_wavefront_frame`，generate/extend/connect/shade/accumulate 五 kernel）：与 megakernel 在软件 ICD 上逐像素 0 差异，4 vs 8 弹射 PSNR 47.23 dB；产品出片路径不变，WebGPU 腿运行时未采 |
 | **Metal** | 代码就绪（不提供独立 Metal 后端，不点亮），未实机验证 | 同构移植完成（历史资产），`is_available()` 恒 false |
 | **WebGPU** | 代码就绪（T1/T2/T3 绿），对外支持面仍限 Chrome/Edge；T3 已在三星 Galaxy S10 + 荣耀 X40 2 台真机各 19/19 全项通过（同一份 wasm）（非 Chrome/Edge 品牌，品牌项待验） | 可行性评估完成（迁移量 4–6 人日），渲染路径 T03 落地；真机 19/19（4 个浏览器环境 / 2 台设备） |
 
