@@ -78,7 +78,7 @@ Rust 写的程序化媒体引擎。输入 `.prism` 场景文本或 Rust 调用�
 | **接** | MCP stdio 三工具（`scene_check` / `render_submit` / `diagnose`）；节点 SDK 语义化版本协商 + 示例节点包；CLI（`render` / `preview` / `demo`）；交互式编辑器双档预览（Draft 几何图案 / Real 低 spp，与出片同源、逐字节相同）+ 子图签名增量；batch manifest 笛卡尔积；三平台硬编探测骨架（VideoToolbox / NVENC / VAAPI，未接后端） |
 | **旁路** | 生成艺术：流场 / L 系统 / 元胞自动机 / 反应扩散 / Mandelbrot / Voronoi，矢量 draw-on 与图表。AI 辅助：确定性 mock 推理层（分镜 / 字幕 / 色彩提示），模型权重当数据读、乘加代码自己写，不引 ML 框架 |
 
-这张表只列能力。每项「做不到什么」写在下面的[诚实的边界](#诚实的边界)，不藏在表里。
+这张表只列能力。每项「做不到什么」写在下面，不藏在表里。
 
 <a id="quickstart"></a>
 ## 三分钟跑起来
