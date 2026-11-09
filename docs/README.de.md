@@ -25,7 +25,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/tests-4629%20passed-brightgreen.svg" alt="Tests">
-  <img src="https://img.shields.io/badge/dependencies-zero-brightgreen.svg" alt="Dependencies">
+  <img src="https://img.shields.io/badge/backends-CPU%20%2B%20Vulkan-lightgrey.svg" alt="Backends">
   <img src="https://img.shields.io/badge/crates-29-blue.svg" alt="Crates">
   <img src="https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg" alt="Distribution">
   <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.0.1-blue.svg" alt="Release"></a>
@@ -40,7 +40,7 @@
 </p>
 
 <p align="center">
-  <sub><b>789</b> Dateien · <b>29</b> Crates · <b>341.000</b> Zeilen Rust · <b>4629</b> Tests · <b>0</b> Fremdabhängigkeiten · <b>22,1 MB</b> Einzeldatei</sub>
+  <sub><b>789</b> Dateien · <b>29</b> Crates · <b>341.000</b> Zeilen Rust · <b>4629</b> Tests · <b>22,1 MB</b> Einzeldatei</sub>
 </p>
 
 <!-- TOC-START -->
@@ -333,7 +333,7 @@ Das sind keine „später“-Punkte. Sie werden heute ausdrücklich nicht unters
 <a id="compliance"></a>
 ## Compliance
 
-Die Engine verspricht null Fremdcode-Abhängigkeiten und prüft das selbst:
+Fremdcode-Abhängigkeiten sind null, selbst geprüft:
 
 - **C1 Kein Fremdcode**: Alle 130 Abhängigkeiten (110 Laufzeit + 20 Test) sind `path`-Abhängigkeiten im Repo; kein `build.rs`, keine nativen Link-Direktiven; `Cargo.lock` fixiert 29 Repo-Pakete.
 - **C2 Vollständiges Asset-Register**: Alle fünf Assets haben vollständige Haupttabellenfelder; Schriften stehen unter SIL OFL 1.1, der vollständige Lizenztext liegt bei der Schrift unter `src/prism-text/font_data/LICENSE`.

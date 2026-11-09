@@ -25,7 +25,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/tests-4629%20passed-brightgreen.svg" alt="Tests">
-  <img src="https://img.shields.io/badge/dependencies-zero-brightgreen.svg" alt="Dependencies">
+  <img src="https://img.shields.io/badge/backends-CPU%20%2B%20Vulkan-lightgrey.svg" alt="Backends">
   <img src="https://img.shields.io/badge/crates-29-blue.svg" alt="Crates">
   <img src="https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg" alt="Distribution">
   <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.0.1-blue.svg" alt="Release"></a>
@@ -40,7 +40,7 @@
 </p>
 
 <p align="center">
-  <sub><b>789</b> files · <b>29</b> crates · <b>341k</b> lines of Rust · <b>4629</b> tests · <b>0</b> third-party dependencies · <b>22.1 MB</b> single-file package</sub>
+  <sub><b>789</b> files · <b>29</b> crates · <b>341k</b> lines of Rust · <b>4629</b> tests · <b>22.1 MB</b> single-file package</sub>
 </p>
 
 <!-- TOC-START -->
@@ -333,7 +333,7 @@ These are not "later" items. They are explicitly unsupported today. Better here 
 <a id="compliance"></a>
 ## Compliance
 
-The engine promises zero third-party code dependencies, verified by self-check:
+Third-party code dependencies are zero, verified by self-check:
 
 - **C1 Zero third-party code**: all 130 dependencies (110 runtime + 20 test) are in-repo `path` dependencies; no `build.rs`, no native link directives; `Cargo.lock` pins 29 in-repo packages.
 - **C2 Complete asset registry**: all five asset entries have their main-table fields; fonts are distributed under SIL OFL 1.1 with the full license text next to the font at `src/prism-text/font_data/LICENSE`.

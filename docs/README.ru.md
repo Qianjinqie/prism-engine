@@ -25,7 +25,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/tests-4629%20passed-brightgreen.svg" alt="Tests">
-  <img src="https://img.shields.io/badge/dependencies-zero-brightgreen.svg" alt="Dependencies">
+  <img src="https://img.shields.io/badge/backends-CPU%20%2B%20Vulkan-lightgrey.svg" alt="Backends">
   <img src="https://img.shields.io/badge/crates-29-blue.svg" alt="Crates">
   <img src="https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg" alt="Distribution">
   <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.0.1-blue.svg" alt="Release"></a>
@@ -40,7 +40,7 @@
 </p>
 
 <p align="center">
-  <sub><b>789</b> файла · <b>29</b> crate · <b>341 тыс.</b> строк Rust · <b>4629</b> тестов · <b>0</b> сторонних зависимостей · <b>22,1 МБ</b> одним файлом</sub>
+  <sub><b>789</b> файла · <b>29</b> crate · <b>341 тыс.</b> строк Rust · <b>4629</b> тестов · <b>22,1 МБ</b> одним файлом</sub>
 </p>
 
 <!-- TOC-START -->
@@ -333,7 +333,7 @@ node tools/pack_source_txt.mjs --verify      # упаковка и распак�
 <a id="compliance"></a>
 ## Соответствие
 
-Движок обещает ноль сторонних кодовых зависимостей и проверяет это сам:
+Сторонних кодовых зависимостей нет, что проверяется самопроверкой:
 
 - **C1 Ноль стороннего кода**: все 130 зависимостей (110 рабочих + 20 тестовых) — `path`-зависимости внутри репозитория; нет `build.rs`, нет директив нативной линковки; `Cargo.lock` фиксирует 29 пакетов репозитория.
 - **C2 Полный реестр ассетов**: у всех пяти ассетов заполнены поля основной таблицы; шрифты распространяются по SIL OFL 1.1, полный текст лицензии лежит рядом со шрифтом в `src/prism-text/font_data/LICENSE`.

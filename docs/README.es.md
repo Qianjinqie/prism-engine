@@ -25,7 +25,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/tests-4629%20passed-brightgreen.svg" alt="Tests">
-  <img src="https://img.shields.io/badge/dependencies-zero-brightgreen.svg" alt="Dependencies">
+  <img src="https://img.shields.io/badge/backends-CPU%20%2B%20Vulkan-lightgrey.svg" alt="Backends">
   <img src="https://img.shields.io/badge/crates-29-blue.svg" alt="Crates">
   <img src="https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg" alt="Distribution">
   <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.0.1-blue.svg" alt="Release"></a>
@@ -40,7 +40,7 @@
 </p>
 
 <p align="center">
-  <sub><b>789</b> archivos · <b>29</b> crates · <b>341 mil</b> líneas de Rust · <b>4629</b> pruebas · <b>0</b> dependencias de terceros · <b>22,1 MB</b> en un solo archivo</sub>
+  <sub><b>789</b> archivos · <b>29</b> crates · <b>341 mil</b> líneas de Rust · <b>4629</b> pruebas · <b>22,1 MB</b> en un solo archivo</sub>
 </p>
 
 <!-- TOC-START -->
@@ -333,7 +333,7 @@ No son puntos de «ya veremos». Hoy no están soportados, explícitamente. Mejo
 <a id="compliance"></a>
 ## Cumplimiento
 
-El motor promete cero dependencias de código de terceros y lo verifica por autocomprobación:
+Las dependencias de código de terceros son cero, verificadas por autocomprobación:
 
 - **C1 Cero código de terceros**: las 130 dependencias (110 de ejecución + 20 de prueba) son `path` dentro del repositorio; sin `build.rs`, sin directivas de enlace nativo; `Cargo.lock` fija 29 paquetes del repositorio.
 - **C2 Registro de activos completo**: las cinco entradas de activos tienen completos los campos de la tabla principal; las fuentes se distribuyen bajo SIL OFL 1.1 con el texto completo de la licencia junto a la fuente en `src/prism-text/font_data/LICENSE`.

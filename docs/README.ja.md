@@ -25,7 +25,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/tests-4629%20passed-brightgreen.svg" alt="Tests">
-  <img src="https://img.shields.io/badge/dependencies-zero-brightgreen.svg" alt="Dependencies">
+  <img src="https://img.shields.io/badge/backends-CPU%20%2B%20Vulkan-lightgrey.svg" alt="Backends">
   <img src="https://img.shields.io/badge/crates-29-blue.svg" alt="Crates">
   <img src="https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg" alt="Distribution">
   <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.0.1-blue.svg" alt="Release"></a>
@@ -40,7 +40,7 @@
 </p>
 
 <p align="center">
-  <sub><b>789</b> ファイル · <b>29</b> crate · <b>34.1 万</b> 行の Rust · <b>4629</b> テスト · サードパーティ依存 <b>0</b> · <b>22.1 MB</b> の単一ファイル</sub>
+  <sub><b>789</b> ファイル · <b>29</b> crate · <b>34.1 万</b> 行の Rust · <b>4629</b> テスト · <b>22.1 MB</b> の単一ファイル</sub>
 </p>
 
 <!-- TOC-START -->
@@ -333,7 +333,7 @@ node tools/pack_source_txt.mjs --verify      # パッケージと展開の往復
 <a id="compliance"></a>
 ## コンプライアンス
 
-エンジンはサードパーティコード依存ゼロを掲げ、自己点検で検証しています：
+サードパーティコード依存はゼロで、自己点検で検証しています：
 
 - **C1 サードパーティコード依存ゼロ**：130 の依存（実行時 110 + テスト 20）はすべてリポジトリ内の `path` 依存。`build.rs` なし、ネイティブリンク指令なし。`Cargo.lock` はリポジトリ内 29 パッケージを固定。
 - **C2 アセット登録の完備**：5 件のアセットの主表項目が揃っています。フォントは SIL OFL 1.1 で配布し、ライセンス全文を `src/prism-text/font_data/LICENSE` に同梱。

@@ -25,7 +25,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/tests-4629%20passed-brightgreen.svg" alt="Tests">
-  <img src="https://img.shields.io/badge/dependencies-zero-brightgreen.svg" alt="Dependencies">
+  <img src="https://img.shields.io/badge/backends-CPU%20%2B%20Vulkan-lightgrey.svg" alt="Backends">
   <img src="https://img.shields.io/badge/crates-29-blue.svg" alt="Crates">
   <img src="https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg" alt="Distribution">
   <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.0.1-blue.svg" alt="Release"></a>
@@ -40,7 +40,7 @@
 </p>
 
 <p align="center">
-  <sub><b>789</b> 个文件 &nbsp;·&nbsp; <b>29</b> 个 crate &nbsp;·&nbsp; <b>34.1 万</b> 行 Rust &nbsp;·&nbsp; <b>4629</b> 条测试 &nbsp;·&nbsp; <b>0</b> 个第三方依赖 &nbsp;·&nbsp; <b>22.1 MB</b> 单文件</sub>
+  <sub><b>789</b> 个文件 &nbsp;·&nbsp; <b>29</b> 个 crate &nbsp;·&nbsp; <b>34.1 万</b> 行 Rust &nbsp;·&nbsp; <b>4629</b> 条测试 &nbsp;·&nbsp; <b>22.1 MB</b> 单文件</sub>
 </p>
 
 <!-- TOC-START -->
@@ -78,7 +78,7 @@ Rust 写的程序化媒体引擎。输入 `.prism` 场景文本或 Rust 调用�
 | **接** | MCP stdio 三工具（`scene_check` / `render_submit` / `diagnose`）；节点 SDK 语义化版本协商 + 示例节点包；CLI（`render` / `preview` / `demo`）；交互式编辑器双档预览（Draft 几何图案 / Real 低 spp，与出片同源、逐字节相同）+ 子图签名增量；batch manifest 笛卡尔积；三平台硬编探测骨架（VideoToolbox / NVENC / VAAPI，未接后端） |
 | **旁路** | 生成艺术：流场 / L 系统 / 元胞自动机 / 反应扩散 / Mandelbrot / Voronoi，矢量 draw-on 与图表。AI 辅助：确定性 mock 推理层（分镜 / 字幕 / 色彩提示），模型权重当数据读、乘加代码自己写，不引 ML 框架 |
 
-这张表只列能力。每项「做不到什么」写在下面，不藏在表里。
+这张表只列能力。每项「做不到什么」写在下面的[诚实的边界](#诚实的边界)，不藏在表里。
 
 <a id="quickstart"></a>
 ## 三分钟跑起来

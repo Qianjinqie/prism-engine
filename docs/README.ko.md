@@ -25,7 +25,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/tests-4629%20passed-brightgreen.svg" alt="Tests">
-  <img src="https://img.shields.io/badge/dependencies-zero-brightgreen.svg" alt="Dependencies">
+  <img src="https://img.shields.io/badge/backends-CPU%20%2B%20Vulkan-lightgrey.svg" alt="Backends">
   <img src="https://img.shields.io/badge/crates-29-blue.svg" alt="Crates">
   <img src="https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg" alt="Distribution">
   <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.0.1-blue.svg" alt="Release"></a>
@@ -40,7 +40,7 @@
 </p>
 
 <p align="center">
-  <sub><b>789</b> 파일 · <b>29</b> crate · <b>34.1만</b> 줄의 Rust · <b>4629</b> 테스트 · 서드파티 의존성 <b>0</b> · <b>22.1 MB</b> 단일 파일</sub>
+  <sub><b>789</b> 파일 · <b>29</b> crate · <b>34.1만</b> 줄의 Rust · <b>4629</b> 테스트 · <b>22.1 MB</b> 단일 파일</sub>
 </p>
 
 <!-- TOC-START -->
@@ -333,7 +333,7 @@ node tools/pack_source_txt.mjs --verify      # 패키징과 언팩 왕복을 바
 <a id="compliance"></a>
 ## 컴플라이언스
 
-엔진은 서드파티 코드 의존성 제로를 표방하며 자체 점검으로 검증합니다:
+서드파티 코드 의존성은 제로이며, 자체 점검으로 검증합니다:
 
 - **C1 서드파티 코드 의존성 제로**: 130개 의존성(런타임 110 + 테스트 20)이 모두 저장소 내 `path` 의존성. `build.rs` 없음, 네이티브 링크 지시 없음. `Cargo.lock`이 저장소 내 29개 패키지를 고정.
 - **C2 에셋 등록 완비**: 5개 에셋의 주표 항목이 모두 채워져 있습니다. 폰트는 SIL OFL 1.1로 배포하며 라이선스 전문을 `src/prism-text/font_data/LICENSE`에 동봉.
