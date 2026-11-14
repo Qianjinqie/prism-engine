@@ -31,7 +31,7 @@ mod r1_parity;
 use r1_parity::{camera_uniform, device_ready, sobol_table_bytes};
 use prism_core::EvalCtx;
 use prism_gpu::vulkan::wavefront::{
-    WavefrontLight, WavefrontMaterial, WavefrontMode, WavefrontRequest, WavefrontTri,
+    WavefrontMaterial, WavefrontMode, WavefrontRequest, WavefrontTri,
 };
 use prism_gpu::vulkan::VulkanBackend;
 use prism_gpu::AestheticReq;

@@ -77,7 +77,7 @@ fn run_pooled_scenario() -> Vec<Vec<u8>> {
     let mut out: Vec<Vec<u8>> = Vec::with_capacity(FRAMES);
     for i in 0..FRAMES {
         let t = i as f32 / FPS as f32;
-        let mut fb = frame_pool::render_frame_pooled(&mut device, &scene, t, DUR, W, H);
+        let fb = frame_pool::render_frame_pooled(&mut device, &scene, t, DUR, W, H);
         out.push(fb.pixels.clone()); // 捕获逐字节结果
         FramePool::release(fb); // 归还池，供下一帧复用（产生命中）
     }
@@ -235,4 +235,124 @@ fn rss_report_is_produced() {
     assert_eq!(report.width, W);
     assert_eq!(report.height, H);
     let _ = report.peak_rss_kib; // 字段存在且可读取（Linux 为 Some，其他平台 None）
+}
+
+// ---------------------------------------------------------------------------
+// 验收 5（V3.1 收尾 C）：帧池贯穿出片链路 / 每帧分配次数下降可验证
+// ---------------------------------------------------------------------------
+
+/// 固定 RGBA8 基帧（池化 / 非池化两条路径用同一输入）。
+fn fixed_rgba() -> Vec<[u8; 4]> {
+    (0..(W * H) as usize)
+        .map(|i| [(i & 0xff) as u8, (i >> 3 & 0xff) as u8, (i >> 7 & 0xff) as u8, 255])
+        .collect()
+}
+
+/// 非池化基线：每帧新建 `Framebuffer` 并填充（旧出片链路每帧一次大分配）。
+fn run_alloc_heavy(rgba: &[[u8; 4]]) -> u64 {
+    measure::reset_counters();
+    let base: Counters = measure::snapshot();
+    for _ in 0..FRAMES {
+        let mut pixels: Vec<u8> = Vec::with_capacity(rgba.len() * 4);
+        for p in rgba {
+            pixels.extend_from_slice(p);
+        }
+        let fb = Framebuffer { width: W, height: H, pixels };
+        std::hint::black_box(&fb);
+    }
+    measure::snapshot().delta_since(&base).alloc_count
+}
+
+/// 池化链路：每帧 `pack_rgba8`（从池取）→ 交付 → `release`（归还复用）。
+fn run_pooled_pack(rgba: &[[u8; 4]]) -> (u64, PoolStats) {
+    FramePool::clear();
+    frame_pool::reset_pool_stats();
+    measure::reset_counters();
+    let base: Counters = measure::snapshot();
+    for _ in 0..FRAMES {
+        let fb = frame_pool::pack_rgba8(rgba, W, H);
+        std::hint::black_box(&fb);
+        FramePool::release(fb);
+    }
+    (
+        measure::snapshot().delta_since(&base).alloc_count,
+        frame_pool::pool_stats(),
+    )
+}
+
+#[test]
+fn pooled_main_chain_reduces_allocations_per_frame() {
+    let _guard = serial_guard();
+    let rgba = fixed_rgba();
+    // 预热：让 thread_local 池 / 分配器的惰性初始化不计入任一测量窗口。
+    let _ = run_pooled_pack(&rgba);
+    let heavy: u64 = run_alloc_heavy(&rgba);
+    let (pooled, stats): (u64, PoolStats) = run_pooled_pack(&rgba);
+
+    let heavy_per_frame: u64 = measure::alloc_per_frame(
+        Counters::default(),
+        Counters { alloc_count: heavy, ..Counters::default() },
+        FRAMES as u64,
+    );
+    let pooled_per_frame: u64 = measure::alloc_per_frame(
+        Counters::default(),
+        Counters { alloc_count: pooled, ..Counters::default() },
+        FRAMES as u64,
+    );
+
+    assert!(stats.hits > 0, "帧池必须发生跨帧复用命中");
+    assert_eq!(stats.misses, 1, "同尺寸序列只应首次分配一次缓冲");
+    assert_eq!(stats.hits, (FRAMES - 1) as u64, "其余帧应命中复用");
+    assert!(
+        pooled_per_frame < heavy_per_frame,
+        "池化链路每帧分配次数必须下降：非池化 {heavy_per_frame} 次/帧，池化 {pooled_per_frame} 次/帧 \
+         （总 {heavy} → {pooled}）"
+    );
+    assert!(stats.reuse_ratio() > 0.5, "复用率应过半：{:?}", stats);
+    assert!(stats.summary_line().contains("[v31-pool]"));
+}
+
+#[test]
+fn pooled_pack_is_bytewise_neutral_and_reuses_the_same_allocation() {
+    let _guard = serial_guard();
+    let rgba = fixed_rgba();
+    // 朴素构造（旧 framebuffer_of 语义）。
+    let mut plain: Vec<u8> = Vec::with_capacity(rgba.len() * 4);
+    for p in &rgba {
+        plain.extend_from_slice(p);
+    }
+    FramePool::clear();
+    frame_pool::reset_pool_stats();
+    let first = frame_pool::pack_rgba8(&rgba, W, H);
+    assert_eq!(first.pixels, plain, "池化 pack 必须与朴素构造逐字节一致");
+    let released_ptr: *const u8 = first.pixels.as_ptr();
+    FramePool::release(first);
+
+    let second = frame_pool::pack_rgba8(&rgba, W, H);
+    assert_eq!(second.pixels, plain, "复用缓冲不得改像素");
+    assert_eq!(
+        released_ptr,
+        second.pixels.as_ptr(),
+        "帧池跨帧复用必须是同一分配（指针相等）"
+    );
+    // 零拷贝身份白名单判据覆盖主链两条新路径。
+    zero_copy::verify_pool_reuse(&second.pixels, &second.pixels);
+    zero_copy::verify_borrow_chain(&second.pixels, &second.pixels);
+    assert!(zero_copy::is_zero_copy_path("movie.frame_pool_reuse"));
+    assert!(zero_copy::is_zero_copy_path("mux.frame_view_borrow"));
+    FramePool::release(second);
+}
+
+#[test]
+fn rss_delta_report_carries_3600_frame_extrapolation_note() {
+    let _guard = serial_guard();
+    let before: Counters = Counters { alloc_count: 10, ..Counters::default() };
+    let after: Counters = Counters { alloc_count: 90, ..Counters::default() };
+    let rep = measure::rss_delta_report("v31_movie", 36, Some(1000), Some(1008), before, after);
+    assert_eq!(rep.frames, 36);
+    assert_eq!(rep.delta_kib, Some(8));
+    assert_eq!(rep.alloc_per_frame, 80 / 36);
+    let line: String = rep.summary_line();
+    assert!(line.contains("[v31-mem]"), "报表必须有确定性采集行：{line}");
+    assert!(line.contains("帧数=36"));
 }

@@ -469,7 +469,10 @@ fn v6_static_gate_render_flag_and_color_path_are_wired() {
     let cmd = source("crates/prism-app/src/cmd_render.rs");
     assert!(cmd.contains("--ocio <CONFIG.OCIO>"), "render 用法须列 --ocio");
     assert!(cmd.contains("\"--ocio\" =>"), "parse_args 须真解析 --ocio");
-    assert!(cmd.contains("pipeline.apply_frames(&mut frames)"), "render 出口须应用 LUT");
+    // 零拷贝出片改造：无 --ocio 时帧是借用视图（不 clone），有 --ocio 时才
+    // 物化 owned 帧供 LUT 就地改写。应用点从 `&mut frames` 变为 `&mut owned`，
+    // 「render 出口须应用 LUT」的保护意图不变，静态证据随之对齐当前接线。
+    assert!(cmd.contains("pipeline.apply_frames(&mut owned)"), "render 出口须应用 LUT");
     assert!(cmd.contains("load_ocio_pipeline"), "render 须调用产品桥");
     let color = source("crates/prism-postfx/src/effects/color.rs");
     assert!(color.contains("apply_color_with_ocio"), "既有色彩管理节点须有 OCIO 入口");

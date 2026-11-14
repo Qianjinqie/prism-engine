@@ -7,7 +7,7 @@
 //!   metalness）的数值 / 键序与历史一致；新键仅在显式声明时插入。
 
 use prism_core::node::{ParamValue, StructureId};
-use prism_dsl::{compile_v2, CompileV2Output, DslError};
+use prism_dsl::{compile_v2, CompileV2Output};
 
 /// 最小可编译 v2 外壳（场景含一个 stage3d + material）。
 fn shell(material_body: &str) -> String {

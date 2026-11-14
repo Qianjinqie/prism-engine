@@ -299,7 +299,7 @@ pub fn curve_request(w: u32, h: u32, spp: u32, max_bounces: u32, tol: f32) -> Wa
 pub fn curve_cpu_reference(w: u32, h: u32, spp: u32, max_bounces: u32, tol: f32) -> Vec<[f32; 4]> {
     use prism_core::EvalCtx;
     use prism_rt::camera::Camera;
-    use prism_rt::integrator::{MaterialKind, RenderParams, Scene};
+    use prism_rt::integrator::{MaterialKind, RenderParams};
     use prism_math::Vec3 as V3;
 
     // 从 parity_scene 起步（地板 + 后墙 + Sphere 灯），追加柱子网格。

@@ -11,9 +11,9 @@
 
 use prism_core::fixpoint::{solve_mode_def, SolveModeMeta};
 use prism_core::graph::Graph;
-use prism_core::node::{Composition, Hash256, MergeOp, Node, NodeId, ParamValue, StructureId};
+use prism_core::node::{Composition, MergeOp, Node, NodeId, ParamValue, StructureId};
 use prism_core::signature::{
-    cache_key, cache_key_with_mode, node_signature, ChannelDef, ChannelDefs, CacheDims,
+    cache_key, cache_key_with_mode, node_signature, ChannelDefs, CacheDims,
     SIGNATURE_SCHEMA_VERSION,
 };
 
