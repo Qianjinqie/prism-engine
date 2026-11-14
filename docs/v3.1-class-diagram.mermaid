@@ -1,0 +1,146 @@
+classDiagram
+    class V31Config {
+        +ResTier res
+        +QualityTier quality
+        +u32 width, height, fps, frames
+        +u32 spp_per_frame, window, bounces, min_spp
+        +bool accumulate, denoise, adaptive, gpu_prefer
+        +legacy() V31Config
+        +for_tier(r, q) V31Config
+        +apply_to(CompileV2Output)
+        +effective_spp() u32
+    }
+    class ResTier {
+        <<enumeration>>
+        R320x180
+        R640x360
+        R720p
+        R1080p
+        R4K
+        Custom
+    }
+    class QualityTier {
+        <<enumeration>>
+        Preview
+        Final
+        Fast
+    }
+    class CompileV2Output {
+        +u32 width, height, fps
+        +f32 duration
+        +Vec~SceneV2~ scenes
+    }
+    class TemporalState {
+        +AccumBuffer buf
+        +u32 width, height, window
+        +u32 scene_key, spp_per_frame, frame_spp
+        +Option~Vec~f32x4~~ last
+        +new(w, h, window, spp) TemporalState
+        +push(f32 linear, key) AccumOutcome
+        +reset(ResetReason)
+        +frame_spp() u32
+        +effective_spp() u32
+    }
+    class AccumBuffer {
+        +new(w, h)
+        +push_pass(f32 linear)
+        +pass_count() u32
+        +running_mean(x, y) f32x4
+        +canonical_mean(x, y) f32x4
+        +clear()
+    }
+    class AccumOutcome {
+        <<enumeration>>
+        Warmup
+        Hit
+        Reset
+    }
+    class ResetReason {
+        <<enumeration>>
+        SceneCut
+        TemporalOutlier
+        GpuFallback
+        SizeChange
+    }
+    class V31ErrorReport {
+        +u8 max_delta, p99_delta
+        +f64 psnr_db
+        +f64 hist_bin_max_rel
+        +f64 edge_retention
+        +f64 temporal_outlier_ratio
+    }
+    class V31Verdict {
+        +bool pass
+        +Vec~String~ reasons
+        +V31ErrorReport report
+    }
+    class V31ErrorGate {
+        +compare_frame(golden, got, prev) V31ErrorReport
+        +judge_v31(report, seq_psnr) V31Verdict
+    }
+    class V31FrameSink {
+        <<interface>>
+        +on_frame(f, fb, linear)
+    }
+    class V31GpuBridge {
+        +try_render_linear(req) Option~f32x4~
+        +probe() GpuProbe
+    }
+    class RtBackend {
+        +u32 spp, max_bounces, threads
+        +render_scene(req) Framebuffer
+    }
+    class CpuRefBackend {
+        +render_scene(req) Framebuffer
+    }
+    class MoviePipeline {
+        +render_movie(compile, device)
+        +render_movie_v31(compile, device, cfg, sink)
+        +render_movie_frame(compile, device, frame, sims)
+    }
+    class Deliverable {
+        +Vec~Framebuffer~ frames
+        +Vec~Vec~u8~~ wiring_trace
+    }
+    class FramePool {
+        +acquire(w, h) Framebuffer
+        +release(fb)
+        +pool_stats() PoolStats
+    }
+    class Measure {
+        +snapshot() Counters
+        +rss_current_kib() u64
+        +rss_report(scenario, w, h) RssReport
+        +copy_bytes(dst, src)
+    }
+    class AtrousSpatial {
+        +u32 iterations
+        +f32 sigma_color
+        +eval_window(Fbuf16F) Fbuf16F
+    }
+    class WavefrontParity {
+        +parity_report(a, b, ch) ParityReport
+        +judge(report, gate) ParityVerdict
+    }
+
+    V31Config *-- ResTier
+    V31Config *-- QualityTier
+    V31Config ..> CompileV2Output : apply_to 覆写规格
+    MoviePipeline --> V31Config : 读策略
+    MoviePipeline --> V31FrameSink : 逐帧钩子
+    MoviePipeline --> TemporalState : push / reset
+    MoviePipeline --> V31ErrorGate : 判据
+    MoviePipeline --> V31GpuBridge : GPU 优先
+    MoviePipeline --> Deliverable : 产出
+    TemporalState *-- AccumBuffer : 窗口持有
+    TemporalState ..> AccumOutcome : 返回
+    AccumOutcome ..> ResetReason : 携带
+    V31ErrorGate ..> V31ErrorReport : 生成
+    V31ErrorGate ..> V31Verdict : 判定
+    V31ErrorGate ..|> WavefrontParity : 复用统计基座
+    V31GpuBridge ..> RtBackend : None 回退 CPU
+    RtBackend ..|> V31GpuBridge : 线性帧出口
+    CpuRefBackend ..> MoviePipeline : --fast 零回归路径
+    MoviePipeline --> FramePool : 复用缓冲
+    MoviePipeline --> Measure : 计时 / RSS
+    MoviePipeline --> AtrousSpatial : 保守降噪

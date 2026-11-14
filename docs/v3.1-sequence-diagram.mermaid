@@ -1,0 +1,44 @@
+sequenceDiagram
+    participant CLI as cmd_render::run
+    participant CFG as V31Config
+    participant DSL as CompileV2Output
+    participant MV as movie::render_movie_v31
+    participant SC as render_scene_frame
+    participant GPU as V31GpuBridge
+    participant RT as RtBackend / rt_tiles
+    participant LIN as linear.rs (f32)
+    participant AC as TemporalState
+    participant GT as V31ErrorGate
+    participant DN as AtrousSpatial
+    participant POOL as FramePool / measure
+    participant MUX as prism_mux
+
+    CLI->>CFG: parse_args(--res --quality --frames --fps)
+    CFG->>DSL: apply_to() 覆写 width/height/fps/duration
+    CLI->>MV: render_movie_v31(compile, device, cfg, sink)
+    loop frame i in 0..frames
+        MV->>SC: render_frame_at(i, scene_key, cfg)
+        SC->>GPU: try_render_linear(req)
+        alt 真 GPU 且 is_available 且误差预检通过
+            GPU-->>SC: Some(linear f32 readback, 零拷贝)
+        else 无 /dev/dri、lavapipe 或失败
+            GPU-->>SC: None
+            SC->>RT: RtBackend::new(spp_per_frame, 6)
+            RT->>LIN: render_frame_linear(同 trace_sample)
+            LIN-->>SC: Vec<[f32;4]>
+        end
+        SC->>AC: push(linear, scene_key)
+        alt 累积命中 pass_count == W
+            AC-->>SC: Hit(mean) → clear()
+        else 暖机 / 场景切换 / 帧差分异常 / GPU 回落
+            AC-->>SC: Warmup 或 Reset(reason) → 清空重采
+        end
+        SC->>DN: 保守 à-trous（quality final|preview；fast 跳过）
+        DN-->>SC: 线性帧
+        SC->>POOL: acquire → tone-map 到 RGBA8 → measure 分段计时
+        SC->>GT: on_frame(i, fb, golden_i) 五判据 + 序列 PSNR
+        GT-->>MV: V31Verdict（任一失败 = CI 硬失败）
+        MV->>MUX: 零拷贝视图写 MJPEG/MP4
+        POOL->>POOL: release(fb) 复用；记录 rss_start/end、alloc/copy 计数
+    end
+    MV-->>CLI: Deliverable + 3600 帧 RSS 报表
