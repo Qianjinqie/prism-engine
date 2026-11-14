@@ -24,11 +24,11 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License">
-  <img src="https://img.shields.io/badge/tests-4629%20passed-brightgreen.svg" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-4760%20passed-brightgreen.svg" alt="Tests">
   <img src="https://img.shields.io/badge/backends-CPU%20%2B%20Vulkan-lightgrey.svg" alt="Backends">
   <img src="https://img.shields.io/badge/crates-29-blue.svg" alt="Crates">
   <img src="https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg" alt="Distribution">
-  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.0.1-blue.svg" alt="Release"></a>
+  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.1-blue.svg" alt="Release"></a>
 </p>
 
 <p align="center">
@@ -40,7 +40,7 @@
 </p>
 
 <p align="center">
-  <sub><b>789</b> файла · <b>29</b> crate · <b>341 тыс.</b> строк Rust · <b>4629</b> тестов · <b>22,1 МБ</b> одним файлом</sub>
+  <sub><b>811</b> файла · <b>29</b> crate · <b>354 тыс.</b> строк Rust · <b>4760</b> тестов · <b>22,7 МБ</b> одним файлом</sub>
 </p>
 
 <!-- TOC-START -->
@@ -86,17 +86,17 @@
 
 ```bash
 # 1. Скачать пакет исходников и проверить SHA-256
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0.1/prism-engine-v3.0.1-source.txt
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0.1/SHA256SUMS.txt
-grep 'v3.0.1' SHA256SUMS.txt | sha256sum -c -
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.1/prism-engine-v3.1-source.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.1/SHA256SUMS.txt
+grep 'v3.1' SHA256SUMS.txt | sha256sum -c -
 
 # 2. Извлечь встроенный распаковщик (достаточно Node 18+, npm install не нужен)
 awk '/^UNPACK SCRIPT BEGIN$/{f=1;next} /^UNPACK SCRIPT END$/{f=0} f' \
-  prism-engine-v3.0.1-source.txt > unpack.cjs
+  prism-engine-v3.1-source.txt > unpack.cjs
 node unpack.cjs                    # восстанавливает 789 файла
 
 # 3. Собрать и прогнать весь набор тестов
-cargo test --workspace --release     # 4629 passed / 0 failed
+cargo test --workspace --release     # 4760 passed / 0 failed
 
 # 4. Ничего не писать — просто посмотреть, как он рендерит
 cargo run -p prism-app --release     # встроенная демо-сцена
@@ -251,7 +251,7 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 1. **Замыкание подписи**: графы узлов, ключи кеша, ключи снимков и подписи кадров используют один четырёхмерный хеш конфигурации. Изменился параметр ⇒ ключ обязан измениться ⇒ устаревшего переиспользования нет. Узлы итераций несут в ключе `(ε, n)`, потоковые — номер кадра; при `None` поведение побайтово вырождается в прежнее.
 2. **Байтовые неподвижные точки**: USD экспорт→импорт→экспорт побайтово идентичен; round-trip WAV 16/24/32 бит совпадает; EXR сверяется битстрим с битстримом с официальным OpenEXR.
 3. **Детерминизм упаковки**: упаковка одного и того же исходника дважды даёт одинаковый SHA-256; round-trip распаковки сравнивает каждый файл побайтово.
-4. **Тесты как критерий**: многие из 4629 тестов фиксируют золотые значения (допуск ужесточён с 1e-2 до 1e-6, измеренный остаток 4.53e-7); точность формы ограничивается расстоянием Хаусдорфа, а не «выглядит похоже».
+4. **Тесты как критерий**: многие из 4760 тестов фиксируют золотые значения (допуск ужесточён с 1e-2 до 1e-6, измеренный остаток 4.53e-7); точность формы ограничивается расстоянием Хаусдорфа, а не «выглядит похоже».
 
 <a id="architecture"></a>
 ## Архитектура
@@ -295,7 +295,7 @@ flowchart LR
 ## Сборка, тесты, гейты
 
 ```bash
-cargo test --workspace --release      # 4629 passed / 0 failed / 0 ignored
+cargo test --workspace --release      # 4760 passed / 0 failed / 0 ignored
 cargo xtest                           # эквивалентный псевдоним
 cargo test -p prism-core --release    # дымовой тест одного crate
 
@@ -306,7 +306,7 @@ node tools/compliance_check.mjs --self-test  # обратная проверка
 node tools/pack_source_txt.mjs --verify      # упаковка и распаковка туда-обратно, побайтово
 ```
 
-- Полный набор: **4629 passed / 0 failed / 0 ignored**, 239 тестовых секций, 110 с на всех ядрах (release).
+- Полный набор: **4760 passed / 0 failed / 0 ignored**, 239 тестовых секций, 110 с на всех ядрах (release).
 - В CI шесть job: защита от призрачной записи, сборка + полные тесты, сборка wasm32, статическая проверка WGSL, битстрим-интероп с официальным OpenEXR, перекрёстная проверка на Node-хосте.
 - В скане гигиены всё ещё есть совпадения: распространяемый слой документации чист, остальное — в комментариях исходников и файлах, которые не входят в пакет. Скрипт существует, чтобы остатки оставались **видимыми и разбираемыми по одному**, а не чтобы изображать чистоту.
 

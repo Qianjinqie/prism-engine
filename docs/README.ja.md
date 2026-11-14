@@ -24,11 +24,11 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License">
-  <img src="https://img.shields.io/badge/tests-4629%20passed-brightgreen.svg" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-4760%20passed-brightgreen.svg" alt="Tests">
   <img src="https://img.shields.io/badge/backends-CPU%20%2B%20Vulkan-lightgrey.svg" alt="Backends">
   <img src="https://img.shields.io/badge/crates-29-blue.svg" alt="Crates">
   <img src="https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg" alt="Distribution">
-  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.0.1-blue.svg" alt="Release"></a>
+  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.1-blue.svg" alt="Release"></a>
 </p>
 
 <p align="center">
@@ -40,7 +40,7 @@
 </p>
 
 <p align="center">
-  <sub><b>789</b> ファイル · <b>29</b> crate · <b>34.1 万</b> 行の Rust · <b>4629</b> テスト · <b>22.1 MB</b> の単一ファイル</sub>
+  <sub><b>811</b> ファイル · <b>29</b> crate · <b>35.4 万</b> 行の Rust · <b>4760</b> テスト · <b>22.7 MB</b> の単一ファイル</sub>
 </p>
 
 <!-- TOC-START -->
@@ -86,17 +86,17 @@ Rust で書かれたプロシージャル・メディアエンジン。入力は
 
 ```bash
 # 1. 単一ファイルのソースパッケージを取得し、SHA-256 を検証
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0.1/prism-engine-v3.0.1-source.txt
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0.1/SHA256SUMS.txt
-grep 'v3.0.1' SHA256SUMS.txt | sha256sum -c -
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.1/prism-engine-v3.1-source.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.1/SHA256SUMS.txt
+grep 'v3.1' SHA256SUMS.txt | sha256sum -c -
 
 # 2. パッケージに埋め込まれた展開スクリプトを取り出す（Node 18+ のみ、npm install 不要）
 awk '/^UNPACK SCRIPT BEGIN$/{f=1;next} /^UNPACK SCRIPT END$/{f=0} f' \
-  prism-engine-v3.0.1-source.txt > unpack.cjs
+  prism-engine-v3.1-source.txt > unpack.cjs
 node unpack.cjs                    # 789 ファイルを復元
 
 # 3. ビルドして全テストを実行
-cargo test --workspace --release     # 4629 passed / 0 failed
+cargo test --workspace --release     # 4760 passed / 0 failed
 
 # 4. 何も書かずに、まず映像を出す
 cargo run -p prism-app --release     # 内蔵デモシーン
@@ -251,7 +251,7 @@ let color = render_pixel(&scene, &cam, &ctx, (640, 360), (1280, 720), &params);
 1. **署名閉包**：ノードグラフ、キャッシュキー、スナップショットキー、フレーム署名を四次元設定ハッシュに統一。パラメータが変わればキーも必ず変わり、誤再利用が起きない。反復ノードのキーは `(ε, n)`、ストリームノードはフレーム番号を含み、`None` では旧挙動へバイト単位で退化する。
 2. **バイト不動点**：USD はエクスポート→インポート→エクスポートがバイト一致；WAV 16/24/32 bit の往復が一致；EXR は公式 OpenEXR とビットストリーム同士で突き合わせる。
 3. **パッケージングの決定性**：同じソースを二度パッケージすると SHA-256 が一致；展開の往復で全ファイルをバイト単位で比較する。
-4. **テストを判定基準にする**：4629 件のテストの多くが黄金値を固定（許容差は 1e-2 から 1e-6 へ、実測残差 4.53e-7）；形状の忠実さは「だいたい合っている」ではなく Hausdorff 距離で上限を決める。
+4. **テストを判定基準にする**：4760 件のテストの多くが黄金値を固定（許容差は 1e-2 から 1e-6 へ、実測残差 4.53e-7）；形状の忠実さは「だいたい合っている」ではなく Hausdorff 距離で上限を決める。
 
 <a id="architecture"></a>
 ## アーキテクチャ
@@ -295,7 +295,7 @@ flowchart LR
 ## ビルド・テスト・ゲート
 
 ```bash
-cargo test --workspace --release      # 4629 passed / 0 failed / 0 ignored
+cargo test --workspace --release      # 4760 passed / 0 failed / 0 ignored
 cargo xtest                           # 同等のエイリアス
 cargo test -p prism-core --release    # 単一 crate のスモークテスト
 
@@ -306,7 +306,7 @@ node tools/compliance_check.mjs --self-test  # 反証：落ちることを確認
 node tools/pack_source_txt.mjs --verify      # パッケージと展開の往復をバイト単位で検証
 ```
 
-- 全量：**4629 passed / 0 failed / 0 ignored**、239 のテスト区間、全コア並列で 110 秒（release）。
+- 全量：**4760 passed / 0 failed / 0 ignored**、239 のテスト区間、全コア並列で 110 秒（release）。
 - CI は六つのジョブ：幽霊書き込み防御、ビルド + 全テスト、wasm32 ビルド、WGSL 静的検査、公式 OpenEXR とのビットストリーム相互検証、Node ホストのクロスチェック。
 - 衛生スキャンには依然ヒットが残ります。配布物のドキュメント層はクリア済みで、残りはソースコメントと配布対象外のリポジトリ内ファイルです。スクリプトの存在は、残存を**見える形で一件ずつ片付ける**ためであり、きれいなふりをするためではありません。
 

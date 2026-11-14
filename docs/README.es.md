@@ -24,11 +24,11 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License">
-  <img src="https://img.shields.io/badge/tests-4629%20passed-brightgreen.svg" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-4760%20passed-brightgreen.svg" alt="Tests">
   <img src="https://img.shields.io/badge/backends-CPU%20%2B%20Vulkan-lightgrey.svg" alt="Backends">
   <img src="https://img.shields.io/badge/crates-29-blue.svg" alt="Crates">
   <img src="https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg" alt="Distribution">
-  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.0.1-blue.svg" alt="Release"></a>
+  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.1-blue.svg" alt="Release"></a>
 </p>
 
 <p align="center">
@@ -40,7 +40,7 @@
 </p>
 
 <p align="center">
-  <sub><b>789</b> archivos · <b>29</b> crates · <b>341 mil</b> líneas de Rust · <b>4629</b> pruebas · <b>22,1 MB</b> en un solo archivo</sub>
+  <sub><b>811</b> archivos · <b>29</b> crates · <b>354 mil</b> líneas de Rust · <b>4760</b> pruebas · <b>22,7 MB</b> en un solo archivo</sub>
 </p>
 
 <!-- TOC-START -->
@@ -86,17 +86,17 @@ La tabla solo enumera capacidades. Lo que cada una no puede hacer está en [Lím
 
 ```bash
 # 1. Descargar el paquete de código y verificar su SHA-256
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0.1/prism-engine-v3.0.1-source.txt
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0.1/SHA256SUMS.txt
-grep 'v3.0.1' SHA256SUMS.txt | sha256sum -c -
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.1/prism-engine-v3.1-source.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.1/SHA256SUMS.txt
+grep 'v3.1' SHA256SUMS.txt | sha256sum -c -
 
 # 2. Extraer el script de desempaquetado incrustado (solo Node 18+, sin npm install)
 awk '/^UNPACK SCRIPT BEGIN$/{f=1;next} /^UNPACK SCRIPT END$/{f=0} f' \
-  prism-engine-v3.0.1-source.txt > unpack.cjs
+  prism-engine-v3.1-source.txt > unpack.cjs
 node unpack.cjs                    # restaura 789 archivos
 
 # 3. Compilar y ejecutar la suite completa
-cargo test --workspace --release     # 4629 passed / 0 failed
+cargo test --workspace --release     # 4760 passed / 0 failed
 
 # 4. Sin escribir nada, verlo renderizar
 cargo run -p prism-app --release     # escena de demostración integrada
@@ -251,7 +251,7 @@ Cuatro capas, desde los parámetros hasta los bytes:
 1. **Cierre de firmas**: grafos de nodos, claves de caché, claves de snapshot y firmas de fotograma comparten un hash de configuración de cuatro dimensiones. Cambiar un parámetro ⇒ la clave cambia ⇒ no hay reutilización obsoleta. Los nodos de iteración llevan `(ε, n)` en la clave; los de flujo, el número de fotograma; `None` degrada bit a bit al comportamiento anterior.
 2. **Puntos fijos de bytes**: USD exportar→importar→exportar es idéntico byte a byte; los round-trips WAV de 16/24/32 bits coinciden; EXR se compara bitstream contra bitstream con el OpenEXR oficial.
 3. **Determinismo de empaquetado**: empaquetar dos veces la misma fuente da el mismo SHA-256; el round-trip de desempaquetado compara cada archivo byte a byte.
-4. **Los tests como criterio**: muchos de los 4629 tests fijan valores de oro (tolerancia ajustada de 1e-2 a 1e-6, residuo medido 4,53e-7); la fidelidad de forma se acota con distancia de Hausdorff en lugar de «se ve bastante parecido».
+4. **Los tests como criterio**: muchos de los 4760 tests fijan valores de oro (tolerancia ajustada de 1e-2 a 1e-6, residuo medido 4,53e-7); la fidelidad de forma se acota con distancia de Hausdorff en lugar de «se ve bastante parecido».
 
 <a id="architecture"></a>
 ## Arquitectura
@@ -295,7 +295,7 @@ Estructura tras desempaquetar:
 ## Compilar, probar y puertas
 
 ```bash
-cargo test --workspace --release      # 4629 passed / 0 failed / 0 ignored
+cargo test --workspace --release      # 4760 passed / 0 failed / 0 ignored
 cargo xtest                           # alias equivalente
 cargo test -p prism-core --release    # prueba rápida de un crate
 
@@ -306,7 +306,7 @@ node tools/compliance_check.mjs --self-test  # prueba inversa: debe fallar, demo
 node tools/pack_source_txt.mjs --verify      # ida y vuelta de empaquetado, byte a byte
 ```
 
-- Suite completa: **4629 passed / 0 failed / 0 ignored**, 239 secciones de prueba, 110 s con todos los núcleos (release).
+- Suite completa: **4760 passed / 0 failed / 0 ignored**, 239 secciones de prueba, 110 s con todos los núcleos (release).
 - La CI tiene seis jobs: defensa de escritura fantasma, compilación + pruebas completas, compilación wasm32, comprobación estática WGSL, interoperabilidad de bitstream con el OpenEXR oficial, verificación cruzada en host Node.
 - El escaneo de higiene aún tiene coincidencias: la capa de documentación distribuida está limpia, el resto está en comentarios de código y archivos solo del repositorio. El script existe para que lo restante siga **visible y corregible pieza a pieza**, no para fingir que todo está limpio.
 

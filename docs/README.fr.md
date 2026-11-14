@@ -24,11 +24,11 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License">
-  <img src="https://img.shields.io/badge/tests-4629%20passed-brightgreen.svg" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-4760%20passed-brightgreen.svg" alt="Tests">
   <img src="https://img.shields.io/badge/backends-CPU%20%2B%20Vulkan-lightgrey.svg" alt="Backends">
   <img src="https://img.shields.io/badge/crates-29-blue.svg" alt="Crates">
   <img src="https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg" alt="Distribution">
-  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.0.1-blue.svg" alt="Release"></a>
+  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.1-blue.svg" alt="Release"></a>
 </p>
 
 <p align="center">
@@ -40,7 +40,7 @@
 </p>
 
 <p align="center">
-  <sub><b>789</b> fichiers · <b>29</b> crates · <b>341 000</b> lignes de Rust · <b>4629</b> tests · <b>22,1 Mo</b> en un seul fichier</sub>
+  <sub><b>811</b> fichiers · <b>29</b> crates · <b>354 000</b> lignes de Rust · <b>4760</b> tests · <b>22,7 Mo</b> en un seul fichier</sub>
 </p>
 
 <!-- TOC-START -->
@@ -86,17 +86,17 @@ Le tableau ne liste que des capacités. Ce que chacune ne sait pas faire se trou
 
 ```bash
 # 1. Récupérer le paquet source et vérifier son SHA-256
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0.1/prism-engine-v3.0.1-source.txt
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0.1/SHA256SUMS.txt
-grep 'v3.0.1' SHA256SUMS.txt | sha256sum -c -
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.1/prism-engine-v3.1-source.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.1/SHA256SUMS.txt
+grep 'v3.1' SHA256SUMS.txt | sha256sum -c -
 
 # 2. Extraire le script de dépaquetage embarqué (Node 18+ seulement, sans npm install)
 awk '/^UNPACK SCRIPT BEGIN$/{f=1;next} /^UNPACK SCRIPT END$/{f=0} f' \
-  prism-engine-v3.0.1-source.txt > unpack.cjs
+  prism-engine-v3.1-source.txt > unpack.cjs
 node unpack.cjs                    # restaure 789 fichiers
 
 # 3. Compiler et lancer toute la suite de tests
-cargo test --workspace --release     # 4629 passed / 0 failed
+cargo test --workspace --release     # 4760 passed / 0 failed
 
 # 4. Sans rien écrire, le regarder rendre
 cargo run -p prism-app --release     # scène de démonstration intégrée
@@ -251,7 +251,7 @@ Quatre couches, des paramètres jusqu'aux octets :
 1. **Clôture de signature** : graphes de nœuds, clés de cache, clés d'instantané et signatures d'image partagent un hash de configuration à quatre dimensions. Changer un paramètre ⇒ la clé change ⇒ pas de réutilisation périmée. Les nœuds d'itération portent `(ε, n)` dans leur clé, les nœuds de flux le numéro d'image ; `None` dégénère au bit près vers l'ancien comportement.
 2. **Points fixes d'octets** : USD export→import→export est identique octet pour octet ; les allers-retours WAV 16/24/32 bits concordent ; EXR est comparé flux de bits contre flux de bits avec l'OpenEXR officiel.
 3. **Déterminisme du paquetage** : empaqueter deux fois la même source donne un SHA-256 identique ; l'aller-retour de dépaquetage compare chaque fichier octet pour octet.
-4. **Les tests comme critère** : beaucoup des 4629 tests verrouillent des valeurs d'or (tolérance resserrée de 1e-2 à 1e-6, résidu mesuré 4,53e-7) ; la fidélité de forme est bornée par distance de Hausdorff plutôt que par « ça a l'air assez proche ».
+4. **Les tests comme critère** : beaucoup des 4760 tests verrouillent des valeurs d'or (tolérance resserrée de 1e-2 à 1e-6, résidu mesuré 4,53e-7) ; la fidélité de forme est bornée par distance de Hausdorff plutôt que par « ça a l'air assez proche ».
 
 <a id="architecture"></a>
 ## Architecture
@@ -295,7 +295,7 @@ Structure après dépaquetage :
 ## Compiler, tester, portes
 
 ```bash
-cargo test --workspace --release      # 4629 passed / 0 failed / 0 ignored
+cargo test --workspace --release      # 4760 passed / 0 failed / 0 ignored
 cargo xtest                           # alias équivalent
 cargo test -p prism-core --release    # test de fumée d'un crate
 
@@ -306,7 +306,7 @@ node tools/compliance_check.mjs --self-test  # preuve inverse : doit échouer, m
 node tools/pack_source_txt.mjs --verify      # aller-retour paquetage/dépaquetage, octet par octet
 ```
 
-- Suite complète : **4629 passed / 0 failed / 0 ignored**, 239 sections de tests, 110 s sur tous les cœurs (release).
+- Suite complète : **4760 passed / 0 failed / 0 ignored**, 239 sections de tests, 110 s sur tous les cœurs (release).
 - La CI compte six jobs : défense écriture fantôme, compilation + tests complets, compilation wasm32, vérification statique WGSL, interopérabilité de flux de bits avec l'OpenEXR officiel, contre-vérification sur hôte Node.
 - Le scan d'hygiène a encore des occurrences : la couche documentaire distribuée est propre, le reste se trouve dans les commentaires de source et les fichiers propres au dépôt. Le script existe pour que le reste demeure **visible et corrigeable un par un**, pas pour prétendre que tout est propre.
 

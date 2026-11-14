@@ -24,11 +24,11 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License">
-  <img src="https://img.shields.io/badge/tests-4629%20passed-brightgreen.svg" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-4760%20passed-brightgreen.svg" alt="Tests">
   <img src="https://img.shields.io/badge/backends-CPU%20%2B%20Vulkan-lightgrey.svg" alt="Backends">
   <img src="https://img.shields.io/badge/crates-29-blue.svg" alt="Crates">
   <img src="https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg" alt="Distribution">
-  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.0.1-blue.svg" alt="Release"></a>
+  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.1-blue.svg" alt="Release"></a>
 </p>
 
 <p align="center">
@@ -40,7 +40,7 @@
 </p>
 
 <p align="center">
-  <sub><b>789</b> files · <b>29</b> crates · <b>341k</b> lines of Rust · <b>4629</b> tests · <b>22.1 MB</b> single-file package</sub>
+  <sub><b>811</b> files · <b>29</b> crates · <b>354k</b> lines of Rust · <b>4760</b> tests · <b>22.7 MB</b> single-file package</sub>
 </p>
 
 <!-- TOC-START -->
@@ -86,17 +86,17 @@ The table lists capabilities only. What each one cannot do is in [Honest boundar
 
 ```bash
 # 1. Fetch the single-file source package and verify it
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0.1/prism-engine-v3.0.1-source.txt
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.0.1/SHA256SUMS.txt
-grep 'v3.0.1' SHA256SUMS.txt | sha256sum -c -
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.1/prism-engine-v3.1-source.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.1/SHA256SUMS.txt
+grep 'v3.1' SHA256SUMS.txt | sha256sum -c -
 
 # 2. Extract the unpack script embedded in the package (Node 18+ only, no npm install)
 awk '/^UNPACK SCRIPT BEGIN$/{f=1;next} /^UNPACK SCRIPT END$/{f=0} f' \
-  prism-engine-v3.0.1-source.txt > unpack.cjs
+  prism-engine-v3.1-source.txt > unpack.cjs
 node unpack.cjs                    # restores 789 files
 
 # 3. Build and run the full test suite
-cargo test --workspace --release     # 4629 passed / 0 failed
+cargo test --workspace --release     # 4760 passed / 0 failed
 
 # 4. Write nothing, just watch it render
 cargo run -p prism-app --release     # built-in demo scene
@@ -251,7 +251,7 @@ Four layers, from parameters all the way down to bytes:
 1. **Signature closure**: node graphs, cache keys, snapshot keys, and frame signatures share one four-dimensional configuration hash. Change one parameter ⇒ the key must change ⇒ no stale reuse. Iteration nodes include `(ε, n)` in their key; stream nodes include the frame number; `None` degrades bit-for-bit to the old behavior.
 2. **Byte fixed points**: USD export→import→export is byte-identical; WAV 16/24/32-bit round-trips match; EXR is compared bitstream-to-bitstream against the official OpenEXR.
 3. **Packaging determinism**: packing the same source twice yields an identical SHA-256; the unpack round-trip compares every file byte by byte.
-4. **Tests as the criterion**: many of the 4629 tests lock golden values (tolerance tightened from 1e-2 to 1e-6, measured residual 4.53e-7); shape fidelity is bounded by Hausdorff distance rather than "looks close enough".
+4. **Tests as the criterion**: many of the 4760 tests lock golden values (tolerance tightened from 1e-2 to 1e-6, measured residual 4.53e-7); shape fidelity is bounded by Hausdorff distance rather than "looks close enough".
 
 <a id="architecture"></a>
 ## Architecture
@@ -295,7 +295,7 @@ Layout after unpacking:
 ## Build, test, and gates
 
 ```bash
-cargo test --workspace --release      # 4629 passed / 0 failed / 0 ignored
+cargo test --workspace --release      # 4760 passed / 0 failed / 0 ignored
 cargo xtest                           # equivalent alias
 cargo test -p prism-core --release    # single-crate smoke test
 
@@ -306,7 +306,7 @@ node tools/compliance_check.mjs --self-test  # reverse proof: must fail, proving
 node tools/pack_source_txt.mjs --verify      # pack and unpack round-trip, byte by byte
 ```
 
-- Full suite: **4629 passed / 0 failed / 0 ignored**, 239 test binaries, 110 s using all cores (release).
+- Full suite: **4760 passed / 0 failed / 0 ignored**, 239 test binaries, 110 s using all cores (release).
 - CI has six jobs: ghost-write defense, build + full tests, wasm32 build, WGSL static check, bitstream interop against official OpenEXR, Node-host cross-check.
 - The hygiene scan still has hits: the distributed documentation layer is clean, the rest sit in source comments and repository-only files. The script exists so leftovers stay **visible and fixable one by one** — not to pretend the tree is spotless.
 
