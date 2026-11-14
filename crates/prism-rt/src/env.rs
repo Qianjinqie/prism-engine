@@ -981,7 +981,8 @@ mod tests {
                     [c, c * 1.1, c * 1.4, 1.0]
                 }
             });
-            let table = TexTable::new(&refs, &texels);
+            // 构造函数本身是「表数据合法」的断言；此处只核 pdf，故不绑定变量名。
+            let _table = TexTable::new(&refs, &texels);
             let total = cdf.total_weight();
             let mut worst = 0.0f32;
             let mut n = 0u32;

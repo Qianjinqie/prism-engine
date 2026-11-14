@@ -39,6 +39,8 @@ pub mod loudnorm;
 pub mod mp4;
 pub mod rate_control;
 pub mod video;
+/// V3.1 编码 IO：零拷贝 RGBA8 帧视图 + 视图版 MP4(MJPEG) 出口。
+pub mod view;
 
 pub use avi::{
     write_avi, write_avi_jpeg, write_avi_mjpeg, write_avi_mjpeg_audio, write_avi_mjpeg_audio_frames,

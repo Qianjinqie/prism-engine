@@ -393,6 +393,20 @@ pub const CLOTH_PARAMS_OFF: usize = 128;
 /// `WFParams` 在参数区内的偏移。
 pub const WF_PARAMS_OFF: usize = 192;
 
+// ---- 2D 路径光栅 WebGPU 判据（与 `path_raster.wgsl` 的 8×8 工作组严格对齐）----
+/// 画布宽：1 个 x 工作组覆盖 8 列。
+pub const PATH_RASTER_W: u32 = 8;
+/// 画布高：`@workgroup_size(8, 8, 1)` 的 y 维正好 8 行。
+pub const PATH_RASTER_H: u32 = 8;
+/// 像素总数。
+pub const PATH_RASTER_PIXELS: usize = (PATH_RASTER_W as usize) * (PATH_RASTER_H as usize);
+/// 输出覆盖率缓冲字节数（每像素 1 个 f32 位型 u32）。
+pub const PATH_RASTER_OUT_BYTES: usize = PATH_RASTER_PIXELS * 4;
+/// 行范围缓冲字节数（每行 `[start, count]` 两个 u32）。
+pub const PATH_RASTER_ROWS_BYTES: usize = (PATH_RASTER_H as usize) * 2 * 4;
+/// 片段缓冲上界；`prepare` 产物的字节数在该预算内，超了直接判红而不是静默截断。
+pub const PATH_RASTER_SEGMENT_BYTES: usize = 1024;
+
 // ---------------------------------------------------------------------------
 // 状态与文本缓冲
 // ---------------------------------------------------------------------------
@@ -579,6 +593,17 @@ struct Scratch {
     /// → 后者读到被 census 改写过的 samples（假失败）。独立一块从根上排除这个
     /// 竞态，代价只有 304 字节的零初始化静态区（`.bss`，不进 wasm 数据段）。
     gi_layout_out: [u8; GI_PROBE_STRIDE_BYTES as usize],
+    // ---- 2D 路径光栅 WebGPU 判据的独立工作区 ----
+    /// `b0` 参数块：`[w, h, segments_f32_len, rows_u32_len]`。
+    path_params: [u8; 16],
+    /// `b1` 片段缓冲（f32 位型）。
+    path_segments: [u8; PATH_RASTER_SEGMENT_BYTES],
+    /// `b2` 行范围缓冲。
+    path_rows: [u8; PATH_RASTER_ROWS_BYTES],
+    /// CPU f32 参考的逐字节期望值（与 `path_out` 分两块，杜绝「自己比自己」）。
+    path_expected: [u8; PATH_RASTER_OUT_BYTES],
+    /// `b3` 输出缓冲与 GPU 读回落点（run 阶段预填 0xA5 哨兵）。
+    path_out: [u8; PATH_RASTER_OUT_BYTES],
 }
 
 impl Scratch {
@@ -622,6 +647,11 @@ impl Scratch {
             gi_params: [0; GI_PARAMS_BYTES as usize],
             gi_params_echo: [0; GI_PARAMS_BYTES as usize],
             gi_layout_out: [0; GI_PROBE_STRIDE_BYTES as usize],
+            path_params: [0; 16],
+            path_segments: [0; PATH_RASTER_SEGMENT_BYTES],
+            path_rows: [0; PATH_RASTER_ROWS_BYTES],
+            path_expected: [0; PATH_RASTER_OUT_BYTES],
+            path_out: [0; PATH_RASTER_OUT_BYTES],
         }
     }
 }
@@ -1005,6 +1035,13 @@ static TESTS: &[TestItem] = &[
         needs_gpu: false,
         run: t_shader_dispatch_census,
         collect: None,
+    },
+    TestItem {
+        id: "gpu.path_raster",
+        name: "真 WebGPU：path_raster.wgsl 的 path_main 四绑定 dispatch，与 CPU f32 参考逐字节判对",
+        needs_gpu: true,
+        run: t_gpu_path_raster,
+        collect: Some(c_gpu_path_raster),
     },
     TestItem {
         id: "gpu.sim_particles",
@@ -2677,6 +2714,19 @@ static COVERAGE: &[(&str, &[(&str, &str, &str)])] = &[
              shader 已嵌入 SHADERS 并过 D-29 结构自检，等待 WebGPU 运行时真 dispatch",
         )],
     ),
+    // 2D 矢量路径光栅：WGSL 与 SPIR-V 发射器、CPU f32 参考三端同式。
+    (
+        "path_raster.wgsl",
+        &[(
+            "path_main",
+            ST_COVERED,
+            "由 `gpu.path_raster` 真 dispatch：四绑定 {params,segments,rows,out} 一份 f32 位型 POD \
+             同时喂给 WGSL `path_raster.wgsl/path_main` 与 `path_raster::rasterize_cpu_prepared`，\
+             1 工作组覆盖 8×8 像素，readback 逐字节对拍 + 0xA5 哨兵 + 单比特扰动负控；\
+             Vulkan 同式 `spv_path_raster` 在 `llvmpipe (LLVM 20.1.2, 256 bits)` 上 \
+             dispatch → fence → readback 与同一 CPU 参考逐字节一致；WGSL 结构自检 22/22 PASS",
+        )],
+    ),
     // ---- compute-first 管线（三个新 kernel） ----
     //
     // 三个入口都**如实标 SKIP**：本构建环境只有 libvulkan loader、无 ICD，
@@ -2794,6 +2844,225 @@ fn t_shader_dispatch_census() -> Status {
             .collect::<Vec<_>>()
             .join(", "),
         lines.join("\n")
+    ));
+    Status::Pass
+}
+
+// ---------------------------------------------------------------------------
+// 测试项 9b：真 WebGPU path_raster.wgsl / path_main（四绑定，逐字节判对）
+// ---------------------------------------------------------------------------
+
+/// 8×8 画布里的半像素边界矩形；`prepare` 产物同时喂给 WGSL kernel 与 CPU 参考。
+fn path_raster_fixture() -> crate::path_raster::RasterInput {
+    use crate::path_raster::{PathFillRule, RasterPoint};
+    let contour: Vec<RasterPoint> = vec![
+        RasterPoint::new(1.5, 1.5),
+        RasterPoint::new(6.5, 1.5),
+        RasterPoint::new(6.5, 6.5),
+        RasterPoint::new(1.5, 6.5),
+    ];
+    crate::path_raster::prepare(
+        &[contour],
+        PathFillRule::Winding,
+        PATH_RASTER_W,
+        PATH_RASTER_H,
+    )
+}
+
+/// f32 位型 → u8 量化视图（与 `CoverageMask::to_u8` 同口径，纯比较与四则）。
+#[inline]
+fn path_quantize_u8(bits: u32) -> u8 {
+    let v = f32::from_bits(bits);
+    let c = if v < 0.0 { 0.0 } else if v > 1.0 { 1.0 } else { v };
+    let q = (c * 255.0 + 0.5) as u32;
+    q.min(255) as u8
+}
+
+/// `gpu.path_raster` 的 run：准备同一份 POD → 四绑定 → 1 工作组 dispatch → 读回。
+fn t_gpu_path_raster() -> Status {
+    let dev = match ready_device("gpu.path_raster") {
+        Ok(d) => d,
+        Err(s) => return s,
+    };
+    let wgsl = match expanded_named("path_raster.wgsl") {
+        Some(w) => w,
+        None => return fail("gpu.path_raster：path_raster.wgsl 展开结果缺失"),
+    };
+    let input = path_raster_fixture();
+    let expected = crate::path_raster::rasterize_cpu_prepared(&input);
+    if expected.data.len() != PATH_RASTER_PIXELS {
+        return fail("gpu.path_raster：CPU 参考输出尺寸与 8×8 画布不符");
+    }
+    let mut expected_bytes: Vec<u8> = Vec::with_capacity(PATH_RASTER_OUT_BYTES);
+    for &v in &expected.data {
+        expected_bytes.extend_from_slice(&v.to_bits().to_le_bytes());
+    }
+    let params: [u8; 16] = input.params_bytes();
+    let segs: Vec<u8> = input.segments_bytes();
+    let rows: Vec<u8> = input.rows_bytes();
+    let out_len: u32 = PATH_RASTER_OUT_BYTES as u32;
+    if segs.len() > PATH_RASTER_SEGMENT_BYTES
+        || rows.len() > PATH_RASTER_ROWS_BYTES
+        || segs.len() % 4 != 0
+        || rows.len() % 4 != 0
+    {
+        return fail("gpu.path_raster：prepare 产物越过定长工作区预算或未按 u32 对齐");
+    }
+
+    let out_ptr = addr_of_buf(|s| &mut s.path_out[..]);
+    SCRATCH.with(|s| {
+        let mut v = s.borrow_mut();
+        v.path_params.copy_from_slice(&params);
+        v.path_segments[..segs.len()].copy_from_slice(&segs);
+        v.path_rows[..rows.len()].copy_from_slice(&rows);
+        v.path_expected.copy_from_slice(&expected_bytes);
+        v.path_out.fill(0xA5);
+        v.out_ptr = out_ptr;
+        v.out_len = out_len;
+    });
+
+    let par_buf = match make_buffer("gpu.path_raster", dev, 16u32, usage::STORAGE, || {
+        (addr_of_slice(|s| &s.path_params[..]), 16u32)
+    }) {
+        Ok(h) => h,
+        Err(s) => return s,
+    };
+    let seg_len = segs.len() as u32;
+    let seg_buf = match make_buffer("gpu.path_raster", dev, seg_len, usage::STORAGE, || {
+        (
+            addr_of_slice(|s| &s.path_segments[..segs.len()]),
+            seg_len,
+        )
+    }) {
+        Ok(h) => h,
+        Err(s) => return s,
+    };
+    let rows_len = rows.len() as u32;
+    let row_buf = match make_buffer("gpu.path_raster", dev, rows_len, usage::STORAGE, || {
+        (
+            addr_of_slice(|s| &s.path_rows[..rows.len()]),
+            rows_len,
+        )
+    }) {
+        Ok(h) => h,
+        Err(s) => return s,
+    };
+    let out_buf = match make_buffer("gpu.path_raster", dev, out_len, usage::STORAGE, || {
+        (
+            addr_of_slice(|s| &s.path_out[..PATH_RASTER_OUT_BYTES]),
+            out_len,
+        )
+    }) {
+        Ok(h) => h,
+        Err(s) => return s,
+    };
+
+    // `every_covered_entry_appears_in_a_dispatch_chain` 机械核对的正是这张 steps 表：
+    // 入口名与工作组数都写成字面量，`&[…]` 是四绑定连续前缀 {0,1,2,3}。
+    let steps: [(&'static str, u32, &[u32]); 1] = [
+        ("path_main", 1, &[par_buf, seg_buf, row_buf, out_buf]),
+    ];
+    set_result(&format!(
+        "已提交 path_raster.wgsl/path_main：1 工作组 × 8×8 像素 + {} 个片段\n\
+         缓冲：params=16B segments={}B rows={}B out={}B\n\
+         读回 {out_len} 字节 → 线性内存 {out_ptr}，待 settle 后与 CPU f32 参考逐字节判对",
+        input.segment_count(),
+        segs.len(),
+        rows.len(),
+        out_len
+    ));
+    if let Err(s) = submit_chain("gpu.path_raster", dev, wgsl, &steps) {
+        return s;
+    }
+    if let Err(s) = readback_to("gpu.path_raster", dev, out_buf, out_len, out_ptr) {
+        return s;
+    }
+    Status::Pending
+}
+
+/// `gpu.path_raster` 的 collect：逐字节对拍 + 0xA5 哨兵 + 单比特扰动负控。
+fn c_gpu_path_raster() -> Status {
+    let dev = match ready_device("gpu.path_raster") {
+        Ok(d) => d,
+        Err(s) => return s,
+    };
+    if let Err(s) = check_errors("gpu.path_raster", dev) {
+        return s;
+    }
+    if gpu::device_lost(dev) != 0 {
+        return fail("device 在 path_main dispatch 期间 lost");
+    }
+    let (out, expected, out_len) = SCRATCH.with(|s| {
+        let v = s.borrow();
+        (v.path_out, v.path_expected, v.out_len)
+    });
+    let len = out_len as usize;
+    if len != PATH_RASTER_OUT_BYTES {
+        return fail("gpu.path_raster：读回长度与 8×8 输出缓冲不符");
+    }
+    let still_sentinel = out[..len].iter().all(|&b| b == 0xA5);
+    let differing_bytes = out[..len]
+        .iter()
+        .zip(expected[..len].iter())
+        .filter(|(a, b)| **a != **b)
+        .count();
+    let differing_pixels = out[..len]
+        .chunks_exact(4)
+        .zip(expected[..len].chunks_exact(4))
+        .filter(|(a, b)| *a != *b)
+        .count();
+    let mut max_channel_delta: i32 = 0;
+    for (a, b) in out[..len]
+        .chunks_exact(4)
+        .zip(expected[..len].chunks_exact(4))
+    {
+        let av = path_quantize_u8(u32::from_le_bytes([a[0], a[1], a[2], a[3]])) as i32;
+        let bv = path_quantize_u8(u32::from_le_bytes([b[0], b[1], b[2], b[3]])) as i32;
+        let d = if av > bv { av - bv } else { bv - av };
+        if d > max_channel_delta {
+            max_channel_delta = d;
+        }
+    }
+    let nonzero_pixels = expected[..len]
+        .chunks_exact(4)
+        .filter(|c| {
+            let s: &[u8] = *c;
+            u32::from_le_bytes([s[0], s[1], s[2], s[3]]) != 0
+        })
+        .count();
+    let mut bad = expected;
+    bad[0] ^= 1;
+    let bad_bytes = bad[..len]
+        .iter()
+        .zip(out[..len].iter())
+        .filter(|(a, b)| **a != **b)
+        .count();
+
+    if still_sentinel {
+        return fail("gpu.path_raster：输出仍是 0xA5 哨兵，path_main 未写出任何字节（负控检出）");
+    }
+    if differing_bytes != 0 || differing_pixels != 0 || max_channel_delta != 0 {
+        return fail(format!(
+            "gpu.path_raster 与 CPU f32 参考不一致：differing_bytes={differing_bytes} \
+             differing_pixels={differing_pixels} max_channel_delta={max_channel_delta}"
+        ));
+    }
+    if nonzero_pixels == 0 {
+        return fail("gpu.path_raster：CPU 参考全零，判据失去判别力");
+    }
+    if bad_bytes == 0 {
+        return fail("gpu.path_raster：单比特扰动未被逐字节判据检出（负控失效）");
+    }
+    let words: Vec<u32> = out[..len]
+        .chunks_exact(4)
+        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+    let fingerprint = hash_u32(&words);
+    set_result(&format!(
+        "真 WebGPU path_main：{PATH_RASTER_PIXELS}/{PATH_RASTER_PIXELS} 像素与 CPU f32 参考逐字节一致 ✓\n\
+         differing_bytes=0 differing_pixels=0 max_channel_delta=0；非零像素 {nonzero_pixels}\n\
+         负控：0xA5 哨兵已全部覆写；单比特扰动 differing_bytes={bad_bytes} ⇒ 判据 FAIL（符合预期）\n\
+         fingerprint=0x{fingerprint:08x}"
     ));
     Status::Pass
 }
@@ -4103,6 +4372,10 @@ fn c_gpu_rt_wavefront() -> Status {
 // 一次读回即判三入口：CPU 侧对同一份 slot 数组按同序推进，最后逐字段比对。
 
 /// `rt_wavefront.wgsl` 的 `sample_index`（32 位 hash；与 shader 逐位一致）。
+///
+/// 当前 native 侧只由 wasm/QA 链按 shader 语义复用；保留给宿主对拍，不进
+/// 常规 release 调用图。显式标注避免把「参考件」伪装成热路径。
+#[allow(dead_code)]
 fn wf_sample_index(px: u32, py: u32, sample: u32, dim: u32, node_id: u32) -> u32 {
     let pack = (px << 16) | (py & 0xFFFF);
     // hash4(pack, sample, dim, node_id)（见 sim_particles 的 pcg_hash）。
@@ -9338,9 +9611,9 @@ mod tests {
             .filter(|(_, st, _)| *st == ST_COVERED)
             .count();
         assert_eq!(
-            covered, 20,
-            "COVERED 入口应为 20 个（particles 3 + sph 3 + cloth 3 + wavefront 5 + GI 4 \
-             + scene_frame 1 + scene_frame_v3 1）"
+            covered, 21,
+            "COVERED 入口应为 21 个（particles 3 + sph 3 + cloth 3 + wavefront 5 + GI 4 \
+             + scene_frame 1 + scene_frame_v3 1 + path_raster 1）"
         );
     }
 
@@ -9385,6 +9658,7 @@ mod tests {
     fn new_gpu_items_skip_cleanly_without_device() {
         DEVICE.with(|d| d.set(0));
         for id in [
+            "gpu.path_raster",
             "gpu.sim_particles",
             "gpu.sim_sph",
             "gpu.sim_cloth",

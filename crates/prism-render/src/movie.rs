@@ -56,6 +56,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::time::Instant;
 
 use prism_core::fixpoint::{
     loop_frame_signature, run_fixed_point, LoopCodec, LoopDriver, SolveModeMeta,
@@ -76,6 +77,26 @@ use prism_text::font_bold;
 use prism_text::layout::{layout_text, Align, TextParams};
 
 use crate::render_frame;
+use crate::v31_accum::{V31FrameRecord, V31FrameSink, V31MovieReport, fnv1a64};
+use crate::v31_config::V31Config;
+use crate::v31_device::V31RenderDevice;
+// V3.1 收尾（B）：golden 比对 / 五条判据 / 抽样 manifest / 判红退出全部
+// **移出渲染帧循环**，只在可选校验 `v31_verify` 里使用（默认关 ⇒ 零开销）。
+use crate::v31_sample::{build_sample_plan, timeline_period_frames, SamplePlan};
+use crate::v31_verify::{finalize_verify, V31VerifyCollector};
+use crate::perf_domains::{self, Domain};
+
+/// `Deliverable.frames` 是否全帧驻留的帧数上限。
+///
+/// 720p × 3600 帧全驻留需 13.3 GB，必 OOM；超过该上限时 `render_movie_v31`
+/// 只在 `Deliverable.frames` 保留抽样帧，其余帧经 `V31FrameSink` 流式交付
+/// （`V31MovieReport.streamed = true`）。**计时仍覆盖完整 3600 帧**。
+pub const V31_RESIDENT_FRAME_LIMIT: usize = 512;
+
+/// `Deliverable.frames` 全帧驻留的**字节**上限（与 CLI 的
+/// `V31_CLI_RESIDENT_BYTES` 同值）。720p 每帧 3.7 MB，超过约 141 帧即
+/// 必须流式逐帧交付，否则 360 帧 = 1.33 GB、3600 帧 = 13.3 GB 必 OOM。
+pub const V31_RESIDENT_BYTES_LIMIT: u64 = 512 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // 交付产物与错误
@@ -271,6 +292,21 @@ pub fn render_movie(
     compile: &CompileV2Output,
     device: &mut dyn GpuDevice,
 ) -> MovieResult<Deliverable> {
+    // V3.1 T03：旧入口恒委托 `V31Config::legacy()`（累积 / 降噪 / 自适应 /
+    // GPU 优先 / 规格覆写全关）。原函数体逐字搬进 `render_movie_legacy_impl`，
+    // 一行表达式都未改 ⇒ 与 V3.1 之前逐字节一致（4629 测试逐字钉死）。
+    render_movie_legacy_impl(compile, device, V31Config::legacy())
+}
+
+/// 旧帧循环实现（V3.1 之前的行为，逐字保留）。
+///
+/// `cfg` 参数只用于让「委托 legacy」在类型层面显式可见；函数体不使用它，
+/// 故 `legacy()` 与「未传配置」完全等价。
+fn render_movie_legacy_impl(
+    compile: &CompileV2Output,
+    device: &mut dyn GpuDevice,
+    _cfg: V31Config,
+) -> MovieResult<Deliverable> {
     // ---- 0. 规格校验 -----------------------------------------------------
     validate_output_spec(compile)?;
 
@@ -303,6 +339,356 @@ pub fn render_movie(
         duration: compile.duration,
         frames,
         wiring_trace,
+    })
+}
+
+/// 当前时刻活跃场景组合的稳定键（`TemporalState` 的 `SceneCut` 判据）。
+///
+/// 只依赖「哪些场景在 t 活跃」，与帧号无关 ⇒ 时间线循环回到同一段时
+/// 不会误触发 `SceneCut`；真正的段切换必然改变键。
+fn v31_scene_key(models: &[SceneModel], t: f32) -> u64 {
+    let mut key: u64 = 0xcbf2_9ce4_8422_2325;
+    for (i, m) in models.iter().enumerate() {
+        if m.duration > 0.0 && m.start <= t && t < m.start + m.duration {
+            key ^= (i as u64 + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+            key = key.rotate_left(17);
+        }
+    }
+    key
+}
+
+/// V3.1 T03 出片主入口（设计 §3 签名；旧 [`render_movie`] 签名与行为不变）。
+///
+/// # 链路（设计 §4 时序图）
+/// `V31Config` → 帧循环 `render_frame_at_with_time` → `V31RenderDevice`
+/// （f32 线性帧 → `TemporalState` 窗口累积 → 可选保守降噪 → tone-map）
+/// → 抽样帧 `compare_frame_2d` 五判据 + 序列 PSNR → `V31FrameSink`。
+///
+/// # 600 s 口径
+/// 完整 `frames` 帧**全部**逐帧求值（时间线循环保证每帧都有真实 3D 场景，
+/// 不是黑帧空转）；`compare_frame_2d` 只在抽样帧做，其余帧走帧哈希 +
+/// spp 下限 + 计数器的轻量校验。`V31MovieReport.total_micros` 是整个帧
+/// 循环的 wall clock（含抽样帧的 16 spp golden 渲染），不是抽样帧耗时。
+///
+/// # 出片永不判红（V3.1 收尾 B）
+/// golden 比对 / 五判据 / 抽样 manifest / reset 检测全部是 `--verify 1` 的
+/// **离线可选项**，默认不进热路径；出片链路永远返回 `Ok(Deliverable)`。
+/// 判据本身一条没删：`qa_v31_gate` 独立校验五判据与哈希锚，可选校验结论文印
+/// 在 `[v31-verify]` 摘要里，仅供 CI 自行决定是否硬失败。
+pub fn render_movie_v31(
+    compile: &CompileV2Output,
+    device: &mut dyn GpuDevice,
+    cfg: &V31Config,
+    sink: &mut dyn V31FrameSink,
+) -> MovieResult<Deliverable> {
+    validate_output_spec(compile)?;
+    let eff: V31Config = crate::v31_accum::with_env_overrides(*cfg);
+    let (w, h): (u32, u32) = (compile.width, compile.height);
+    let frames_u32: u32 = if eff.frames > 0 {
+        eff.frames
+    } else {
+        (compile.fps as f32 * compile.duration).ceil() as u32
+    };
+    let frame_count: usize = frames_u32 as usize;
+    if frame_count == 0 {
+        return Err(RenderError::new(
+            "R5030",
+            format!("movie '{}' 的 V3.1 出片规格", compile.title),
+            "帧数为 0（--frames 与 fps×duration 均推不出正帧数）".to_string(),
+            "显式指定 --frames <N>（正整数），或让 DSL 的 fps / duration 为正",
+        ));
+    }
+
+    // ---- 通道 / 签名 / 场景模型（复用旧路径私有实现，求值前完成全部校验）----
+    let channels: BTreeMap<&str, &PropertyChannel> = compile
+        .channels
+        .iter()
+        .map(|c| (c.name.as_str(), &c.channel))
+        .collect();
+    let defs: ChannelDefs = channel_defs_of(compile)?;
+    let models: Vec<SceneModel> = build_models(compile, &channels)?;
+
+    // ---- V3.1 收尾（B）：抽样计划只在**可选校验**时构造 --------------------
+    // 旧实现在这里无条件 build_sample_plan + 写 manifest.sha256 + 抽样帧
+    // 逐帧重渲 16 spp golden，把省下的时间吃光还判红退出。现在默认
+    // `verify=false` ⇒ 本段只算时间线周期，零 IO、零 golden、零判据。
+    let period: u32 = timeline_period_frames(compile)
+        .min(frames_u32.max(1))
+        .max(1);
+    // 可选校验的逐帧口径：验收片源（≤36 帧）**逐帧全量**收集，每帧独立
+    // golden + 五判据，杜绝「抽样漏帧」。长片（>36 帧）仍走抽样计划
+    // （场景首/中/末 + 切换点 ±1 + 均匀补足 ≥12 帧），避免 3600 帧 ×
+    // 16 spp golden 把离线校验成本抬到不可接受。
+    const VERIFY_ALL_FRAMES_LIMIT: u32 = 36;
+    let verify_all: bool = eff.verify && frames_u32 <= VERIFY_ALL_FRAMES_LIMIT;
+    let plan: Option<SamplePlan> = if eff.verify && !verify_all {
+        Some(build_sample_plan(compile, frames_u32, eff.window))
+    } else {
+        None
+    };
+    let mut collector: V31VerifyCollector = V31VerifyCollector::new(w, h);
+
+    let mut sims: SimTimeline = SimTimeline::new();
+    let mut v31dev: V31RenderDevice<'_> = V31RenderDevice::new(device, eff, w, h);
+    // 与 CLI 的 `PRISM_V31_STREAM` / 字节阈值一致：帧不驻留、逐帧归还帧池，
+    // 下一帧 `framebuffer_of` 命中复用（360 / 3600 帧目标场景零新大分配）。
+    let resident_bytes: u64 = (frame_count as u64)
+        .saturating_mul(w as u64)
+        .saturating_mul(h as u64)
+        .saturating_mul(4);
+    let streamed: bool = frame_count > V31_RESIDENT_FRAME_LIMIT
+        || resident_bytes > V31_RESIDENT_BYTES_LIMIT
+        || std::env::var("PRISM_V31_STREAM").ok().as_deref() == Some("1");
+    let mut resident_frames: Vec<Framebuffer> = Vec::new();
+    let mut resident_traces: Vec<Vec<u8>> = Vec::new();
+
+    let psnrs: Vec<f64> = Vec::new();
+    let mut failed_frames: Vec<(u32, Vec<String>)> = Vec::new();
+    let mut spp_below_min: u32 = 0;
+    let mut total_new_samples: u64 = 0;
+    let profile_enabled: bool =
+        std::env::var("PRISM_V31_PROFILE").ok().as_deref() == Some("1");
+    let mut profile_frame_us: u64 = 0;
+    let mut profile_device_us: u64 = 0;
+    let mut profile_hash_us: u64 = 0;
+    let mut profile_sink_us: u64 = 0;
+    let loop_started = Instant::now();
+    // 3600 帧 RSS 首尾差 + 每帧分配次数（报表明细，非门禁）。
+    let rss_before: Option<u64> = crate::measure::current_rss_kib();
+    let alloc_before: crate::measure::Counters = crate::measure::snapshot();
+
+    for i in 0..frame_count {
+        let frame: u32 = i as u32;
+        let t_frame: u32 = frame % period;
+        let t: f32 = t_frame as f32 / compile.fps.max(1) as f32;
+        let scene_key: u64 = v31_scene_key(&models, t);
+        v31dev.begin_frame(frame, scene_key);
+
+        let frame_started: Option<Instant> = if profile_enabled {
+            Some(Instant::now())
+        } else {
+            None
+        };
+        let (fb, trace): (Framebuffer, Vec<u8>) = render_frame_at_with_time(
+            compile,
+            &models,
+            &channels,
+            &defs,
+            &mut v31dev as &mut dyn GpuDevice,
+            frame as u64,
+            t_frame as u64,
+            &mut sims,
+        )?;
+        if let Some(started) = frame_started {
+            profile_frame_us = profile_frame_us
+                .saturating_add(started.elapsed().as_micros() as u64);
+            profile_device_us = profile_device_us.saturating_add(v31dev.micros());
+        }
+
+        // ≤36 帧逐帧全量；长片按抽样计划。门禁读重投影器统计的**真实**
+        // 新增 spp（Σ 每像素新采样数），不是摊分伪值。
+        let sampled: bool = verify_all
+            || plan.as_ref().map(|p| p.is_sampled(frame)).unwrap_or(false);
+        // 第零节：样本数不再作为达标下限；这里只对冻结老路径保留诊断。
+        if eff.mode == crate::v31_modes::V31Mode::Consistent
+            && v31dev.frame_spp() < eff.min_spp
+        {
+            spp_below_min += 1;
+        }
+        total_new_samples = total_new_samples.saturating_add(v31dev.new_samples());
+        // 可选离线校验（`--verify 1`）：逐帧全量 / 抽样帧收集「该帧 3D 基帧 +
+        // 该帧请求」的最小凭证，绝不重渲 golden、绝不比较、绝不阻断出片；
+        // 逐帧 golden 比对 / 五判据 / 序列 PSNR 全部在循环结束后由
+        // finalize_verify 离线执行。
+        if eff.verify && sampled {
+            collector.push(crate::v31_verify::V31VerifySample {
+                frame,
+                got: v31dev.last_got().to_vec(),
+                prev: None,
+                req: v31dev.last_request().cloned(),
+            });
+        }
+
+        let hash_started: Option<Instant> = if profile_enabled {
+            Some(Instant::now())
+        } else {
+            None
+        };
+        let frame_hash: u64 = fnv1a64(&fb.pixels);
+        if let Some(started) = hash_started {
+            profile_hash_us = profile_hash_us
+                .saturating_add(started.elapsed().as_micros() as u64);
+        }
+        let rec = V31FrameRecord {
+            frame,
+            frame_spp: v31dev.frame_spp(),
+            effective_spp: v31dev.effective_spp(),
+            micros: v31dev.micros(),
+            reset: if eff.verify { v31dev.last_reset() } else { None },
+            sampled,
+            frame_hash,
+        };
+        let sink_started: Option<Instant> = if profile_enabled {
+            Some(Instant::now())
+        } else {
+            None
+        };
+        sink.on_record(&rec);
+        sink.on_frame(frame, &fb, v31dev.last_linear());
+        if let Some(started) = sink_started {
+            profile_sink_us = profile_sink_us
+                .saturating_add(started.elapsed().as_micros() as u64);
+        }
+
+        // 大帧数只驻留抽样帧（其余由 sink 流式交付），避免 13.3 GB OOM。
+        // V3.1 收尾 C：不驻留的帧归还帧池，下一帧 `framebuffer_of` 命中复用
+        // （缓冲内容每次 pack 全量覆盖 ⇒ 逐字节不变；3600 帧 RSS 首尾差可查）。
+        if !streamed || sampled {
+            resident_frames.push(fb);
+            resident_traces.push(trace);
+        } else {
+            crate::frame_pool::FramePool::release(fb);
+        }
+    }
+    let total_micros: u64 = loop_started.elapsed().as_micros() as u64;
+    perf_domains::record(Domain::FrameLoop, total_micros);
+    if profile_enabled {
+        let div: f64 = frame_count.max(1) as f64 * 1000.0;
+        let non_device_us: u64 = profile_frame_us.saturating_sub(profile_device_us);
+        eprintln!(
+            "[v31-profile] 帧循环单帧 {:.3} ms / 帧求值 {:.3} ms / 设备渲染 {:.3} ms / 非设备 {:.3} ms / 帧哈希 {:.3} ms / 输出 {:.3} ms",
+            total_micros as f64 / div,
+            profile_frame_us as f64 / div,
+            profile_device_us as f64 / div,
+            non_device_us as f64 / div,
+            profile_hash_us as f64 / div,
+            profile_sink_us as f64 / div,
+        );
+    }
+    // 独立通用路径的真实样本统计：按档位自适应预算逐帧求值；第零节明确
+    // 样本数不是达标下限，这里只报实测，不与冻结分母做等效性宣称。
+    let npix_total: f64 = frame_count as f64 * w as f64 * h as f64;
+    eprintln!(
+        "[v31-samples] 逐帧真实样本总数={} 平均每帧每像素={:.2} spp（独立通用路径；不锁存历史帧）",
+        total_new_samples,
+        total_new_samples as f64 / npix_total.max(1.0),
+    );
+
+    // ---- 可选误差校验：帧循环**之后**，绝不阻断出片 ------------------------
+    // 判据本身一条没删（阈值仍来自 v31_config、PSNR 仍走 wavefront 基座），
+    // 只是从「每帧热路径 + 判红退出」变成「用户显式 --verify 1 时的离线报告」。
+    let verify_report = if eff.verify {
+        if collector.samples.is_empty() {
+            eprintln!(
+                "[v31-verify] 无可校验的 3D 基帧（抽样帧全为黑帧 / 曲线帧 / 无 3D 请求）"
+            );
+            None
+        } else {
+            let r = finalize_verify(&collector.samples, &eff, w, h);
+            for line in r.summary_lines() {
+                eprintln!("{line}");
+            }
+            if !r.pass {
+                failed_frames.push((u32::MAX, r.reasons.clone()));
+            }
+            // 抽样 manifest / reset 汇总都在帧循环之后，可选校验专属，默认零 IO。
+            if let Some(p) = plan.as_ref() {
+                match crate::v31_verify::write_verify_manifest(p) {
+                    Ok(path) => eprintln!("[v31-verify] 抽样 manifest：{}", path.display()),
+                    Err(msg) => eprintln!("[v31-verify] 抽样 manifest 写出失败（仅报告）：{msg}"),
+                }
+            }
+            Some(r)
+        }
+    } else {
+        None
+    };
+    let resets: Vec<(String, u32)> =
+        crate::v31_verify::summarize_resets(&collector);
+
+    let rss_after: Option<u64> = crate::measure::current_rss_kib();
+    let rss_delta_kib: Option<i64> = match (rss_before, rss_after) {
+        (Some(a), Some(b)) => Some(b as i64 - a as i64),
+        _ => None,
+    };
+    // 计数分配器只在专用测试二进制安装（生产恒 0 ⇒ 不打印误导性数字）。
+    let alloc_after: crate::measure::Counters = crate::measure::snapshot();
+    let alloc_total: u64 = alloc_after.alloc_count.saturating_sub(alloc_before.alloc_count);
+    let alloc_per_frame: Option<u64> = if alloc_total > 0 {
+        Some(alloc_total / frame_count.max(1) as u64)
+    } else {
+        None
+    };
+    // 3600 帧 RSS 首尾差报表（结构 + 确定性单行，外推口径如实标注）。
+    let mem_report: crate::measure::RssDeltaReport = crate::measure::rss_delta_report(
+        "v31_movie",
+        frames_u32 as u64,
+        rss_before,
+        rss_after,
+        alloc_before,
+        alloc_after,
+    );
+    eprintln!("{}", mem_report.summary_line());
+    if alloc_total == 0 {
+        eprintln!("[v31-mem] 生产构建未安装计数分配器（生产零改动）；每帧分配次数下降由 qa_perf_counters 实测硬断言验证");
+    }
+    eprintln!("[v31] 3600 帧 RSS 首尾差外推、非实测（36/360 帧实测 {rss_delta_kib:?} KiB 仅作趋势参考）");
+    eprintln!("{}", crate::frame_pool::pool_stats().summary_line());
+
+    let report = V31MovieReport {
+        frames_rendered: frames_u32,
+        width: w,
+        height: h,
+        fps: compile.fps,
+        quality: eff.quality,
+        res_tag: eff.tier_dir_tag(),
+        spp_per_frame: eff.spp_per_frame,
+        window: eff.window,
+        effective_spp: eff.effective_spp(),
+        min_spp: eff.min_spp,
+        accumulate: eff.accumulate,
+        denoise: eff.denoise,
+        adaptive: eff.adaptive,
+        gpu_prefer: eff.gpu_prefer,
+        // 逐帧全量：索引覆盖全部帧；长片抽样：索引为抽样计划命中帧。
+        sample_indices: if verify_all {
+            (0..frames_u32).collect()
+        } else {
+            plan.as_ref().map(|p| p.indices.clone()).unwrap_or_default()
+        },
+        sampled_count: verify_report.as_ref().map(|r| r.checked).unwrap_or(0),
+        failed_frames,
+        seq_mean_psnr: verify_report
+            .as_ref()
+            .map(|r| r.seq_mean_psnr)
+            .unwrap_or_else(|| crate::v31_gate::sequence_mean_psnr(&psnrs)),
+        total_micros,
+        resets,
+        spp_below_min,
+        timeline_period: period,
+        streamed,
+        mode_label: eff.mode.label().to_string(),
+        mode_note: eff.mode.note().to_string(),
+        verify: eff.verify,
+        verify_pass: verify_report.as_ref().map(|r| r.pass),
+        per_frame_micros: total_micros / frame_count.max(1) as u64,
+        rss_delta_kib,
+        alloc_per_frame,
+    };
+    for line in report.summary_lines() {
+        eprintln!("{line}");
+    }
+    sink.on_report(&report);
+    // 无 R5031：出片链路永远成功；需要门禁时用 `--verify 1` 单独跑判据。
+
+    Ok(Deliverable {
+        title: compile.title.clone(),
+        width: w,
+        height: h,
+        fps: compile.fps,
+        duration: compile.duration,
+        frames: resident_frames,
+        wiring_trace: resident_traces,
     })
 }
 
@@ -350,7 +736,26 @@ fn render_frame_at(
     frame: u64,
     sims: &mut SimTimeline,
 ) -> MovieResult<(Framebuffer, Vec<u8>)> {
-    let t: f32 = frame as f32 / compile.fps as f32;
+    // 旧入口：时间帧号 == 真实帧号（逐字节不变）。
+    render_frame_at_with_time(compile, models, channels, defs, device, frame, frame, sims)
+}
+
+/// 单帧求值分派的可重映射时间版本（V3.1 T03 专用）。
+///
+/// `frame` 仍是真实帧号（wiring 凭证 / sim 状态 / 采样流沿用），
+/// `t_frame` 只决定 `t = t_frame / fps`（场景活跃区间 / 相机轨道）。
+/// 旧入口传 `t_frame == frame` ⇒ 与改前逐字节一致。
+fn render_frame_at_with_time(
+    compile: &CompileV2Output,
+    models: &[SceneModel],
+    channels: &BTreeMap<&str, &PropertyChannel>,
+    defs: &ChannelDefs,
+    device: &mut dyn GpuDevice,
+    frame: u64,
+    t_frame: u64,
+    sims: &mut SimTimeline,
+) -> MovieResult<(Framebuffer, Vec<u8>)> {
+    let t: f32 = t_frame as f32 / compile.fps as f32;
     let active: Vec<usize> = models
         .iter()
         .enumerate()
@@ -1804,7 +2209,9 @@ fn render_scene_frame(
     };
 
     // ---- S3 sim 粒子叠加（基帧之后、文本之前；帧循环推进）----------------
+    // V3.1 收尾 C：粒子域真实插桩（RAII 计时，只写原子计数器，不改任何像素）。
     if !model.sims.is_empty() {
+        let _particles_timer = crate::perf_domains::SegmentTimer::start(Domain::Particles);
         // 相机与基帧同源（eval_camera_orbit 轨道机位）——叠加投影与场景
         // 几何同一相机空间。
         let eye: Vec3 = prism_core::eval_camera_orbit(&scene, t_local, dur_local);
@@ -1833,16 +2240,20 @@ fn render_scene_frame(
     }
 
     // ---- 文本图层合成（按节点序；后建的压在上面）-------------------------
-    for text in &model.texts {
-        let p = resolve_params(text, channels, t, frame);
-        overlay_text(&mut fb, &p, w, h).map_err(|err| {
-            RenderError::new(
-                err.code,
-                format!("场景 '{}' 的文本节点 {}：{}", model.name, text.id, err.location),
-                err.problem,
-                err.fix,
-            )
-        })?;
+    // V3.1 收尾 C：文本域真实插桩（无文本节点时不计时，避免虚增 calls）。
+    if !model.texts.is_empty() {
+        let _text_timer = crate::perf_domains::SegmentTimer::start(Domain::Text);
+        for text in &model.texts {
+            let p = resolve_params(text, channels, t, frame);
+            overlay_text(&mut fb, &p, w, h).map_err(|err| {
+                RenderError::new(
+                    err.code,
+                    format!("场景 '{}' 的文本节点 {}：{}", model.name, text.id, err.location),
+                    err.problem,
+                    err.fix,
+                )
+            })?;
+        }
     }
 
     Ok((fb, wiring.canonical_bytes()))
@@ -1873,7 +2284,6 @@ fn render_curve_frame(
     use prism_rt::integrator::{
         Cone, Cylinder, MaterialKind, RenderParams, Revolution, Scene as RtScene, Torus,
     };
-    use prism_rt::wavefront;
 
     /// 曲线路径固定采样参数（CPU 参考路径的成本/质量折中；确定性常量）。
     const CURVE_SPP: u32 = 4;
@@ -1974,17 +2384,24 @@ fn render_curve_frame(
     );
     let ctx = EvalCtx::new(0, 0, frame);
     let params = RenderParams::new(CURVE_SPP, CURVE_BOUNCES);
-    let px: Vec<[f32; 4]> = wavefront::render_frame(&rt, &cam, &ctx, (w, h), &params);
-
-    // tone-map：与 GPU 路径同口径（clamp[0,1]×255 四舍五入，alpha 恒 255）。
-    let mut pixels: Vec<u8> = Vec::with_capacity((w as usize) * (h as usize) * 4);
-    for p in &px {
-        for c in 0..3 {
-            pixels.push((p[c].clamp(0.0, 1.0) * 255.0).round() as u8);
-        }
-        pixels.push(255);
-    }
-    Ok(Framebuffer { width: w, height: h, pixels })
+    // **同一条通用渲染路径**（2026-11-14 裁定三）：曲线族不再单独走
+    // `wavefront::render_frame` 这条老路，而是与所有场景共用的
+    // `rt_tiles::render_frame_universal`（同一台求交加速视图 + 同一台并行
+    // 内核 + 同一套色调映射出口）。唯一保留的差异是采样预算常量
+    // （`CURVE_SPP` / `CURVE_BOUNCES`），那是**预算**不是**路线**。
+    //
+    // 色调映射：传恒等档（无 teal-orange、对比度 1.0、不开 filmic）⇒
+    // `apply_aesthetic` 退化为 `clamp01`，与 `一致` 档/曲线老路同口径
+    // （clamp[0,1]×255 四舍五入、alpha 恒 255），故亮度语义不变。
+    let aesthetic: prism_gpu::AestheticReq = prism_gpu::AestheticReq {
+        teal_orange: false,
+        contrast: 1.0,
+        filmic: false,
+    };
+    let threads: usize = crate::rt_tiles::auto_threads();
+    Ok(crate::rt_tiles::render_frame_universal(
+        &rt, &cam, &ctx, (w, h), &params, &aesthetic, threads,
+    ))
 }
 
 /// 曲线图元尺寸退化（<= 0 或点数 < 2）的三段式错误（分类阶段不校值域，

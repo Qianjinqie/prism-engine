@@ -1,0 +1,41 @@
+// ============================================================================
+// t1_inside_shell —— 域外验收片源之一：相机位于大球内部（球内壁照明）
+//
+// 为什么需要域外片源：任务书 8.4 要求「域外片源同样按 8.1 五条与 8.2 门槛
+// 判定，且必须计入验收、不许 exclude」。域内 `v31_motion` / `w2d_showcase`
+// 都是「单球 + 方向光 + 无投影接收面」，通用路径在它们上面成立不代表对别的
+// 场景成立。
+//
+// 本片源覆盖面：
+//   - 相机在球内（orbit radius 1.8 < 球半径 5.5）：视线被内壁完全包围，
+//     没有「物体 / 背景」轮廓，画面整体是一片连续曲面；
+//   - 内壁上带位移起伏（`displacement` + 程序棋盘），但幅度很小（0.05），
+//     属一阶连续的高频扰动，不是遮挡边界；
+//   - 相机沿轨道逐帧移动（内建 `orbit`），故整段序列是**真运动**，不是冻结帧。
+//
+// 它同时是「通用路径仍然真实加速」的干净判据：这一类场景在 16 spp 下与
+// golden 逐位一致（实测 inf dB），而端到端耗时降到 `一致` 档的 1/16。
+//
+// 实跑（workspace 根目录）：
+//   ./target/release/prism-app render examples/t1_inside_shell.prism \
+//     --mode 快速 --res 720p --frames 36 --fps 60 --codec mjpeg --out /tmp/t1.mp4
+// ============================================================================
+
+// prism-dsl 1
+
+movie "t1-inside-shell" { duration 2s fps 12 resolution 320x180 format png }
+
+theme { contrast 1.0 }
+
+scene "inside-shell" {
+    duration 2s
+    stage3d {
+        camera main { orbit { center 0,0,0 radius 1.8 } fov 78 }
+        sdf shell { kind sphere radius 5.5 }
+        material hero { albedo #b9c7da roughness 0.85 metalness 0.05 }
+        light key { direction(0.3,-1,0.2) color #ffffff intensity 3.0 }
+        light fill { direction(-0.7,-0.4,-0.5) color #cfe0ff intensity 1.1 }
+    }
+}
+
+output { resolution 320x180 format png }

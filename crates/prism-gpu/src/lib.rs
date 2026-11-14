@@ -66,6 +66,31 @@ pub mod cpu_tex;
 pub mod background;
 
 // ----------------------------------------------------------------------------
+// 2D 矢量路径光栅（GPU 优先、CPU 兜底；与 background 同形态）
+// ----------------------------------------------------------------------------
+//
+// `path_raster` 把「矢量路径 → 每像素精确覆盖率」搬到 GPU：Vulkan compute
+// （`vulkan::spirv_path`）+ WebGPU WGSL（`shaders/path_raster.wgsl`）双 kernel，
+// CPU 侧 f64 预处理 + f32 参考同式对拍（`tests/vulkan_path_raster_gpu.rs`）。
+// 与 `prism-raster` **互不依赖**：本 crate 只吃 POD 路径顶点，聚合在下游
+// `prism-postfx`，依赖图是 DAG（详见 path_raster.rs 文件头）。
+
+pub mod path_raster;
+
+/// V3.1 GPU 回落接线：物理 GPU 自动启用、无则透明回落 CPU（与
+/// [`path_raster::rasterize`] 同形态的能力探测 + 单帧兜底范式）。
+pub mod v31_gpu;
+
+/// 2D 路径光栅入口与 CPU 参考（GPU 优先、CPU 兜底）。
+///
+/// 模块内是 `rasterize_gpu(...) -> Option<CoverageMask>` / `rasterize(...)`；
+/// 顶层加 `path_` 前缀避免与场景光栅类 API 命名混淆。
+pub use path_raster::{
+    rasterize as rasterize_path, rasterize_cpu as rasterize_path_cpu,
+    rasterize_gpu as rasterize_path_gpu,
+};
+
+// ----------------------------------------------------------------------------
 // WebGPU 手写绑定后端（D1；零第三方 crate — D-15）
 // ----------------------------------------------------------------------------
 //

@@ -355,6 +355,9 @@ pub fn opcode_name(op: u32) -> &'static str {
         OP_F_ORD_GREATER_THAN => "OpFOrdGreaterThan",
         OP_F_ORD_LESS_THAN_EQUAL => "OpFOrdLessThanEqual",
         OP_F_ORD_GREATER_THAN_EQUAL => "OpFOrdGreaterThanEqual",
+        // 2D 路径光栅 kernel 的 `tri_factor` 用它判 `Δ == 0`（竖直边）；
+        // 编号 180 早在白名单里，这里只补诊断短名，反汇编不报 OpUnknown。
+        OP_F_ORD_EQUAL => "OpFOrdEqual",
         OP_SHIFT_RIGHT_LOGICAL => "OpShiftRightLogical",
         OP_SHIFT_LEFT_LOGICAL => "OpShiftLeftLogical",
         OP_BITWISE_OR => "OpBitwiseOr",
@@ -690,7 +693,8 @@ pub static MODULES: &[(&str, &[u32])] = &[
 /// 生成是纯函数（同输入必得同字节流），因此「运行期生成」不等于「不确定」：
 /// [`build_is_deterministic`](super::spirv_bg) 直接断言两次构建逐字相同。
 ///
-/// 表内顺序 = 注册顺序（确定性）：背景帧 kernel 在前，光追场景 kernel 在后。
+/// 表内顺序 = 注册顺序（确定性）：背景帧、光追场景、2D 路径光栅三份发射器
+/// 模块依次入表；每份模块名都是单一真源常量，不在此硬编码字符串。
 pub fn generated_modules() -> &'static [(&'static str, &'static [u32])] {
     static GENERATED: std::sync::OnceLock<Vec<(&'static str, &'static [u32])>> =
         std::sync::OnceLock::new();
@@ -703,6 +707,10 @@ pub fn generated_modules() -> &'static [(&'static str, &'static [u32])] {
             (
                 super::spirv_rt::MODULE_SCENE,
                 super::spirv_rt::scene_words(),
+            ),
+            (
+                super::spirv_path::MODULE_PATH_RASTER,
+                super::spirv_path::path_words(),
             ),
         ]
     })
@@ -1955,17 +1963,28 @@ mod tests {
         // 名字表随 cfg 变：`spv_env_probe` 只在**有 Vulkan compute 的目标**上入表
         // （wasm32 无该路径，见 [`MODULES`] 的注释），故期望值分两支，不写死。
         #[cfg(not(target_arch = "wasm32"))]
-        let want_names = vec!["spv_mul2_probe", "spv_env_probe", "spv_background", "spv_scene"];
+        let want_names = vec![
+            "spv_mul2_probe",
+            "spv_env_probe",
+            "spv_background",
+            "spv_scene",
+            "spv_path_raster",
+        ];
         #[cfg(target_arch = "wasm32")]
-        let want_names = vec!["spv_mul2_probe", "spv_background", "spv_scene"];
+        let want_names = vec![
+            "spv_mul2_probe",
+            "spv_background",
+            "spv_scene",
+            "spv_path_raster",
+        ];
         assert_eq!(module_names(), want_names, "静态模块 + 发射器模块，顺序固定");
-        // 静态表：手写 mul2（+ 入库的 env 探针，naga 产物）；两个发射器产物
-        // （背景帧 / 光追场景）在另一张表——两张表口径不混。
+        // 静态表：手写 mul2（+ 入库的 env 探针，naga 产物）；三个发射器产物
+        // （背景帧 / 光追场景 / 2D 路径光栅）在另一张表——两张表口径不混。
         #[cfg(not(target_arch = "wasm32"))]
         assert_eq!(MODULES.len(), 2);
         #[cfg(target_arch = "wasm32")]
         assert_eq!(MODULES.len(), 1);
-        assert_eq!(generated_modules().len(), 2);
+        assert_eq!(generated_modules().len(), 3);
         // 生成表指向 `OnceLock` 中的同一实例（指针稳定，FFI 传得出去）。
         let a = module("spv_background").expect("背景模块已注册");
         let b = module("spv_background").expect("背景模块已注册");
@@ -1974,6 +1993,11 @@ mod tests {
         let d = module("spv_scene").expect("场景模块已注册");
         assert_eq!(c.as_ptr(), d.as_ptr(), "同一模块须全程序唯一实例");
         assert_ne!(a.as_ptr(), c.as_ptr(), "两个模块不得共享同一字流");
+        let e = module("spv_path_raster").expect("2D 路径光栅模块已注册");
+        let f = module("spv_path_raster").expect("2D 路径光栅模块已注册");
+        assert_eq!(e.as_ptr(), f.as_ptr(), "2D 路径光栅模块须全程序唯一实例");
+        assert_ne!(a.as_ptr(), e.as_ptr(), "路径光栅与背景模块不得共享字流");
+        assert_ne!(c.as_ptr(), e.as_ptr(), "路径光栅与场景模块不得共享字流");
     }
 
     /// **`.spv` ↦ Rust 字流**：入库产物与编译期字流必须逐字一致。

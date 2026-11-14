@@ -37,6 +37,28 @@ pub struct PoolStats {
     pub misses: u64,
 }
 
+impl PoolStats {
+    /// 缓冲复用率（命中 / 总取用；无取用时为 0）。
+    pub fn reuse_ratio(&self) -> f64 {
+        let total: u64 = self.hits.saturating_add(self.misses);
+        if total == 0 {
+            0.0
+        } else {
+            self.hits as f64 / total as f64
+        }
+    }
+
+    /// 供脚本采集的确定性行（帧池贯穿出片链路的报表口径）。
+    pub fn summary_line(&self) -> String {
+        format!(
+            "[v31-pool] 命中 {} / 未命中 {} / 复用率 {:.4}（每帧大分配随命中下降）",
+            self.hits,
+            self.misses,
+            self.reuse_ratio()
+        )
+    }
+}
+
 /// 取当前池统计快照。
 pub fn pool_stats() -> PoolStats {
     PoolStats {
@@ -95,6 +117,26 @@ impl FramePool {
     pub fn clear() {
         POOL.with(|p| p.borrow_mut().free.clear());
     }
+}
+
+/// 从池中取一帧并把 RGBA8 像素**就地写入**（出片主链组装点）。
+///
+/// 与 `Framebuffer { pixels: Vec::with_capacity(..) + extend }` 逐字节一致，
+/// 但命中池时复用既有 `Vec<u8>` 的容量 ⇒ 该帧零次大分配。调用方在帧交付后
+/// 用 [`FramePool::release`] 归还，即可让下一帧命中。
+pub fn pack_rgba8(rgba: &[[u8; 4]], w: u32, h: u32) -> Framebuffer {
+    let mut fb: Framebuffer = FramePool::acquire(w, h);
+    let need: usize = rgba.len() * 4;
+    fb.pixels.clear();
+    if fb.pixels.capacity() < need {
+        fb.pixels.reserve(need - fb.pixels.capacity());
+    }
+    for p in rgba {
+        fb.pixels.extend_from_slice(p);
+    }
+    fb.width = w;
+    fb.height = h;
+    fb
 }
 
 /// 池化单帧渲染（判据 ② 中性路径）：与非池化 [`crate::render_frame`] 输出

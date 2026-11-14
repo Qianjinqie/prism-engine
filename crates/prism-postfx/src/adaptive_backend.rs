@@ -127,7 +127,7 @@ impl GpuDevice for AdaptiveRtBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use prism_gpu::{AestheticReq, CameraReq, SphereReq};
+    use prism_gpu::{AestheticReq, CameraReq};
 
     /// 后端名与能力位（诊断与能力日志的契约）。
     #[test]

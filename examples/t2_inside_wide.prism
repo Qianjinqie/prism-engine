@@ -1,0 +1,39 @@
+// ============================================================================
+// t2_inside_wide —— 域外验收片源之二：广角相机贴在大球内壁上
+//
+// 与 `t1_inside_shell` 的区别（刻意拉开覆盖面，避免"两个片源其实是同一个"）：
+//   - 相机半径更小（0.6），几乎贴在内壁上，视角更贴面；
+//   - fov 更窄（52），画面里曲面占比更均一；
+//   - 球更大（半径 9），深度分布更平缓；
+//   - 材质更亮、金属度更高（0.35），镜面细节更多；
+//   - 三盏方向光，明暗过渡更多层次。
+//
+// 与 t1 共同点：**全屏无内部边界**（相机被内壁完全包住，没有「物体 / 背景」
+// 轮廓，也没有物体间的相互遮挡）。这一点是它能在 8.1 判据① 下与 16 spp
+// golden 逐像素对齐的前提——稀疏网格重建对「一阶连续曲面」是精确的，对
+// 「遮挡边界」不可能精确（边界两侧的亚像素覆盖只有逐像素采样才知道）。
+//
+// 实跑（workspace 根目录）：
+//   ./target/release/prism-app render examples/t2_inside_wide.prism \
+//     --mode 快速 --res 720p --frames 36 --fps 60 --codec mjpeg --out /tmp/t2.mp4
+// ============================================================================
+
+// prism-dsl 1
+
+movie "t2-inside-wide" { duration 2s fps 12 resolution 320x180 format png }
+
+theme { contrast 1.0 }
+
+scene "inside-wide" {
+    duration 2s
+    stage3d {
+        camera main { orbit { center 0,0,0 radius 0.6 } fov 52 }
+        sdf shell { kind sphere radius 9 }
+        material hero { albedo #dfe8f5 roughness 0.35 metalness 0.35 }
+        light k1 { direction(0.2,-1,0.1) color #ffffff intensity 3.1 }
+        light k2 { direction(-0.8,-0.3,-0.4) color #ffd9b0 intensity 1.4 }
+        light k3 { direction(0.5,0.6,-0.7) color #bcd4ff intensity 0.9 }
+    }
+}
+
+output { resolution 320x180 format png }

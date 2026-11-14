@@ -34,6 +34,7 @@
 //! `BTreeMap` 固定序；零线程、零系统时间、零 libm。
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use prism_core::PropertyChannel;
 
@@ -157,13 +158,13 @@ const G5_RULING: &str = "不适用（G5 平台域，§2.1 / D-19）";
 
 /// 39 行能力接线表。**顺序即规格表顺序**，不得增删、不得改序。
 pub const CAPABILITY_ROWS: &[CapabilityRow] = &[
-    row!("R-1", "crates/prism-rt/src/integrator.rs:3723",
+    row!("R-1", "crates/prism-rt/src/integrator.rs:5407",
         ["spp", "max_bounces", "clamp_indirect", "nee_only"], "L3", "",
         "W2-R-01", "crates/prism-render/src/rt_backend.rs:150", CapFamily::Render),
-    row!("R-2", "crates/prism-rt/src/bsdf.rs:420",
+    row!("R-2", "crates/prism-rt/src/bsdf.rs:472",
         ["base_color", "metalness", "roughness", "ior", "transmission", "subsurface",
          "subsurface_radius", "alpha_t", "alpha_b", "rotation", "maps"], "L3", "",
-        "W2-R-02", "crates/prism-rt/src/bsdf.rs:420", CapFamily::CameraMaterial),
+        "W2-R-02", "crates/prism-rt/src/bsdf.rs:472", CapFamily::CameraMaterial),
     row!("R-3", "crates/prism-rt/src/caustics.rs:39",
         ["center", "radius", "ior"], "L2", "",
         "W2-R-03", "crates/prism-rt/src/caustics.rs:39", CapFamily::Render),
@@ -199,11 +200,11 @@ pub const CAPABILITY_ROWS: &[CapabilityRow] = &[
     row!("R-13", "crates/prism-postfx/src/adaptive.rs:85",
         ["n0", "total", "mantissa_bits", "tile", "rounds"], "L2", "",
         "W2-R-13", "crates/prism-postfx/src/adaptive.rs:85", CapFamily::Post),
-    row!("G-1", "crates/prism-rt/src/integrator.rs:885",
+    row!("G-1", "crates/prism-rt/src/integrator.rs:906",
         ["spheres", "boxes", "paraboloids", "planes", "meshes", "cylinders", "cones",
          "toruses", "revolutions", "lights", "medium", "curve_bvh", "textures",
          "instances", "instance_geoms", "instance_bvh", "texels", "env_cdf", "media"],
-        "L3", "", "W2-G-01", "crates/prism-rt/src/integrator.rs:885", CapFamily::Geometry),
+        "L3", "", "W2-G-01", "crates/prism-rt/src/integrator.rs:906", CapFamily::Geometry),
     row!("G-2", "crates/prism-core/src/attach.rs:159",
         ["positions", "indices", "uv", "displacement", "crease", "corners"], "L3", "",
         "W2-G-02", "crates/prism-core/src/attach.rs:159", CapFamily::Geometry),
@@ -641,6 +642,9 @@ pub fn resolve_frame(
     global_seed: u64,
     node_id: u64,
 ) -> WiringFrame {
+    // V3.1 收尾 C：场景翻译 / 逐帧接线解算计时。只记录耗时，不触碰任何
+    // 求值语句 ⇒ `WiringFrame::canonical_bytes` 与旧版逐字节一致。
+    let __timing_started = std::time::Instant::now();
     use prism_core::EvalCtx;
     let ctx = EvalCtx::new(global_seed, node_id, frame);
     let mut out = WiringFrame::default();
@@ -671,7 +675,45 @@ pub fn resolve_frame(
     if let Some(f) = &plan.finish {
         crate::finish::inject_frame_values(&mut out, f, frame, global_seed, node_id);
     }
+    record_resolve(__timing_started.elapsed().as_micros() as u64);
     out
+}
+
+// ---------------------------------------------------------------------------
+// V3.1 收尾 C：DSL / 场景翻译计时计数器（进程级、零第三方、relaxed 原子）
+// ---------------------------------------------------------------------------
+
+static RESOLVE_MICROS: AtomicU64 = AtomicU64::new(0);
+static RESOLVE_CALLS: AtomicU64 = AtomicU64::new(0);
+const RELAXED: Ordering = Ordering::Relaxed;
+
+/// DSL 场景翻译 / 逐帧接线解算的计时快照。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WiringTiming {
+    /// `resolve_frame` 累计耗时（微秒）。
+    pub resolve_micros: u64,
+    /// `resolve_frame` 累计调用次数（= 逐帧解算次数）。
+    pub resolve_calls: u64,
+}
+
+/// 取当前计时快照（CLI / 门禁脚本采集）。
+pub fn timing_snapshot() -> WiringTiming {
+    WiringTiming {
+        resolve_micros: RESOLVE_MICROS.load(RELAXED),
+        resolve_calls: RESOLVE_CALLS.load(RELAXED),
+    }
+}
+
+/// 记一次耗时（由 `resolve_frame` 调用；也可供脚本单独登记编译段）。
+pub fn record_resolve(micros: u64) {
+    RESOLVE_MICROS.fetch_add(micros, RELAXED);
+    RESOLVE_CALLS.fetch_add(1, RELAXED);
+}
+
+/// 清零计时（脚本建立首次基线前调用）。
+pub fn reset_timing() {
+    RESOLVE_MICROS.store(0, RELAXED);
+    RESOLVE_CALLS.store(0, RELAXED);
 }
 
 /// 把关键帧 / 解析式绑定登记为 `PropertyChannel` 的**唯一入口**。

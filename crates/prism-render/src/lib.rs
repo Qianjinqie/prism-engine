@@ -399,6 +399,79 @@ pub use measure::{
 };
 pub use zero_copy::{buffer_reborrow, is_zero_copy_path, verify_zero_copy, ZERO_COPY_WHITELIST};
 
+// ---------------------------------------------------------------------------
+// V3.1「全方位性能优化」——验收框架与配置基础设施（T01）
+//
+// 依赖方向：`v31_gate` / `v31_golden` → `v31_config`（常量单一真源），
+// `v31_golden` → `prism-rt`（确定性 CPU 渲染）/ `prism-io`（PNG + SHA-256）
+// / `prism-math`（ACES + det_pow）/ `prism-dsl`（档位枚举的规格覆写入口）。
+// 三者都不被本 crate 的旧模块依赖 ⇒ 旧入口 `render_movie` / `--fast` 零回归。
+// T03 接 `movie::render_movie_v31` 时直接消费下面 re-export 的公共类型。
+// ---------------------------------------------------------------------------
+
+pub mod v31_config;
+pub mod v31_gate;
+pub mod v31_golden;
+// T03「出片主链路」：时域累积状态机 / f32 线性帧旁路 / 设备包装器 / golden 抽样。
+// 依赖方向：四者都只依赖 v31_config + 本 crate 既有模块 + prism-rt/gpu/dsl/io，
+// 不被任何旧模块依赖 ⇒ `render_movie` / `--fast` 零回归。
+pub mod v31_accum;
+pub mod linear;
+pub mod v31_device;
+pub mod v31_sample;
+// V3.1 收尾：四个大模式 / 精细开关（v31_modes）、可选离线误差校验
+// （v31_verify）、全域分段计时（perf_domains）。全部只依赖既有模块，
+// 旧入口零回归。时空重建（v31_reconstruct）已按复盘结论整体删除。
+pub mod v31_modes;
+pub mod v31_verify;
+pub mod perf_domains;
+// V3.1 时域重投影样本复用（几何感知，S2–S5 实装）：G-buffer / 重投影 /
+// 几何一致性 / 失效回填 / 真实新增样本统计。独立模块，旧入口零回归。
+pub mod v31_temporal;
+pub use v31_temporal::{independent_golden_u8, ReprojStats, TemporalReprojector};
+
+pub use v31_config::{
+    DEFAULT_FRAMES, DEFAULT_FPS, DELTA_HARD, DELTA_P99, EDGE_KEEP, FINAL_SPP, GALLERY_BYTES,
+    GALLERY_SHA256, GOLDEN_BOUNCES, GOLDEN_SPP, HIST_BINS, HIST_BIN_REL, JudgeLimits, MIN_SPP,
+    PREVIEW_SPP, PSNR_FRAME_DB, PSNR_SEQ_DB, QualityTier, ResTier, STRONG_EDGE_MIN,
+    TEMPORAL_OUTLIER, V31Config,
+};
+pub use v31_gate::{
+    V31ErrorReport, V31SequenceAggregate, V31Verdict, compare_frame, compare_frame_2d,
+    compare_frame_2d_expected, judge_parity, judge_v31, judge_v31_with, parity_of_u8,
+    sequence_mean_psnr,
+};
+pub use v31_golden::{
+    GoldenError, GoldenFrameRecord, GoldenStore, GoldenSummary, GoldenTier, ManifestEntry,
+    render_golden_frame, sha256_hex, GOLDEN_ROOT_REL,
+};
+pub use v31_accum::{
+    AccumOutcome, CollectingV31Sink, NullV31Sink, ResetReason, StreamingV31Sink, TemporalState,
+    V31FrameRecord, V31FrameSink, V31MovieReport, fnv1a64, with_env_overrides,
+};
+pub use linear::{
+    LinearFrameRequest, denoise_conservative, denoise_enabled, render_frame_linear,
+    rgba8_of, tone_map_linear, try_render_linear,
+};
+pub use v31_device::V31RenderDevice;
+pub use v31_sample::{
+    MIN_SAMPLE_FRAMES, MANIFEST_TAG, SamplePlan, build_sample_plan, timeline_period_frames,
+};
+pub use movie::{render_movie_v31, V31_RESIDENT_FRAME_LIMIT};
+
+// V3.1 收尾公共 API：四档 + 精细开关 / 重建器 / 可选校验 / 分段计时。
+pub use v31_modes::{V31Knobs, V31Mode};
+pub use v31_verify::{
+    disabled_report, finalize_verify, V31VerifyCollector, V31VerifyReport, V31VerifySample,
+};
+pub use perf_domains::{
+    record as record_domain, reset as reset_domains, snapshot as domain_snapshot, Domain,
+    DomainSnapshot, SegmentTimer,
+};
+pub use measure::{
+    alloc_per_frame, current_rss_kib, rss_delta_report, RssDeltaReport,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -36,9 +36,11 @@ use prism_core::node::{Hash256, SnapshotKey, SnapshotStore};
 use prism_math::Vec3;
 
 use crate::xpbd::{
-    DistanceConstraint, DivergenceDetector, SolveMode, SolveModeMeta, World,
+    DistanceConstraint, DivergenceDetector, SolveModeMeta, World,
     DIVERGENCE_WINDOW_DEFAULT, RESIDUAL_EPS_DEFAULT,
 };
+#[cfg(test)]
+use crate::xpbd::SolveMode;
 use crate::PhysicsError;
 
 // ---------------------------------------------------------------------------

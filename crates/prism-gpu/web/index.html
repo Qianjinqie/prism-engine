@@ -150,7 +150,7 @@ const ST_NAME = ["PASS","FAIL","PENDING","SKIP","BAD_ARG"];
 // 构建后用 wasm 的 sha256 前 8 位替换下面的 `__WASM_VER__` 占位符（幂等），
 // 内容一变小 URL 就变，缓存自然失效。未跑过 build.sh 时占位符原样保留，
 // 仍可正常加载（只是不做缓存破坏）。
-const WASM_URL = "prism_gpu.wasm?v=489ab3cc";
+const WASM_URL = "prism_gpu.wasm?v=c51c86d7";
 
 // 句柄表在 wasm 线性内存里的元素宽度：句柄是 u32 ⇒ 4 字节。
 // 命名常量而非字面量：bind group 那段要把 n 个句柄的数组整段读出来，

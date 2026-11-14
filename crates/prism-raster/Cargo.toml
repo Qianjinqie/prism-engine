@@ -7,3 +7,7 @@ edition = "2021"
 prism-io = { path = "../prism-io" }
 prism-math = { path = "../prism-math" }
 prism-core = { path = "../prism-core" }
+
+[dev-dependencies]
+# 差分对拍的确定性伪随机源（固定种子、纯整数哈希；不引入 rand）。
+prism-noise = { path = "../prism-noise" }

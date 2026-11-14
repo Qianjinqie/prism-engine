@@ -1113,7 +1113,7 @@ section("6. 无 WebGPU 时的行为（不白屏、不误报、不 panic）");
   check("GPU 依赖项数量未回退（>= 4）", gpuItems.length >= 4, `${gpuItems.length} 项`);
   for (const id of [
     "device.init", "wgsl.compile", "gpu.scan_block", "gpu.histogram",
-    "gpu.sim_particles", "gpu.sim_sph", "gpu.sim_cloth", "gpu.rt_wavefront",
+    "gpu.path_raster", "gpu.sim_particles", "gpu.sim_sph", "gpu.sim_cloth", "gpu.rt_wavefront",
     "gpu.rt_wavefront_multi", "gpu.params_roundtrip", "gpu.gi_layout", "gpu.gi_compute",
   ]) {
     const m = byId[id];

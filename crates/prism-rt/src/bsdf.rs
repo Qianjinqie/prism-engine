@@ -366,12 +366,29 @@ fn alpha_interp(alpha: f32) -> (usize, f32) {
 /// 值（镜面瓣极窄时估计量方差大）；越界会让调用方的 `1−E` 变负，使多散射
 /// 补偿**反向抽走**该通道能量——表现是高饱和金属（金/铜）的强通道被抵消，
 /// 整体偏成补色（青绿）。域约束在此统一执行，不依赖 LUT 精度。
+///
+/// B.2 起生产热路径（`multiscatter_ms_geom`）改用预算版 [`energy_dir_at`]；
+/// 本「每次自算 α 插值 + 取表」入口保留为**未提升的参考语义**，供白炉标准形 /
+/// 旧彩色形式等测试判据消费（它们就是要走非提升路径做独立复算）。
+#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(not(test), allow(dead_code))]
 fn energy_dir(mu: f32, alpha: f32, f0v: f32) -> f32 {
-    let t = energy_table();
+    let (ai, af) = alpha_interp(alpha);
+    energy_dir_at(energy_table(), mu, ai, af, f0v)
+}
+
+/// [`energy_dir`] 的「α 插值 + 能量表引用已预算」内核。
+///
+/// 与原 `energy_dir` 的算术**逐句相同**：只是把 `t = energy_table()` 与
+/// `(ai, af) = alpha_interp(alpha)` 从函数内提到调用方。二者都是纯函数（前者
+/// 是 `OnceLock`，后者无状态），`multiscatter_ms` 里的三次能量查询共享同一个
+/// `alpha`，故把这两步各算一次、三次查询复用同一 `(t, ai, af)` 不改变任何
+/// 一项浮点运算的操作数或顺序 ⇒ 逐字节一致（见 `eval_hoist_bitwise`）。
+#[inline]
+fn energy_dir_at(t: &EnergyTable, mu: f32, ai: usize, af: f32, f0v: f32) -> f32 {
     let mx = clamp(mu, 0.0, 1.0) * (E_MU as f32 - 1.0);
     let mi = (mx as usize).min(E_MU - 2);
     let mf = mx - mi as f32;
-    let (ai, af) = alpha_interp(alpha);
     let e0 = (t.e0[mi][ai] * (1.0 - af) + t.e0[mi][ai + 1] * af) * (1.0 - mf)
         + (t.e0[mi + 1][ai] * (1.0 - af) + t.e0[mi + 1][ai + 1] * af) * mf;
     let e1 = (t.e1[mi][ai] * (1.0 - af) + t.e1[mi][ai + 1] * af) * (1.0 - mf)
@@ -380,12 +397,47 @@ fn energy_dir(mu: f32, alpha: f32, f0v: f32) -> f32 {
 }
 
 /// 表插值：E_avg(α, f0v)。域约束理由同 [`energy_dir`]。
+///
+/// 与 [`energy_dir`] 同理：生产热路径用预算版 [`energy_avg_at`]，本入口保留
+/// 为白炉标准形 / 旧形式测试判据的未提升参考语义。
+#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(not(test), allow(dead_code))]
 fn energy_avg(alpha: f32, f0v: f32) -> f32 {
-    let t = energy_table();
     let (ai, af) = alpha_interp(alpha);
+    energy_avg_at(energy_table(), ai, af, f0v)
+}
+
+/// [`energy_avg`] 的「α 插值 + 能量表引用已预算」内核，逐位相同，理由同
+/// [`energy_dir_at`]。
+#[inline]
+fn energy_avg_at(t: &EnergyTable, ai: usize, af: f32, f0v: f32) -> f32 {
     let a0 = t.avg0[ai] * (1.0 - af) + t.avg0[ai + 1] * af;
     let a1 = t.avg1[ai] * (1.0 - af) + t.avg1[ai + 1] * af;
     (a0 * (1.0 - f0v) + a1 * f0v).clamp(0.0, 1.0)
+}
+
+/// 单次 [`Bsdf::eval`] 中跨 core / multiscatter 两半复用的纯标量。
+///
+/// 三项都是 `(self, wo, wi, n)` 的纯函数：`cos_o/cos_i` 是点积的 `.max(0.0)`，
+/// `f0` 是 Schlick 基反射率。原实现里 `eval_core` 与 `multiscatter_ms` 各自重算
+/// 一遍（连同 `eval` 的几何短路共 6 次点积 + 2 次 `f0()`），这里提前算一次复用。
+/// 纯子表达式提升不改变任何运算顺序 ⇒ 与「各算各的」逐字节一致。
+#[derive(Clone, Copy)]
+struct EvalGeom {
+    cos_o: f32,
+    cos_i: f32,
+    f0: Vec3,
+}
+
+impl EvalGeom {
+    #[inline]
+    fn new(b: &Bsdf, wo: Vec3, wi: Vec3, n: Vec3) -> Self {
+        EvalGeom {
+            cos_o: wo.dot(&n).max(0.0),
+            cos_i: wi.dot(&n).max(0.0),
+            f0: b.f0(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -493,6 +545,73 @@ const _: () = assert!(MAP_SLOTS == 4);
 // 首版草稿在这里也写了一条 `offset_of!(…, maps) == 56`，编译即炸：
 // 非 `repr(C)` 结构体可以重排。删掉它不是因为"过不了"，而是因为它声称的
 // 性质本来就不该被声称。
+
+/// V3.1：`Bsdf::eval` 中**只依赖材质参数**的子表达式的帧级缓存。
+///
+/// 由 [`Bsdf::eval_cache`] 每帧构造一次，供 [`Bsdf::eval_cached`] 在
+/// 逐样本热路径读取。所有字段都是 `(self)` 的纯函数值；缓存是**恒等提升**
+/// （操作数与结合顺序不动），不是近似，故 `eval_cached` 与 `eval` 逐位一致。
+/// `usize` 的 `ai` 是 `alpha_interp` 的能量表基准索引（`af` 为插值余数）。
+#[derive(Debug, Clone, Copy)]
+pub struct BsdfEvalCache {
+    /// Schlick 基反射率 `f0()`。
+    pub f0: Vec3,
+    /// 基础色。
+    pub base_color: Vec3,
+    /// 感知粗糙度。
+    pub roughness: f32,
+    /// 各向同性 GGX α = roughness²。
+    pub alpha: f32,
+    /// 白炉能量表插值基准索引。
+    pub ai: usize,
+    /// 白炉能量表插值余数。
+    pub af: f32,
+    /// 帧级 LUT：`e1[mi][ai]·(1−af) + e1[mi][ai+1]·af`，`mi = 0..E_MU`。
+    /// `energy_dir_at(t, μ, ai, af, 1.0)` 的 `e0·(1−1)=0` 分支恒为死项，
+    /// 且 α 维插值只依赖帧级 `(ai, af)`，故每帧预算 8 个 μ 格点即可；
+    /// 逐样本的 μ 线性插值与 `energy_dir_at` 逐句同式（纯子式提升）。
+    pub e1_blend: [f32; E_MU],
+    /// 半球平均方向能量 `E_avg`。
+    pub e_avg: f32,
+    /// 平均 Fresnel `F_avg = f0 + (1−f0)/21`。
+    pub f_avg: Vec3,
+    /// `π · max(1−E_avg, 1e−3)`（多散射分母）。
+    pub pi_den_avg: f32,
+    /// R 通道 `max(1 − F_avg.x·(1−E_avg), 1e−3)`。
+    pub den_r: f32,
+    /// G 通道分母。
+    pub den_g: f32,
+    /// B 通道分母。
+    pub den_b: f32,
+    /// `(1−metalness)·(1−transmission)`（漫反瓣权重）。
+    pub one_metal_one_trans: f32,
+    /// 是否走各向异性分支（α_t ≠ α_b）。
+    pub anisotropic: bool,
+    /// 切线方向 α_t。
+    pub alpha_t: f32,
+    /// 副切线方向 α_b。
+    pub alpha_b: f32,
+    /// 各向异性旋转角。
+    pub rotation: f32,
+}
+
+/// V3.1：`energy_dir_at(t, μ, ai, af, f0v=1.0)` 的帧级 LUT 版，与 [`energy_dir_at`]
+/// **逐位一致**。
+///
+/// `f0v=1.0` ⇒ `(1.0−f0v)=0.0`，`energy_dir_at` 的 `e0·0 + e1·1` 化简为 `e1`
+/// （能量表恒为有限非负值，`e0·0.0=0.0`，`0.0+e1=e1`，故 `.clamp` 前的值
+/// 逐位相同）。`e1` 的 α 维插值 `e1[mi][ai](1−af)+e1[mi][ai+1]·af` 只依赖
+/// 帧级 `(ai,af)` 与 μ 格点 `mi`，已预算进 [`BsdfEvalCache::e1_blend`]；逐样本
+/// 只剩 μ 维线性插值，操作数与结合序与 `energy_dir_at` 的 `e1` 逐句相同 ⇒
+/// 逐字节一致（`v31_eval_cache_bitwise` 对拍判据）。
+#[inline]
+fn energy_dir_cached(c: &BsdfEvalCache, mu: f32) -> f32 {
+    let mx = clamp(mu, 0.0, 1.0) * (E_MU as f32 - 1.0);
+    let mi = (mx as usize).min(E_MU - 2);
+    let mf = mx - mi as f32;
+    let e1 = c.e1_blend[mi] * (1.0 - mf) + c.e1_blend[mi + 1] * mf;
+    e1.clamp(0.0, 1.0)
+}
 
 impl Bsdf {
     /// 构造（参数域断言，宪章 C19）。
@@ -638,20 +757,49 @@ impl Bsdf {
         // 几何有效性短路：当入射/出射与法线同侧不成立（cos_i ≤ 0 或 cos_o ≤ 0），
         // 该对方向不构成有效反射（如 wi 与 n 反向），BRDF（含多散射补偿）应精确为 0。
         // W1 引入的多散射补偿项此前未在 eval 入口短路，导致反向 wi 仍返回非零 —— 回归修复。
-        if wo.dot(&n) <= 0.0 || wi.dot(&n) <= 0.0 {
+        // V3.1 P1-2：短路用的两次点积**向下复用**给 `EvalGeom`，省掉重算。
+        // `co > 0` 时 `co.max(0.0) == co`（精确），故预算值与 `EvalGeom::new`
+        // 的 `wo.dot(&n).max(0.0)` 逐位相同；操作数、结合序、分支一律不动
+        // ⇒ 输出逐字节一致。判据：`eval_hoist_bitwise`（冻结老语义逐位对拍）
+        // 与下面的 `v31_eval_dot_reuse_is_bitwise_identical`。
+        let co: f32 = wo.dot(&n);
+        let ci: f32 = wi.dot(&n);
+        if co <= 0.0 || ci <= 0.0 {
             return Vec3::splat(0.0);
         }
-        self.eval_core(wo, wi, n) + self.multiscatter_ms(wo, wi, n)
+        // B.2 逐位不变的公共子式提升：原实现里 `eval_core` 与 `multiscatter_ms`
+        // 各自重算 cos_o/cos_i/f0（连同本短路共 6 次点积 + 2 次含除法的 `f0()`），
+        // 且 ms 内三次能量查询各重算一次 `alpha_interp` 与 `energy_table()`。
+        // 这里把这些**纯子表达式**各算一次向下传，不改变任何一项运算的操作数或
+        // 结合顺序 ⇒ 输出与逐半重算版本逐字节一致。
+        let g = EvalGeom {
+            cos_o: co.max(0.0),
+            cos_i: ci.max(0.0),
+            f0: self.f0(),
+        };
+        self.eval_core_geom(wo, wi, n, &g) + self.multiscatter_ms_geom(&g)
     }
 
     /// eval 的无补偿核心：diffuse + spec（各向同性 / 各向异性分支）。
+    ///
+    /// 公开语义保持不变（`eval_no_ms` 与能量守恒反向自证依赖它）；只把主体
+    /// 委托给 [`Self::eval_core_geom`]，后者接受预算的 [`EvalGeom`]。
     pub(crate) fn eval_core(&self, wo: Vec3, wi: Vec3, n: Vec3) -> Vec3 {
-        let cos_o = wo.dot(&n).max(0.0);
-        let cos_i = wi.dot(&n).max(0.0);
+        let g = EvalGeom::new(self, wo, wi, n);
+        self.eval_core_geom(wo, wi, n, &g)
+    }
+
+    /// [`Self::eval_core`] 的主体：`cos_o/cos_i/f0` 由 [`EvalGeom`] 预算。
+    /// 除「读预算值」外与原实现逐句相同（点积、schlick、diffuse、spec 的
+    /// 每一处算术与分支都不动），故逐字节一致。
+    #[inline]
+    fn eval_core_geom(&self, wo: Vec3, wi: Vec3, n: Vec3, g: &EvalGeom) -> Vec3 {
+        let cos_o = g.cos_o;
+        let cos_i = g.cos_i;
         if cos_o <= 0.0 || cos_i <= 0.0 {
             return Vec3::splat(0.0);
         }
-        let f0 = self.f0();
+        let f0 = g.f0;
         let f_v = schlick(f0, cos_o);
         let mut f = Vec3::splat(0.0);
 
@@ -698,18 +846,39 @@ impl Bsdf {
     /// 拉伸后**已多保留**能量（半球积分高于几何均值 α_g = √(α_t·α_b) 的等效各向同性），
     /// 若按 α_g 或较大轴查表会**过度补偿**（白炉 R 冲到 1.07+，凭空造能）；
     /// 取较小轴 ⇒ 补偿量更小，保证白炉积分 R ≤ 1+ε（不创造能量）。
+    ///
+    /// 公开语义保留（能量守恒反向自证 + 逐位对拍 `eval_hoist_bitwise` 消费）：
+    /// 生产 `eval` 走预算几何版 [`Self::multiscatter_ms_geom`]，本入口是未提升
+    /// 方向的薄封装，两者输出同一 [`EvalGeom`] 逐字节一致。
+    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn multiscatter_ms(&self, wo: Vec3, wi: Vec3, n: Vec3) -> Vec3 {
-        let cos_o = wo.dot(&n).max(0.0);
-        let cos_i = wi.dot(&n).max(0.0);
+        let g = EvalGeom::new(self, wo, wi, n);
+        self.multiscatter_ms_geom(&g)
+    }
+
+    /// [`Self::multiscatter_ms`] 的主体：`cos_o/cos_i/f0` 由 [`EvalGeom`] 预算，
+    /// 且三次能量查询共享**一次** `(t, ai, af)`（原实现经 `energy_dir`/`energy_avg`
+    /// 各算一次 `alpha_interp` + `energy_table()`，共 3 次）。
+    ///
+    /// 其余算术（ms_base / f_avg / comp 的每步结合顺序）与原实现逐句相同，
+    /// 故与「三次各自全算」版本逐字节一致：纯子表达式提升，`eval_hoist_bitwise`
+    /// 用冻结的老语义参考实现逐位断言。
+    #[inline]
+    fn multiscatter_ms_geom(&self, g: &EvalGeom) -> Vec3 {
+        let cos_o = g.cos_o;
+        let cos_i = g.cos_i;
         let alpha = if self.is_anisotropic() {
             self.alpha_t.min(self.alpha_b)
         } else {
             self.alpha()
         };
-        let f0 = self.f0();
-        let e_o = energy_dir(cos_o, alpha, 1.0);
-        let e_i = energy_dir(cos_i, alpha, 1.0);
-        let e_avg = energy_avg(alpha, 1.0);
+        let f0 = g.f0;
+        let t = energy_table();
+        let (ai, af) = alpha_interp(alpha);
+        let e_o = energy_dir_at(t, cos_o, ai, af, 1.0);
+        let e_i = energy_dir_at(t, cos_i, ai, af, 1.0);
+        let e_avg = energy_avg_at(t, ai, af, 1.0);
         let ms_base = (1.0 - e_o) * (1.0 - e_i) / (PI * (1.0 - e_avg).max(1e-3));
         let f_avg = f0 + (Vec3::splat(1.0) - f0) * (1.0 / 21.0);
         let comp = |fa: f32| ms_base * fa * fa * e_avg / (1.0 - fa * (1.0 - e_avg)).max(1e-3);
@@ -719,6 +888,125 @@ impl Bsdf {
     /// 反向自证用：eval 但**不含**多散射补偿（即「破坏归一化因子」的等价实验）。
     pub fn eval_no_ms(&self, wo: Vec3, wi: Vec3, n: Vec3) -> Vec3 {
         self.eval_core(wo, wi, n)
+    }
+
+    /// V3.1：把 `eval` 中**只依赖材质参数**的纯子表达式预计算成帧级常量。
+    ///
+    /// 逐项列出被提升的量：`f0()`、`alpha()` / `alpha_ms`、`alpha_interp`、
+    /// `energy_avg_at`（`e_avg`）、`f_avg`、`PI·max(1−e_avg,1e−3)`、
+    /// 三个通道的 `max(1−f_avg·(1−e_avg),1e−3)`、`(1−metal)(1−trans)`、
+    /// 各向异性判定。它们都是 `(self)` 的纯函数，逐帧只需算一次。
+    /// 缓存值与 `eval` 内部逐句计算的结果**逐位相同**（同样的操作数与
+    /// 结合顺序），故 `eval_cached` 是恒等变换，不是近似。
+    pub fn eval_cache(&self) -> BsdfEvalCache {
+        let f0: Vec3 = self.f0();
+        let alpha: f32 = self.alpha();
+        let anisotropic: bool = self.is_anisotropic();
+        let alpha_ms: f32 = if anisotropic {
+            self.alpha_t.min(self.alpha_b)
+        } else {
+            alpha
+        };
+        let t = energy_table();
+        let (ai, af) = alpha_interp(alpha_ms);
+        let e_avg: f32 = energy_avg_at(t, ai, af, 1.0);
+        // 帧级 LUT：`energy_dir_at(t, μ, ai, af, 1.0)` 里 `e0·(1−1)=0`
+        // 是死项，只剩 e1 的 α 维插值 `(e1[mi][ai](1−af)+e1[mi][ai+1]·af)`，
+        // 它只依赖帧级 `(ai,af)` 与 μ 格点 `mi` ⇒ 8 个格点每帧预算一次。
+        let one_m_af: f32 = 1.0 - af;
+        let mut e1_blend: [f32; E_MU] = [0.0; E_MU];
+        for mi in 0..E_MU {
+            e1_blend[mi] = t.e1[mi][ai] * one_m_af + t.e1[mi][ai + 1] * af;
+        }
+        let f_avg: Vec3 = f0 + (Vec3::splat(1.0) - f0) * (1.0 / 21.0);
+        let one_m_e: f32 = 1.0 - e_avg;
+        let den_avg: f32 = one_m_e.max(1e-3);
+        let den = |fa: f32| -> f32 { (1.0 - fa * one_m_e).max(1e-3) };
+        BsdfEvalCache {
+            f0,
+            base_color: self.base_color,
+            roughness: self.roughness,
+            alpha,
+            ai,
+            af,
+            e1_blend,
+            e_avg,
+            f_avg,
+            pi_den_avg: PI * den_avg,
+            den_r: den(f_avg.x),
+            den_g: den(f_avg.y),
+            den_b: den(f_avg.z),
+            one_metal_one_trans: (1.0 - self.metalness) * (1.0 - self.transmission),
+            anisotropic,
+            alpha_t: self.alpha_t,
+            alpha_b: self.alpha_b,
+            rotation: self.rotation,
+        }
+    }
+
+    /// V3.1：`eval` 的帧级缓存版，与 [`Self::eval`] **逐位一致**。
+    ///
+    /// 只把「材质常量」换成缓存读取；`cos_o/cos_i/f0` 之外的所有算术
+    /// （Burley diffuse、GGX/Smith/Schlick、白炉多散射）与 `eval` 逐句同式，
+    /// 操作数与结合顺序一律不动。判据见 `v31_eval_cache_bitwise` 单测。
+    #[inline]
+    pub fn eval_cached(&self, wo: Vec3, wi: Vec3, n: Vec3, c: &BsdfEvalCache) -> Vec3 {
+        let co: f32 = wo.dot(&n);
+        let ci: f32 = wi.dot(&n);
+        if co <= 0.0 || ci <= 0.0 {
+            return Vec3::splat(0.0);
+        }
+        let cos_o: f32 = co.max(0.0);
+        let cos_i: f32 = ci.max(0.0);
+        let f0: Vec3 = c.f0;
+        let f_v: Vec3 = schlick(f0, cos_o);
+        let mut f: Vec3 = Vec3::splat(0.0);
+
+        // V3.1 CSE：`(wo+wi).normalize()` 在 diffuse 的 `cos_d` 与各向同性
+        // `spec_scatter` 的 `cos_h` 里是**同一个向量**，预算一次两瓣共用；
+        // `cos_d = cos_h.max(0.0)`。spec 的 `cos_o/cos_i>0` 守卫由本函数入口
+        // 短路覆盖，`cos_h<=0` 守卫由下方 `else if` 覆盖。spec 内部逐句内联
+        // 后操作数与结合顺序与 `eval` 完全相同 ⇒ 逐位一致
+        // （`eval_cache_bitwise_is_identical` 含金属/非金属/各向异性对拍）。
+        let h: Vec3 = (wo + wi).normalize();
+        let cos_h: f32 = h.dot(&n);
+        if c.one_metal_one_trans > 0.0 {
+            let cos_d = cos_h.max(0.0);
+            let fd90 = 0.5 + 2.0 * c.roughness * cos_d * cos_d;
+            let term = (1.0 + (fd90 - 1.0) * pow5(1.0 - cos_i))
+                * (1.0 + (fd90 - 1.0) * pow5(1.0 - cos_o));
+            let diff = hadamard(
+                hadamard(c.base_color, Vec3::splat(FRAC_1_PI * term)),
+                Vec3::splat(1.0) - f_v,
+            );
+            f = f + diff * c.one_metal_one_trans;
+        }
+
+        if c.anisotropic {
+            // 各向异性分支保留原函数逐位语义（其 h/cos_h 内部自算，但结果同源）。
+            f = f + spec_scatter_aniso(wo, wi, n, c.alpha_t, c.alpha_b, c.rotation, f0);
+        } else if cos_h > 0.0 {
+            // `spec_scatter(wo, wi, n, c.alpha, f0)` 的内联等价式：
+            // cos_o/cos_i 已由入口预算，h/cos_h 已预算，逐句同式。
+            let g = smith_g1(c.alpha, cos_o) * smith_g1(c.alpha, cos_i);
+            let f_h = schlick(f0, wo.dot(&h).max(0.0));
+            f = f + f_h * (ggx_d(c.alpha, cos_h) * g / (4.0 * cos_o * cos_i));
+        }
+
+        // 帧级 LUT 版（与 energy_dir_at(t, μ, ai, af, 1.0) 逐位一致，见文档）：
+        // f0v=1.0 时 e0·(1−f0v) 恒为 0，α 维插值已预算进 c.e1_blend，
+        // 逐样本只剩 μ 维线性插值 + clamp，省掉每样本 2 次完整能量表查询。
+        let e_o = energy_dir_cached(c, cos_o);
+        let e_i = energy_dir_cached(c, cos_i);
+        let ms_base = (1.0 - e_o) * (1.0 - e_i) / c.pi_den_avg;
+        let ea = c.e_avg;
+        let fa = c.f_avg;
+        let ms = Vec3::new(
+            ms_base * fa.x * fa.x * ea / c.den_r,
+            ms_base * fa.y * fa.y * ea / c.den_g,
+            ms_base * fa.z * fa.z * ea / c.den_b,
+        );
+        f + ms
     }
 
     /// 反射域立体角 pdf（BSDF 采样策略 vs NEE/MNEE 的 MIS 备择策略）。
@@ -966,6 +1254,371 @@ mod tests {
     use super::*;
     use crate::sampler::sample_1d;
     use prism_core::SampleIndex;
+
+    /// V3.1 P1-2：`eval` 复用短路点积后，与「短路 + `EvalGeom::new` 各算各的」
+    /// 冻结参考逐位一致（全材质 × 方向网格，含反向 wi 的短路分支）。
+    #[test]
+    fn v31_eval_dot_reuse_is_bitwise_identical() {
+        fn ref_eval(b: &Bsdf, wo: Vec3, wi: Vec3, n: Vec3) -> Vec3 {
+            if wo.dot(&n) <= 0.0 || wi.dot(&n) <= 0.0 {
+                return Vec3::splat(0.0);
+            }
+            let g = EvalGeom::new(b, wo, wi, n);
+            b.eval_core_geom(wo, wi, n, &g) + b.multiscatter_ms_geom(&g)
+        }
+        let mats: Vec<Bsdf> = vec![
+            Bsdf::new(
+                Vec3::new(0.72, 0.28, 0.18), 0.0, 0.35, 1.5, 0.0, 0.0,
+                Vec3::splat(0.3),
+            ),
+            Bsdf::new(
+                Vec3::new(0.98, 0.68, 0.26), 1.0, 0.12, 1.5, 0.0, 0.0,
+                Vec3::splat(0.3),
+            ),
+            Bsdf::new(
+                Vec3::new(0.90, 0.88, 0.84), 0.0, 0.16, 1.5, 0.4, 0.12,
+                Vec3::splat(0.08),
+            ),
+        ];
+        let n: Vec3 = Vec3::new(0.0, 1.0, 0.0);
+        let dirs: Vec<Vec3> = vec![
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.3, 0.9, 0.2),
+            Vec3::new(-0.7, 0.4, -0.5),
+            Vec3::new(0.1, -0.9, 0.3), // 反向：短路分支
+            Vec3::new(0.9, 0.05, 0.1),
+        ];
+        let mut checked: u32 = 0;
+        for b in &mats {
+            for &wo in &dirs {
+                for &wi in &dirs {
+                    let got: Vec3 = b.eval(wo, wi, n);
+                    let want: Vec3 = ref_eval(b, wo, wi, n);
+                    assert_eq!(got.x.to_bits(), want.x.to_bits(), "x: wo={wo:?} wi={wi:?}");
+                    assert_eq!(got.y.to_bits(), want.y.to_bits(), "y: wo={wo:?} wi={wi:?}");
+                    assert_eq!(got.z.to_bits(), want.z.to_bits(), "z: wo={wo:?} wi={wi:?}");
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked >= 75, "对拍覆盖不足：{checked}");
+    }
+
+    // =======================================================================
+    //  B.2 公共子式提升的位级对拍权威：优化前 eval 的**冻结逐字拷贝**。
+    //
+    //  这一组函数完全独立于生产路径的任何辅助函数：自带 energy_dir / energy_avg
+    //  的内联实现（每次查询各算一次 alpha_interp + energy_table），eval_core 与
+    //  multiscatter_ms 各自重算 cos_o/cos_i/f0，eval 逐半相加。用于证明
+    //  「把纯子表达式各算一次向下传」不改变任何一位输出——不是容差内接近，
+    //  而是 to_bits() 全等。任何放宽 differing 阈值都属改判据，不做。
+    // =======================================================================
+
+    /// 冻结：优化前 `energy_dir`（α 插值 + 取表都在函数内）。
+    fn frozen_energy_dir(mu: f32, alpha: f32, f0v: f32) -> f32 {
+        let t = energy_table();
+        let mx = clamp(mu, 0.0, 1.0) * (E_MU as f32 - 1.0);
+        let mi = (mx as usize).min(E_MU - 2);
+        let mf = mx - mi as f32;
+        let (ai, af) = alpha_interp(alpha);
+        let e0 = (t.e0[mi][ai] * (1.0 - af) + t.e0[mi][ai + 1] * af) * (1.0 - mf)
+            + (t.e0[mi + 1][ai] * (1.0 - af) + t.e0[mi + 1][ai + 1] * af) * mf;
+        let e1 = (t.e1[mi][ai] * (1.0 - af) + t.e1[mi][ai + 1] * af) * (1.0 - mf)
+            + (t.e1[mi + 1][ai] * (1.0 - af) + t.e1[mi + 1][ai + 1] * af) * mf;
+        (e0 * (1.0 - f0v) + e1 * f0v).clamp(0.0, 1.0)
+    }
+
+    /// 冻结：优化前 `energy_avg`。
+    fn frozen_energy_avg(alpha: f32, f0v: f32) -> f32 {
+        let t = energy_table();
+        let (ai, af) = alpha_interp(alpha);
+        let a0 = t.avg0[ai] * (1.0 - af) + t.avg0[ai + 1] * af;
+        let a1 = t.avg1[ai] * (1.0 - af) + t.avg1[ai + 1] * af;
+        (a0 * (1.0 - f0v) + a1 * f0v).clamp(0.0, 1.0)
+    }
+
+    /// 冻结：优化前 `eval_core`（自算 cos_o/cos_i/f0）。
+    fn frozen_eval_core(b: &Bsdf, wo: Vec3, wi: Vec3, n: Vec3) -> Vec3 {
+        let cos_o = wo.dot(&n).max(0.0);
+        let cos_i = wi.dot(&n).max(0.0);
+        if cos_o <= 0.0 || cos_i <= 0.0 {
+            return Vec3::splat(0.0);
+        }
+        let f0 = b.f0();
+        let f_v = schlick(f0, cos_o);
+        let mut f = Vec3::splat(0.0);
+        let one_metal = 1.0 - b.metalness;
+        let one_trans = 1.0 - b.transmission;
+        if one_metal * one_trans > 0.0 {
+            let h = (wo + wi).normalize();
+            let cos_d = h.dot(&n).max(0.0);
+            let fd90 = 0.5 + 2.0 * b.roughness * cos_d * cos_d;
+            let term = (1.0 + (fd90 - 1.0) * pow5(1.0 - cos_i))
+                * (1.0 + (fd90 - 1.0) * pow5(1.0 - cos_o));
+            let diff = hadamard(
+                hadamard(b.base_color, Vec3::splat(FRAC_1_PI * term)),
+                Vec3::splat(1.0) - f_v,
+            );
+            f = f + diff * (one_metal * one_trans);
+        }
+        let alpha = b.alpha();
+        if b.is_anisotropic() {
+            f = f + spec_scatter_aniso(wo, wi, n, b.alpha_t, b.alpha_b, b.rotation, f0);
+        } else {
+            f = f + spec_scatter(wo, wi, n, alpha, f0);
+        }
+        f
+    }
+
+    /// 冻结：优化前 `multiscatter_ms`（自算 cos/alpha/f0，3 次独立查表）。
+    fn frozen_multiscatter_ms(b: &Bsdf, wo: Vec3, wi: Vec3, n: Vec3) -> Vec3 {
+        let cos_o = wo.dot(&n).max(0.0);
+        let cos_i = wi.dot(&n).max(0.0);
+        let alpha = if b.is_anisotropic() {
+            b.alpha_t.min(b.alpha_b)
+        } else {
+            b.alpha()
+        };
+        let f0 = b.f0();
+        let e_o = frozen_energy_dir(cos_o, alpha, 1.0);
+        let e_i = frozen_energy_dir(cos_i, alpha, 1.0);
+        let e_avg = frozen_energy_avg(alpha, 1.0);
+        let ms_base = (1.0 - e_o) * (1.0 - e_i) / (PI * (1.0 - e_avg).max(1e-3));
+        let f_avg = f0 + (Vec3::splat(1.0) - f0) * (1.0 / 21.0);
+        let comp = |fa: f32| ms_base * fa * fa * e_avg / (1.0 - fa * (1.0 - e_avg)).max(1e-3);
+        Vec3::new(comp(f_avg.x), comp(f_avg.y), comp(f_avg.z))
+    }
+
+    /// 冻结：优化前 `eval`（几何短路 + 两半相加）。
+    fn frozen_eval(b: &Bsdf, wo: Vec3, wi: Vec3, n: Vec3) -> Vec3 {
+        if wo.dot(&n) <= 0.0 || wi.dot(&n) <= 0.0 {
+            return Vec3::splat(0.0);
+        }
+        frozen_eval_core(b, wo, wi, n) + frozen_multiscatter_ms(b, wo, wi, n)
+    }
+
+    /// 断言两个 Vec3 三通道逐位相等（附上下文标签）。
+    fn assert_vec3_bits(tag: &str, got: Vec3, want: Vec3) {
+        assert_eq!(got.x.to_bits(), want.x.to_bits(), "{tag}: R 逐位不一致 got={} want={}", got.x, want.x);
+        assert_eq!(got.y.to_bits(), want.y.to_bits(), "{tag}: G 逐位不一致 got={} want={}", got.y, want.y);
+        assert_eq!(got.z.to_bits(), want.z.to_bits(), "{tag}: B 逐位不一致 got={} want={}", got.z, want.z);
+    }
+
+    /// B.2 主判据：`eval` 的公共子式提升对全材质 × 全方向网格**逐字节一致**。
+    ///
+    /// 覆盖：电介质 / 金属 / 混合 / 透射 / 次表面 / 各向异性，roughness 从镜面
+    /// 到全粗，ior 1.0–2.5，方向含正视 / 掠射 / 反向（几何短路）/ 倾斜法线。
+    /// 冻结参考是优化前的逐字实现，与生产路径不共享任何辅助函数 ⇒ 不是自证。
+    #[test]
+    fn eval_hoist_bitwise() {
+        let srad = Vec3::splat(0.3);
+        let mut mats: Vec<Bsdf> = vec![
+            Bsdf::new(Vec3::new(0.8, 0.2, 0.2), 0.0, 0.05, 1.5, 0.0, 0.0, srad), // 镜面电介质
+            Bsdf::new(Vec3::new(0.2, 0.6, 0.9), 0.0, 0.9, 1.45, 0.0, 0.0, srad), // 全粗电介质
+            Bsdf::new(Vec3::new(1.0, 0.766, 0.336), 1.0, 0.2, 1.5, 0.0, 0.0, srad), // 金
+            Bsdf::new(Vec3::new(0.955, 0.638, 0.538), 1.0, 0.4, 2.5, 0.0, 0.0, srad), // 铜/高 ior
+            Bsdf::new(Vec3::splat(1.0), 1.0, 0.6, 1.5, 0.0, 0.0, srad), // 白金属
+            Bsdf::new(Vec3::new(0.5, 0.5, 0.5), 0.5, 0.5, 1.5, 0.5, 0.3, srad), // 混合 + 透射 + 次表面
+            Bsdf::new(Vec3::new(0.9, 0.8, 0.7), 0.0, 0.35, 1.0, 1.0, 0.0, srad), // 全透射 / ior=1
+            Bsdf::new(Vec3::new(0.3, 0.7, 0.5), 0.7, 0.55, 1.7, 0.2, 0.1, srad), // 通用混合
+        ];
+        // 各向异性：α_t ≠ α_b，走 spec_scatter_aniso + ms 查表取 min 轴分支。
+        mats.push(Bsdf::new(Vec3::new(0.8, 0.4, 0.2), 0.6, 0.4, 1.5, 0.0, 0.0, srad)
+            .with_anisotropy(0.05, 0.6, 0.7));
+        mats.push(Bsdf::new(Vec3::new(0.2, 0.9, 0.6), 1.0, 0.3, 1.5, 0.0, 0.0, srad)
+            .with_anisotropy(0.8, 0.02, -1.3));
+
+        // 确定性伪随机方向（LCG，无随机源），含 z<0 与掠射，覆盖几何短路。
+        let mut s: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut dirs: Vec<Vec3> = Vec::new();
+        for _ in 0..48 {
+            s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let u1 = ((s >> 33) as u32) as f32 / u32::MAX as f32;
+            s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let u2 = ((s >> 33) as u32) as f32 / u32::MAX as f32;
+            let z = u1 * 1.2 - 0.1; // [-0.1, 1.1) ⇒ 少量反向 + 掠射
+            let z = z.clamp(-0.3, 1.0);
+            let r = (1.0 - z * z).max(0.0).sqrt();
+            let (c, sn) = cos_sin(u2 * 2.0 * PI);
+            dirs.push(Vec3::new(r * c, r * sn, z).normalize());
+        }
+        // 显式加几组极值：正对、正交、反向。
+        dirs.push(Vec3::new(0.0, 0.0, 1.0));
+        dirs.push(Vec3::new(0.0, 0.0, -1.0));
+        dirs.push(Vec3::new(1.0, 0.0, 1e-4).normalize());
+
+        let normals = [
+            Vec3::new(0.0, 0.0, 1.0),
+            Vec3::new(0.1, 0.9, 0.2).normalize(),
+            Vec3::new(-0.3, 0.4, 0.87).normalize(),
+        ];
+
+        let mut checks = 0u64;
+        for (mi, b) in mats.iter().enumerate() {
+            for (ni, &n) in normals.iter().enumerate() {
+                for (oi, &wo) in dirs.iter().enumerate() {
+                    for (ii, &wi) in dirs.iter().enumerate() {
+                        let tag = format!("m={mi} n={ni} wo={oi} wi={ii}");
+                        let got = b.eval(wo, wi, n);
+                        let want = frozen_eval(b, wo, wi, n);
+                        assert_vec3_bits(&format!("{tag} eval"), got, want);
+                        // 两半公开入口各自也与冻结参考逐位一致。
+                        assert_vec3_bits(&format!("{tag} eval_core"), b.eval_core(wo, wi, n),
+                            frozen_eval_core(b, wo, wi, n));
+                        assert_vec3_bits(&format!("{tag} multiscatter_ms"),
+                            b.multiscatter_ms(wo, wi, n), frozen_multiscatter_ms(b, wo, wi, n));
+                        checks += 3;
+                    }
+                }
+            }
+        }
+        // 双跑确定性：同一输入两遍逐位一致（G3 / 逐字节确定性）。
+        let b = &mats[4];
+        let n = normals[0];
+        for &wo in &dirs {
+            for &wi in &dirs {
+                assert_vec3_bits("双跑", b.eval(wo, wi, n), b.eval(wo, wi, n));
+            }
+        }
+        assert!(checks >= 200_000, "对拍网格应足够大，实际 {checks}");
+        println!("[eval-hoist] {checks} 组 Vec3 逐位对拍全等（含 eval/eval_core/multiscatter_ms 三入口）");
+    }
+
+    /// V3.1 权威判据：`eval_cached`（帧级常量提升 + 白炉 LUT + 半向量 CSE +
+    /// spec 内联，四层恒等提升）对**优化前冻结语义** `frozen_eval` 逐字节一致。
+    ///
+    /// `frozen_eval` 自带 `energy_dir/energy_avg` 内联实现、`eval_core` 与
+    /// `multiscatter_ms` 各算各的 cos/f0、两次 `(wo+wi).normalize()`，与生产
+    /// `eval_cached` 不共享任何辅助函数 ⇒ 不是自证。覆盖电介质/金属/混合/
+    /// 各向异性、镜面到全粗、反向短路、掠射（cos_h≤0 触发内联 spec 的
+    /// `else if` 分支）、倾斜法线。任何一位不一致即判红。
+    #[test]
+    fn v31_eval_cached_vs_frozen_is_bitwise_identical() {
+        let srad = Vec3::splat(0.3);
+        let mut mats: Vec<Bsdf> = vec![
+            Bsdf::new(Vec3::new(0.8, 0.2, 0.2), 0.0, 0.05, 1.5, 0.0, 0.0, srad),
+            Bsdf::new(Vec3::new(0.2, 0.6, 0.9), 0.0, 0.9, 1.45, 0.0, 0.0, srad),
+            Bsdf::new(Vec3::new(1.0, 0.766, 0.336), 1.0, 0.2, 1.5, 0.0, 0.0, srad),
+            Bsdf::new(Vec3::new(0.955, 0.638, 0.538), 1.0, 0.4, 2.5, 0.0, 0.0, srad),
+            Bsdf::new(Vec3::splat(1.0), 1.0, 0.6, 1.5, 0.0, 0.0, srad),
+            Bsdf::new(Vec3::new(0.5, 0.5, 0.5), 0.5, 0.5, 1.5, 0.0, 0.0, srad),
+            Bsdf::new(Vec3::new(0.3, 0.7, 0.5), 0.7, 0.55, 1.7, 0.0, 0.0, srad),
+        ];
+        mats.push(Bsdf::new(Vec3::new(0.8, 0.4, 0.2), 0.6, 0.4, 1.5, 0.0, 0.0, srad)
+            .with_anisotropy(0.05, 0.6, 0.7));
+        mats.push(Bsdf::new(Vec3::new(0.2, 0.9, 0.6), 1.0, 0.3, 1.5, 0.0, 0.0, srad)
+            .with_anisotropy(0.8, 0.02, -1.3));
+
+        // 确定性方向网格（LCG，无随机源），含反向与掠射，覆盖 cos_h≤0。
+        let mut s: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut dirs: Vec<Vec3> = Vec::new();
+        for _ in 0..60 {
+            s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let u1 = ((s >> 33) as u32) as f32 / u32::MAX as f32;
+            s = s.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let u2 = ((s >> 33) as u32) as f32 / u32::MAX as f32;
+            let z = (u1 * 1.3 - 0.2).clamp(-0.3, 1.0);
+            let r = (1.0 - z * z).max(0.0).sqrt();
+            let (c, sn) = cos_sin(u2 * 2.0 * PI);
+            dirs.push(Vec3::new(r * c, r * sn, z).normalize());
+        }
+        dirs.push(Vec3::new(0.0, 0.0, 1.0));
+        dirs.push(Vec3::new(0.0, 0.0, -1.0));
+        dirs.push(Vec3::new(1.0, 0.0, 1e-4).normalize()); // 掠射
+        let normals = [
+            Vec3::new(0.0, 0.0, 1.0),
+            Vec3::new(0.1, 0.9, 0.2).normalize(),
+            Vec3::new(-0.3, 0.4, 0.87).normalize(),
+        ];
+        let mut checks = 0u64;
+        for (mi, b) in mats.iter().enumerate() {
+            let cache = b.eval_cache();
+            for (ni, &n) in normals.iter().enumerate() {
+                for (oi, &wo) in dirs.iter().enumerate() {
+                    for (ii, &wi) in dirs.iter().enumerate() {
+                        let got = b.eval_cached(wo, wi, n, &cache);
+                        let want = frozen_eval(b, wo, wi, n);
+                        let tag = format!("m={mi} n={ni} wo={oi} wi={ii}");
+                        assert_vec3_bits(&tag, got, want);
+                        checks += 1;
+                    }
+                }
+            }
+        }
+        assert!(checks >= 100_000, "对拍网格不足：{checks}");
+        println!("[v31-eval-cached] {checks} 组对冻结语义逐位全等");
+    }
+
+    /// B.2 同进程前后对比量尺：冻结的「未提升」eval（优化前逐字实现）与
+    /// 生产「已提升」eval 在**同一进程、同一输入数组**上交替计时，消除跨进程
+    /// 频率漂移噪声。只打印不设阈值断言（计时不作正确性判据，避免 flaky）；
+    /// 位级等价由 `eval_hoist_bitwise` 的 23 万组对拍机械保证。
+    #[test]
+    fn eval_hoist_bench_same_process() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        let srad = Vec3::splat(0.3);
+        let b = Bsdf::new(Vec3::new(0.8, 0.2, 0.2), 0.3, 0.45, 1.5, 0.2, 0.1, srad);
+        let n = Vec3::new(0.0, 0.0, 1.0);
+        let wo = Vec3::new(0.3, 0.2, 0.9).normalize();
+        // 一组方向（全部正半球，避开短路，测主体成本）。
+        let mut cases: Vec<(Vec3, Vec3)> = Vec::new();
+        for i in 0..64 {
+            let a = (i as f32) * 0.0981;
+            let wii = Vec3::new(a.fract() * 0.8, 0.3 + (a * 0.5).fract() * 0.5, 0.6).normalize();
+            cases.push((wo, wii));
+        }
+        let iters = 4000u32;
+        let t_old = Instant::now();
+        for _ in 0..iters {
+            for &(w_o, w_i) in &cases {
+                black_box(frozen_eval(black_box(&b), black_box(w_o), black_box(w_i), black_box(n)));
+            }
+        }
+        let old_ns = t_old.elapsed().as_secs_f64() * 1e9 / (iters as f64 * cases.len() as f64);
+        let t_new = Instant::now();
+        for _ in 0..iters {
+            for &(w_o, w_i) in &cases {
+                black_box(b.eval(black_box(w_o), black_box(w_i), black_box(n)));
+            }
+        }
+        let new_ns = t_new.elapsed().as_secs_f64() * 1e9 / (iters as f64 * cases.len() as f64);
+        println!("[eval-hoist-bench] 同进程 before(未提升)={old_ns:.2} ns/次 after(已提升)={new_ns:.2} ns/次 speedup={:.3}x ({:.1}%)",
+            old_ns / new_ns, (1.0 - new_ns / old_ns) * 100.0);
+    }
+
+    /// B.2 辅判据：预算版 `energy_dir_at`/`energy_avg_at` 对全 (α, μ, f0v)
+    /// 网格与「每次各算 alpha_interp + 取表」的冻结实现逐位一致。
+    /// 覆盖 α 端点 / 格点 / 格间、μ 端点 / 越界、f0v 两端点。
+    #[test]
+    fn energy_at_hoist_bitwise() {
+        let t = energy_table();
+        let alphas = [0.0f32, 0.01, 0.05, 0.075, 0.1, 0.2, 0.28, 0.35, 0.55,
+            0.62, 0.75, 0.9, 0.95, 1.0, 1.3];
+        let mus = [-0.5f32, 0.0, 0.03, 0.125, 0.25, 0.5, 0.7, 0.99, 1.0, 1.4];
+        let f0vs = [0.0f32, 0.04, 0.37, 1.0];
+        let mut checks = 0u64;
+        for &alpha in &alphas {
+            let (ai, af) = alpha_interp(alpha);
+            for &mu in &mus {
+                for &f0v in &f0vs {
+                    let got = energy_dir_at(t, mu, ai, af, f0v);
+                    let want = frozen_energy_dir(mu, alpha, f0v);
+                    assert_eq!(got.to_bits(), want.to_bits(),
+                        "energy_dir_at α={alpha} μ={mu} f0v={f0v} 逐位不一致 got={got} want={want}");
+                    checks += 1;
+                }
+            }
+            for &f0v in &f0vs {
+                let got = energy_avg_at(t, ai, af, f0v);
+                let want = frozen_energy_avg(alpha, f0v);
+                assert_eq!(got.to_bits(), want.to_bits(),
+                    "energy_avg_at α={alpha} f0v={f0v} 逐位不一致 got={got} want={want}");
+                checks += 1;
+            }
+        }
+        println!("[energy-at-hoist] {checks} 组标量逐位对拍全等");
+    }
 
     #[test]
     fn schlick_and_f0_anchors() {

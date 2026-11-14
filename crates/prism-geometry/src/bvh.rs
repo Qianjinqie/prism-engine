@@ -115,6 +115,53 @@ impl Aabb {
     }
 }
 
+/// 射线遍历栈：常态走定长数组，只有极深树才溢出到堆。
+///
+/// 旧实现每次求交都 `Vec::with_capacity(64)`，即使一棵树只下潜三层也要
+/// 向分配器申请一次堆内存。渲染热路径里主射线、阴影射线、介质射线都会
+/// 反复调用 BVH，这笔分配与释放是纯开销。本结构保留完全相同的后进先出
+/// 次序：定长段未满时写在定长段；溢出项永远位于栈顶，故 `pop` 先取溢出段。
+#[derive(Debug)]
+pub(crate) struct RayStack {
+    fixed: [(u32, f32); 64],
+    len: usize,
+    overflow: Vec<(u32, f32)>,
+}
+
+impl RayStack {
+    /// 以根节点入栈。
+    #[inline]
+    pub(crate) fn new(root: (u32, f32)) -> Self {
+        let mut fixed = [(0u32, 0.0f32); 64];
+        fixed[0] = root;
+        RayStack { fixed, len: 1, overflow: Vec::new() }
+    }
+
+    /// 入栈，保持与 `Vec::push` 相同的栈顶语义。
+    #[inline]
+    pub(crate) fn push(&mut self, value: (u32, f32)) {
+        if self.len < self.fixed.len() {
+            self.fixed[self.len] = value;
+            self.len += 1;
+        } else {
+            self.overflow.push(value);
+        }
+    }
+
+    /// 出栈，溢出段优先于定长段。
+    #[inline]
+    pub(crate) fn pop(&mut self) -> Option<(u32, f32)> {
+        if let Some(v) = self.overflow.pop() {
+            return Some(v);
+        }
+        if self.len == 0 {
+            return None;
+        }
+        self.len -= 1;
+        Some(self.fixed[self.len])
+    }
+}
+
 /// 单轴 slab 区间（平行轴显式处理，见 [`Aabb::ray`]）。
 #[inline]
 fn slab_interval(lo: f32, hi: f32, inv: f32) -> (f32, f32) {
@@ -537,8 +584,7 @@ impl Bvh {
         let inv = Vec3::new(1.0 / rd.x, 1.0 / rd.y, 1.0 / rd.z);
         let mut best: Option<RayHit> = None;
         // 固定深度显式栈（深度上界由图元总数推导，64 层必够）。
-        let mut stack: Vec<(u32, f32)> = Vec::with_capacity(64);
-        stack.push((0, t_min));
+        let mut stack: RayStack = RayStack::new((0, t_min));
         while let Some((id, t_lo)) = stack.pop() {
             if let Some(b) = best {
                 if t_lo > b.t {

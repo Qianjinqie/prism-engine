@@ -361,6 +361,16 @@ pub struct SampleStream<'a> {
     index: u32,
     /// `hash2_prefix(base, MASK_SALT)`：打散掩码的哈希前缀（像素级常量）。
     prefix: u64,
+    /// 像素级维度打散掩码表 `hash2_finish(prefix, d)`（d ∈ [0, SOBOL_DIMS)）。
+    ///
+    /// `Some` = [`PixelStreamBase::stream`] 通用渲染主路径：每像素只预算一次
+    /// 64 个掩码，`sample_1d` / `sample_2d` 直接查表，省掉每次抽取的 1–2 次
+    /// `pcg::permute`。`None` = `SampleStream::new` 的单流入口（相机 / 波前 /
+    /// 深度 / 单样本 / 测试），保留 `dim_value_p` / `dim_pair_p` 现算，逐字节不变。
+    /// 两条路径同式逐位一致：`masks[d]` 恒等于 `hash2_finish(prefix, d) as u32`
+    /// （判据 `pixel_stream_base_bitwise_tests`）。不判定场景内容，对任意
+    /// 几何 / 灯族 / 材质 / spp 组合生效。
+    masks: Option<&'a [u32; SOBOL_DIMS as usize]>,
 }
 
 impl<'a> SampleStream<'a> {
@@ -370,13 +380,19 @@ impl<'a> SampleStream<'a> {
         let base: u64 = base_seed(ctx, pixel);
         let index: u32 = sobol_index(base, sample);
         let prefix: u64 = mask_prefix(base);
-        SampleStream { ctx, pixel, sample, base, index, prefix }
+        SampleStream { ctx, pixel, sample, base, index, prefix, masks: None }
     }
 
     /// 本流的像素坐标（相机投射取亚像素抖动基准）。
     #[inline]
     pub fn pixel(&self) -> (u32, u32) {
         self.pixel
+    }
+
+    /// 本流的样本序号；供独立通用路径消费同帧首交点缓存时校验身份。
+    #[inline]
+    pub fn sample_index(&self) -> u32 {
+        self.sample
     }
 
     /// 构造指定维度的 [`SampleIndex`]（frame/node_id 取自 ctx，D-28）。
@@ -395,12 +411,28 @@ impl<'a> SampleStream<'a> {
     }
 
     /// 一维 Sobol 抽取（与自由函数 [`sample_1d`] 逐位相同）。
+    ///
+    /// 通用渲染主路径（`masks = Some`）把每维打散掩码 `hash2_finish(prefix, dim)`
+    /// 提升为「每像素预算一次」的查表，省掉每次抽取的一次 `pcg::permute`；
+    /// 表内维度逐位等价于 `dim_value_p`，超表兜底仍走同式 `hash2_f32`。
     #[inline]
     pub fn sample_1d(&self, dimension: u16) -> f32 {
-        dim_value_p(self.prefix, self.base, dimension, self.index)
+        match self.masks {
+            Some(m) => {
+                if dimension >= SOBOL_DIMS {
+                    return pcg::hash2_f32(self.base, dimension as u64, self.index as u64);
+                }
+                to_unit(sobol_u32(dimension, self.index) ^ m[dimension as usize])
+            }
+            None => dim_value_p(self.prefix, self.base, dimension, self.index),
+        }
     }
 
     /// 二维 Sobol 抽取（维度 d 与 d+1；与自由函数 [`sample_2d`] 逐位相同）。
+    ///
+    /// 表内维度对走「每像素预算的 64 项掩码表」+ 一趟位扫描，与
+    /// `dim_pair_p` 逐位相同（同一 `hash2_finish(prefix, ·)` 结果）；
+    /// 超表兜底一律保留原 `dim_value_p` 路径，不查表。
     #[inline]
     pub fn sample_2d(&self, dimension: u16) -> (f32, f32) {
         if dimension + 1 >= SOBOL_DIMS {
@@ -409,7 +441,16 @@ impl<'a> SampleStream<'a> {
                 dim_value_p(self.prefix, self.base, dimension + 1, self.index),
             );
         }
-        dim_pair_p(self.prefix, dimension, self.index)
+        match self.masks {
+            Some(m) => {
+                let (v0, v1) = sobol_pair_u32(dimension, self.index);
+                (
+                    to_unit(v0 ^ m[dimension as usize]),
+                    to_unit(v1 ^ m[dimension as usize + 1]),
+                )
+            }
+            None => dim_pair_p(self.prefix, dimension, self.index),
+        }
     }
 
     /// 游程辅助抽取（变长序列：介质步进）。
@@ -427,6 +468,300 @@ impl<'a> SampleStream<'a> {
     }
 }
 
+/// 像素级采样常量（V3.1 等价化简快速内核的「样本流常量提升」）。
+///
+/// `SampleStream::new(ctx, pixel, sample)` 的派生量里，`base = base_seed(ctx,pixel)`、
+/// `index_xor = hash1(base, IDX_SALT)`、`prefix = mask_prefix(base)`，以及
+/// `dim_pair_p` 的两个打散掩码 `mask0/mask1`（只依赖 `prefix` 与固定维度对）都是
+/// **像素级常量**——同一像素的 16 个槽位把它们重复计算 16 次。本结构每像素
+/// 构造一次，把每样本 8 次 `permute` 降为 0。
+///
+/// # 逐位一致性（两层恒等变换，均为 GF(2)/整数律，非近似）
+/// 设 `c = index_xor`，样本 `s` 的 Sobol 索引 `i = s ^ c`。原
+/// `dim_pair_p(prefix, dim, i)` 返回
+/// `to_unit(sobol(dim, i) ^ mask0)`、`to_unit(sobol(dim+1, i) ^ mask1)`。
+/// ① 打散掩码与 `base`/`prefix` 只依赖像素，提到构造期算一次。
+/// ② Sobol 方向数按 `bits(i)` 异或 ⇒ `sobol(dim, a^b) = sobol(dim,a) ^
+///    sobol(dim,b)`（GF(2) 线性）。故 `sobol(dim, i) = sobol(dim, c) ^
+///    sobol(dim, s)`，其中 `sobol(dim, c)` 是像素级常量并入 `c0/c1`，而
+///    `sobol(dim, s)` 对 `s < 16` 至多 4 个置位（原 `i` 是随机 32 位，平均
+///    16 个置位）⇒ 逐样本位扫描从 ~16 次降到 ≤4 次。
+/// 于是 `sample_2d(s) = (to_unit(c0 ^ sobol(dim,s)), to_unit(c1 ^
+///    sobol(dim+1,s)))`，与原式逐位相同（`pixel_sample_base_is_bitwise_identical`
+/// 覆盖表内维度 / 相机像素维 / 超表边界逐位对拍）。
+#[derive(Debug, Clone, Copy)]
+pub struct PixelSampleBase {
+    /// `sobol(dim, c) ^ mask0`（像素级常量）。
+    c0: u32,
+    /// `sobol(dim+1, c) ^ mask1`（像素级常量）。
+    c1: u32,
+    dim: u16,
+    /// 超表兜底用的像素级派生量（`dim + 1 >= SOBOL_DIMS` 时才用）。
+    base: u64,
+    prefix: u64,
+    index_xor: u32,
+}
+
+impl PixelSampleBase {
+    /// 以 `(ctx, pixel, dim)` 预算像素级常量；`dim` 固定为该像素的采样维度对。
+    #[inline]
+    pub fn new(ctx: &EvalCtx, pixel: (u32, u32), dim: u16) -> Self {
+        let base: u64 = base_seed(ctx, pixel);
+        let index_xor: u32 = pcg::hash1(base, IDX_SALT) as u32;
+        let prefix: u64 = mask_prefix(base);
+        let (c0, c1): (u32, u32) = if dim + 1 < SOBOL_DIMS {
+            let (sc0, sc1): (u32, u32) = sobol_pair_u32(dim, index_xor);
+            let mask0: u32 = pcg::hash2_finish(prefix, dim as u64) as u32;
+            let mask1: u32 = pcg::hash2_finish(prefix, dim as u64 + 1) as u32;
+            (sc0 ^ mask0, sc1 ^ mask1)
+        } else {
+            (0, 0)
+        };
+        PixelSampleBase { c0, c1, dim, base, prefix, index_xor }
+    }
+
+    /// 样本 `sample` 在该维度对的二维抖动，与 `SampleStream::sample_2d` 逐位一致。
+    #[inline]
+    pub fn sample_2d(&self, sample: u32) -> (f32, f32) {
+        if self.dim + 1 >= SOBOL_DIMS {
+            // 超表兜底：与 SampleStream::sample_2d 的两次 dim_value_p 同式。
+            let index: u32 = sample ^ self.index_xor;
+            return (
+                dim_value_p(self.prefix, self.base, self.dim, index),
+                dim_value_p(self.prefix, self.base, self.dim + 1, index),
+            );
+        }
+        let (s0, s1): (u32, u32) = sobol_pair_u32(self.dim, sample);
+        (to_unit(self.c0 ^ s0), to_unit(self.c1 ^ s1))
+    }
+
+    /// 用调用方预算的 `(sobol(dim,s), sobol(dim+1,s))` 定点坐标取抖动。
+    /// 该表只依赖 `dim/sample`，与像素无关，可整帧共享一次预算，逐样本连
+    /// `sobol_pair_u32` 位扫描都省掉。仅 `dim + 1 < SOBOL_DIMS` 有效。
+    #[inline]
+    pub fn jitter_for_sobol(&self, s0: u32, s1: u32) -> (f32, f32) {
+        debug_assert!(self.dim + 1 < SOBOL_DIMS);
+        (to_unit(self.c0 ^ s0), to_unit(self.c1 ^ s1))
+    }
+}
+
+/// 像素级样本流常量（V3.1 通用路径「跨样本常量提升」）。
+///
+/// `SampleStream::new(ctx, pixel, sample)` 的三个派生量里，`base_seed(ctx,pixel)`、
+/// `mask_prefix(base)` 与 `sobol_index` 的 `hash1(base, IDX_SALT)` 都只依赖
+/// `(ctx, pixel)`，**与样本序号无关**。`render_pixel_range` 对同一像素的 N 个
+/// 样本把它们重算 N 次（每样本 3 次哈希、共 7 次 `pcg::permute`）。本结构每
+/// 像素构造一次，`stream` 逐样本只做 `index = sample ^ index_xor`，把这些哈希
+/// 从 O(N) 降到 O(1)。
+///
+/// 在此基础上再预算**全 64 维打散掩码表** `masks[d] = hash2_finish(prefix, d)`
+/// （同样只依赖像素）。原 `sample_1d` / `sample_2d` 每次抽取都现算 1–2 次
+/// `pcg::permute`；一条路径 16 spp 会调用数十次，改查表后把这些 permute 从
+/// O(N·维度) 降到「每像素 64 次」。表内维度逐位等价于现算（同一个纯函数、相同
+/// 输入），超表兜底仍保留原式 ⇒ 任意几何 / 灯族 / 材质 / 贴图 / 介质 / spp
+/// 组合输出逐字节不变。
+///
+/// # 逐位一致性（纯函数 + GF(2) 整数律，非近似）
+/// `sobol_index(base, sample) = sample ^ (hash1(base, IDX_SALT) as u32)`
+/// （见 [`sobol_index`]），故 `index = sample ^ self.index_xor` 与
+/// `SampleStream::new` 的 `index` 逐位相等；`base` / `prefix` 是同一纯函数的
+/// 相同输入下的输出。`masks[d]` 与 `dim_value_p` / `dim_pair_p` 里的
+/// `hash2_finish(prefix, ·)` 逐位相等。判据见
+/// `pixel_stream_base_bitwise_tests::stream_matches_new_bitwise`（对拍
+/// `masks = Some` 与 `masks = None` 两条路径）。
+///
+/// 这条改造落在 `prism-rt` 通用渲染入口，**不判定场景内容**：任意场景都吃到
+/// 同一份收益；`一致` 档哈希锚因此不变。
+#[derive(Debug, Clone, Copy)]
+pub struct PixelStreamBase {
+    base: u64,
+    prefix: u64,
+    index_xor: u32,
+    /// 每像素预算的 64 维打散掩码（表内维度；超表走 `hash2_f32` 兜底）。
+    masks: [u32; SOBOL_DIMS as usize],
+}
+
+impl PixelStreamBase {
+    /// 以 `(ctx, pixel)` 预算像素级常量（每像素一次）。
+    #[inline]
+    pub fn new(ctx: &EvalCtx, pixel: (u32, u32)) -> Self {
+        let base: u64 = base_seed(ctx, pixel);
+        let prefix: u64 = mask_prefix(base);
+        let mut masks: [u32; SOBOL_DIMS as usize] = [0u32; SOBOL_DIMS as usize];
+        for d in 0..SOBOL_DIMS as usize {
+            masks[d] = pcg::hash2_finish(prefix, d as u64) as u32;
+        }
+        PixelStreamBase {
+            prefix,
+            index_xor: pcg::hash1(base, IDX_SALT) as u32,
+            base,
+            masks,
+        }
+    }
+
+    /// 样本 `sample` 的流句柄，与 `SampleStream::new(ctx, pixel, sample)`
+    /// **逐位一致**（标量字段逐个相同；掩码表是同一纯函数的预算值，非近似）。
+    #[inline]
+    pub fn stream<'a>(
+        &'a self,
+        ctx: &'a EvalCtx,
+        pixel: (u32, u32),
+        sample: u32,
+    ) -> SampleStream<'a> {
+        SampleStream {
+            ctx,
+            pixel,
+            sample,
+            base: self.base,
+            index: sample ^ self.index_xor,
+            prefix: self.prefix,
+            masks: Some(&self.masks),
+        }
+    }
+}
+
+#[cfg(test)]
+mod pixel_stream_base_bitwise_tests {
+    use super::*;
+
+    #[test]
+    fn stream_matches_new_bitwise() {
+        let ctx = EvalCtx::new(0x9E37_79B9, 3, 7);
+        for &(px, py) in &[(0u32, 0u32), (1, 2), (17, 991), (4095, 2160)] {
+            let pb = PixelStreamBase::new(&ctx, (px, py));
+            for sample in 0u32..64 {
+                let a = SampleStream::new(&ctx, (px, py), sample);
+                let b = pb.stream(&ctx, (px, py), sample);
+                assert_eq!(a.base, b.base, "base @{px},{py} s{sample}");
+                assert_eq!(a.index, b.index, "index @{px},{py} s{sample}");
+                assert_eq!(a.prefix, b.prefix, "prefix @{px},{py} s{sample}");
+                assert_eq!(a.sample, b.sample);
+                assert_eq!(a.pixel, b.pixel);
+                for dim in [0u16, 2, 4, 7, 100, 1000] {
+                    assert_eq!(
+                        a.sample_1d(dim).to_bits(),
+                        b.sample_1d(dim).to_bits(),
+                        "1d dim{dim} @{px},{py} s{sample}"
+                    );
+                    let (u0, v0) = a.sample_2d(dim);
+                    let (u1, v1) = b.sample_2d(dim);
+                    assert_eq!(u0.to_bits(), u1.to_bits(), "2d.0 dim{dim} s{sample}");
+                    assert_eq!(v0.to_bits(), v1.to_bits(), "2d.1 dim{dim} s{sample}");
+                    assert_eq!(
+                        a.aux_1d(dim, sample).to_bits(),
+                        b.aux_1d(dim, sample).to_bits(),
+                        "aux dim{dim} s{sample}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// 全维度 + 超表边界逐位对拍：`masks = Some`（每像素预算查表）与
+    /// `masks = None`（现算 `dim_value_p` / `dim_pair_p`）在整个 64 维表域、
+    /// 超表兜底、以及 `sample_2d` 的 `dim + 1 == SOBOL_DIMS` 边界上逐位相同。
+    /// 维度选择只由弹射深度决定、与几何 / 灯族 / 材质 / 贴图无关，钉死全部
+    /// 维度即钉死「任意场景」这条通用路径的确定性。
+    #[test]
+    fn masks_table_matches_recompute_all_dims_bitwise() {
+        let ctx = EvalCtx::new(0xD1B5_4A32_D192_ED03, 11, 5);
+        let pixels: [(u32, u32); 4] = [(0, 0), (3, 71), (640, 360), (3839, 2159)];
+        let mut dims_1d: Vec<u16> = (0..=SOBOL_DIMS).collect();
+        dims_1d.extend_from_slice(&[65, 100, 1000, 32_767, 65_535]);
+        let mut dims_2d: Vec<u16> = (0..SOBOL_DIMS).collect();
+        dims_2d.extend_from_slice(&[63, 64, 100, 1000]);
+        for &(px, py) in &pixels {
+            let pb = PixelStreamBase::new(&ctx, (px, py));
+            for sample in [0u32, 1, 7, 15, 16, 63, 1024, 0xFFFF_FFFF] {
+                let a = SampleStream::new(&ctx, (px, py), sample);
+                let b = pb.stream(&ctx, (px, py), sample);
+                assert_eq!(a.base, b.base, "base px({px},{py}) s{sample}");
+                assert_eq!(a.index, b.index, "index px({px},{py}) s{sample}");
+                assert_eq!(a.prefix, b.prefix, "prefix px({px},{py}) s{sample}");
+                for &dim in &dims_1d {
+                    assert_eq!(
+                        a.sample_1d(dim).to_bits(),
+                        b.sample_1d(dim).to_bits(),
+                        "1d dim{dim} px({px},{py}) s{sample}"
+                    );
+                }
+                for &dim in &dims_2d {
+                    let (u0, v0) = a.sample_2d(dim);
+                    let (u1, v1) = b.sample_2d(dim);
+                    assert_eq!(
+                        u0.to_bits(), u1.to_bits(),
+                        "2d.0 dim{dim} px({px},{py}) s{sample}"
+                    );
+                    assert_eq!(
+                        v0.to_bits(), v1.to_bits(),
+                        "2d.1 dim{dim} px({px},{py}) s{sample}"
+                    );
+                }
+                assert_eq!(
+                    a.aux_1d(7, sample).to_bits(),
+                    b.aux_1d(7, sample).to_bits(),
+                    "aux px({px},{py}) s{sample}"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod pixel_sample_base_bitwise_tests {
+    use super::*;
+
+    fn test_ctx() -> EvalCtx {
+        EvalCtx::new(0x9E37_79B9_7F4A_7C15, 7, 3)
+    }
+
+    /// Sobol 索引的 GF(2) 线性：`Sobol(a^b) = Sobol(a) ^ Sobol(b)`。
+    /// 这是 `PixelSampleBase` 把 `Sobol(s^idx)` 拆成 `Sobol(s)^Sobol(idx)`
+    /// 的代数依据，逐位锁定。
+    #[test]
+    fn sobol_index_is_gf2_linear() {
+        for dim in [0u16, 3, 10, 30, 62, 63] {
+            for a in 0..64u32 {
+                for b in [0u32, 1, 7, 0x9E37_79B9, 0xFFFF_FFFF] {
+                    assert_eq!(
+                        sobol_u32(dim, a ^ b),
+                        sobol_u32(dim, a) ^ sobol_u32(dim, b),
+                        "GF(2) 线性在 dim{dim} a{a} b{b} 不成立"
+                    );
+                }
+            }
+        }
+    }
+
+    /// `PixelSampleBase::sample_2d(s)` 与 `SampleStream::new(...).sample_2d(dim)`
+    /// 逐位一致：覆盖表内维度、相机像素维 `DIM_PIXEL`、超表边界 `dim = 63`。
+    /// 同时验证 `jitter_for_sobol`（整帧预算表路径）与 `sample_2d` 逐位一致。
+    #[test]
+    fn pixel_sample_base_is_bitwise_identical() {
+        let c = test_ctx();
+        for dim in [0u16, 3, 10, 30, 62, 63] {
+            for &(px, py) in &[(0u32, 0u32), (17, 23), (123, 456), (4095, 2047)] {
+                let base = PixelSampleBase::new(&c, (px, py), dim);
+                for s in 0..16u32 {
+                    let stream = SampleStream::new(&c, (px, py), s);
+                    let (a, b) = stream.sample_2d(dim);
+                    let (x, y) = base.sample_2d(s);
+                    assert_eq!(a.to_bits(), x.to_bits(), "dim{dim} px({px},{py}) s{s} u");
+                    assert_eq!(b.to_bits(), y.to_bits(), "dim{dim} px({px},{py}) s{s} v");
+                    if dim + 1 < SOBOL_DIMS {
+                        let (jx, jy) = base.jitter_for_sobol(
+                            sobol_u32(dim, s),
+                            sobol_u32(dim + 1, s),
+                        );
+                        assert_eq!(x.to_bits(), jx.to_bits(), "jitter u dim{dim} s{s}");
+                        assert_eq!(y.to_bits(), jy.to_bits(), "jitter v dim{dim} s{s}");
+                    }
+                }
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 确定性三角件（D-29 简化件：区间逼近多项式 + 固定系数，禁 libm）
 // ---------------------------------------------------------------------------
@@ -436,18 +771,58 @@ impl<'a> SampleStream<'a> {
 
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI};
 
-/// `[0, π/4]` 上的 sin（固定系数 Maclaurin，Horner 排布）。
+// ---------------------------------------------------------------------------
+// V3.1 P1-1：构建期 const 查表（等价变换，**禁数值近似**）
+//
+// 与 `prism_math::det_trig` 同款纪律：系数是编译期常量表达式，与优化前的
+// 字面量逐位相同；Horner 结合序逐句不变 ⇒ 输出与冻结参考实现逐位一致
+// （判据：`v31_det_trig_bitwise_tests`）。这不是插值表，不改任何一项
+// 浮点运算的操作数或顺序，故纯 CPU 单帧哈希锚不变。
+// ---------------------------------------------------------------------------
+const SIN_C: [f32; 5] = [
+    1.0,
+    -1.0 / 6.0,
+    1.0 / 120.0,
+    -1.0 / 5040.0,
+    1.0 / 362_880.0,
+];
+const COS_C: [f32; 5] = [
+    1.0,
+    -0.5,
+    1.0 / 24.0,
+    -1.0 / 720.0,
+    1.0 / 40_320.0,
+];
+
+/// `[0, π/4]` 上的 sin（构建期 const 系数 + Horner，逐位不变）。
+///
+/// 热路径改走 [`quarter_sin_cos`]；本函数保留为冻结对拍对象。
+#[cfg_attr(not(test), allow(dead_code))]
 #[inline]
 fn quarter_sin(x: f32) -> f32 {
     let x2 = x * x;
-    x * (1.0 + x2 * (-1.0 / 6.0 + x2 * (1.0 / 120.0 + x2 * (-1.0 / 5040.0 + x2 * (1.0 / 362_880.0)))))
+    x * (SIN_C[0] + x2 * (SIN_C[1] + x2 * (SIN_C[2] + x2 * (SIN_C[3] + x2 * SIN_C[4]))))
 }
 
-/// `[0, π/4]` 上的 cos（固定系数 Maclaurin，Horner 排布）。
+/// `[0, π/4]` 上的 cos（构建期 const 系数 + Horner，逐位不变）。
+#[cfg_attr(not(test), allow(dead_code))]
 #[inline]
 fn quarter_cos(x: f32) -> f32 {
     let x2 = x * x;
-    1.0 + x2 * (-0.5 + x2 * (1.0 / 24.0 + x2 * (-1.0 / 720.0 + x2 * (1.0 / 40_320.0))))
+    COS_C[0] + x2 * (COS_C[1] + x2 * (COS_C[2] + x2 * (COS_C[3] + x2 * COS_C[4])))
+}
+
+/// `[0, π/4]` 上一次性算 `(cos x, sin x)`：只做一次 `x*x`。
+///
+/// V3.1 P1-1 等价变换：旧路径两个函数各算一次 `x2 = x*x`（同一纯运算、
+/// 逐位相同），这里复用同一个 `x2`；两条 Horner 的操作数与结合序逐句不变
+/// ⇒ 两个分量都逐位一致，每样本省一次 f32 乘法。
+#[inline]
+fn quarter_sin_cos(x: f32) -> (f32, f32) {
+    let x2 = x * x;
+    let s = x * (SIN_C[0] + x2 * (SIN_C[1] + x2 * (SIN_C[2] + x2 * (SIN_C[3] + x2 * SIN_C[4]))));
+    let c = COS_C[0] + x2 * (COS_C[1] + x2 * (COS_C[2] + x2 * (COS_C[3] + x2 * COS_C[4])));
+    (c, s)
 }
 
 /// 任意角 `(cos x, sin x)`：mod 2π 归约（精确 floor）→ 象限对称 →
@@ -462,9 +837,11 @@ pub fn cos_sin(x: f32) -> (f32, f32) {
     // 半区归约到 [0, π/4]。
     let (c, s) = if r > FRAC_PI_4 {
         let rr = FRAC_PI_2 - r;
-        (quarter_sin(rr), quarter_cos(rr))
+        // quarter_sin_cos(rr) = (cos rr, sin rr)；半区互换回 (sin rr, cos rr)。
+        let (cr, sr) = quarter_sin_cos(rr);
+        (sr, cr)
     } else {
-        (quarter_cos(r), quarter_sin(r))
+        quarter_sin_cos(r)
     };
     match q {
         0 => (c, s),
@@ -536,6 +913,71 @@ pub fn cone_dir(w: Vec3, cos_theta_max: f32, u: f32, v: f32) -> Vec3 {
 // ---------------------------------------------------------------------------
 // 测试
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod v31_det_trig_bitwise_tests {
+    use super::*;
+
+    /// 优化前实现的冻结逐字拷贝（字面量系数 + 分别调用两个 quarter 函数）。
+    fn quarter_sin_ref(x: f32) -> f32 {
+        let x2 = x * x;
+        x * (1.0 + x2 * (-1.0 / 6.0 + x2 * (1.0 / 120.0 + x2 * (-1.0 / 5040.0 + x2 * (1.0 / 362_880.0)))))
+    }
+
+    fn quarter_cos_ref(x: f32) -> f32 {
+        let x2 = x * x;
+        1.0 + x2 * (-0.5 + x2 * (1.0 / 24.0 + x2 * (-1.0 / 720.0 + x2 * (1.0 / 40_320.0))))
+    }
+
+    fn cos_sin_ref(x: f32) -> (f32, f32) {
+        const TWO_PI: f32 = 2.0 * PI;
+        let mut r = x - TWO_PI * (x / TWO_PI).floor();
+        let q = (r * (2.0 / PI)) as i32 & 3;
+        r -= q as f32 * FRAC_PI_2;
+        let (c, s) = if r > FRAC_PI_4 {
+            let rr = FRAC_PI_2 - r;
+            (quarter_sin_ref(rr), quarter_cos_ref(rr))
+        } else {
+            (quarter_cos_ref(r), quarter_sin_ref(r))
+        };
+        match q {
+            0 => (c, s),
+            1 => (-s, c),
+            2 => (-c, -s),
+            _ => (s, -c),
+        }
+    }
+
+    /// const 表 + 复用 `x2` 后，与冻结参考在整圆周 4096 点上逐位一致。
+    #[test]
+    fn cos_sin_is_bitwise_identical_to_frozen_reference() {
+        for k in 0..4096 {
+            let x: f32 = -4.0 * PI + 8.0 * PI * k as f32 / 4096.0;
+            let (c, s) = cos_sin(x);
+            let (cr, sr) = cos_sin_ref(x);
+            assert_eq!(c.to_bits(), cr.to_bits(), "cos({x})");
+            assert_eq!(s.to_bits(), sr.to_bits(), "sin({x})");
+        }
+        for k in 0..=512 {
+            let t: f32 = FRAC_PI_4 * k as f32 / 512.0;
+            assert_eq!(quarter_sin(t).to_bits(), quarter_sin_ref(t).to_bits());
+            assert_eq!(quarter_cos(t).to_bits(), quarter_cos_ref(t).to_bits());
+        }
+    }
+
+    /// 单一真源纪律：`prism-rt::sampler::cos_sin` 与
+    /// `prism_math::det_trig::cos_sin` 两份实现必须逐位相同，防漂移。
+    #[test]
+    fn sampler_and_math_det_trig_are_bitwise_identical() {
+        for k in 0..4096 {
+            let x: f32 = -4.0 * PI + 8.0 * PI * k as f32 / 4096.0;
+            let (c, s) = cos_sin(x);
+            let (mc, ms) = prism_math::det_trig::cos_sin(x);
+            assert_eq!(c.to_bits(), mc.to_bits(), "cos({x}) 跨 crate 漂移");
+            assert_eq!(s.to_bits(), ms.to_bits(), "sin({x}) 跨 crate 漂移");
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

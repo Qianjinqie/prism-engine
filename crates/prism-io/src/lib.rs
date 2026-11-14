@@ -242,17 +242,24 @@ fn append_chunk(out: &mut Vec<u8>, chunk_type: &[u8; 4], data: &[u8]) {
 /// 公开供上层（MCP `render_frame` 需直接返回 PNG 字节）在内存中编码，避免
 /// 落盘再读回；与 [`save_png`] 复用同一编码路径，保证字节一致。
 pub fn encode_png(fb: &Framebuffer) -> Vec<u8> {
-    let width: u32 = fb.width;
-    let height: u32 = fb.height;
+    encode_png_view(&fb.pixels, fb.width, fb.height)
+}
 
+/// V3.1 收尾 C —— PNG **零拷贝视图**编码入口。
+///
+/// 直接借用 RGBA8 字节切片（来自 `Framebuffer.pixels` / `FrameView.rgba8`），
+/// 不再为了编码而构造一份中间 `Framebuffer` 或 clone 像素。字节流与
+/// [`encode_png`] **逐字节相同**（同一 CRC32 / adler32 / 存储型 deflate 路径），
+/// 故 golden 资产哈希、manifest 与既有测试全部零回归。
+pub fn encode_png_view(rgba8: &[u8], width: u32, height: u32) -> Vec<u8> {
     // 像素缓冲区长度校验：应为 width * height * 4（RGBA8）。
     let expected_len: usize = (width as usize) * (height as usize) * 4;
     assert_eq!(
-        fb.pixels.len(),
+        rgba8.len(),
         expected_len,
-        "Framebuffer.pixels 长度应为 width*height*4 ({}), 实际 {}",
+        "RGBA8 视图长度应为 width*height*4 ({}), 实际 {}",
         expected_len,
-        fb.pixels.len()
+        rgba8.len()
     );
 
     let mut out: Vec<u8> = Vec::new();
@@ -279,7 +286,7 @@ pub fn encode_png(fb: &Framebuffer) -> Vec<u8> {
     for y in 0..height {
         raw.push(0x00); // 过滤字节：无过滤（None）
         let row_start: usize = (y as usize) * stride;
-        raw.extend_from_slice(&fb.pixels[row_start..row_start + stride]);
+        raw.extend_from_slice(&rgba8[row_start..row_start + stride]);
     }
 
     // 4) IDAT chunk：zlib 流（CMF=0x78, FLG=0x01）+ 存储型 deflate 数据 + adler32。
@@ -412,6 +419,23 @@ mod tests {
     }
 
     #[test]
+    fn encode_png_view_is_bytewise_identical_to_framebuffer() {
+        let fb: Framebuffer = make_test_frame();
+        // 零拷贝视图：直接借用 `fb.pixels`，不构造中间帧、不 clone。
+        let view: Vec<u8> = encode_png_view(&fb.pixels, fb.width, fb.height);
+        let owned: Vec<u8> = encode_png(&fb);
+        assert_eq!(view, owned, "PNG 零拷贝视图字节流必须与 owned 路径逐字节一致");
+        assert_eq!(&view[0..8], &PNG_SIGNATURE);
+    }
+
+    #[test]
+    fn encode_png_view_rejects_wrong_length() {
+        let short: Vec<u8> = vec![0; 15];
+        let result = std::panic::catch_unwind(|| encode_png_view(&short, 2, 2));
+        assert!(result.is_err(), "长度不符必须显式拒绝（不静默截断）");
+    }
+
+    #[test]
     fn test_crc32_known_vector() {
         // 标准参考向量：CRC32("123456789") 必须为 0xCBF43926（权威校验值）。
         assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
@@ -434,7 +458,6 @@ mod tests {
 
         // 1) 签名正确。
         assert_eq!(&bytes[0..8], &PNG_SIGNATURE);
-
         // 2) 第一个 chunk 为 IHDR，长度为 13，类型串正确。
         let len: u32 = u32::from_be_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
         assert_eq!(len, 13);

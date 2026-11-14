@@ -99,6 +99,12 @@ pub mod spirv_bg;
 /// aesthetic），产物经 [`spirv::module`] 以 `spv_scene` 取用。
 pub mod spirv_rt;
 
+/// **2D 矢量路径光栅 kernel** 的 SPIR-V 发射器（自研，零第三方依赖）。
+/// 与背景 kernel 并列：一像素一 invocation，结构化动态循环遍历该行的解析边
+/// 片段；`NoContraction` + 同式求值树 ⇒ 与 `crate::path_raster::rasterize_cpu`
+/// 逐字节对拍（判据 P1）。
+pub mod spirv_path;
+
 /// compute pipeline 装配 + 队列提交（真机路径；有设备真跑，无设备如实报
 /// `DeviceUnavailable`，不假装跑过）。
 pub mod compute;
@@ -108,6 +114,13 @@ pub mod compute;
 /// SPIR-V（[`spirv_bg`]）→ compute pipeline → dispatch → fence → 读回，
 /// 输出与 [`crate::background::render_background_cpu`] 逐字节对拍。
 pub mod background;
+
+/// **2D 矢量路径光栅帧的 GPU 出图**：compute 离屏 → readback f32 覆盖率。
+///
+/// 四绑定（params / 片段 / 行范围 / 输出，全部 `array<u32>` 位型），
+/// SPIR-V 由 [`spirv_path`] 发射，与 `crate::path_raster::rasterize_cpu`
+/// 逐字节对拍；`crate::path_raster::rasterize` 是「GPU 优先、CPU 兜底」入口。
+pub mod path_raster;
 
 /// **光追场景帧的 GPU 出图**：同一套 compute 闭环，4 个绑定（参数/球/灯/输出）。
 ///
@@ -374,6 +387,13 @@ pub struct VulkanBackend {
     /// 一条通过不能替另一条背书。
     #[cfg(not(target_arch = "wasm32"))]
     render_self_test: std::cell::Cell<Option<bool>>,
+    /// **2D 路径光栅帧路径**自检结果缓存（与上面三条并列的第四条独立能力位）。
+    ///
+    /// 首次调用真跑一帧 8×8 路径 kernel：要求 `status == Ok`、读回 64 个 f32、
+    /// 且至少一个非零（否则说明 kernel 根本没写出东西，不能算「能出图」）。
+    /// 背景/场景/路径是三份不同的 SPIR-V，互不背书。
+    #[cfg(not(target_arch = "wasm32"))]
+    path_self_test: std::cell::Cell<Option<bool>>,
 }
 
 impl VulkanBackend {
@@ -391,6 +411,7 @@ impl VulkanBackend {
                 compute_self_test: std::cell::Cell::new(None),
                 frame_self_test: std::cell::Cell::new(None),
                 render_self_test: std::cell::Cell::new(None),
+                path_self_test: std::cell::Cell::new(None),
             }
         }
         #[cfg(target_arch = "wasm32")]
@@ -671,6 +692,75 @@ impl VulkanBackend {
         {
             background::dispatch((), w, h, t, seed)
         }
+    }
+
+    /// **出 2D 路径光栅帧**（compute 离屏 → 读回 f32 覆盖率）。
+    ///
+    /// 有设备上下文时真跑 kernel；无设备 / wasm / 超限时如实返回非 `Ok`
+    /// 报告（不 panic、不返回假帧）。`crate::path_raster::rasterize` 按
+    /// [`path_raster::PathFrameReport::is_ok`] 判断是否回退 CPU 参考。
+    pub fn rasterize_path_frame(
+        &mut self,
+        input: &crate::path_raster::RasterInput,
+    ) -> path_raster::PathFrameReport {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            path_raster::dispatch(self.context.as_deref(), input, None)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            path_raster::dispatch(input, None)
+        }
+    }
+
+    /// **显式 SPIR-V 字流**的派发入口（负控专用，反假绿）。
+    ///
+    /// 产品路径永不调用它；`tests/vulkan_path_raster_gpu.rs` 用它注入
+    /// `spirv_path::build_path_module_with_one(1.0 + ε)` 的**故意错误**字流，
+    /// 断言逐字节判据必须 FAIL，从而证明绿灯来自真实 kernel 执行。
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn rasterize_path_frame_with_words(
+        &mut self,
+        input: &crate::path_raster::RasterInput,
+        words: &[u32],
+    ) -> path_raster::PathFrameReport {
+        path_raster::dispatch(self.context.as_deref(), input, Some(words))
+    }
+
+    /// 2D 路径光栅帧路径是否已在本设备上真跑通（第四条独立能力位）。
+    ///
+    /// 真跑一帧 8×8 路径 kernel 并检查：状态 `Ok` ∧ 读回 64 个 f32 ∧ 至少一个
+    /// 非零。结果缓存，失败不重试。无上下文恒 `false`。
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn path_frame_available(&self) -> bool {
+        if let Some(v) = self.path_self_test.get() {
+            return v;
+        }
+        use crate::path_raster::{prepare, PathFillRule, RasterPoint};
+        let sq = vec![
+            RasterPoint::new(1.5, 1.5),
+            RasterPoint::new(6.5, 1.5),
+            RasterPoint::new(6.5, 6.5),
+            RasterPoint::new(1.5, 6.5),
+        ];
+        let input = prepare(&[sq], PathFillRule::Winding, 8, 8);
+        let v = match self.context.as_deref() {
+            Some(ctx) => {
+                let r = path_raster::dispatch(Some(ctx), &input, None);
+                r.is_ok()
+                    && r.coverage.data.len() == 64
+                    && r.coverage.data.iter().any(|&x| x != 0.0)
+            }
+            None => false,
+        };
+        self.path_self_test.set(Some(v));
+        v
+    }
+
+    /// wasm32：无原生 Vulkan，恒 `false`（WGSL kernel 走 WebGPU harness）。
+    #[cfg(target_arch = "wasm32")]
+    pub fn path_frame_available(&self) -> bool {
+        false
     }
 
     /// 构造后端时建立探测上下文。

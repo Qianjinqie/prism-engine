@@ -37,6 +37,9 @@ pub static SHADERS: &[(&str, &str)] = &[
     ("gi_compute.wgsl", include_str!("../shaders/gi_compute.wgsl")),
     // 背景渲染 GPU compute shader（demo `paint_background` 热点的 GPU 管线兜底）。
     ("background.wgsl", include_str!("../shaders/background.wgsl")),
+    // 2D 矢量路径光栅 GPU compute shader：与 `vulkan/spirv_path` 发射的 SPIR-V、
+    // `path_raster::segment_area` 三端逐句同式（4 绑定 / 8×8 工作组）。
+    ("path_raster.wgsl", include_str!("../shaders/path_raster.wgsl")),
     // compute-first 管线的两个真实 kernel（语义权威在
     // `crate::compute`，判对基准是它们的 CPU 参考实现）+ SPIR-V 装配探针。
     (

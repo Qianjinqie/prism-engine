@@ -1,0 +1,43 @@
+// ============================================================================
+// v31_motion —— 时域重投影验收专用「真运动」片源（S1，新增文件）
+//
+// 与既有 7 个 .prism 的区别：既有片源的 3D 主体静止（只有文字 alpha / 材质
+// 缓变）。本片源让 3D 主体逐帧真的动，覆盖三类运动，供重投影复用逐帧验收：
+//
+//   ① 相机位移/旋转：movie 帧循环把 t_local / dur_local 传给
+//      build_render_request → eval_camera_orbit(scene, t, duration)，机位沿
+//      orbit_center 水平圆轨道逐帧移动并始终注视中心（2s @ 12fps = 24 帧走满
+//      360°，约 15°/帧）。这是渲染器内建轨道，不需要 DSL 关键帧。
+//   ② 物体平移/缩放（遮挡变化）：sdf ball 的 radius 用字段级关键帧通道
+//      0.7 → 1.5 → 0.7，逐帧改变主体轮廓大小 ⇒ 球体遮挡的背景像素逐帧变化。
+//   ③ 材质/光照在 world 空间固定，相机绕行时球面 Lambert 明暗图相对屏幕
+//      逐帧旋转（view-independent 辐亮度、但可见世界点集合逐帧改变）。
+//
+// 全片无文字层、无过渡：整帧就是 3D 主体，相邻帧像素差可干净量化，
+// 杜绝「文字 alpha 淡入淡出冒充运动」。
+//
+// 实跑（workspace 根目录）：
+//   ./target/release/prism-app render examples/v31_motion.prism \
+//     --mode 一致 --res 720p --frames 24 --fps 12 --out /tmp/motion.mp4
+// ============================================================================
+
+// prism-dsl 1
+
+movie "v31-motion" { duration 2s fps 12 resolution 320x180 format png }
+
+theme { teal-orange contrast 1.06 filmic }
+
+scene "orbit-and-pulse" {
+    duration 2s
+    stage3d {
+        camera main { orbit { center 0,0,0 radius 5 } fov 55 }
+        sdf ball {
+            kind sphere
+            radius { key 0s 0.35 linear key 0.5s 2.3 linear key 1s 0.35 linear key 1.5s 2.3 linear key 2s 0.35 linear }
+        }
+        material hero { albedo #c0392b roughness 0.35 metalness 0.05 }
+        light key { direction(1,-1,-0.5) color #fff4e6 intensity 3 }
+    }
+}
+
+output { resolution 320x180 format png }

@@ -144,17 +144,17 @@ pub fn power_heuristic(a: f32, b: f32) -> f32 {
 #[inline]
 pub fn nee_mis_weight(light: &Light, pdf_light: f32, pdf_bsdf: f32) -> f32 {
     match light {
-        Light::Sphere { .. } => power_heuristic(pdf_light, pdf_bsdf),
-        // 环境**贴图**与球光同臂（选型报告 §3.1 第 4 条）：它是"BSDF 采样
-        // 可达的几何"（逃逸射线命中它），故两策略要配对。
+        // 球光（几何发光体）与环境**贴图**（BSDF 逃逸射线可命中）同臂：
+        // 两策略 power heuristic 配对。W2 起本臂已可达：
+        // `integrator::nee_env_surface` / `nee_env_volume` 拿着 Environment 的
+        // CDF 样本走到这里，与逃逸分支的 `1 − power_heuristic(...)` 逐位互补；
+        // 忘接本臂的表现是背景偏亮 ~2×（权重 1 而非 0.5），V1 白炉 MIS
+        // 互补断言就是拦这个的。
         //
-        // W2 起该臂**已可达**：`integrator::nee_env_surface` / `nee_env_volume`
-        // 拿着 Environment 的 CDF 样本走到这里，与逃逸分支的
-        // `1 − power_heuristic(pdf_env, pdf_bsdf)` 逐位互补。臂本身是 W0 定的
-        // 桩，W2 未改一个字节——接线的风险正在注释里写的那条：忘掉本臂的表现
-        // 是背景偏亮 ~2×（权重 1 而非 0.5），且只在"同一方向既能被 BSDF 采到
-        // 又能被 CDF 采到"时才显形（V1 白炉的 MIS 互补断言就是拦这个的）。
-        Light::Environment { .. } => power_heuristic(pdf_light, pdf_bsdf),
+        // V3.1 P1-2：合并两个逐字相同的 arm（去重复分支），数值零变化。
+        Light::Sphere { .. } | Light::Environment { .. } => {
+            power_heuristic(pdf_light, pdf_bsdf)
+        }
         // 非几何灯：BSDF 采样路径取不到该灯的贡献，NEE 全额、无配对。
         _ => 1.0,
     }
@@ -182,8 +182,21 @@ pub fn sample_nee(light: &Light, p: Vec3, u1: f32, u2: f32) -> Option<LightSampl
         Light::Directional { direction, radiance, cos_theta_max } => {
             // 锥内均匀采样（同款）；pdf = 1/(2π(1−cos_max))。
             // cos_max = 1（δ）时 cone_dir 退化为正对轴，pdf 记 1.0 占位。
-            let wi = cone_dir(*direction, *cos_theta_max, u1, u2);
-            let pdf_w = if *cos_theta_max >= 1.0 {
+            // V3.1 P1-2：重复的 `*cos_theta_max >= 1.0` 预算一次复用
+            // （纯比较，不改变任何浮点运算的操作数或顺序）。
+            let is_delta: bool = *cos_theta_max >= 1.0;
+            // 通用等价改造：δ 方向光的 cone_dir(w, 1, u, v) 恒等于 w
+            // （cos_t = 1 − u·0 = 1、sin_t = √(1−1) = 0 ⇒ onb(w) 与
+            // cos_sin(2πv) 的结果全部被乘零）。原每样本一次的 onb + 确定性
+            // 三角 + 两次标量乘是纯死计算。直接取灯方向，逐位等价，对任意
+            // 含 δ 方向光的场景（任意几何/材质/其它灯）生效——这是逐灯类型
+            // 的通用分派，不是按场景内容判定的整帧分流。
+            let wi = if is_delta {
+                *direction
+            } else {
+                cone_dir(*direction, *cos_theta_max, u1, u2)
+            };
+            let pdf_w = if is_delta {
                 1.0
             } else {
                 1.0 / (2.0 * PI * (1.0 - cos_theta_max))
@@ -193,7 +206,7 @@ pub fn sample_nee(light: &Light, p: Vec3, u1: f32, u2: f32) -> Option<LightSampl
                 dist: f32::INFINITY,
                 radiance: *radiance,
                 pdf_w,
-                delta: *cos_theta_max >= 1.0,
+                delta: is_delta,
             })
         }
         Light::Sphere { center, radius, radiance } => {
@@ -261,6 +274,96 @@ pub fn sample_nee(light: &Light, p: Vec3, u1: f32, u2: f32) -> Option<LightSampl
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// V3.1 P1-2：合并 MIS arm + 预算 `is_delta` 后，与冻结的旧实现逐位一致。
+    #[test]
+    fn v31_structural_refactor_is_bitwise_identical() {
+        fn mis_ref(light: &Light, a: f32, b: f32) -> f32 {
+            match light {
+                Light::Sphere { .. } => power_heuristic(a, b),
+                Light::Environment { .. } => power_heuristic(a, b),
+                _ => 1.0,
+            }
+        }
+        fn dir_ref(
+            direction: Vec3,
+            radiance: Vec3,
+            cos_max: f32,
+            u1: f32,
+            u2: f32,
+        ) -> LightSample {
+            let wi = cone_dir(direction, cos_max, u1, u2);
+            let pdf_w = if cos_max >= 1.0 {
+                1.0
+            } else {
+                1.0 / (2.0 * PI * (1.0 - cos_max))
+            };
+            LightSample {
+                wi,
+                dist: f32::INFINITY,
+                radiance,
+                pdf_w,
+                delta: cos_max >= 1.0,
+            }
+        }
+        let dir: Vec3 = Vec3::new(0.3, -0.9, 0.32);
+        let rad: Vec3 = Vec3::new(4.0, 3.0, 2.0);
+        let kinds: Vec<Light> = vec![
+            Light::Directional { direction: dir, radiance: rad, cos_theta_max: 0.9 },
+            Light::Directional { direction: dir, radiance: rad, cos_theta_max: 1.0 },
+            Light::Sphere { center: Vec3::new(0.0, 0.0, 5.0), radius: 1.0, radiance: rad },
+            Light::Rect {
+                center: Vec3::new(0.0, 5.0, 0.0),
+                edge_u: Vec3::new(2.0, 0.0, 0.0),
+                edge_v: Vec3::new(0.0, 0.0, 2.0),
+                radiance: rad,
+            },
+            Light::Ambient { radiance: rad },
+            Light::Environment { map: 1 },
+        ];
+
+        // ① MIS 权重：合并 arm 后逐位一致。
+        for l in &kinds {
+            for (a, b) in [(0.0f32, 0.0f32), (0.2, 0.6), (1.5, 0.3), (0.9, 0.9)] {
+                assert_eq!(
+                    nee_mis_weight(l, a, b).to_bits(),
+                    mis_ref(l, a, b).to_bits(),
+                    "MIS 权重不等：{l:?}"
+                );
+            }
+        }
+
+        // ② Directional 分支：预算 is_delta 后逐位一致（含 δ 灯与锥灯边界）。
+        let cos_maxes: [f32; 5] = [0.0, 0.5, 0.9, 0.999_999, 1.0];
+        let mut checked: u32 = 0;
+        for &cm in &cos_maxes {
+            for k in 0..16usize {
+                let u1: f32 = (k as f32 + 0.5) / 16.0;
+                let u2: f32 = ((k * 7 % 16) as f32 + 0.5) / 16.0;
+                let light = Light::Directional {
+                    direction: dir,
+                    radiance: rad,
+                    cos_theta_max: cm,
+                };
+                let got: LightSample = sample_nee(
+                    &light,
+                    Vec3::new(0.0, 0.0, 0.0),
+                    u1,
+                    u2,
+                )
+                .expect("方向光 NEE 必有样本");
+                let want: LightSample = dir_ref(dir, rad, cm, u1, u2);
+                assert_eq!(got.wi.x.to_bits(), want.wi.x.to_bits(), "wi.x cm={cm} k={k}");
+                assert_eq!(got.wi.y.to_bits(), want.wi.y.to_bits(), "wi.y cm={cm} k={k}");
+                assert_eq!(got.wi.z.to_bits(), want.wi.z.to_bits(), "wi.z cm={cm} k={k}");
+                assert_eq!(got.dist.to_bits(), want.dist.to_bits(), "dist cm={cm} k={k}");
+                assert_eq!(got.pdf_w.to_bits(), want.pdf_w.to_bits(), "pdf_w cm={cm} k={k}");
+                assert_eq!(got.delta, want.delta, "delta cm={cm} k={k}");
+                checked += 1;
+            }
+        }
+        assert!(checked >= 80, "对拍覆盖不足：{checked}");
+    }
 
     /// 确定性样本流坐标（网格扫掠，测试内不引 Sobol 依赖）。
     fn grid_u(k: usize, n: usize) -> f32 {

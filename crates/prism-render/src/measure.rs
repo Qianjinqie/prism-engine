@@ -215,3 +215,88 @@ pub fn rss_report(scenario: &str, width: u32, height: u32) -> RssReport {
         peak_rss_kib: peak_rss_kib(),
     }
 }
+
+// ---------------------------------------------------------------------------
+// V3.1 收尾 C：RSS 首尾差 + 每帧分配次数（3600 帧内存报表）
+// ---------------------------------------------------------------------------
+
+/// 读进程**当前**常驻内存（`VmRSS`，KiB）。
+///
+/// 与 [`peak_rss_kib`]（生命周期高水位 `VmHWM`）不同：首尾差必须用当前值，
+/// 否则「跑完 3600 帧后 RSS 是否回到起点」这个问题根本问不出来。
+/// Linux 解析 `/proc/self/status`；其他平台返回 `None`。
+pub fn current_rss_kib() -> Option<u64> {
+    let status: String = std::fs::read_to_string("/proc/self/status").ok()?;
+    for line in status.lines() {
+        if let Some(rest) = line.strip_prefix("VmRSS:") {
+            let kb: u64 = rest.split_whitespace().next()?.parse().ok()?;
+            return Some(kb);
+        }
+    }
+    None
+}
+
+/// 3600 帧 RSS 首尾差报表（**非门禁**：绝对值随环境变化，只作报表）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RssDeltaReport {
+    pub scenario: String,
+    pub frames: u64,
+    pub first_kib: Option<u64>,
+    pub last_kib: Option<u64>,
+    /// `last − first`（KiB）；任一读取失败为 `None`。
+    pub delta_kib: Option<i64>,
+    /// 每帧平均分配次数（由 [`Counters::delta_since`] 给出）。
+    pub alloc_per_frame: u64,
+    /// 每帧平均分配字节。
+    pub alloc_bytes_per_frame: u64,
+}
+
+impl RssDeltaReport {
+    /// 供脚本采集的确定性行。
+    pub fn summary_line(&self) -> String {
+        let (f, l, d) = match (self.first_kib, self.last_kib, self.delta_kib) {
+            (Some(f), Some(l), Some(d)) => (f.to_string(), l.to_string(), format!("{d}")),
+            _ => ("n/a".to_string(), "n/a".to_string(), "n/a".to_string()),
+        };
+        format!(
+            "[v31-mem] 场景={} 帧数={} RSS 首={} KiB 尾={} KiB 差={} KiB / 每帧分配 {} 次 {} B",
+            self.scenario,
+            self.frames,
+            f,
+            l,
+            d,
+            self.alloc_per_frame,
+            self.alloc_bytes_per_frame
+        )
+    }
+}
+
+/// 组装 RSS 首尾差报表（纯函数，输入是两个已采集的快照）。
+pub fn rss_delta_report(
+    scenario: &str,
+    frames: u64,
+    first_kib: Option<u64>,
+    last_kib: Option<u64>,
+    before: Counters,
+    after: Counters,
+) -> RssDeltaReport {
+    let d: Counters = after.delta_since(&before);
+    let denom: u64 = frames.max(1);
+    RssDeltaReport {
+        scenario: scenario.to_string(),
+        frames,
+        first_kib,
+        last_kib,
+        delta_kib: match (first_kib, last_kib) {
+            (Some(a), Some(b)) => Some(b as i64 - a as i64),
+            _ => None,
+        },
+        alloc_per_frame: d.alloc_count / denom,
+        alloc_bytes_per_frame: d.alloc_bytes / denom,
+    }
+}
+
+/// 每帧分配次数（帧池验证用：同一场景池化路径 vs 非池化路径）。
+pub fn alloc_per_frame(before: Counters, after: Counters, frames: u64) -> u64 {
+    after.delta_since(&before).alloc_count / frames.max(1)
+}

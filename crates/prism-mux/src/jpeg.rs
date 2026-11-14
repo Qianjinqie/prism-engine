@@ -16,6 +16,7 @@
 //! 输出为标准 JFIF（APP0）基线 JPEG，可被浏览器/解码器直接解码（烟测）。
 
 use crate::{MuxError, MuxResult};
+use std::sync::OnceLock;
 
 /// JPEG 编码配置。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,6 +166,42 @@ impl HuffTable {
     }
 }
 
+// V3.1 编码 IO：标准 Annex K Huffman 表是**编译期常量**，旧实现每帧重建
+// 两次（灰度 / 彩色各 2 表 × 每帧），3600 帧 = 7200 次无谓分配与填表。
+// 用 std 的 `OnceLock` 进程级缓存一次；表内容逐位不变 ⇒ JPEG 字节流不变。
+static STD_HUFF: OnceLock<(HuffTable, HuffTable)> = OnceLock::new();
+
+fn std_huff_tables() -> &'static (HuffTable, HuffTable) {
+    STD_HUFF.get_or_init(|| {
+        (
+            HuffTable::build(&STD_DC_LUMA_BITS, &STD_DC_LUMA_VALS),
+            HuffTable::build(&STD_AC_LUMA_BITS, &STD_AC_LUMA_VALS),
+        )
+    })
+}
+
+/// V3.1 收尾 C —— 一部片子共用的 JPEG 常量表（量化表 + 标准 Huffman 表引用）。
+///
+/// 旧 `encode_jpeg_color` 每帧重建一次 `scaled_quant_table`（64 次乘除）并
+/// 重新查 `STD_HUFF`；3600 帧 = 3600 次纯重复。出片链路 `quality` 恒定，
+/// 故在帧循环外构建一次，逐帧只做**必需**的 `rgb_to_ycbcr` 色彩转换 +
+/// DCT + 熵编码（色彩转换每帧一次，不重复；灰度便捷函数那条独立路径不进
+/// 出片主链）。表内容逐位不变 ⇒ JPEG / MP4 字节流逐字节同源。
+pub struct JpegTables {
+    q: [u16; 64],
+    huff: &'static (HuffTable, HuffTable),
+}
+
+impl JpegTables {
+    /// 按质量构建一次（Huffman 表由 `OnceLock` 进程级共享，零重复分配）。
+    pub fn new(quality: u8) -> Self {
+        JpegTables {
+            q: scaled_quant_table(quality),
+            huff: std_huff_tables(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 位写入器
 // ---------------------------------------------------------------------------
@@ -249,8 +286,7 @@ pub fn encode_jpeg_gray(gray: &[u8], width: u32, height: u32, cfg: JpegConfig) -
         ));
     }
     let q = scaled_quant_table(cfg.quality);
-    let dc = HuffTable::build(&STD_DC_LUMA_BITS, &STD_DC_LUMA_VALS);
-    let ac = HuffTable::build(&STD_AC_LUMA_BITS, &STD_AC_LUMA_VALS);
+    let (dc, ac) = std_huff_tables();
 
     let mut out: Vec<u8> = Vec::with_capacity(expected / 2 + 1024);
     write_headers(&mut out, width, height, cfg.quality, &q);
@@ -273,7 +309,7 @@ pub fn encode_jpeg_gray(gray: &[u8], width: u32, height: u32, cfg: JpegConfig) -
                     block[y * 8 + x] = v;
                 }
             }
-            encode_block(&mut bits, &mut block, &q, &dc, &ac, &mut prev_dc);
+            encode_block(&mut bits, &mut block, &q, dc, ac, &mut prev_dc);
         }
     }
     bits.flush();
@@ -571,7 +607,24 @@ fn write_headers_color(out: &mut Vec<u8>, width: u32, height: u32, q: &[u16; 64]
 /// 编码单张彩色 RGBA 图为基线（4:4:4）JPEG 字节流。
 ///
 /// 不依赖任何外部库；与 [`encode_jpeg_gray`] 共用 DCT/量化/Huffman 基础件。
+/// 单帧入口：现构一次 [`JpegTables`] 后委托 [`encode_jpeg_color_with_tables`]，
+/// 字节流与改动前逐字节相同。
 pub fn encode_jpeg_color(rgba: &[u8], width: u32, height: u32, cfg: JpegConfig) -> MuxResult<Vec<u8>> {
+    let tables = JpegTables::new(cfg.quality);
+    encode_jpeg_color_with_tables(rgba, width, height, &tables)
+}
+
+/// 出片主链批量入口：复用帧循环外构建的 [`JpegTables`]，逐帧只做一次
+/// `rgb_to_ycbcr` 色彩转换 + DCT + 熵编码（表构建零重复）。
+///
+/// 与 [`encode_jpeg_color`] 逐字节同源；调用方负责保证 `tables` 的质量与
+/// `JpegConfig.quality` 一致（[`JpegTables::new`] 是唯一构造入口）。
+pub fn encode_jpeg_color_with_tables(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    tables: &JpegTables,
+) -> MuxResult<Vec<u8>> {
     let n = (width as usize) * (height as usize);
     if n == 0 {
         return Err(MuxError::new(
@@ -590,9 +643,8 @@ pub fn encode_jpeg_color(rgba: &[u8], width: u32, height: u32, cfg: JpegConfig) 
             "提供完整 RGBA8 缓冲",
         ));
     }
-    let q = scaled_quant_table(cfg.quality);
-    let luma_dc = HuffTable::build(&STD_DC_LUMA_BITS, &STD_DC_LUMA_VALS);
-    let luma_ac = HuffTable::build(&STD_AC_LUMA_BITS, &STD_AC_LUMA_VALS);
+    let q: &[u16; 64] = &tables.q;
+    let (luma_dc, luma_ac): (&HuffTable, &HuffTable) = (&tables.huff.0, &tables.huff.1);
 
     let mut y_plane = vec![0u8; n];
     let mut cb_plane = vec![0u8; n];
@@ -600,7 +652,7 @@ pub fn encode_jpeg_color(rgba: &[u8], width: u32, height: u32, cfg: JpegConfig) 
     rgb_to_ycbcr(rgba, n, &mut y_plane, &mut cb_plane, &mut cr_plane);
 
     let mut out: Vec<u8> = Vec::with_capacity(n * 2 + 2048);
-    write_headers_color(&mut out, width, height, &q);
+    write_headers_color(&mut out, width, height, q);
 
     let mut bits = BitWriter::new();
     let (mw, mh) = (width as usize, height as usize);
@@ -615,11 +667,11 @@ pub fn encode_jpeg_color(rgba: &[u8], width: u32, height: u32, cfg: JpegConfig) 
     for by in 0..bh {
         for bx in 0..bw {
             fill_block(&y_plane, mw, mh, bx, by, &mut blk);
-            encode_block(&mut bits, &mut blk, &q, &luma_dc, &luma_ac, &mut prev_y);
+            encode_block(&mut bits, &mut blk, q, luma_dc, luma_ac, &mut prev_y);
             fill_block(&cb_plane, mw, mh, bx, by, &mut blk);
-            encode_block(&mut bits, &mut blk, &q, &luma_dc, &luma_ac, &mut prev_cb);
+            encode_block(&mut bits, &mut blk, q, luma_dc, luma_ac, &mut prev_cb);
             fill_block(&cr_plane, mw, mh, bx, by, &mut blk);
-            encode_block(&mut bits, &mut blk, &q, &luma_dc, &luma_ac, &mut prev_cr);
+            encode_block(&mut bits, &mut blk, q, luma_dc, luma_ac, &mut prev_cr);
         }
     }
     bits.flush();
@@ -632,6 +684,31 @@ pub fn encode_jpeg_color(rgba: &[u8], width: u32, height: u32, cfg: JpegConfig) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prebuilt_tables_match_per_frame_encode_bytewise() {
+        // 多帧、多质量：出片主链复用表构建，字节流必须与单帧入口逐字节相同。
+        let frames: Vec<Vec<u8>> = vec![
+            vec![128u8; 24 * 16 * 4],
+            vec![37u8; 24 * 16 * 4],
+            vec![211u8; 24 * 16 * 4],
+        ];
+        for quality in [35u8, 85, 95] {
+            let tables = JpegTables::new(quality);
+            for f in &frames {
+                let single = encode_jpeg_color(
+                    f,
+                    24,
+                    16,
+                    JpegConfig { quality, grayscale: false },
+                )
+                .unwrap();
+                let batched =
+                    encode_jpeg_color_with_tables(f, 24, 16, &tables).unwrap();
+                assert_eq!(single, batched, "表复用路径必须逐字节同源（quality={quality}）");
+            }
+        }
+    }
 
     #[test]
     fn encodes_minimal_gray_image() {

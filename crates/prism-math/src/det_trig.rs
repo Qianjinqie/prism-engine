@@ -13,21 +13,71 @@
 
 use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI};
 
-/// `[0, π/4]` 上的 `sin`（固定系数 Maclaurin，Horner 排布）。
+// ---------------------------------------------------------------------------
+// V3.1 P1-1：构建期 const 查表（等价变换，**禁数值近似**）
+//
+// 系数是编译期常量表达式，与优化前的字面量 `1.0/6.0` 等逐位相同；下面的
+// Horner 结合序逐句保持不变，故输出与冻结参考实现逐位一致（判据：
+// `v31_bitwise_tests` 的三个 to_bits() 全等测试）。这是「同一加法/乘法树
+// 的两种存储写法」，不是插值表、不改任何一项浮点运算的操作数或顺序。
+// ---------------------------------------------------------------------------
+const SIN_C: [f32; 5] = [
+    1.0,
+    -1.0 / 6.0,
+    1.0 / 120.0,
+    -1.0 / 5040.0,
+    1.0 / 362_880.0,
+];
+const COS_C: [f32; 5] = [
+    1.0,
+    -0.5,
+    1.0 / 24.0,
+    -1.0 / 720.0,
+    1.0 / 40_320.0,
+];
+const ATAN_C: [f32; 8] = [
+    1.0,
+    -1.0 / 3.0,
+    1.0 / 5.0,
+    -1.0 / 7.0,
+    1.0 / 9.0,
+    -1.0 / 11.0,
+    1.0 / 13.0,
+    -1.0 / 15.0,
+];
+
+/// `[0, π/4]` 上的 `sin`（构建期 const 系数 + Horner，逐位不变）。
+///
+/// 生产热路径改走 [`quarter_sin_cos`]（复用 `x2`）；本函数保留为「单分量
+/// 语义」的冻结对拍对象，故非测试构建允许 dead_code。
+#[cfg_attr(not(test), allow(dead_code))]
 #[inline]
 fn quarter_sin(x: f32) -> f32 {
     let x2 = x * x;
-    x * (1.0
-        + x2 * (-1.0 / 6.0
-            + x2 * (1.0 / 120.0
-                + x2 * (-1.0 / 5040.0 + x2 * (1.0 / 362_880.0)))))
+    x * (SIN_C[0] + x2 * (SIN_C[1] + x2 * (SIN_C[2] + x2 * (SIN_C[3] + x2 * SIN_C[4]))))
 }
 
-/// `[0, π/4]` 上的 `cos`（固定系数 Maclaurin，Horner 排布）。
+/// `[0, π/4]` 上的 `cos`（构建期 const 系数 + Horner，逐位不变）。
+///
+/// 同 [`quarter_sin`]：保留为冻结对拍对象，热路径走 [`quarter_sin_cos`]。
+#[cfg_attr(not(test), allow(dead_code))]
 #[inline]
 fn quarter_cos(x: f32) -> f32 {
     let x2 = x * x;
-    1.0 + x2 * (-0.5 + x2 * (1.0 / 24.0 + x2 * (-1.0 / 720.0 + x2 * (1.0 / 40_320.0))))
+    COS_C[0] + x2 * (COS_C[1] + x2 * (COS_C[2] + x2 * (COS_C[3] + x2 * COS_C[4])))
+}
+
+/// `[0, π/4]` 上一次性算 `(cos x, sin x)`：只做一次 `x*x`。
+///
+/// V3.1 P1-1 等价变换：旧路径分别调 `quarter_cos(x)` / `quarter_sin(x)`，
+/// 各算一次 `x2 = x*x`（同一纯运算，逐位相同）。这里复用同一个 `x2`，
+/// 两条 Horner 的操作数与结合序逐句不变 ⇒ 两个分量都逐位一致，省一次乘法。
+#[inline]
+fn quarter_sin_cos(x: f32) -> (f32, f32) {
+    let x2 = x * x;
+    let s = x * (SIN_C[0] + x2 * (SIN_C[1] + x2 * (SIN_C[2] + x2 * (SIN_C[3] + x2 * SIN_C[4]))));
+    let c = COS_C[0] + x2 * (COS_C[1] + x2 * (COS_C[2] + x2 * (COS_C[3] + x2 * COS_C[4])));
+    (c, s)
 }
 
 /// 任意角 `(cos x, sin x)`：`mod 2π` 归约（精确 floor）→ 象限对称 →
@@ -42,9 +92,11 @@ pub fn cos_sin(x: f32) -> (f32, f32) {
     // 半区归约到 [0, π/4]。
     let (c, s) = if r > FRAC_PI_4 {
         let rr = FRAC_PI_2 - r;
-        (quarter_sin(rr), quarter_cos(rr))
+        // quarter_sin_cos(rr) = (cos rr, sin rr)；半区互换回 (sin rr, cos rr)。
+        let (cr, sr) = quarter_sin_cos(rr);
+        (sr, cr)
     } else {
-        (quarter_cos(r), quarter_sin(r))
+        quarter_sin_cos(r)
     };
     match q {
         0 => (c, s),
@@ -88,13 +140,7 @@ pub fn tan(x: f32) -> f32 {
 #[inline]
 fn quarter_atan(z: f32) -> f32 {
     let z2 = z * z;
-    z * (1.0
-        + z2 * (-1.0 / 3.0
-            + z2 * (1.0 / 5.0
-                + z2 * (-1.0 / 7.0
-                    + z2 * (1.0 / 9.0
-                        + z2 * (-1.0 / 11.0
-                            + z2 * (1.0 / 13.0 + z2 * (-1.0 / 15.0))))))))
+    z * (ATAN_C[0] + z2 * (ATAN_C[1] + z2 * (ATAN_C[2] + z2 * (ATAN_C[3] + z2 * (ATAN_C[4] + z2 * (ATAN_C[5] + z2 * (ATAN_C[6] + z2 * ATAN_C[7])))))))
 }
 
 /// `atan(x)`，`x >= 0`，返回 `[0, π/2]`。
@@ -183,6 +229,127 @@ pub fn acos(x: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // =======================================================================
+    // V3.1 P1-1 冻结参考：优化前实现的**逐字拷贝**（字面量系数 + 分别调用
+    // quarter_sin/quarter_cos）。用于证明「构建期 const 查表 + 复用 x2」
+    // 不改变任何一位输出；放宽成容差比较即属改判据，不做。
+    // =======================================================================
+
+    fn quarter_sin_ref(x: f32) -> f32 {
+        let x2 = x * x;
+        x * (1.0 + x2 * (-1.0 / 6.0 + x2 * (1.0 / 120.0 + x2 * (-1.0 / 5040.0 + x2 * (1.0 / 362_880.0)))))
+    }
+
+    fn quarter_cos_ref(x: f32) -> f32 {
+        let x2 = x * x;
+        1.0 + x2 * (-0.5 + x2 * (1.0 / 24.0 + x2 * (-1.0 / 720.0 + x2 * (1.0 / 40_320.0))))
+    }
+
+    fn quarter_atan_ref(z: f32) -> f32 {
+        let z2 = z * z;
+        z * (1.0 + z2 * (-1.0 / 3.0 + z2 * (1.0 / 5.0 + z2 * (-1.0 / 7.0 + z2 * (1.0 / 9.0 + z2 * (-1.0 / 11.0 + z2 * (1.0 / 13.0 + z2 * (-1.0 / 15.0))))))))
+    }
+
+    fn atan_pos_ref(x: f32) -> f32 {
+        const TAN_PI_8: f32 = 0.414_213_57;
+        if x > 1.0 {
+            return FRAC_PI_2 - atan_pos_ref(1.0 / x);
+        }
+        if x > TAN_PI_8 {
+            return FRAC_PI_4 + quarter_atan_ref((x - 1.0) / (x + 1.0));
+        }
+        quarter_atan_ref(x)
+    }
+
+    fn atan2_ref(y: f32, x: f32) -> f32 {
+        if !y.is_finite() || !x.is_finite() {
+            return 0.0;
+        }
+        if x == 0.0 {
+            if y == 0.0 {
+                return 0.0;
+            }
+            return if y > 0.0 { FRAC_PI_2 } else { -FRAC_PI_2 };
+        }
+        let ax = x.abs();
+        let ay = y.abs();
+        let r = if ay <= ax {
+            atan_pos_ref(ay / ax)
+        } else {
+            FRAC_PI_2 - atan_pos_ref(ax / ay)
+        };
+        if x > 0.0 {
+            if y >= 0.0 { r } else { -r }
+        } else if y >= 0.0 {
+            PI - r
+        } else {
+            r - PI
+        }
+    }
+
+    fn cos_sin_ref(x: f32) -> (f32, f32) {
+        const TWO_PI: f32 = 2.0 * PI;
+        let mut r = x - TWO_PI * (x / TWO_PI).floor();
+        let q = (r * (2.0 / PI)) as i32 & 3;
+        r -= q as f32 * FRAC_PI_2;
+        let (c, s) = if r > FRAC_PI_4 {
+            let rr = FRAC_PI_2 - r;
+            (quarter_sin_ref(rr), quarter_cos_ref(rr))
+        } else {
+            (quarter_cos_ref(r), quarter_sin_ref(r))
+        };
+        match q {
+            0 => (c, s),
+            1 => (-s, c),
+            2 => (-c, -s),
+            _ => (s, -c),
+        }
+    }
+
+    #[test]
+    fn const_tables_are_bitwise_identical() {
+        for k in 0..=512 {
+            let t: f32 = FRAC_PI_4 * k as f32 / 512.0;
+            assert_eq!(quarter_sin(t).to_bits(), quarter_sin_ref(t).to_bits(), "sin t={t}");
+            assert_eq!(quarter_cos(t).to_bits(), quarter_cos_ref(t).to_bits(), "cos t={t}");
+            let z: f32 = 0.414_213_57 * k as f32 / 512.0;
+            assert_eq!(quarter_atan(z).to_bits(), quarter_atan_ref(z).to_bits(), "atan z={z}");
+            let (c, s) = quarter_sin_cos(t);
+            assert_eq!(c.to_bits(), quarter_cos_ref(t).to_bits(), "fused cos t={t}");
+            assert_eq!(s.to_bits(), quarter_sin_ref(t).to_bits(), "fused sin t={t}");
+        }
+    }
+
+    #[test]
+    fn cos_sin_fused_x2_is_bitwise_identical() {
+        for k in 0..4096 {
+            let x: f32 = -4.0 * PI + 8.0 * PI * k as f32 / 4096.0;
+            let (c, s) = cos_sin(x);
+            let (cr, sr) = cos_sin_ref(x);
+            assert_eq!(c.to_bits(), cr.to_bits(), "cos({x})");
+            assert_eq!(s.to_bits(), sr.to_bits(), "sin({x})");
+        }
+    }
+
+    #[test]
+    fn atan2_const_table_is_bitwise_identical() {
+        for k in 0..2048 {
+            let a: f32 = -PI + 2.0 * PI * k as f32 / 2048.0;
+            let (c, s) = cos_sin(a);
+            assert_eq!(atan2(s, c).to_bits(), atan2_ref(s, c).to_bits(), "k={k}");
+        }
+        for &(y, x) in &[
+            (0.0f32, 0.0f32),
+            (1.0, 0.0),
+            (-1.0, 0.0),
+            (0.0, -1.0),
+            (f32::NAN, 1.0),
+            (1.0, f32::INFINITY),
+        ] {
+            assert_eq!(atan2(y, x).to_bits(), atan2_ref(y, x).to_bits(), "({y},{x})");
+        }
+    }
 
     #[test]
     fn sin_cos_match_reference_points() {

@@ -30,6 +30,8 @@ const FRAC_PI_12: f32 = 0.261_799_39;
 const TAN_PI_12: f32 = 0.267_949_19;
 
 /// `[0, π/4]` 上的 sin（固定系数 Maclaurin，Horner 排布；与 rt 同式）。
+/// 热路径改走 [`quarter_sin_cos`]；本函数保留为冻结对拍对象。
+#[cfg_attr(not(test), allow(dead_code))]
 #[inline]
 fn quarter_sin(x: f32) -> f32 {
     let x2 = x * x;
@@ -38,10 +40,29 @@ fn quarter_sin(x: f32) -> f32 {
 }
 
 /// `[0, π/4]` 上的 cos（固定系数 Maclaurin，Horner 排布；与 rt 同式）。
+/// 热路径改走 [`quarter_sin_cos`]；本函数保留为冻结对拍对象。
+#[cfg_attr(not(test), allow(dead_code))]
 #[inline]
 fn quarter_cos(x: f32) -> f32 {
     let x2 = x * x;
     1.0 + x2 * (-0.5 + x2 * (1.0 / 24.0 + x2 * (-1.0 / 720.0 + x2 * (1.0 / 40_320.0))))
+}
+
+/// `[0, π/4]` 上一次性算 `(cos x, sin x)`：只做一次 `x*x`。
+///
+/// V3.1 通用路径等价变换：旧路径两条 Horner 各算一次 `x2 = x*x`（同一纯
+/// 运算、逐位相同），这里复用同一个 `x2`；两条 Horner 的操作数与结合序逐句
+/// 不变 ⇒ 两个分量都逐位一致（判据见
+/// `det_cos_sin_matches_frozen_quarter_reference`）。落在 [`det_cos_sin`] /
+/// [`det_cos`] / [`det_sin`] 上，对任意 `solve_cubic` 三角法求根（圆环 /
+/// 旋转面）、BVH / 曲线 / 细分的 winding 三角调用生效，不判定场景内容。
+#[inline]
+fn quarter_sin_cos(x: f32) -> (f32, f32) {
+    let x2 = x * x;
+    let s = x * (1.0
+        + x2 * (-1.0 / 6.0 + x2 * (1.0 / 120.0 + x2 * (-1.0 / 5040.0 + x2 * (1.0 / 362_880.0)))));
+    let c = 1.0 + x2 * (-0.5 + x2 * (1.0 / 24.0 + x2 * (-1.0 / 720.0 + x2 * (1.0 / 40_320.0))));
+    (c, s)
 }
 
 /// 任意角 `(cos x, sin x)`：mod 2π 归约（精确 floor）→ 象限对称 →
@@ -53,12 +74,16 @@ pub fn det_cos_sin(x: f32) -> (f32, f32) {
     // 象限号：q = floor(r / (π/2)) ∈ {0,1,2,3}。
     let q = (r * (2.0 / PI)) as i32 & 3;
     r -= q as f32 * FRAC_PI_2; // r ∈ [0, π/2]
-    // 半区归约到 [0, π/4]。
+    // 半区归约到 [0, π/4]：一次 quarter_sin_cos 复用同一 x2。
     let (c, s) = if r > FRAC_PI_4 {
         let rr = FRAC_PI_2 - r;
-        (quarter_sin(rr), quarter_cos(rr))
+        // quarter_sin_cos(rr) = (cos rr, sin rr) = (sin r, cos r)；
+        // 旧式 (c, s) = (quarter_sin(rr), quarter_cos(rr)) = (sin rr, cos rr)，
+        // 故这里把 (cr, sr) 交换回 (sr, cr)。
+        let (cr, sr) = quarter_sin_cos(rr);
+        (sr, cr)
     } else {
-        (quarter_cos(r), quarter_sin(r))
+        quarter_sin_cos(r)
     };
     match q {
         0 => (c, s),
@@ -280,5 +305,45 @@ mod tests {
             assert_eq!(det_atan2(y, x).to_bits(), det_atan2(y, x).to_bits());
         }
         assert_eq!(det_asin(0.42).to_bits(), det_asin(0.42).to_bits());
+    }
+
+    /// V3.1 通用三角改造：复用 `x2` 的 [`quarter_sin_cos`] 与冻结的分立
+    /// `quarter_sin` / `quarter_cos` 参考在整圆周逐位一致（含 `det_cos` /
+    /// `det_sin` 标量取件）。这是整数/浮点恒等变换的证据，不是"测出来差不多"：
+    /// 两条 Horner 共用同一个 `x2 = x*x`，操作数与结合序逐句不变。
+    #[test]
+    fn det_cos_sin_reused_x2_is_bitwise_identical_to_frozen_reference() {
+        fn frozen(x: f32) -> (f32, f32) {
+            let mut r = x - TWO_PI * (x / TWO_PI).floor();
+            let q = (r * (2.0 / PI)) as i32 & 3;
+            r -= q as f32 * FRAC_PI_2;
+            let (c, s) = if r > FRAC_PI_4 {
+                let rr = FRAC_PI_2 - r;
+                (quarter_sin(rr), quarter_cos(rr))
+            } else {
+                (quarter_cos(r), quarter_sin(r))
+            };
+            match q {
+                0 => (c, s),
+                1 => (-s, c),
+                2 => (-c, -s),
+                _ => (s, -c),
+            }
+        }
+        for k in 0..8192 {
+            let x: f32 = -8.0 * PI + 16.0 * PI * (k as f32) / 8192.0;
+            let (c, s) = det_cos_sin(x);
+            let (cr, sr) = frozen(x);
+            assert_eq!(c.to_bits(), cr.to_bits(), "cos({x})");
+            assert_eq!(s.to_bits(), sr.to_bits(), "sin({x})");
+            assert_eq!(det_cos(x).to_bits(), cr.to_bits(), "det_cos({x})");
+            assert_eq!(det_sin(x).to_bits(), sr.to_bits(), "det_sin({x})");
+        }
+        for k in 0..=2048 {
+            let t: f32 = FRAC_PI_4 * (k as f32) / 2048.0;
+            let (c, s) = quarter_sin_cos(t);
+            assert_eq!(c.to_bits(), quarter_cos(t).to_bits(), "quarter cos({t})");
+            assert_eq!(s.to_bits(), quarter_sin(t).to_bits(), "quarter sin({t})");
+        }
     }
 }

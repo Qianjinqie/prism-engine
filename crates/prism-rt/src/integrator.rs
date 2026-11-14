@@ -40,22 +40,24 @@
 //! （D-28 像素域）→ tile 化不影响采样流，整幅与分块逐位一致（关卡 3）。
 
 use std::f32::consts::{FRAC_1_PI, PI};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use prism_core::EvalCtx;
-use prism_geometry::bvh::{Bvh as GeoBvh, Triangle as GeoTriangle};
+use prism_geometry::aabb_bvh::AabbBvh as UniversalBvh;
+use prism_geometry::bvh::{Aabb as GeoAabb, Bvh as GeoBvh, Triangle as GeoTriangle};
 use prism_math::{det_trig, Vec3};
 
-use crate::accum::mean_samples;
+use crate::accum::mean_samples_fill;
 use crate::bsdf::{hadamard, Bsdf, SampleCtx};
 use crate::caustics::{mnee_mirror, mnee_refraction, Refractor};
-use crate::camera::{Camera, Ray};
+use crate::camera::{Camera, Ray, DIM_PIXEL};
 use crate::instance::{Instance, INSTANCE_MAT_FROM_GEOM};
 use crate::light::{ambient_background, nee_mis_weight, sample_nee};
 
 /// 光源（四族；对外沿用 integrator 命名，内部委托 [`crate::light`]）。
 pub use crate::light::Light;
 use crate::media::Medium;
-use crate::sampler::SampleStream;
+use crate::sampler::{PixelStreamBase, SampleStream};
 use crate::spectral::{
     cauchy_ior, flat_spectral_value, hero_wavelength, spectral_to_rgb, SpectralConfig,
 };
@@ -630,6 +632,25 @@ pub(crate) fn has_normal_map(m: &MaterialKind) -> bool {
         MaterialKind::Pbr(b) => b.maps[crate::bsdf::MAP_NORMAL] != crate::texture::NO_TEXTURE,
         _ => false,
     }
+}
+
+/// 整个场景里是否有**任何**材质挂了贴图。
+///
+/// 纹理分离重建（`pixel_base_color`）只在有 albedo 贴图时才有意义：无贴图
+/// 场景的 albedo 是常量、比值恒为 1，多算一次主射线纯属浪费。故调用方先用
+/// 本函数做一次**每帧一次**的场景级判定——`false` 时整条分离逻辑整体跳过，
+/// 无贴图场景（含域内两个验收片源）的输出与开销都逐字节不变。
+pub fn scene_has_maps(scene: &Scene) -> bool {
+    scene.spheres.iter().any(|s| material_has_maps(&s.1))
+        || scene.boxes.iter().any(|s| material_has_maps(&s.1))
+        || scene.paraboloids.iter().any(|s| material_has_maps(&s.1))
+        || scene.planes.iter().any(|s| material_has_maps(&s.1))
+        || scene.cylinders.iter().any(|s| material_has_maps(&s.1))
+        || scene.cones.iter().any(|s| material_has_maps(&s.1))
+        || scene.toruses.iter().any(|s| material_has_maps(&s.1))
+        || scene.revolutions.iter().any(|s| material_has_maps(&s.1))
+        || scene.meshes.iter().any(|m| material_has_maps(&m.1))
+        || scene.instance_geoms.iter().any(|g| material_has_maps(&g.1))
 }
 
 /// 单张贴图的采样（句柄 0 / 越界 → `None`）。
@@ -1702,6 +1723,77 @@ fn finite_vec3(v: Vec3) -> bool {
     v.x.is_finite() && v.y.is_finite() && v.z.is_finite()
 }
 
+// ---------------------------------------------------------------------------
+// V3.1 性能：曲线图元（圆柱 / 圆锥 / 旋转曲面）AABB 预剔除
+// ---------------------------------------------------------------------------
+
+/// 包围盒的保守余量（相对半宽 + 绝对下限）。
+///
+/// 余量**不是**几何放大，而是给 IEEE-754 slab 除法 `(lo-o)/d`、`(hi-o)/d`
+/// 与闭式求根之间的末位舍入差留缓冲：擦边命中绝不能因为一次向零舍入
+/// 被误判成盒外。相对项 `1e-4` 远小于图元尺度，对剔除率无实质影响；
+/// 绝对项 `1e-5` 覆盖贴着原点的小图元。
+///
+/// 该余量只决定"是否被剔除"，命中分支的求根系数、根序与候选验证与
+/// 加预剔除之前**逐字相同**，故渲染输出逐字节不变。
+const CURVE_AABB_PAD_REL: f32 = 1.0e-4;
+const CURVE_AABB_PAD_ABS: f32 = 1.0e-5;
+
+/// 射线段 `[T_MIN, t_max)` 是否**可能**命中以 `center` 为心、径向半径
+/// 上界 `r`、轴向局部范围 `[y_lo, y_hi]` 的曲线图元。
+///
+/// 返回 `false` ⇒ 射线与该图元的保守 AABB 无交 ⇒ 闭式求根的任意实根都
+/// 不可能落在有效区间内，调用方直接 `return None`，跳过整段求根
+/// （圆环的 Ferrari 四次 / 三次闭式是这四个函数里最贵的部分）。
+///
+/// AABB 取轴向 +Y 的柱形包围：`x/z = center ± r`，
+/// `y = center + [y_lo, y_hi]`。启用本剔除的三族取值：
+/// * 圆柱 / 圆锥：`r = radius`、`[y_lo, y_hi] = [-H, H]`；
+/// * 旋转曲面：`r = max(profile.r)`、
+///   `[y_lo, y_hi] = [min(profile.y), max(profile.y)]`。
+///
+/// 这三族都在求根后按段界 / 半径**验证命中点**，故命中点必在数学包围盒
+/// 内，剔除不会丢命中（余量只用于吸收 IEEE 舍入）。**圆环不在此列**：
+/// 它把四次方程的全部数值实根当命中且不验证命中点，盒外射线也可能产生
+/// 伪根并计入基线输出，详见 [`Scene::torus_t`] 内的说明。
+///
+/// 非有限图元参数（±inf 半径 / 轮廓点）会让 AABB 退化；此时**不剔除**，
+/// 交回原求交路径自己处理（原本就靠 NaN 根被 `t >= T_MIN` 自然排除），
+/// 保证这类退化输入的行为一字未变。
+#[inline]
+fn curve_box_may_hit(
+    center: Vec3,
+    r: f32,
+    y_lo: f32,
+    y_hi: f32,
+    ro: Vec3,
+    rd: Vec3,
+    t_max: f32,
+) -> bool {
+    #[inline]
+    fn pad(v: f32) -> f32 {
+        v.abs() * CURVE_AABB_PAD_REL + CURVE_AABB_PAD_ABS
+    }
+    let rp = r + pad(r);
+    let lo_y = y_lo - pad(y_lo);
+    let hi_y = y_hi + pad(y_hi);
+    let bb = Aabb::new(
+        Vec3::new(center.x - rp, center.y + lo_y, center.z - rp),
+        Vec3::new(center.x + rp, center.y + hi_y, center.z + rp),
+    );
+    // 退化 AABB（非有限参数 / NaN 轮廓）⇒ 跳过预剔除，走原路径。
+    let finite = bb.min.x.is_finite()
+        && bb.min.y.is_finite()
+        && bb.min.z.is_finite()
+        && bb.max.x.is_finite()
+        && bb.max.y.is_finite()
+        && bb.max.z.is_finite();
+    if !finite {
+        return true;
+    }
+    bb.segment_interval(ro, rd, T_MIN, t_max).is_some()
+}
+
 /// 三角形单位几何法线（绕序 a→b→c 右手；零面积退化返回零向量）。
 ///
 /// 退化三角形（零面积）在 Möller–Trumbore 下分母为零 ⇒ **永不被射线命中**，
@@ -1725,6 +1817,1369 @@ pub const FRAC_1_PI_F32: f32 = FRAC_1_PI;
 const SURFACE_EPS: f32 = 1e-3;
 /// 未命中段长（逃逸/方向光阴影距离）。
 const MISS_T: f32 = 1.0e30;
+
+// ---------------------------------------------------------------------------
+// V3.1 独立通用路径：场景级 AABB 加速 + 像素射线束解析逃逸
+// ---------------------------------------------------------------------------
+//
+// 这一段只在「档位启用独立通用路径」时通过 [`UniversalIntersectGuard`] 生效；
+// `一致` 档不挂守卫，`Scene::intersect` / `Scene::any_hit` 仍走冻结老路径。
+// 新路径不按场景内容分流：先为任意 `Scene` 构造一份只读加速视图，再把所有
+// 几何族按老路径的全局顺序编成图元 id；粗阶段用通用 AABB-BVH 剪枝，精阶段
+// 逐字复用原有 `*_t`。无穷平面、圆环、旋转曲面不做包围盒剪枝，改为按全局序
+// 线性精查，避免改变既有数值伪根语义。逃逸像素另用「同一像素 16 条实际采样
+// 射线均不穿过全场景保守包围盒」做严格充分判定，环境图与常量环境光按老路径
+// 的逃逸公式逐样本解析求值，16 个槽位不减、不复用历史、不空域补样本。
+
+/// 像素射线束解析逃逸的栈内样本上限；超过则不走该捷径，直接完整求值。
+const UNIVERSAL_STACK_SPP: usize = 64;
+
+/// 通用加速视图里的图元种类。顺序与老 `intersect_impl` 的族顺序一致。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UniversalKind {
+    Sphere(usize),
+    AabbBox(usize),
+    Paraboloid(usize),
+    Plane(usize),
+    Mesh(usize),
+    Cylinder(usize),
+    Cone(usize),
+    Torus(usize),
+    Revolution(usize),
+    Instance(usize),
+}
+
+/// 加速视图里的图元记录；`key` 是老路径的全局顺序键，用于并列 t 决胜。
+#[derive(Debug, Clone, Copy)]
+struct UniversalPrim {
+    key: u32,
+    kind: UniversalKind,
+}
+
+/// 任意场景均可构造的只读加速视图；不含指向 `Scene` 的引用，便于跨线程共享。
+#[derive(Debug, Clone)]
+pub struct UniversalAccel {
+    /// 可安全用有限 AABB 剪枝的图元树。
+    bvh: UniversalBvh,
+    /// 树内图元，下标与 `AabbBvh` 的返回 id 对齐。
+    safe: Vec<UniversalPrim>,
+    /// 树内图元的保守 AABB，按同一全局图元 id 对齐。
+    safe_aabbs: Vec<GeoAabb>,
+    /// 不能用有限 AABB 剪枝、必须逐条精查的图元（无穷平面 / 四次伪根族等）。
+    always: Vec<UniversalPrim>,
+    /// 有限介质区域包围盒；射线束若命中任一区域则不能走逃逸捷径。
+    volumes: Vec<Aabb>,
+    /// 是否允许用「16 条实际采样射线」做整像素逃逸判定。
+    cullable: bool,
+    /// 是否启用逐像素逃逸捷径；离线标定可用环境变量整体关闭。
+    background_shortcut: bool,
+}
+
+/// 固定容量节点栈；常态零堆分配，极深树才溢出到 Vec。
+struct UniversalNodeStack {
+    fixed: [u32; 128],
+    len: usize,
+    overflow: Vec<u32>,
+}
+
+impl UniversalNodeStack {
+    #[inline]
+    fn new(root: u32) -> Self {
+        let mut fixed = [0u32; 128];
+        fixed[0] = root;
+        UniversalNodeStack { fixed, len: 1, overflow: Vec::new() }
+    }
+
+    #[inline]
+    fn push(&mut self, value: u32) {
+        if self.len < self.fixed.len() {
+            self.fixed[self.len] = value;
+            self.len += 1;
+        } else {
+            self.overflow.push(value);
+        }
+    }
+
+    #[inline]
+    fn pop(&mut self) -> Option<u32> {
+        if let Some(v) = self.overflow.pop() {
+            return Some(v);
+        }
+        if self.len == 0 {
+            return None;
+        }
+        self.len -= 1;
+        Some(self.fixed[self.len])
+    }
+}
+
+#[inline]
+fn universal_vmin(a: Vec3, b: Vec3) -> Vec3 {
+    Vec3::new(a.x.min(b.x), a.y.min(b.y), a.z.min(b.z))
+}
+
+#[inline]
+fn universal_vmax(a: Vec3, b: Vec3) -> Vec3 {
+    Vec3::new(a.x.max(b.x), a.y.max(b.y), a.z.max(b.z))
+}
+
+/// 把精确 min/max 扩成保守 AABB；非有限或区间反序返回 `None`。
+#[inline]
+fn geo_aabb_padded(min: Vec3, max: Vec3) -> Option<GeoAabb> {
+    if !finite_vec3(min)
+        || !finite_vec3(max)
+        || min.x > max.x
+        || min.y > max.y
+        || min.z > max.z
+    {
+        return None;
+    }
+    let half = (max - min) * 0.5;
+    let pad = Vec3::new(
+        half.x.abs() * 1.0e-4 + 1.0e-5,
+        half.y.abs() * 1.0e-4 + 1.0e-5,
+        half.z.abs() * 1.0e-4 + 1.0e-5,
+    );
+    let lo = min - pad;
+    let hi = max + pad;
+    if !finite_vec3(lo) || !finite_vec3(hi) {
+        return None;
+    }
+    Some(GeoAabb { min: lo, max: hi })
+}
+
+/// 把几何侧 AABB 并入全场景保守包围盒；失败则整体放弃逃逸判定。
+fn grow_geo_bounds(dst: &mut Option<Aabb>, b: &GeoAabb) {
+    if !finite_vec3(b.min)
+        || !finite_vec3(b.max)
+        || b.min.x > b.max.x
+        || b.min.y > b.max.y
+        || b.min.z > b.max.z
+    {
+        *dst = None;
+        return;
+    }
+    let Some(cur) = dst.as_mut() else {
+        return;
+    };
+    cur.min = universal_vmin(cur.min, b.min);
+    cur.max = universal_vmax(cur.max, b.max);
+}
+
+/// 把介质区域包围盒并入全场景保守包围盒。
+fn grow_rt_bounds(dst: &mut Option<Aabb>, b: &Aabb) {
+    if !finite_vec3(b.min)
+        || !finite_vec3(b.max)
+        || b.min.x > b.max.x
+        || b.min.y > b.max.y
+        || b.min.z > b.max.z
+    {
+        *dst = None;
+        return;
+    }
+    let Some(cur) = dst.as_mut() else {
+        return;
+    };
+    cur.min = universal_vmin(cur.min, b.min);
+    cur.max = universal_vmax(cur.max, b.max);
+}
+
+/// 几何侧 AABB 是否可用于射线束剪枝。
+#[inline]
+fn geo_aabb_valid(b: &GeoAabb) -> bool {
+    finite_vec3(b.min)
+        && finite_vec3(b.max)
+        && b.min.x <= b.max.x
+        && b.min.y <= b.max.y
+        && b.min.z <= b.max.z
+}
+
+/// 介质侧 AABB 是否可用于射线束剪枝。
+#[inline]
+fn rt_aabb_valid(b: &Aabb) -> bool {
+    finite_vec3(b.min)
+        && finite_vec3(b.max)
+        && b.min.x <= b.max.x
+        && b.min.y <= b.max.y
+        && b.min.z <= b.max.z
+}
+
+/// 16 条实际采样射线里是否有一条可能穿过几何侧 AABB。
+#[inline]
+fn any_ray_hits_geo_aabb(b: &GeoAabb, ro: Vec3, invs: &[Vec3]) -> bool {
+    if !geo_aabb_valid(b) {
+        return true; // 非法包围盒不能证明「无命中」。
+    }
+    for &inv in invs {
+        if b.ray(ro, inv, T_MIN, MISS_T).is_some() {
+            return true;
+        }
+    }
+    false
+}
+
+/// 16 条实际采样射线里是否有一条可能穿过介质区域 AABB。
+#[inline]
+fn any_ray_hits_rt_aabb(b: &Aabb, ro: Vec3, dirs: &[Vec3]) -> bool {
+    if !rt_aabb_valid(b) {
+        return true;
+    }
+    for &d in dirs {
+        if b.segment_interval(ro, d, T_MIN, MISS_T).is_some() {
+            return true;
+        }
+    }
+    false
+}
+
+/// 把一个图元编入安全树或线性精查表，并同步维护全场景包围盒。
+fn push_universal_prim(
+    key: u32,
+    kind: UniversalKind,
+    aabb: Option<GeoAabb>,
+    safe: &mut Vec<UniversalPrim>,
+    aabbs: &mut Vec<GeoAabb>,
+    always: &mut Vec<UniversalPrim>,
+    bounds: &mut Option<Aabb>,
+) {
+    let prim = UniversalPrim { key, kind };
+    match aabb {
+        Some(b) => {
+            safe.push(prim);
+            aabbs.push(b);
+            grow_geo_bounds(bounds, &b);
+        }
+        None => {
+            always.push(prim);
+            *bounds = None;
+        }
+    }
+}
+
+impl UniversalAccel {
+    /// 从任意场景构造通用加速视图；只读，不修改 `Scene`，不改变 `一致` 档。
+    pub fn build(scene: &Scene) -> Self {
+        let mut safe: Vec<UniversalPrim> = Vec::new();
+        let mut aabbs: Vec<GeoAabb> = Vec::new();
+        let mut always: Vec<UniversalPrim> = Vec::new();
+        let mut volumes: Vec<Aabb> = Vec::new();
+        let mut bounds: Option<Aabb> = Some(Aabb::new(
+            Vec3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY),
+            Vec3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY),
+        ));
+        let mut key: u32 = 0;
+
+        for i in 0..scene.spheres.len() {
+            let s = &scene.spheres[i].0;
+            let r = s.radius.abs();
+            let aabb = if finite_vec3(s.center) && s.radius.is_finite() && r > 0.0 {
+                let d = Vec3::new(r, r, r);
+                geo_aabb_padded(s.center - d, s.center + d)
+            } else {
+                None
+            };
+            push_universal_prim(
+                key,
+                UniversalKind::Sphere(i),
+                aabb,
+                &mut safe,
+                &mut aabbs,
+                &mut always,
+                &mut bounds,
+            );
+            key = key.wrapping_add(1);
+        }
+        for i in 0..scene.boxes.len() {
+            let b = &scene.boxes[i].0;
+            let aabb = geo_aabb_padded(b.min, b.max);
+            push_universal_prim(
+                key,
+                UniversalKind::AabbBox(i),
+                aabb,
+                &mut safe,
+                &mut aabbs,
+                &mut always,
+                &mut bounds,
+            );
+            key = key.wrapping_add(1);
+        }
+        for i in 0..scene.paraboloids.len() {
+            let g = &scene.paraboloids[i].0;
+            let aabb = if g.k.is_finite()
+                && g.r_max.is_finite()
+                && g.k > 0.0
+                && g.r_max > 0.0
+            {
+                let r = g.r_max;
+                let z = g.k * r * r;
+                if z.is_finite() {
+                    geo_aabb_padded(Vec3::new(-r, -r, 0.0), Vec3::new(r, r, z))
+                } else {
+                    None
+                }
+            } else {
+                // 非法抛物面在老路径里永不命中；不编入图元，也不禁用包围盒剪枝。
+                key = key.wrapping_add(1);
+                continue;
+            };
+            push_universal_prim(
+                key,
+                UniversalKind::Paraboloid(i),
+                aabb,
+                &mut safe,
+                &mut aabbs,
+                &mut always,
+                &mut bounds,
+            );
+            key = key.wrapping_add(1);
+        }
+        for i in 0..scene.planes.len() {
+            let pl = &scene.planes[i].0;
+            let n = pl.normal;
+            let nlen2 = n.dot(&n);
+            let valid = finite_vec3(pl.point)
+                && finite_vec3(n)
+                && nlen2.is_finite()
+                && nlen2 >= 1.0e-16;
+            if !valid {
+                key = key.wrapping_add(1);
+                continue;
+            }
+            let aabb = match pl.half_extent {
+                Some(h) if h.is_finite() && h > 0.0 => {
+                    let (tu, tv) = plane_tangent_basis(n);
+                    let mut mn = Vec3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY);
+                    let mut mx = Vec3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
+                    for su in [-1.0f32, 1.0f32] {
+                        for sv in [-1.0f32, 1.0f32] {
+                            let p = pl.point + tu * (h * su) + tv * (h * sv);
+                            mn = universal_vmin(mn, p);
+                            mx = universal_vmax(mx, p);
+                        }
+                    }
+                    geo_aabb_padded(mn, mx)
+                }
+                Some(_) => {
+                    key = key.wrapping_add(1);
+                    continue;
+                }
+                // 无穷平面不能用有限 AABB 剪枝；老路径的掠射命中必须逐条精查。
+                None => None,
+            };
+            push_universal_prim(
+                key,
+                UniversalKind::Plane(i),
+                aabb,
+                &mut safe,
+                &mut aabbs,
+                &mut always,
+                &mut bounds,
+            );
+            key = key.wrapping_add(1);
+        }
+        for i in 0..scene.meshes.len() {
+            let mesh = &scene.meshes[i].0;
+            if mesh.triangles.is_empty() {
+                key = key.wrapping_add(1);
+                continue;
+            }
+            let aabb = match mesh.bounds() {
+                Some((mn, mx)) => geo_aabb_padded(mn, mx),
+                None => None,
+            };
+            push_universal_prim(
+                key,
+                UniversalKind::Mesh(i),
+                aabb,
+                &mut safe,
+                &mut aabbs,
+                &mut always,
+                &mut bounds,
+            );
+            key = key.wrapping_add(1);
+        }
+        for i in 0..scene.cylinders.len() {
+            let c = &scene.cylinders[i].0;
+            let aabb = if finite_vec3(c.center)
+                && c.radius.is_finite()
+                && c.radius > 0.0
+                && c.half_height.is_finite()
+                && c.half_height > 0.0
+            {
+                let d = Vec3::new(c.radius, c.half_height, c.radius);
+                geo_aabb_padded(c.center - d, c.center + d)
+            } else {
+                key = key.wrapping_add(1);
+                continue;
+            };
+            push_universal_prim(
+                key,
+                UniversalKind::Cylinder(i),
+                aabb,
+                &mut safe,
+                &mut aabbs,
+                &mut always,
+                &mut bounds,
+            );
+            key = key.wrapping_add(1);
+        }
+        for i in 0..scene.cones.len() {
+            let c = &scene.cones[i].0;
+            let aabb = if finite_vec3(c.center)
+                && c.radius.is_finite()
+                && c.radius > 0.0
+                && c.half_height.is_finite()
+                && c.half_height > 0.0
+            {
+                let d = Vec3::new(c.radius, c.half_height, c.radius);
+                geo_aabb_padded(c.center - d, c.center + d)
+            } else {
+                key = key.wrapping_add(1);
+                continue;
+            };
+            push_universal_prim(
+                key,
+                UniversalKind::Cone(i),
+                aabb,
+                &mut safe,
+                &mut aabbs,
+                &mut always,
+                &mut bounds,
+            );
+            key = key.wrapping_add(1);
+        }
+        // 圆环的 Ferrari 四次闭式可能给出落在有效区间内的数值伪根；伪根是
+        // 冻结输出的一部分。旋转曲面按段二次求根也有复杂边界，二者统一走
+        // 线性精查表，不用曲线 BVH、不用有限包围盒剪枝。
+        for i in 0..scene.toruses.len() {
+            push_universal_prim(
+                key,
+                UniversalKind::Torus(i),
+                None,
+                &mut safe,
+                &mut aabbs,
+                &mut always,
+                &mut bounds,
+            );
+            key = key.wrapping_add(1);
+        }
+        for i in 0..scene.revolutions.len() {
+            push_universal_prim(
+                key,
+                UniversalKind::Revolution(i),
+                None,
+                &mut safe,
+                &mut aabbs,
+                &mut always,
+                &mut bounds,
+            );
+            key = key.wrapping_add(1);
+        }
+        for i in 0..scene.instances.len() {
+            let inst = &scene.instances[i];
+            let Some((mesh, _)) = scene.instance_geoms.get(inst.geom_id as usize) else {
+                key = key.wrapping_add(1);
+                continue;
+            };
+            if mesh.triangles.is_empty() {
+                key = key.wrapping_add(1);
+                continue;
+            }
+            let aabb = match mesh.bounds() {
+                Some((mn, mx)) => {
+                    let wb = inst.world_aabb(mn, mx);
+                    geo_aabb_padded(wb.min, wb.max)
+                }
+                None => None,
+            };
+            push_universal_prim(
+                key,
+                UniversalKind::Instance(i),
+                aabb,
+                &mut safe,
+                &mut aabbs,
+                &mut always,
+                &mut bounds,
+            );
+            key = key.wrapping_add(1);
+        }
+
+        if let Some(region) = &scene.medium {
+            if rt_aabb_valid(&region.bounds) {
+                volumes.push(region.bounds);
+                grow_rt_bounds(&mut bounds, &region.bounds);
+            } else {
+                bounds = None;
+            }
+        }
+        for region in &scene.media {
+            if rt_aabb_valid(&region.bounds) {
+                volumes.push(region.bounds);
+                grow_rt_bounds(&mut bounds, &region.bounds);
+            } else {
+                bounds = None;
+            }
+        }
+        if !always.is_empty() {
+            bounds = None;
+        }
+        let cullable = always.is_empty() && bounds.is_some();
+        let safe_aabbs = aabbs.clone();
+        let bvh = UniversalBvh::build(&aabbs);
+        // 当前最短积分预算下，逐像素重建射线束 + 全场景包遍历比直接走
+        // `trace_one` 的逃逸分支更贵；默认关闭，环境变量仅用于 A/B 标定。
+        let background_shortcut: bool =
+            std::env::var("PRISM_V31_UNIV_BG").ok().as_deref() == Some("1");
+        UniversalAccel {
+            bvh,
+            safe,
+            safe_aabbs,
+            always,
+            volumes,
+            cullable,
+            background_shortcut,
+        }
+    }
+
+    /// 16 条实际采样射线是否全部不可能碰到任何可加速几何或介质区域。
+    ///
+    /// 用同一棵 AABB-BVH 做包遍历：节点 AABB 只要被任一采样射线穿过就下潜，
+    /// 叶子再逐图元保守 AABB 判定；介质区域单独按同一 16 条射线判定。全部
+    /// 未穿过才返回 `true`，这是严格充分条件，不含连续抖动近似。
+    fn all_rays_miss(&self, ro: Vec3, dirs: &[Vec3], invs: &[Vec3]) -> bool {
+        if !self.cullable || dirs.is_empty() || dirs.len() != invs.len() {
+            return false;
+        }
+        for b in &self.volumes {
+            if any_ray_hits_rt_aabb(b, ro, dirs) {
+                return false;
+            }
+        }
+        if self.bvh.node_count() == 0 {
+            return true;
+        }
+        let Some((root_bounds, _, _, _)) = self.bvh.node(0) else {
+            return false;
+        };
+        if !any_ray_hits_geo_aabb(&root_bounds, ro, invs) {
+            return true;
+        }
+        let mut stack = UniversalNodeStack::new(0);
+        while let Some(id) = stack.pop() {
+            let Some((bounds, start, count, right)) = self.bvh.node(id as usize) else {
+                return false;
+            };
+            if !any_ray_hits_geo_aabb(&bounds, ro, invs) {
+                continue;
+            }
+            if count > 0 {
+                for slot in start..start.saturating_add(count) {
+                    let Some(&orig) = self.bvh.order().get(slot as usize) else {
+                        return false;
+                    };
+                    let Some(aabb) = self.safe_aabbs.get(orig as usize) else {
+                        return false;
+                    };
+                    if any_ray_hits_geo_aabb(aabb, ro, invs) {
+                        return false;
+                    }
+                }
+            } else {
+                let left = id.saturating_add(1);
+                stack.push(right);
+                stack.push(left);
+            }
+        }
+        true
+    }
+
+    /// 老路径的 `skip` 语义：曲线族不豁免，实例三角形豁免交给 `instance_t`。
+    #[inline]
+    fn is_skipped(kind: UniversalKind, skip: Option<ShapeRef>) -> bool {
+        let Some(s) = skip else {
+            return false;
+        };
+        match (kind, s) {
+            (UniversalKind::Sphere(i), ShapeRef::Sphere(j)) => i == j,
+            (UniversalKind::AabbBox(i), ShapeRef::Box(j)) => i == j,
+            (UniversalKind::Paraboloid(i), ShapeRef::Paraboloid(j)) => i == j,
+            (UniversalKind::Plane(i), ShapeRef::Plane(j)) => i == j,
+            (UniversalKind::Mesh(i), ShapeRef::Mesh(j)) => i == j,
+            (UniversalKind::Mesh(i), ShapeRef::Bvh(j)) => i == j,
+            _ => false,
+        }
+    }
+
+    /// 网格级三角形豁免（老 `mesh_t` 的二次查询口径）。
+    #[inline]
+    fn skip_tri_for(kind: UniversalKind, skip: Option<ShapeRef>) -> Option<usize> {
+        match (kind, skip) {
+            (UniversalKind::Mesh(i), Some(ShapeRef::Triangle(j, t))) if i == j => Some(t),
+            _ => None,
+        }
+    }
+
+    /// 单图元精阶段最近有效根；全部复用老 `*_t`，不改数值结果。
+    #[inline]
+    fn prim_t(
+        &self,
+        scene: &Scene,
+        kind: UniversalKind,
+        ro: Vec3,
+        rd: Vec3,
+        t_max: f32,
+        skip: Option<ShapeRef>,
+    ) -> Option<f32> {
+        if Self::is_skipped(kind, skip) {
+            return None;
+        }
+        match kind {
+            UniversalKind::Sphere(i) => scene.sphere_t(i, ro, rd, t_max),
+            UniversalKind::AabbBox(i) => scene.box_t(i, ro, rd, t_max),
+            UniversalKind::Paraboloid(i) => scene.paraboloid_t(i, ro, rd, t_max),
+            UniversalKind::Plane(i) => scene.plane_t(i, ro, rd, t_max),
+            UniversalKind::Mesh(i) => scene
+                .mesh_t(i, ro, rd, t_max, Self::skip_tri_for(kind, skip))
+                .map(|(t, _)| t),
+            UniversalKind::Cylinder(i) => scene.cylinder_t(i, ro, rd, t_max),
+            UniversalKind::Cone(i) => scene.cone_t(i, ro, rd, t_max),
+            UniversalKind::Torus(i) => scene.torus_t(i, ro, rd, t_max),
+            UniversalKind::Revolution(i) => scene.revolution_t(i, ro, rd, t_max),
+            UniversalKind::Instance(i) => {
+                scene.instance_t(i, ro, rd, t_max, skip).map(|(t, _)| t)
+            }
+        }
+    }
+
+    /// 最优图元转成老 `ShapeRef`；网格 / 实例用同参数二次查询取回三角形下标。
+    #[inline]
+    fn shape_for(
+        &self,
+        scene: &Scene,
+        prim: UniversalPrim,
+        ro: Vec3,
+        rd: Vec3,
+        t_max: f32,
+        skip: Option<ShapeRef>,
+    ) -> Option<ShapeRef> {
+        match prim.kind {
+            UniversalKind::Sphere(i) => Some(ShapeRef::Sphere(i)),
+            UniversalKind::AabbBox(i) => Some(ShapeRef::Box(i)),
+            UniversalKind::Paraboloid(i) => Some(ShapeRef::Paraboloid(i)),
+            UniversalKind::Plane(i) => Some(ShapeRef::Plane(i)),
+            UniversalKind::Mesh(i) => {
+                let (_, tri) =
+                    scene.mesh_t(i, ro, rd, t_max, Self::skip_tri_for(prim.kind, skip))?;
+                Some(ShapeRef::Triangle(i, tri))
+            }
+            UniversalKind::Cylinder(i) => Some(ShapeRef::Cylinder(i)),
+            UniversalKind::Cone(i) => Some(ShapeRef::Cone(i)),
+            UniversalKind::Torus(i) => Some(ShapeRef::Torus(i)),
+            UniversalKind::Revolution(i) => Some(ShapeRef::Revolution(i)),
+            UniversalKind::Instance(i) => {
+                let (_, tri) = scene.instance_t(i, ro, rd, t_max, skip)?;
+                Some(ShapeRef::Instance(i, tri))
+            }
+        }
+    }
+
+    /// 通用 closest-hit：安全树粗剪枝 + 不可剪枝图元线性精查。
+    fn intersect(
+        &self,
+        scene: &Scene,
+        ro: Vec3,
+        rd: Vec3,
+        t_max: f32,
+        skip: Option<ShapeRef>,
+        want_uv: bool,
+    ) -> Option<Hit> {
+        let mut cb = |id: u32| {
+            let prim = self.safe[id as usize];
+            self.prim_t(scene, prim.kind, ro, rd, t_max, skip)
+        };
+        let mut best: Option<(f32, u32, UniversalPrim)> = self
+            .bvh
+            .ray_intersect(ro, rd, T_MIN, t_max, &mut cb)
+            .map(|(t, id)| {
+                let prim = self.safe[id as usize];
+                (t, prim.key, prim)
+            });
+        for &prim in &self.always {
+            if let Some(t) = self.prim_t(scene, prim.kind, ro, rd, t_max, skip) {
+                let better = match best {
+                    None => true,
+                    Some((bt, bk, _)) => t < bt || (t == bt && prim.key < bk),
+                };
+                if better {
+                    best = Some((t, prim.key, prim));
+                }
+            }
+        }
+        let (t, _, prim) = best?;
+        let shape = self.shape_for(scene, prim, ro, rd, t_max, skip)?;
+        let mut hit = Hit::new(t, shape);
+        if want_uv {
+            hit.uv = scene.uv_at(shape, ro + rd * t);
+        }
+        Some(hit)
+    }
+
+    /// 通用 any-hit：与 closest-hit 同一加速结构，只消费是否存在命中。
+    fn any_hit(
+        &self,
+        scene: &Scene,
+        ro: Vec3,
+        rd: Vec3,
+        t_max: f32,
+        skip: Option<ShapeRef>,
+    ) -> bool {
+        let mut cb = |id: u32| {
+            let prim = self.safe[id as usize];
+            self.prim_t(scene, prim.kind, ro, rd, t_max, skip)
+        };
+        if self.bvh.ray_intersect(ro, rd, T_MIN, t_max, &mut cb).is_some() {
+            return true;
+        }
+        for &prim in &self.always {
+            if self.prim_t(scene, prim.kind, ro, rd, t_max, skip).is_some() {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+std::thread_local! {
+    static UNIVERSAL_ACCEL_ADDR: std::cell::Cell<usize> = std::cell::Cell::new(0);
+    static UNIVERSAL_SCENE_ADDR: std::cell::Cell<usize> = std::cell::Cell::new(0);
+    /// 独立通用路径同一线程内的「当前像素 0 号样本首交点」。
+    ///
+    /// 它由 `universal_primary_key` 在求当前帧几何键时顺手挂上，随后第一个
+    /// 真实路径样本直接消费；身份不匹配立即清空，绝不跨帧、跨像素、跨样本
+    /// 复用。`Hit` 只含 f32 / 图元下标，是 Copy 值，不持有任何引用。
+    static PRIMARY_HIT: std::cell::Cell<Option<(u32, u32, u32, Hit)>> =
+        std::cell::Cell::new(None);
+}
+
+/// 只有「稀疏真实样本 + 几何一致重建」路径才打开首交点缓存。
+///
+/// 这是帧级作用域标志：`render_pixel_range_universal` 每像素读一次，决定
+/// `trace_one` 是否消费该线程刚求出的 0 号样本首交点；整帧直渲路径不打开，
+/// 因而不会把缓存检查带进最短积分预算。
+static PRIMARY_HIT_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// 独立通用路径的阴影近似档：0 = 精确，1 = 跳过整条可见性射线，
+/// 2 = 保留几何遮挡、跳过介质透射抽样。默认 0，`一致` 档与 golden 不打开。
+static UNIVERSAL_SHADOW_MODE: AtomicU8 = AtomicU8::new(0);
+
+/// 设置独立通用路径的阴影近似档，返回旧值供调用方恢复。
+pub fn set_universal_shadow_mode(mode: u8) -> u8 {
+    UNIVERSAL_SHADOW_MODE.swap(mode.min(2), Ordering::Relaxed)
+}
+
+/// 读取独立通用路径的阴影近似档。
+#[inline]
+fn universal_shadow_mode() -> u8 {
+    UNIVERSAL_SHADOW_MODE.load(Ordering::Relaxed)
+}
+
+/// 阴影近似档的帧级作用域；析构恢复旧档，不泄漏到 `一致` 档或 golden。
+pub struct UniversalShadowScope {
+    prev: u8,
+}
+
+impl UniversalShadowScope {
+    /// 在当前帧打开指定阴影近似档。
+    pub fn new(mode: u8) -> Self {
+        UniversalShadowScope {
+            prev: set_universal_shadow_mode(mode),
+        }
+    }
+}
+
+impl Drop for UniversalShadowScope {
+    fn drop(&mut self) {
+        set_universal_shadow_mode(self.prev);
+    }
+}
+
+/// 独立通用路径的介质近似档：0 = 随机游程精确，1 = 解析消光近似。
+/// 默认 0，`一致` 档与 golden 不打开。
+static UNIVERSAL_MEDIA_MODE: AtomicU8 = AtomicU8::new(0);
+
+/// 设置独立通用路径的介质近似档，返回旧值供调用方恢复。
+pub fn set_universal_media_mode(mode: u8) -> u8 {
+    UNIVERSAL_MEDIA_MODE.swap(mode.min(1), Ordering::Relaxed)
+}
+
+/// 读取独立通用路径的介质近似档。
+#[inline]
+fn universal_media_mode() -> u8 {
+    UNIVERSAL_MEDIA_MODE.load(Ordering::Relaxed)
+}
+
+/// 介质近似档的帧级作用域；析构恢复旧档，不泄漏到 `一致` 档或 golden。
+pub struct UniversalMediaScope {
+    prev: u8,
+}
+
+impl UniversalMediaScope {
+    /// 在当前帧打开指定介质近似档。
+    pub fn new(mode: u8) -> Self {
+        UniversalMediaScope {
+            prev: set_universal_media_mode(mode),
+        }
+    }
+}
+
+impl Drop for UniversalMediaScope {
+    fn drop(&mut self) {
+        set_universal_media_mode(self.prev);
+    }
+}
+
+/// 介质总消光的确定性估计：均匀介质取 σt，异质介质取场上界。
+#[inline]
+fn medium_sigma_estimate(medium: &Medium) -> f32 {
+    match medium {
+        Medium::Homogeneous(m) => m.sigma_t,
+        Medium::Heterogeneous(m) => m.sigma_t_field.majorant(),
+    }
+}
+
+/// 沿射线累加介质盒光程，给出 Beer 定律解析透射率。
+///
+/// 这是独立通用路径的介质近似：不做随机自由程、不做逐区域阴影抽样，但对
+/// 任意几何、任意介质区域列表一致生效；`一致` 档与 golden 不调用它。
+#[inline]
+fn universal_media_transmittance(
+    scene: &Scene,
+    ro: Vec3,
+    rd: Vec3,
+    max_distance: f32,
+) -> f32 {
+    let t_end: f32 = if max_distance.is_finite() {
+        max_distance.max(0.0)
+    } else {
+        1.0e6
+    };
+    if t_end <= 0.0 {
+        return 1.0;
+    }
+    let mut optical_depth: f64 = 0.0;
+    for region in &scene.media {
+        if let Some((enter, exit)) = region.bounds.segment_interval(ro, rd, 0.0, t_end) {
+            let len: f32 = (exit - enter).max(0.0);
+            if len > 0.0 {
+                optical_depth += medium_sigma_estimate(&region.medium) as f64 * len as f64;
+            }
+        }
+    }
+    if let Some(region) = &scene.medium {
+        if let Some((enter, exit)) = region.bounds.segment_interval(ro, rd, 0.0, t_end) {
+            let len: f32 = (exit - enter).max(0.0);
+            if len > 0.0 {
+                optical_depth += medium_sigma_estimate(&region.medium) as f64 * len as f64;
+            }
+        }
+    }
+    if optical_depth <= 0.0 {
+        1.0
+    } else {
+        let t: f64 = prism_math::det_pow::det_exp(-optical_depth);
+        t.clamp(0.0, 1.0) as f32
+    }
+}
+
+/// 首交点缓存的帧级作用域；析构恢复旧状态，不泄漏到其它帧或其它路径。
+pub struct PrimaryHitScope {
+    prev: bool,
+}
+
+impl PrimaryHitScope {
+    /// 打开整帧首交点缓存。
+    pub fn new() -> Self {
+        PrimaryHitScope {
+            prev: PRIMARY_HIT_ACTIVE.swap(true, Ordering::Relaxed),
+        }
+    }
+}
+
+impl Default for PrimaryHitScope {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for PrimaryHitScope {
+    fn drop(&mut self) {
+        PRIMARY_HIT_ACTIVE.store(self.prev, Ordering::Relaxed);
+        clear_primary_hit();
+    }
+}
+
+#[inline]
+fn primary_hit_active() -> bool {
+    PRIMARY_HIT_ACTIVE.load(Ordering::Relaxed)
+}
+
+#[inline]
+fn set_primary_hit(pixel: (u32, u32), sample: u32, hit: Hit) {
+    if primary_hit_active() {
+        PRIMARY_HIT.with(|c| c.set(Some((pixel.0, pixel.1, sample, hit))));
+    }
+}
+
+#[inline]
+fn clear_primary_hit() {
+    PRIMARY_HIT.with(|c| c.set(None));
+}
+
+#[inline]
+fn take_primary_hit(pixel: (u32, u32), sample: u32) -> Option<Hit> {
+    PRIMARY_HIT.with(|c| {
+        let cur: Option<(u32, u32, u32, Hit)> = c.get();
+        c.set(None);
+        match cur {
+            Some((x, y, s, h)) if x == pixel.0 && y == pixel.1 && s == sample => Some(h),
+            _ => None,
+        }
+    })
+}
+
+/// 把当前线程的 `Scene::intersect` / `Scene::any_hit` 临时切到通用加速视图。
+///
+/// 守卫只保存裸地址，不持有引用；生命周期由 `Drop` 与调用栈保证。构造时记录
+/// 旧地址，析构时恢复，因此嵌套或异常展开都不会把加速视图泄漏到 `一致` 档。
+pub struct UniversalIntersectGuard {
+    prev_accel: usize,
+    prev_scene: usize,
+}
+
+impl UniversalIntersectGuard {
+    /// 挂上通用加速视图；同一线程同一时刻只允许一个生效视图。
+    pub fn new(scene: &Scene, accel: &UniversalAccel) -> Self {
+        let a = accel as *const UniversalAccel as usize;
+        let s = scene as *const Scene as usize;
+        let prev_accel = UNIVERSAL_ACCEL_ADDR.with(|c| {
+            let old = c.get();
+            c.set(a);
+            old
+        });
+        let prev_scene = UNIVERSAL_SCENE_ADDR.with(|c| {
+            let old = c.get();
+            c.set(s);
+            old
+        });
+        UniversalIntersectGuard { prev_accel, prev_scene }
+    }
+}
+
+impl Drop for UniversalIntersectGuard {
+    fn drop(&mut self) {
+        UNIVERSAL_ACCEL_ADDR.with(|c| c.set(self.prev_accel));
+        UNIVERSAL_SCENE_ADDR.with(|c| c.set(self.prev_scene));
+    }
+}
+
+/// 读取当前线程通用加速视图；地址与 `Scene` 不匹配时视为未启用。
+#[inline]
+fn with_universal_accel<R>(scene: &Scene, f: impl FnOnce(&UniversalAccel) -> R) -> Option<R> {
+    let addr = UNIVERSAL_ACCEL_ADDR.with(|c| c.get());
+    if addr == 0 {
+        return None;
+    }
+    let scene_addr = scene as *const Scene as usize;
+    let matched = UNIVERSAL_SCENE_ADDR.with(|c| c.get() == scene_addr);
+    if !matched {
+        return None;
+    }
+    // 守卫存活期间 `accel` 必在调用栈上且不可变借用，故该裸地址有效。
+    let accel = unsafe { &*(addr as *const UniversalAccel) };
+    Some(f(accel))
+}
+
+/// 主射线未命中任何表面时的几何键初始值。
+///
+/// 形状容器的高 24 位为 0 即逃逸族；实际逃逸键会把主射线方向量化进低 40 位，
+/// 因此 `0` 只是数组初值，不是所有逃逸像素共用的一把键。
+pub const UNIVERSAL_MISS_KEY: u64 = 0;
+
+/// 几何键是否属于逃逸射线族。
+#[inline]
+pub fn universal_key_is_miss(key: u64) -> bool {
+    key >> 40 == 0
+}
+
+/// 把逃逸射线的方向量化进几何键；方向相近的相邻像素才可复用背景样本。
+#[inline]
+fn universal_miss_key(dir: Vec3) -> u64 {
+    let nx: u64 = universal_q4_signed(dir.x);
+    let ny: u64 = universal_q4_signed(dir.y);
+    let nz: u64 = universal_q4_signed(dir.z);
+    (nx << 8 | ny << 4 | nz) << 16
+}
+
+/// 把命中图元归到「可共享辐射样本的几何容器」。
+///
+/// 三角形级别的下标刻意不进键：同一连续表面上的相邻像素常落在不同三角形，
+/// 若按三角形区分会让重建在网格上退化为逐像素重渲。实例按实例下标分组，
+/// 与独立网格不混用。
+#[inline]
+fn universal_shape_tag(shape: ShapeRef) -> u64 {
+    let (disc, index): (u64, u64) = match shape {
+        ShapeRef::Sphere(i) => (1, i as u64),
+        ShapeRef::Box(i) => (2, i as u64),
+        ShapeRef::Paraboloid(i) => (3, i as u64),
+        ShapeRef::Plane(i) => (4, i as u64),
+        ShapeRef::Triangle(i, _) => (5, i as u64),
+        ShapeRef::Mesh(i) => (6, i as u64),
+        ShapeRef::Bvh(i) => (7, i as u64),
+        ShapeRef::Cylinder(i) => (8, i as u64),
+        ShapeRef::Cone(i) => (9, i as u64),
+        ShapeRef::Torus(i) => (10, i as u64),
+        ShapeRef::Revolution(i) => (11, i as u64),
+        ShapeRef::Instance(i, _) => (12, i as u64),
+    };
+    ((disc & 0xf) << 20) | (index & 0x000f_ffff)
+}
+
+/// 把 `[0,1)` 参数量化到 8 位；非有限值归零。
+#[inline]
+fn universal_q8_frac(v: f32) -> u64 {
+    if !v.is_finite() {
+        return 0;
+    }
+    let f: f32 = v - v.floor();
+    let q: f32 = (f * 255.0 + 0.5).min(255.0).max(0.0);
+    q as u64
+}
+
+/// 把 `[-1,1]` 的法线分量量化到 4 位；非有限值归到中心 8。
+#[inline]
+fn universal_q4_signed(v: f32) -> u64 {
+    if !v.is_finite() {
+        return 8;
+    }
+    let f: f32 = (v * 0.5 + 0.5).clamp(0.0, 1.0);
+    let q: f32 = (f * 15.0 + 0.5).min(15.0).max(0.0);
+    q as u64
+}
+
+/// 把命中距离量化到 12 位；远景统一落在同一个粗档。
+#[inline]
+fn universal_q12_depth(t: f32) -> u64 {
+    if !t.is_finite() || t <= 0.0 {
+        return 0;
+    }
+    let q: f32 = (t * 32.0 + 0.5).min(4095.0);
+    q as u64
+}
+
+/// 当前帧当前像素的主射线几何键。
+///
+/// 这不是历史缓存、也不是图像域滤波：每帧按当前相机的真实样本射线求一次
+/// 首交点，把「同一几何容器 + 相近深度 + 相近法线 + 相近纹理坐标」编码成
+/// 一个确定性整数，供独立通用路径决定是否复用本帧邻近像素的路径样本。
+/// 未命中返回把主射线方向量化后的逃逸族键，调用方按方向相容性复用本帧样本。
+pub fn universal_primary_key(
+    scene: &Scene,
+    cam: &Camera,
+    ctx: &EvalCtx,
+    pixel: (u32, u32),
+    resolution: (u32, u32),
+    accel: &UniversalAccel,
+) -> u64 {
+    let base: PixelStreamBase = PixelStreamBase::new(ctx, pixel);
+    let stream = base.stream(ctx, pixel, 0);
+    let ray = cam.cast_ray(&stream, resolution);
+    let Some(hit) = accel.intersect(scene, ray.origin, ray.dir, MISS_T, None, false) else {
+        clear_primary_hit();
+        return universal_miss_key(ray.dir);
+    };
+    set_primary_hit(pixel, 0, hit);
+    let p: Vec3 = ray.at(hit.t);
+    let n: Vec3 = scene.normal_at(hit.shape, p);
+    let uv: [f32; 2] = if material_has_maps(scene.material(hit.shape)) {
+        scene.uv_at(hit.shape, p)
+    } else {
+        [0.0, 0.0]
+    };
+    let shape: u64 = universal_shape_tag(hit.shape);
+    let depth: u64 = universal_q12_depth(hit.t);
+    let nx: u64 = universal_q4_signed(n.x);
+    let ny: u64 = universal_q4_signed(n.y);
+    let nz: u64 = universal_q4_signed(n.z);
+    let u: u64 = universal_q8_frac(uv[0]);
+    let v: u64 = universal_q8_frac(uv[1]);
+    (shape << 40) | (depth << 28) | ((nx << 8 | ny << 4 | nz) << 16) | (v << 8) | u
+}
+
+/// 几何键的**深度**量化容差（单位 = key 内 depth 的 1/32 世界单位）。
+///
+/// 缺省值 1 只允许相邻档；这会把球面这类**斜视曲面**的绝大多数单元判成
+/// 不兼容——4 像素间距在球缘处就有 0.1 世界单位的深度差（= 3~4 档），于是
+/// 整个球面退化成逐像素求值，稀疏网格白建。多弹射短预算下，同形状相邻
+/// 深度档的可复用性远高于此，故缺省放到 6 档（≈0.19 世界单位），仍远小于
+/// 任何真实遮挡跳变；环境变量只用于离线标定。
+fn universal_key_depth_tol() -> u64 {
+    static CACHE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *CACHE.get_or_init(|| {
+        std::env::var("PRISM_V31_UNIV_KEY_DEPTH")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(6)
+            .min(64)
+    })
+}
+
+/// 几何键的**法线**量化容差（单位 = key 内每轴 4 位量化档）。
+///
+/// `universal_q4_signed` 把 [-1,1] 压到 16 档（每档约 7.6°）。球面 4 像素
+/// 间距在球缘处的转角约 2.4°，恰好跨 1 档；只允许 1 档会让球缘一圈的单元
+/// 全部落到逐像素。缺省放到 2 档（≈15°），仍足以把不同朝向的表面分开。
+fn universal_key_normal_tol() -> u64 {
+    static CACHE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *CACHE.get_or_init(|| {
+        std::env::var("PRISM_V31_UNIV_KEY_NORMAL")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(2)
+            .min(15)
+    })
+}
+
+/// 两个本帧几何键是否允许复用同一批路径样本。
+///
+/// 形状容器必须完全相同；深度、法线、纹理坐标只允许量化档位的相邻误差。
+/// 边缘、遮挡、材质接缝或纹理格线变化会让键不兼容；调用方改按确定性键距
+/// 选取最接近的本帧真实样本，不靠图像平滑跨过去。
+pub fn universal_key_compatible(a: u64, b: u64) -> bool {
+    if a >> 40 != b >> 40 {
+        return false;
+    }
+    let depth_tol: u64 = universal_key_depth_tol();
+    let normal_tol: u64 = universal_key_normal_tol();
+    let na: u64 = (a >> 16) & 0x0fff;
+    let nb: u64 = (b >> 16) & 0x0fff;
+    // 逃逸族按键内量化的主射线方向比较，避免把不同环境方向的背景样本混在一起。
+    if universal_key_is_miss(a) {
+        for shift in [0u32, 4, 8] {
+            let ca: u64 = (na >> shift) & 0xf;
+            let cb: u64 = (nb >> shift) & 0xf;
+            if ca.max(cb) - ca.min(cb) > normal_tol {
+                return false;
+            }
+        }
+        return true;
+    }
+    let da: u64 = (a >> 28) & 0x0fff;
+    let db: u64 = (b >> 28) & 0x0fff;
+    if da.max(db) - da.min(db) > depth_tol {
+        return false;
+    }
+    for shift in [0u32, 4, 8] {
+        let ca: u64 = (na >> shift) & 0xf;
+        let cb: u64 = (nb >> shift) & 0xf;
+        if ca.max(cb) - ca.min(cb) > normal_tol {
+            return false;
+        }
+    }
+    let ua: u64 = a & 0xff;
+    let ub: u64 = b & 0xff;
+    let va: u64 = (a >> 8) & 0xff;
+    let vb: u64 = (b >> 8) & 0xff;
+    let du: u64 = ua.max(ub) - ua.min(ub);
+    let dv: u64 = va.max(vb) - va.min(vb);
+    du.min(256 - du) <= 2 && dv.min(256 - dv) <= 2
+}
+
+/// 两个本帧几何键的确定性距离；越小越适合复用同一批路径样本。
+///
+/// 这不是图像域平滑：只在同一帧、同一几何容器、相近深度 / 法线 / 纹理坐标
+/// 的候选间选择辐射样本。调用方在完全没有兼容候选时用最小键距的本帧真实
+/// 样本收尾，不补跑第二条完整路径。
+pub fn universal_key_score(a: u64, b: u64) -> u32 {
+    if a >> 40 != b >> 40 {
+        return u32::MAX;
+    }
+    let mut score: u32 = 0;
+    let da: u64 = (a >> 28) & 0x0fff;
+    let db: u64 = (b >> 28) & 0x0fff;
+    score += (da.max(db) - da.min(db)) as u32 * 8;
+    let na: u64 = (a >> 16) & 0x0fff;
+    let nb: u64 = (b >> 16) & 0x0fff;
+    for shift in [0u32, 4, 8] {
+        let ca: u64 = (na >> shift) & 0xf;
+        let cb: u64 = (nb >> shift) & 0xf;
+        score += (ca.max(cb) - ca.min(cb)) as u32 * 16;
+    }
+    let ua: u64 = a & 0xff;
+    let ub: u64 = b & 0xff;
+    let va: u64 = (a >> 8) & 0xff;
+    let vb: u64 = (b >> 8) & 0xff;
+    let du: u64 = ua.max(ub) - ua.min(ub);
+    let dv: u64 = va.max(vb) - va.min(vb);
+    score += du.min(256 - du) as u32 * 2;
+    score += dv.min(256 - dv) as u32 * 2;
+    score
+}
+
+/// 严格充分的「整像素 16 条实际采样射线全部逃逸」判定。
+///
+/// 返回 `Some(vals)` 时，`vals[0..n)` 是老 `trace_one` 在同样 16 个样本槽位
+/// 上的逐位结果：无命中时路径在第一个事件即逃逸，环境图按方向解析取值，
+/// 常量环境光按老公式相加，`max_bounces = 0` 已在调用方单独处理。返回 `None`
+/// 表示不能证明全逃逸，必须走完整路径追踪。
+fn universal_background_samples<'a>(
+    scene: &Scene,
+    cam: &Camera,
+    ctx: &'a EvalCtx,
+    pixel: (u32, u32),
+    resolution: (u32, u32),
+    _params: &RenderParams,
+    accel: &UniversalAccel,
+    base: &'a PixelStreamBase,
+    s_begin: u32,
+    n: usize,
+) -> Option<[[f32; 4]; UNIVERSAL_STACK_SPP]> {
+    if !accel.background_shortcut {
+        return None;
+    }
+    if n > UNIVERSAL_STACK_SPP
+        || cam.aperture_radius != 0.0
+        || cam.shutter_close != cam.shutter_open
+    {
+        return None;
+    }
+    let bg = ambient_background(&scene.lights);
+    let mut vals = [[0.0f32; 4]; UNIVERSAL_STACK_SPP];
+    let mut dirs = [Vec3::new(0.0, 0.0, 0.0); UNIVERSAL_STACK_SPP];
+    let mut invs = [Vec3::new(0.0, 0.0, 0.0); UNIVERSAL_STACK_SPP];
+    for i in 0..n {
+        let s = s_begin.wrapping_add(i as u32);
+        let stream = base.stream(ctx, pixel, s);
+        let (jx, jy) = stream.sample_2d(DIM_PIXEL);
+        let d = cam
+            .pixel_dir(pixel.0 as f32 + jx, pixel.1 as f32 + jy, resolution)
+            .normalize();
+        dirs[i] = d;
+        invs[i] = Vec3::new(1.0 / d.x, 1.0 / d.y, 1.0 / d.z);
+        let env_r = match scene.env() {
+            Some(env) => {
+                let tex = TexTable::new(&scene.textures, &scene.texels);
+                env.radiance(tex, d)
+            }
+            None => Vec3::new(0.0, 0.0, 0.0),
+        };
+        vals[i] = [env_r.x + bg.x, env_r.y + bg.y, env_r.z + bg.z, 1.0];
+    }
+    if accel.all_rays_miss(cam.eye, &dirs[..n], &invs[..n]) {
+        Some(vals)
+    } else {
+        None
+    }
+}
+
+/// 独立通用路径的像素求值入口：`均衡 / 快速` 按档位调用，`一致` 不调用。
+pub fn render_pixel_range_universal(
+    scene: &Scene,
+    cam: &Camera,
+    ctx: &EvalCtx,
+    pixel: (u32, u32),
+    resolution: (u32, u32),
+    params: &RenderParams,
+    accel: &UniversalAccel,
+    s_begin: u32,
+    s_end: u32,
+) -> [f32; 4] {
+    if s_end <= s_begin {
+        return [0.0; 4];
+    }
+    let n = (s_end - s_begin) as usize;
+    if params.max_bounces == 0 {
+        return mean_samples_fill(n, |_| [0.0, 0.0, 0.0, 1.0]);
+    }
+    let base = PixelStreamBase::new(ctx, pixel);
+    if let Some(vals) = universal_background_samples(
+        scene,
+        cam,
+        ctx,
+        pixel,
+        resolution,
+        params,
+        accel,
+        &base,
+        s_begin,
+        n,
+    ) {
+        return mean_samples_fill(n, |i| vals[i]);
+    }
+    let use_primary_cache: bool = primary_hit_active();
+    // 分层抽样：`n` 个样本均匀铺在权威 16 槽位上，而不是取前缀 `[0, n)`。
+    //
+    // 前缀的问题不是"噪点多"，是**系统性偏差**：相机抖动决定的亚像素位置
+    // 只覆盖像素的一角，宽度不到 1 像素的镜面高光会被整块漏掉——实测
+    // v31_motion 320×180 上由此产生 4~12 个满量程离群像素（`max_delta 255`），
+    // 而 99 分位只有 1。均匀铺开后，8 个样本落在像素的 8 个等分格上。
+    //
+    // `n == 16` 时 `step` 恰为 1，样本流与 `一致` 档逐字节相同（哈希锚不动）。
+    let step: u32 = (16u32 / (n as u32).max(1)).max(1);
+    mean_samples_fill(n, |i| {
+        let s = s_begin.wrapping_add((i as u32).wrapping_mul(step));
+        let stream = base.stream(ctx, pixel, s);
+        trace_one(scene, cam, ctx, resolution, &stream, params, use_primary_cache)
+    })
+}
+
+/// 纹理分离重建的辅助入口：单像素首命中处的**材质基础色**（含贴图调制）。
+///
+/// # 为什么需要它
+///
+/// 稀疏网格重建对"辐亮度"做双线性插值是安全的（光照与几何项在一个单元内
+/// 近似一阶连续），但对**贴图纹理**不安全：棋盘 / 条纹这类高频图案的 albedo
+/// 逐像素跳变，四角插值等于把格线抹平 —— 这正是第零节五禁止的"糊一下"。
+///
+/// 而 albedo 与光照在漫反射项里是**可分离**的：`L = albedo ⊙ E / π`。于是节点
+/// 只存"带 albedo 的辐亮度"与"该点的 albedo"，像素处再取一次自己的 albedo，
+/// 用比值 `albedo_px / albedo_interp` 把插值结果校正回高频纹理。纹理区因此
+/// 不必逐像素跑满 spp，只要**一条**主射线取 albedo。
+///
+/// 返回 `(base_color, mapped)`。`mapped == false` 表示首命中没有贴图、或该
+/// 射线未命中任何几何，调用方据此跳过校正、保持插值原值。
+///
+/// 采样抖动与节点一致（都取 0 号样本的像素内偏移），故校正用的是同一个
+/// 亚像素位置的 albedo，不会把抖动差当成纹理差。
+pub fn pixel_base_color(
+    scene: &Scene,
+    cam: &Camera,
+    ctx: &EvalCtx,
+    pixel: (u32, u32),
+    resolution: (u32, u32),
+) -> ([f32; 3], bool) {
+    let base: PixelStreamBase = PixelStreamBase::new(ctx, pixel);
+    let stream = base.stream(ctx, pixel, 0);
+    let (jx, jy) = stream.sample_2d(DIM_PIXEL);
+    let dir: Vec3 = cam
+        .pixel_dir(pixel.0 as f32 + jx, pixel.1 as f32 + jy, resolution)
+        .normalize();
+    let Some(h) = scene.intersect(cam.eye, dir, MISS_T, None) else {
+        return ([0.0; 3], false);
+    };
+    let mat: &MaterialKind = scene.material(h.shape);
+    if !material_has_maps(mat) {
+        return ([0.0; 3], false);
+    }
+    let p: Vec3 = cam.eye + dir * h.t;
+    let n: Vec3 = scene.normal_at(h.shape, p);
+    let uv: [f32; 2] = scene.uv_at(h.shape, p);
+    let foot: Footprint = scene.footprint_at(h.shape, p, n, dir, h.t, 0.0);
+    let tex: TexTable<'_> = TexTable::new(&scene.textures, &scene.texels);
+    match material_bsdf_at(mat, uv, foot, tex) {
+        Some(b) => ([b.base_color.x, b.base_color.y, b.base_color.z], true),
+        None => ([0.0; 3], false),
+    }
+}
 
 impl Scene {
     pub(crate) fn material(&self, s: ShapeRef) -> &MaterialKind {
@@ -2639,6 +4094,11 @@ impl Scene {
         }
         let q = ro - c.center;
         let (r, h) = (c.radius, c.half_height);
+        // V3.1：AABB 预剔除。只做 `None` 早退，**不**用返回的 exit 收紧
+        // t_max —— 命中时的求根系数 / 根序 / 候选判定保持逐字不变。
+        if !curve_box_may_hit(c.center, r, -h, h, ro, rd, t_max) {
+            return None;
+        }
         let mut best: Option<f32> = None;
 
         // 侧面：x²+z² = R²（局部坐标）。
@@ -2704,6 +4164,10 @@ impl Scene {
         }
         let q = ro - c.center;
         let (r, h) = (c.radius, c.half_height);
+        // V3.1：AABB 预剔除（圆锥侧面半径由 R 线性收到 0 ⇒ 径向界即 R）。
+        if !curve_box_may_hit(c.center, r, -h, h, ro, rd, t_max) {
+            return None;
+        }
         let k = r / (2.0 * h);
         let mut best: Option<f32> = None;
 
@@ -2777,6 +4241,13 @@ impl Scene {
         if !finite_vec3(t.center) || !(t.major > 0.0) || !(t.minor > 0.0) {
             return None; // 图元自身非法 ⇒ 永不命中
         }
+        // V3.1：圆环**刻意不做** AABB 预剔除（实测后回退）。
+        // `solve_quartic` 的 Ferrari 闭式在射线几何上完全不与环面相交时，
+        // 仍会返回落在 `[T_MIN, t_max)` 内的数值伪根（例：ro 已高于环面
+        // AABB 上界且 rd.y > 0，却报 t≈0.01 命中）。本函数沿用既有口径
+        // 把所有实根当命中、不验证命中点，故这些伪根是基线输出的一部分；
+        // 任何几何剔除都会移除它们 ⇒ 指纹必变。留待下一波（改求根器或
+        // 补命中点验证、允许改变输出时）一并处理。
         let q = ro - t.center;
         let u = t.major * t.major - t.minor * t.minor;
         let a2 = rd.dot(&rd);
@@ -2806,6 +4277,51 @@ impl Scene {
         best
     }
 
+    /// V3.1（裁定 4）：圆环**阴影臂**的「区间内是否存在实根」快判。
+    ///
+    /// 与 [`Self::torus_t`] 的 `.is_some()` **谓词完全等价**：有限性检查、
+    /// 四次方程系数、`solve_quartic` 调用与候选判据 `tr >= T_MIN && tr < t_max`
+    /// 逐字相同，唯一差别是**不取最小 t**（不选 `best`）、命中首个有效根立即
+    /// 返回 `true`。`torus_t` 主射线逻辑一字未动：Ferrari 的数值伪根仍是
+    /// 基线输出的一部分，故纯 CPU 单帧哈希锚逐字节不变。
+    ///
+    /// 系数计算刻意**重复**而非抽公共函数，正是为了「主射线一字不动」这条
+    /// 硬约束；浮点运算的操作数与结合序与 `torus_t` 完全一致 ⇒ 根数组一致。
+    /// 逐射线 / 逐像素 / t_max 边界的 A/B 对拍见
+    /// `v31_kernel_parity_tests::torus_any_hit_matches_torus_t_is_some_pixel_ab`。
+    #[inline]
+    fn torus_any_hit(&self, i: usize, ro: Vec3, rd: Vec3, t_max: f32) -> bool {
+        if !finite_vec3(ro) || !finite_vec3(rd) {
+            return false;
+        }
+        let t = &self.toruses[i].0;
+        if !finite_vec3(t.center) || !(t.major > 0.0) || !(t.minor > 0.0) {
+            return false;
+        }
+        let q = ro - t.center;
+        let u = t.major * t.major - t.minor * t.minor;
+        let a2 = rd.dot(&rd);
+        let a1 = 2.0 * q.dot(&rd);
+        let a0 = q.dot(&q);
+        let b2 = rd.x * rd.x + rd.z * rd.z;
+        let b1 = 2.0 * (q.x * rd.x + q.z * rd.z);
+        let b0 = q.x * q.x + q.z * q.z;
+        let mm = t.major * t.major;
+        let c4 = a2 * a2;
+        let c3 = 2.0 * a2 * a1;
+        let c2 = a1 * a1 + 2.0 * a2 * (a0 + u) - 4.0 * mm * b2;
+        let c1 = 2.0 * a1 * (a0 + u) - 4.0 * mm * b1;
+        let c0 = (a0 + u) * (a0 + u) - 4.0 * mm * b0;
+        let mut roots = [0.0_f32; 4];
+        let n = prism_geometry::quartic::solve_quartic(c4, c3, c2, c1, c0, &mut roots);
+        for &tr in &roots[..n] {
+            if tr >= T_MIN && tr < t_max {
+                return true;
+            }
+        }
+        false
+    }
+
     /// 旋转曲面求交：轮廓逐段解二次方程（过该段的斜锥；水平段特化为
     /// 环带），段内闭裁剪；**同参数声明 → 同段序列**（段序 =
     /// [`Revolution::new`] 归一后的点列邻接序，纯函数）。
@@ -2823,6 +4339,12 @@ impl Scene {
         if !finite_vec3(rev.center) || rev.profile.len() < 2 {
             return None;
         }
+        // 合法性扫描顺带累计包围尺寸（零额外遍历）：轮廓各段的 ρ 在
+        // [min(r0,r1), max(r0,r1)] 内线性变化，故全局 r 上界 = max profile.r；
+        // 轴向界 = profile.y 的 min/max。
+        let mut r_max: f32 = 0.0;
+        let mut y_min: f32 = f32::INFINITY;
+        let mut y_max: f32 = f32::NEG_INFINITY;
         for p in &rev.profile {
             if !p[0].is_finite() || !p[1].is_finite() {
                 return None; // 非有限轮廓点 ⇒ 整图元永不命中
@@ -2833,6 +4355,13 @@ impl Scene {
                 // 线的镜像分支上，靠 y 段界 + r>=0 半平面排除）⇒ 按永不命中。
                 return None;
             }
+            r_max = r_max.max(p[0]);
+            y_min = y_min.min(p[1]);
+            y_max = y_max.max(p[1]);
+        }
+        // V3.1：AABB 预剔除（盒外射线跳过逐段二次方程求解）。
+        if !curve_box_may_hit(rev.center, r_max, y_min, y_max, ro, rd, t_max) {
+            return None;
         }
         let q = ro - rev.center;
         let b2 = rd.x * rd.x + rd.z * rd.z;
@@ -2934,6 +4463,135 @@ impl Scene {
         self.intersect_impl(ro, rd, t_max, skip, true)
     }
 
+    /// 阴影射线 any-hit 判定（V3.1）：与 `self.intersect(...).is_some()`
+    /// 判定**同一个谓词**，但遇到第一个有效命中立即返回 `true`。
+    ///
+    /// # 为什么可以固定用 `t_max`，不必维护 running limit
+    /// [`Scene::intersect_impl`] 用 `limit`（当前最近 t）收紧后续图元的
+    /// `t_max`。但对 `is_some()` 而言：设第一个在 `[T_MIN, t_max)` 内命中的
+    /// 图元为 P_k —— 在它之前所有图元都未命中，`limit` 仍等于初始
+    /// `t_max`，故 `best` 必然变 `Some`；反之 `best == Some` 显然蕴含存在
+    /// 这样的图元。于是
+    /// `intersect(...).is_some()` ⇔ 存在图元在 `[T_MIN, t_max)` 内命中，
+    /// 逐图元用**固定** `t_max` 测试、首个 `Some` 即返回，结果完全相同。
+    /// 阴影判定只消费这个布尔值 ⇒ 输出逐字节不变，却省掉遍历剩余各族。
+    ///
+    /// 族顺序、`skip` 口径、曲线 BVH 快/线性兜底分支与 `intersect_impl`
+    /// 逐项对齐；主射线（需要 t / shape / uv）仍走 closest-hit，未改动。
+    #[inline]
+    pub(crate) fn any_hit(
+        &self,
+        ro: Vec3,
+        rd: Vec3,
+        t_max: f32,
+        skip: Option<ShapeRef>,
+    ) -> bool {
+        // 独立通用路径与 closest-hit 共用同一只读加速视图；谓词不变。
+        if let Some(hit) =
+            with_universal_accel(self, |a| a.any_hit(self, ro, rd, t_max, skip))
+        {
+            return hit;
+        }
+        // V3.1 T02（裁定 4）：图元按「每图元求交成本升序」访问，首个命中即停。
+        // any_hit 只消费一个 bool，族顺序是 OR 的交换律 ⇒ 与
+        // `intersect_impl(...).is_some()` 谓词等价（逐射线对拍见
+        // v31_kernel_parity_tests::any_hit_matches_intersect_is_some_after_cost_order_reorder）。
+        // 档 1：球 / 盒 / 平面 / 抛物面（线性或二次方程，每图元最便宜）。
+        for i in 0..self.spheres.len() {
+            if skip == Some(ShapeRef::Sphere(i)) {
+                continue;
+            }
+            if self.sphere_t(i, ro, rd, t_max).is_some() {
+                return true;
+            }
+        }
+        for i in 0..self.boxes.len() {
+            if skip == Some(ShapeRef::Box(i)) {
+                continue;
+            }
+            if self.box_t(i, ro, rd, t_max).is_some() {
+                return true;
+            }
+        }
+        for i in 0..self.planes.len() {
+            if skip == Some(ShapeRef::Plane(i)) {
+                continue;
+            }
+            if self.plane_t(i, ro, rd, t_max).is_some() {
+                return true;
+            }
+        }
+        for i in 0..self.paraboloids.len() {
+            if skip == Some(ShapeRef::Paraboloid(i)) {
+                continue;
+            }
+            if self.paraboloid_t(i, ro, rd, t_max).is_some() {
+                return true;
+            }
+        }
+        // 档 2：网格 / 几何实例（BVH 或嵌套变换，成本中等）。
+        for i in 0..self.meshes.len() {
+            // 容器级豁免：`Mesh(i)`（索引网格）与 `Bvh(i)`（soup）均指整块网格。
+            if skip == Some(ShapeRef::Mesh(i)) || skip == Some(ShapeRef::Bvh(i)) {
+                continue;
+            }
+            // 图元级豁免：单个三角形被显式豁免时走二次查询。
+            let skip_tri = match skip {
+                Some(ShapeRef::Triangle(m, t)) if m == i => Some(t),
+                _ => None,
+            };
+            if self.mesh_t(i, ro, rd, t_max, skip_tri).is_some() {
+                return true;
+            }
+        }
+        if !self.instances.is_empty()
+            && self.instance_nearest(ro, rd, t_max, skip).is_some()
+        {
+            return true;
+        }
+        // 档 3：曲线族。BVH 快路径**保持逐字不动**（曲线 BVH 已因 A/B 更慢
+        // 被禁用，此分支非热路径，且它对 is_some() 与线性扫描同解，由
+        // curve_bvh_matches_linear_scan 对拍钉死）。线性兜底才是实际热路径：
+        // 按成本升序 cylinder → cone → revolution → torus 重排，Ferrari 四次
+        // 最贵的 Torus 放最后，阴影臂改用只判存在性的 `torus_any_hit`。
+        let curve_total = self.curve_total();
+        if curve_total > 0 {
+            let bvh_live = self
+                .curve_bvh
+                .as_ref()
+                .is_some_and(|b| b.prim_count() == curve_total);
+            if bvh_live {
+                let bvh = self.curve_bvh.as_ref().expect("bvh_live 已判定存在");
+                let mut cb = |id: u32| self.curve_t(id, ro, rd, t_max);
+                if bvh.ray_intersect(ro, rd, T_MIN, t_max, &mut cb).is_some() {
+                    return true;
+                }
+            } else {
+                for i in 0..self.cylinders.len() {
+                    if self.cylinder_t(i, ro, rd, t_max).is_some() {
+                        return true;
+                    }
+                }
+                for i in 0..self.cones.len() {
+                    if self.cone_t(i, ro, rd, t_max).is_some() {
+                        return true;
+                    }
+                }
+                for i in 0..self.revolutions.len() {
+                    if self.revolution_t(i, ro, rd, t_max).is_some() {
+                        return true;
+                    }
+                }
+                for i in 0..self.toruses.len() {
+                    if self.torus_any_hit(i, ro, rd, t_max) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// 两个公开入口的公共实现（`want_uv` 只在末尾分支，不进候选循环）。
     #[inline]
     fn intersect_impl(
@@ -2944,6 +4602,13 @@ impl Scene {
         skip: Option<ShapeRef>,
         want_uv: bool,
     ) -> Option<Hit> {
+        // 独立通用路径由档位守卫临时挂接；`一致` 档不挂守卫，下面仍是冻结老路径。
+        // 守卫生效时，通用加速视图的 `None` 就是权威「无命中」，不再漏回老路径。
+        if let Some(hit) = with_universal_accel(self, |a| {
+            a.intersect(self, ro, rd, t_max, skip, want_uv)
+        }) {
+            return hit;
+        }
         let mut best: Option<Hit> = None;
         let mut limit = t_max;
         for i in 0..self.spheres.len() {
@@ -3577,8 +5242,27 @@ pub(crate) fn visibility(
     aux_dim: u16,
     steps: &mut u32,
 ) -> f32 {
-    if scene.intersect(ro, rd, max_t - T_MIN, skip).is_some() {
+    // V3.1：阴影判定只消费 `is_some()`，改走 any-hit（首个命中即停）。
+    // 谓词与 `scene.intersect(...).is_some()` 等价 ⇒ 输出逐字节不变；
+    // 主射线仍走 closest-hit（`trace_*` 那条路径未改动）。
+    let shadow_mode: u8 = universal_shadow_mode();
+    let media_approx: bool = universal_media_mode() == 1;
+    if shadow_mode == 1 {
+        return if media_approx {
+            universal_media_transmittance(scene, ro, rd, max_t)
+        } else {
+            1.0
+        };
+    }
+    if scene.any_hit(ro, rd, max_t - T_MIN, skip) {
         return 0.0;
+    }
+    if shadow_mode == 2 || media_approx {
+        return if media_approx {
+            universal_media_transmittance(scene, ro, rd, max_t)
+        } else {
+            1.0
+        };
     }
     if !scene.media.is_empty() {
         let t_end: f32 = max_t - T_MIN;
@@ -3751,6 +5435,7 @@ fn trace_one(
     resolution: (u32, u32),
     stream: &SampleStream<'_>,
     params: &RenderParams,
+    use_primary_cache: bool,
 ) -> [f32; 4] {
     let mut ray = cam.cast_ray(stream, resolution);
     // 一像素的角宽（竖直方向）：主射线的锥半角（A1 足迹的初值）。
@@ -3769,7 +5454,20 @@ fn trace_one(
     for bounce in 0..params.max_bounces {
         let ev = bounce + 1;
         let aux_dim = bounce_dim(ev, SLOT_AUX);
-        let hit = scene.intersect_uv(ray.origin, ray.dir, MISS_T, None);
+        // 通用等价改造：uv 只被「挂了贴图的材质」消费（见下方 mapped 分支）。
+        // `intersect` 与 `intersect_uv` 的 t/shape 逐位相同（既有对拍钉住），
+        // 差别只有末尾那次 `uv_at`（atan2 + acos 两个确定性三角函数）。改用
+        // `intersect` 后，mapped 材质按同一 (shape, p) 口径补算 uv。对任意
+        // 无贴图场景（任意几何/灯族）都省掉每次命中的死三角计算，逐位等价。
+        // 独立通用路径在当前帧几何键阶段已经求过 0 号样本的首交点；身份匹配
+        // 时直接消费，避免同一条主射线在同一帧重复遍历 BVH。未挂缓存的
+        // `一致` 档 / golden / 其它样本序号仍走冻结老求交入口。
+        let hit: Option<Hit> = if use_primary_cache {
+            take_primary_hit(stream.pixel(), stream.sample_index())
+                .or_else(|| scene.intersect(ray.origin, ray.dir, MISS_T, None))
+        } else {
+            scene.intersect(ray.origin, ray.dir, MISS_T, None)
+        };
         let t_surf = hit.map_or(MISS_T, |h| h.t);
 
         // ---- 介质段（相机/续弹段统一；碰撞事件优先于表面事件）----
@@ -3778,7 +5476,16 @@ fn trace_one(
         // `media` 非空 ⇒ 新路径；`media.is_empty()` ⇒ 原分支、**一行不改**。
         // 不允许"空列表也走新路径"——那会把旧场景的共享 aux 步计数器换成
         // 逐区域计数器，采样流立刻平移，逐位兼容当场失效（V1）。
-        if !scene.media.is_empty() {
+        let media_approx: bool = universal_media_mode() == 1;
+        if media_approx {
+            // 独立通用路径的介质近似：用当前帧射线穿过介质盒的解析光程
+            // 一次性压低吞吐，跳过随机自由程与逐区域体阴影抽样。它不是
+            // 图像域平滑，也不读历史帧；对任意介质区域列表一致生效。
+            let distance: f32 = (t_surf - T_MIN).max(0.0);
+            let tr: f32 =
+                universal_media_transmittance(scene, ray.origin, ray.dir, distance);
+            st.throughput = hadamard(st.throughput, Vec3::splat(tr));
+        } else if !scene.media.is_empty() {
             // 逐子区间行进：区域序由入点决定（`select_region` 全序），
             // 一段射线可以顺次穿过多个不相交区域（V3 的串联板）。
             if let Some(hit) =
@@ -3832,6 +5539,11 @@ fn trace_one(
                     let c = hadamard(st.throughput, ls.radiance)
                         * (ph * vis * w / ls.pdf_w);
                     st.radiance = st.radiance + clamp_indirect(c, ev, params.clamp_indirect);
+                }
+                // 最后一个事件之后不会再进入下一轮；续弹抽样与俄罗斯轮盘
+                // 对输出没有任何贡献，独立通用路径的最短积分预算在此收尾。
+                if ev >= params.max_bounces {
+                    break;
                 }
                 // 相位抽样续弹。
                 let (u1, u2) = stream.sample_2d(bounce_dim(ev, SLOT_BSDF));
@@ -3893,6 +5605,9 @@ fn trace_one(
                     let c = hadamard(st.throughput, ls.radiance)
                         * (ph * vis * w / ls.pdf_w);
                     st.radiance = st.radiance + clamp_indirect(c, ev, params.clamp_indirect);
+                }
+                if ev >= params.max_bounces {
+                    break;
                 }
                 // 相位抽样续弹。
                 let (u1, u2) = stream.sample_2d(bounce_dim(ev, SLOT_BSDF));
@@ -3959,8 +5674,16 @@ fn trace_one(
         // `material_bsdf` 逐位相同 ⇒ 定桩前的输出逐字节不变。
         let tex = TexTable::new(&scene.textures, &scene.texels);
         let mapped = material_has_maps(mat);
+        // 通用等价改造：着色主求交已改用 `scene.intersect`（不填 uv，`Hit.uv`
+        // 恒 `[0,0]`）。只有挂了贴图的材质消费 uv，此处按与 `intersect_uv`
+        // 内部完全相同的实参 `uv_at(h.shape, origin + dir·t)` 补算；`p` 正是
+        // `ray.at(h.t) = origin + dir·t`，故逐位等价。任意无贴图场景（任意
+        // 几何 / 灯族）都省掉每次命中的 atan2+acos 死三角计算。
         let (uv, foot) = if mapped {
-            (h.uv, scene.footprint_at(h.shape, p, n, ray.dir, h.t, st.spread))
+            (
+                scene.uv_at(h.shape, p),
+                scene.footprint_at(h.shape, p, n, ray.dir, h.t, st.spread),
+            )
         } else {
             ([0.0f32, 0.0f32], Footprint::ZERO)
         };
@@ -4036,7 +5759,18 @@ fn trace_one(
                 let f = surface_brdf(mat, &bsdf, wo, ls.wi, nv);
                 // f·cosθ（BRDF 已含归一；此处补几何余弦因子）。
                 let f_cos = hadamard(f, Vec3::splat(cos_l));
-                let alt_pdf = surface_pdf(mat, &bsdf, wo, ls.wi, nv);
+                // 通用等价改造：`nee_mis_weight` 只有几何灯（Sphere）与环境
+                // 贴图（Environment，已在本循环开头单列走 CDF 分支）用备择 pdf；
+                // 方向光 / 矩形光 / 常数环境光恒返回 1.0，第三个实参从不被读。
+                // 故对非几何灯而言 `surface_pdf`（含 Disney `Bsdf::pdf`、毛发
+                // Marschner 的确定性三角反解）是纯死计算。按灯**类型**分派，
+                // 不判定场景内容 ⇒ 对任意场景、任意几何/材质组合生效；删除的
+                // 是纯函数、不消耗样本流，`aux_steps` 与后续采样逐位不变。
+                let alt_pdf = if matches!(light, Light::Sphere { .. }) {
+                    surface_pdf(mat, &bsdf, wo, ls.wi, nv)
+                } else {
+                    1.0
+                };
                 let ro = p + nv * SURFACE_EPS;
                 let vis = visibility(
                     scene, ro, ls.wi, ls.dist, skip, stream, aux_dim, &mut aux_steps,
@@ -4084,6 +5818,12 @@ fn trace_one(
             // 故 k=1 链仅对显式镜面几何生效——当前基线场景无镜面板，跳过；
             // k=2 球面折射链已覆盖玻璃焦散主路径，PSR 抖动覆盖残余镜面流形。
             let _ = mnee_mirror; // 接口已挂接（镜面板几何注册后启用）
+        }
+
+        // 最后一个事件之后没有下一次求交；续弹抽样、俄罗斯轮盘与射线改写
+        // 不参与辐射亮度，独立通用路径的最短积分预算在此直接收尾。
+        if ev >= params.max_bounces {
+            break;
         }
 
         // BSDF 抽样续弹。基线 Lambert / Mirror 走解析精确路径（逐位兼容）；
@@ -4257,14 +5997,19 @@ pub fn render_pixel(
 ///
 /// # 归约口径
 ///
-/// 区间内取 [`mean_samples`]（prism-core `reduce` 固定形状树），与
+/// 区间内取 [`mean_samples_fill`]（prism-core `reduce` 固定形状树），与
 /// [`render_pixel`] 完全同一个出口；`count == 1` 时直接返回该样本（`reduce`
 /// 对单项是恒等、`/1.0` 是精确运算，故**逐位等价**，同时省掉两次 `Vec`
 /// 分配——480×270 / spp=1 的视口路径正是这一档）。
 ///
+/// B.2：多样本路径改走生产者变体 [`mean_samples_fill`]，逐样本现算直接填进
+/// 归约缓冲，消除每像素 `Vec` 分配 + 二次拷贝；归约树/结合序不变 ⇒ 与
+/// 旧 `mean_samples(&samples)` 逐字节一致（`mean_samples_fill_matches_slice_bitwise`
+/// 对 n=0..=128 逐位断言，渲染关卡测试另有整幅逐位回归）。
+///
 /// # 空区间
 ///
-/// `s_end <= s_begin` ⇒ 返回单位元 `[0,0,0,0]`（与 [`mean_samples`] 的空集
+/// `s_end <= s_begin` ⇒ 返回单位元 `[0,0,0,0]`（与 [`mean_samples_fill`] 的空集
 /// 语义一致）。调用方不该依赖它，但它不会 panic。
 pub fn render_pixel_range(
     scene: &Scene,
@@ -4279,14 +6024,28 @@ pub fn render_pixel_range(
     if s_end <= s_begin {
         return [0.0; 4];
     }
+    // V3.1 通用路径「跨样本常量提升」：同一像素的 `(base, prefix,
+    // index_xor)` 与样本序号无关，每像素预算一次。落在 `prism-rt` 的公共
+    // 渲染入口上，对**任意**几何 / 灯族 / 材质 / 贴图 / 介质 / spp 组合
+    // 生效；`PixelStreamBase::stream` 与 `SampleStream::new` 逐位一致
+    // （纯函数 + GF(2) 整数律），故归约树喂入的样本序列逐字节不变，
+    // 一致档 / golden / gallery 哈希锚不受影响。
     if s_end - s_begin == 1 {
-        return trace_sample(scene, cam, ctx, resolution, pixel, s_begin, params);
+        // 单样本：掩码表要预算 64 项而只用得上 1–2 项，属净亏损；
+        // 直接走 SampleStream::new（与 base.stream 逐位一致，见
+        // pixel_stream_base_bitwise_tests::stream_matches_new_bitwise）。
+        let stream = SampleStream::new(ctx, pixel, s_begin);
+        return trace_one(scene, cam, ctx, resolution, &stream, params, false);
     }
-    let mut samples = Vec::with_capacity((s_end - s_begin) as usize);
-    for s in s_begin..s_end {
-        samples.push(trace_sample(scene, cam, ctx, resolution, pixel, s, params));
-    }
-    mean_samples(&samples)
+    let base = PixelStreamBase::new(ctx, pixel);
+    let begin = s_begin;
+    // 生产者直接把第 i 个样本写进归约缓冲：零中间 Vec、零二次拷贝。
+    // 每像素预算一次 64 维打散掩码表，逐样本查表代替重复 permute。
+    mean_samples_fill((s_end - s_begin) as usize, |i| {
+        let s = begin + i as u32;
+        let stream = base.stream(ctx, pixel, s);
+        trace_one(scene, cam, ctx, resolution, &stream, params, false)
+    })
 }
 
 /// 单样本求值（`render_pixel` 的**逐样本形式**，两条通路共用同一个入口）。
@@ -4304,7 +6063,7 @@ pub fn trace_sample(
     params: &RenderParams,
 ) -> [f32; 4] {
     let stream = SampleStream::new(ctx, pixel, s);
-    trace_one(scene, cam, ctx, resolution, &stream, params)
+    trace_one(scene, cam, ctx, resolution, &stream, params, false)
 }
 
 /// 自由函数形式的相机射线投射（任务接口字面形式；实现委托 [`Camera::cast_ray`]）。
@@ -4395,7 +6154,7 @@ fn trace_one_spectral(
     for bounce in 0..params.max_bounces {
         let ev = bounce + 1;
         let aux_dim = bounce_dim(ev, SLOT_AUX);
-        let hit = scene.intersect(ray.origin, ray.dir, MISS_T, None);
+        let hit = scene.intersect_uv(ray.origin, ray.dir, MISS_T, None);
 
         // 表面事件（或逃逸）。本切片不接入体积光谱（介质内散射留 V2.3），
         // 直接走表面事件——与退化一致性的简单场景口径一致，不引入回归。
@@ -4495,7 +6254,14 @@ fn trace_one_spectral(
                 }
                 let f = flat_spectral_value(surface_brdf(mat, &bsdf, wo, ls.wi, nv));
                 let f_cos = f * cos_l;
-                let alt_pdf = surface_pdf(mat, &bsdf, wo, ls.wi, nv);
+                // 同 RGB 路径的通用等价改造：备择 pdf 只对几何灯（Sphere）
+                // 参与 power heuristic，非几何灯的 `nee_mis_weight` 恒 1，
+                // `surface_pdf` 是纯死计算。按灯类型分派，对任意场景生效。
+                let alt_pdf = if matches!(light, Light::Sphere { .. }) {
+                    surface_pdf(mat, &bsdf, wo, ls.wi, nv)
+                } else {
+                    1.0
+                };
                 let ro = p + nv * SURFACE_EPS;
                 let vis = visibility(
                     scene, ro, ls.wi, ls.dist, skip, stream, aux_dim, &mut aux_steps,
@@ -4583,7 +6349,7 @@ fn trace_one_spectral(
     [rgb.x, rgb.y, rgb.z, 1.0]
 }
 
-/// 像素渲染（光谱切片，纯函数）：spp 样本经 [`mean_samples`] 同口径归约
+/// 像素渲染（光谱切片，纯函数）：spp 样本经 [`mean_samples_fill`] 同口径归约
 /// （与 [`render_pixel`] 共用，保证退化模式与 RGB 路径逐字节一致）。
 pub fn render_pixel_spectral(
     scene: &Scene,
@@ -4594,14 +6360,11 @@ pub fn render_pixel_spectral(
     params: &RenderParams,
     cfg: &SpectralConfig,
 ) -> [f32; 4] {
-    let mut samples = Vec::with_capacity(params.spp as usize);
-    for s in 0..params.spp {
-        let stream = SampleStream::new(ctx, pixel, s);
-        samples.push(trace_one_spectral(
-            scene, cam, ctx, resolution, &stream, params, cfg,
-        ));
-    }
-    mean_samples(&samples)
+    // B.2：同 RGB 路径，逐样本现算填入归约缓冲，零中间 Vec。
+    mean_samples_fill(params.spp as usize, |i| {
+        let stream = SampleStream::new(ctx, pixel, i as u32);
+        trace_one_spectral(scene, cam, ctx, resolution, &stream, params, cfg)
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -4881,7 +6644,9 @@ mod tests {
         impl PixelSource for RtSource<'_> {
             fn eval_pixel(&self, x: u32, y: u32, si: SampleIndex) -> [f32; 4] {
                 let stream = SampleStream::new(self.ctx, (x, y), si.sample);
-                trace_one(self.scene, self.cam, self.ctx, self.res, &stream, &self.params)
+                trace_one(
+                    self.scene, self.cam, self.ctx, self.res, &stream, &self.params, false,
+                )
             }
         }
 
@@ -8325,5 +10090,181 @@ mod w1b_texture_tests {
                 assert!(p[ch].is_finite(), "渲染出现非有限值：{p:?}");
             }
         }
+    }
+}
+
+// ===========================================================================
+// V3.1 T02：Torus 阴影臂存在性快判 / any_hit 成本序重排的 A/B 对拍
+//
+// 判据是 CI 硬失败项：任一条射线 / 任一 t_max 边界 / 任一 skip 不等价，
+// 立即判红 ⇒ 回退对应优化（设计 §10 P0-1 独立回退开关）。
+// ===========================================================================
+
+#[cfg(test)]
+mod v31_kernel_parity_tests {
+    use super::*;
+
+    fn mat() -> MaterialKind {
+        MaterialKind::Lambert { albedo: Vec3::new(0.5, 0.5, 0.5) }
+    }
+
+    /// 多个环（含非法参数 ① major=0 ② minor<0）+ 各类射线，覆盖伪根区。
+    fn torus_scene() -> Scene {
+        Scene {
+            toruses: vec![
+                (Torus { center: Vec3::new(0.0, 0.0, 0.0), major: 1.0, minor: 0.25 }, mat()),
+                (Torus { center: Vec3::new(3.0, 1.0, -2.0), major: 0.6, minor: 0.12 }, mat()),
+                (Torus { center: Vec3::new(-4.0, 0.0, 0.0), major: 0.0, minor: 0.3 }, mat()),
+                (Torus { center: Vec3::new(6.0, 0.0, 0.0), major: 0.8, minor: -0.2 }, mat()),
+            ],
+            ..Default::default()
+        }
+    }
+
+    /// 覆盖 all 图元族，用于 any_hit ⇔ intersect().is_some() 对拍。
+    fn mixed_scene() -> Scene {
+        Scene {
+            spheres: vec![(
+                Sphere { center: Vec3::new(0.0, 0.0, 1.0), radius: 0.5 },
+                mat(),
+            )],
+            boxes: vec![(
+                Aabb::new(Vec3::new(-3.0, -1.0, -3.0), Vec3::new(3.0, -0.5, 3.0)),
+                mat(),
+            )],
+            planes: vec![(
+                Plane {
+                    point: Vec3::new(0.0, 2.0, 0.0),
+                    normal: Vec3::new(0.0, 1.0, 0.0),
+                    half_extent: None,
+                },
+                mat(),
+            )],
+            paraboloids: vec![(Paraboloid { k: 0.5, r_max: 2.0 }, mat())],
+            toruses: vec![(
+                Torus { center: Vec3::new(1.5, 0.2, 0.0), major: 0.6, minor: 0.15 },
+                mat(),
+            )],
+            cylinders: vec![(
+                Cylinder {
+                    center: Vec3::new(-1.5, 0.5, 0.0),
+                    radius: 0.3,
+                    half_height: 0.5,
+                },
+                mat(),
+            )],
+            cones: vec![(
+                Cone {
+                    center: Vec3::new(0.0, 0.5, -1.5),
+                    radius: 0.4,
+                    half_height: 0.5,
+                },
+                mat(),
+            )],
+            revolutions: vec![(
+                Revolution {
+                    center: Vec3::new(2.5, 0.0, -1.0),
+                    profile: vec![[0.2, -0.3], [0.5, 0.3]],
+                },
+                mat(),
+            )],
+            ..Default::default()
+        }
+    }
+
+    /// 逐射线 + 逐像素网格 + t_max 边界：`torus_any_hit` ≡ `torus_t().is_some()`。
+    #[test]
+    fn torus_any_hit_matches_torus_t_is_some_pixel_ab() {
+        let sc: Scene = torus_scene();
+        let rays: Vec<(Vec3, Vec3)> = vec![
+            (Vec3::new(0.0, 0.0, -4.0), Vec3::new(0.0, 0.0, 1.0)),
+            (Vec3::new(0.0, 0.0, -4.0), Vec3::new(0.35, 0.10, 1.0)),
+            (Vec3::new(0.0, 2.0, 0.0), Vec3::new(0.0, 1.0, 0.0)), // 经典伪根区
+            (Vec3::new(3.0, 1.0, -6.0), Vec3::new(0.0, 0.0, 1.0)),
+            (Vec3::new(2.0, 2.0, -4.0), Vec3::new(-0.2, -0.3, 1.0)),
+            (Vec3::new(1.0, 0.25, 0.0), Vec3::new(1.0, 0.0, 0.0)),
+            (Vec3::new(-8.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0)),
+            (Vec3::new(f32::NAN, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0)),
+            (Vec3::new(0.0, 0.0, -4.0), Vec3::new(f32::INFINITY, 0.0, 1.0)),
+        ];
+        // t_max 边界：恰为 T_MIN、极小、命中前后、无穷。
+        let t_maxs: [f32; 9] = [
+            T_MIN, 0.001, 0.01, 0.5, 1.0, 2.0, 4.0, 8.0, f32::INFINITY,
+        ];
+        let mut comparisons: u32 = 0;
+        for (ro, rd) in &rays {
+            for &tm in &t_maxs {
+                for i in 0..sc.toruses.len() {
+                    let want: bool = sc.torus_t(i, *ro, *rd, tm).is_some();
+                    let got: bool = sc.torus_any_hit(i, *ro, *rd, tm);
+                    assert_eq!(
+                        got, want,
+                        "torus#{i} ro={ro:?} rd={rd:?} t_max={tm}：存在性快判与主射线不等价"
+                    );
+                    comparisons += 1;
+                }
+            }
+        }
+        // 逐像素 A/B：16×16 主射线网格（模拟小分辨率逐像素阴影臂）。
+        for iy in 0..16u32 {
+            for ix in 0..16u32 {
+                let ro: Vec3 = Vec3::new(
+                    -2.0 + ix as f32 * 0.25,
+                    0.4 + iy as f32 * 0.05,
+                    -4.0,
+                );
+                let rd: Vec3 = Vec3::new(0.0, 0.0, 1.0);
+                for &tm in &[0.5f32, 2.0, 8.0, f32::INFINITY] {
+                    for i in 0..sc.toruses.len() {
+                        let want: bool = sc.torus_t(i, ro, rd, tm).is_some();
+                        let got: bool = sc.torus_any_hit(i, ro, rd, tm);
+                        assert_eq!(got, want, "逐像素 torus#{i} ({ix},{iy}) t_max={tm}");
+                        comparisons += 1;
+                    }
+                }
+            }
+        }
+        assert!(comparisons >= 1300, "对拍覆盖不足：{comparisons}");
+    }
+
+    /// 成本序重排后：`any_hit` ≡ `intersect(...).is_some()`（多射线 / t_max / skip）。
+    #[test]
+    fn any_hit_matches_intersect_is_some_after_cost_order_reorder() {
+        let sc: Scene = mixed_scene();
+        let rays: Vec<(Vec3, Vec3)> = vec![
+            (Vec3::new(0.0, 1.5, -4.0), Vec3::new(0.0, -0.1, 1.0)),
+            (Vec3::new(0.0, 0.0, -4.0), Vec3::new(0.0, 0.0, 1.0)),
+            (Vec3::new(-1.5, 0.5, -4.0), Vec3::new(0.0, 0.0, 1.0)),
+            (Vec3::new(1.5, 0.2, -4.0), Vec3::new(0.0, 0.0, 1.0)),
+            (Vec3::new(0.0, 3.0, 0.0), Vec3::new(0.0, -1.0, 0.0)),
+            (Vec3::new(2.5, 0.0, -4.0), Vec3::new(0.0, 0.0, 1.0)),
+            (Vec3::new(-5.0, 2.0, -4.0), Vec3::new(0.5, -0.2, 1.0)),
+            (Vec3::new(0.0, 0.5, 3.0), Vec3::new(0.0, 0.0, -1.0)),
+        ];
+        let t_maxs: [f32; 6] = [T_MIN, 0.5, 4.0, 8.0, 16.0, f32::INFINITY];
+        let skips: [Option<ShapeRef>; 6] = [
+            None,
+            Some(ShapeRef::Sphere(0)),
+            Some(ShapeRef::Box(0)),
+            Some(ShapeRef::Plane(0)),
+            Some(ShapeRef::Torus(0)),
+            Some(ShapeRef::Cylinder(0)),
+        ];
+        let mut comparisons: u32 = 0;
+        for (ro, rd) in &rays {
+            for &tm in &t_maxs {
+                for &skip in &skips {
+                    let got: bool = sc.any_hit(*ro, *rd, tm, skip);
+                    let want: bool = sc.intersect(*ro, *rd, tm, skip).is_some();
+                    assert_eq!(
+                        got, want,
+                        "any_hit 重排后与 closest-hit is_some() 不等价：\
+                         ro={ro:?} rd={rd:?} t_max={tm} skip={skip:?}"
+                    );
+                    comparisons += 1;
+                }
+            }
+        }
+        assert!(comparisons >= 288, "对拍覆盖不足：{comparisons}");
     }
 }

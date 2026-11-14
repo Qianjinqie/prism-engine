@@ -45,7 +45,8 @@ mod lexer;
 mod packs;
 mod parser;
 /// V3.0 W2：39 项能力接线注册表 + 校验 + 时序通道（只搬运，不重实现）。
-mod wiring;
+/// V3.1 收尾 C：公开模块使 `prism-app` 能读取 DSL / 场景翻译计时快照。
+pub mod wiring;
 /// V3.0 W3：观感档位 `finish` 与六族痕迹维度（一等字段 + 生成源头注入）。
 /// 公开模块：`prism-render` / `prism-app` / 静态门禁 / 同源对拍共用同一份声明面。
 pub mod finish;

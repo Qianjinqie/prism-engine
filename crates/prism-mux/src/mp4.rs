@@ -66,9 +66,91 @@ pub fn write_mp4_jpeg_color(
     audio_channels: u16,
     jpeg_cfg: JpegConfig,
 ) -> MuxResult<Vec<u8>> {
-    let mut samples: Vec<Vec<u8>> = Vec::with_capacity(rgba_frames.len());
-    for f in rgba_frames {
-        samples.push(jpeg::encode_jpeg_color(f, video.width, video.height, jpeg_cfg)?);
+    // V3.1 零拷贝：owned 帧序列只映射成 `&[u8]` 视图，不再 clone 像素。
+    let refs: Vec<&[u8]> = rgba_frames.iter().map(|f| f.as_slice()).collect();
+    write_mp4_jpeg_color_views(
+        &refs,
+        video,
+        audio_pcm16,
+        audio_sample_rate,
+        audio_channels,
+        jpeg_cfg,
+    )
+}
+
+/// 视图版彩色 MP4(MJPEG)：逐帧只借用 `&[u8]`，与 [`write_mp4_jpeg_color`]
+/// **逐字节同源**（同一 `encode_jpeg_color`、同一盒序遍历），但省掉
+/// 720p × 3600 帧 = 13.3 GB 的重复 RGBA8 拷贝。
+pub fn write_mp4_jpeg_color_views(
+    rgba_frames: &[&[u8]],
+    video: TrackSpec,
+    audio_pcm16: Option<&[u8]>,
+    audio_sample_rate: u32,
+    audio_channels: u16,
+    jpeg_cfg: JpegConfig,
+) -> MuxResult<Vec<u8>> {
+    // V3.1 收尾 C：量化表 / Huffman 表在整部片子质量恒定时只构建一次。
+    // 各帧 JPEG 编码是纯函数，按帧区间并行；结果按原帧序写回后再 mux，
+    // 因此容器字节与逐帧串行路径逐字节一致。
+    let frame_count: usize = rgba_frames.len();
+    if frame_count == 0 {
+        return mux_mjpeg(&[], video, audio_pcm16, audio_sample_rate, audio_channels);
+    }
+    let tables: jpeg::JpegTables = jpeg::JpegTables::new(jpeg_cfg.quality);
+    let workers: usize = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .clamp(1, frame_count);
+    let chunk: usize = ((frame_count + workers - 1) / workers).max(1);
+    let mut encoded: Vec<Option<MuxResult<Vec<u8>>>> =
+        (0..frame_count).map(|_| None).collect();
+    {
+        let tables_ref: &jpeg::JpegTables = &tables;
+        let width: u32 = video.width;
+        let height: u32 = video.height;
+        let mut rest: &mut [Option<MuxResult<Vec<u8>>>] = &mut encoded[..];
+        let mut start: usize = 0;
+        std::thread::scope(|scope| {
+            let mut handles = Vec::new();
+            while start < frame_count {
+                let end: usize = (start + chunk).min(frame_count);
+                let len: usize = end - start;
+                let frames_part: &[&[u8]] = &rgba_frames[start..end];
+                let (head, tail) = rest.split_at_mut(len);
+                rest = tail;
+                handles.push(scope.spawn(move || {
+                    for (slot, frame) in head.iter_mut().zip(frames_part.iter()) {
+                        *slot = Some(jpeg::encode_jpeg_color_with_tables(
+                            frame,
+                            width,
+                            height,
+                            tables_ref,
+                        ));
+                    }
+                }));
+                start = end;
+            }
+            for handle in handles {
+                if let Err(panic) = handle.join() {
+                    std::panic::resume_unwind(panic);
+                }
+            }
+        });
+    }
+    let mut samples: Vec<Vec<u8>> = Vec::with_capacity(frame_count);
+    for (i, item) in encoded.into_iter().enumerate() {
+        match item {
+            Some(Ok(bytes)) => samples.push(bytes),
+            Some(Err(err)) => return Err(err),
+            None => {
+                return Err(MuxError::new(
+                    "MUX2006",
+                    "mp4::write_mp4_jpeg_color_views",
+                    format!("第 {i} 帧 JPEG 编码结果缺失"),
+                    "检查并行编码任务是否完整覆盖帧区间",
+                ));
+            }
+        }
     }
     mux_mjpeg(&samples, video, audio_pcm16, audio_sample_rate, audio_channels)
 }
@@ -134,6 +216,21 @@ fn write_mp4_impl(
         jpegs.push(jpeg::encode_jpeg_gray(f, video.width, video.height, jpeg_cfg)?);
     }
     mux_mjpeg(&jpegs, video, audio_pcm16, audio_sample_rate, audio_channels)
+}
+
+/// 从**逐帧已编码**的 JPEG 样本封装 MP4（V3.1 流式出片主链入口）。
+///
+/// 帧不驻留：`V31FrameSink::on_frame` 逐帧借用 RGBA8 视图编码后即归还帧池，
+/// 循环结束只累积远小于原始帧的 JPEG 样本，此处一次 mux 落盘。与
+/// [`write_mp4_jpeg_color_views`] 共用同一 `mux_mjpeg` 盒序遍历 ⇒ 逐字节同源。
+pub fn write_mp4_from_jpegs(
+    jpegs: &[Vec<u8>],
+    video: TrackSpec,
+    audio_pcm16: Option<&[u8]>,
+    audio_sample_rate: u32,
+    audio_channels: u16,
+) -> MuxResult<Vec<u8>> {
+    mux_mjpeg(jpegs, video, audio_pcm16, audio_sample_rate, audio_channels)
 }
 
 /// 把**已编码**的 MJPEG 样本（灰度或彩色）封装为 MP4（moov 后置布局）。

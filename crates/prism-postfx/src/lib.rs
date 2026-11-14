@@ -41,6 +41,9 @@
 pub mod adaptive;
 pub mod adaptive_backend;
 pub mod denoise;
+/// V3.1：`denoise.rs` 三件基座（AtrousSpatial / TemporalAccumulator /
+/// DenoiseBackend）与 `prism-render` 时空重建器的真实接线位。
+pub mod v31_backend;
 pub mod effects;
 pub mod registry;
 pub mod warp;

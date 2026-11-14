@@ -4,20 +4,29 @@
 //! 与生成艺术复用。核心设计（选定方案）：
 //!
 //! - **解析扫描线（AET 思想）+ 边上解析跨内覆盖率**：不是 2×2 采样近似，
-//!   而是每行带（row band）内对覆盖区域做几何级精确积分——抗锯齿是解析的；
-//! - **每行带算法**：轮廓边裁剪到行带 → 以"段端点 / 段间交点 / 段穿整像素
-//!   边界"的 y 值切子带 → 子带内跨越序固定，winding 非零区间端点线性 →
-//!   梯形精确积分进像素列。多轮廓重叠（winding=2）天然正确（区域按集合
-//!   测度计，不相交不重复计）；
+//!   而是对覆盖区域做几何级精确积分——抗锯齿是解析的；
+//! - **一次全高 y 扫描**：事件 = 段端点 ∪ 段间交点（全局只算一次）；
+//!   **列折点不是事件**——区域与像素列的交互在列循环里解析求折点。活跃跨越序
+//!   增量维护（近乎有序 → 插入排序 O(n)），于是每行的代价是 O(活跃跨越数)，
+//!   而不是「子带数 × 活跃跨越数」。区域内部列贡献恒为 `q − p`（一次向量化
+//!   区间加），只有两个边界列走解析原函数；
+//! - **几何量走 f64**（顶点仍是调用方给的 f32）：f32 的唯一一次舍入落在写回
+//!   覆盖率缓冲那一步，误差约 1 ulp——旧的全 f32 逐行带实现误差为
+//!   `ulp(坐标)` 量级（1080p 下 5e-5）。多轮廓重叠（winding=2）天然正确
+//!   （区域按集合测度计，不相交不重复计）；
 //! - **输出 RGBA16F**（对齐 prism-io `Fbuf16F` 语义）：f16 存储、f32 计算，
 //!   写入即 RNE 量化，逐字节确定。
 //!
 //! # 确定性契约
 //! - 只用 `+` `-` `×` `÷` 与比较（铁律：禁 libm； 光栅算子面）；
-//! - 浮点排序一律 `f32::total_cmp`（全序，无 NaN 重排歧义）；
+//! - 浮点排序一律 `f32::total_cmp` / `f64::total_cmp`（全序，无 NaN 重排歧义）；
 //! - 无隐藏状态、无随机源：同输入同几何必得同字节输出。
 
 pub mod composite;
+#[cfg(test)]
+mod scanline_diff;
+#[cfg(test)]
+mod scanline_ref;
 pub mod geom;
 pub mod nodes;
 pub mod path;
@@ -26,7 +35,7 @@ pub mod scanline;
 pub use composite::{blend_pixel_over, draw_line, fill_path};
 pub use geom::{Point, Transform};
 pub use path::{Contour, PathBuilder};
-pub use scanline::{rasterize, FillRule};
+pub use scanline::{rasterize, rasterize_into, FillRule};
 
 /// 每像素覆盖率缓冲（行主序，`data[x + y*width] ∈ [0,1]`）。
 ///

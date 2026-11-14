@@ -24,7 +24,7 @@
 //!   （t 并列按图元索引 tie-break）。
 //! - 构建与遍历全程不用 fma 内建；本模块无超越函数。
 
-use super::bvh::Aabb;
+use super::bvh::{Aabb, RayStack};
 use prism_math::Vec3;
 
 /// SAH 分桶数（12 桶；与 bvh.rs 同值同口径）。
@@ -229,9 +229,8 @@ impl AabbBvh {
         }
         let inv = Vec3::new(1.0 / rd.x, 1.0 / rd.y, 1.0 / rd.z);
         let mut best: Option<(f32, u32)> = None;
-        // 固定深度显式栈（深度上界由图元总数推导，64 层必够）。
-        let mut stack: Vec<(u32, f32)> = Vec::with_capacity(64);
-        stack.push((0, t_min));
+        // 定长遍历栈：常态零堆分配，极深树才溢出到 Vec；栈顶次序不变。
+        let mut stack: RayStack = RayStack::new((0, t_min));
         while let Some((id, t_lo)) = stack.pop() {
             if let Some((bt, _)) = best {
                 if t_lo > bt {
