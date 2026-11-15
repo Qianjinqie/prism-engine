@@ -36,7 +36,7 @@
 </p>
 
 <p align="center">
-  <sub>不是效果图，是引擎输出：1200×675 · 256 spp · 路径追踪 + 物理 BSDF + ACES 色调映射 · 4 线程 158 秒<br>场景源码 <a href="docs/gallery/gallery.rs"><code>docs/gallery/gallery.rs</code></a></sub>
+  <sub>不是效果图，是引擎输出：1200×675 · 256 spp · 路径追踪 + 物理 BSDF + ACES 色调映射 <br>场景源码 <a href="docs/gallery/gallery.rs"><code>docs/gallery/gallery.rs</code></a></sub>
 </p>
 
 <p align="center">
