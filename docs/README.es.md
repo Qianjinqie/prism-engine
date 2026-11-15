@@ -36,7 +36,7 @@
 </p>
 
 <p align="center">
-  <sub>No es un montaje, es salida del motor: 1200×675 · 256 spp · trazado de rayos + BSDF físico + mapeo tonal ACES · 4 hilos, 158 s. Código de la escena: <a href="gallery/gallery.rs"><code>docs/gallery/gallery.rs</code></a>.</sub>
+  <sub>No es un montaje, es salida del motor: 1200×675 · 256 spp · trazado de rayos + BSDF físico + mapeo tonal ACES. Código de la escena: <a href="gallery/gallery.rs"><code>docs/gallery/gallery.rs</code></a>.</sub>
 </p>
 
 <p align="center">

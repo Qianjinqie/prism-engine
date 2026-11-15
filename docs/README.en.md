@@ -36,7 +36,7 @@
 </p>
 
 <p align="center">
-  <sub>Not a mock-up — engine output: 1200×675, 256 spp, path tracing + physical BSDF + ACES tone mapping, 4 threads, 158 s. Scene source: <a href="gallery/gallery.rs"><code>docs/gallery/gallery.rs</code></a>.</sub>
+  <sub>Not a mock-up — engine output: 1200×675, 256 spp, path tracing + physical BSDF + ACES tone mapping. Scene source: <a href="gallery/gallery.rs"><code>docs/gallery/gallery.rs</code></a>.</sub>
 </p>
 
 <p align="center">

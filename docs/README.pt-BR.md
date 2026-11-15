@@ -36,7 +36,7 @@
 </p>
 
 <p align="center">
-  <sub>Não é mock-up, é saída do motor: 1200×675 · 256 spp · path tracing + BSDF físico + tonemapping ACES · 4 threads, 158 s. Código da cena: <a href="gallery/gallery.rs"><code>docs/gallery/gallery.rs</code></a>.</sub>
+  <sub>Não é mock-up, é saída do motor: 1200×675 · 256 spp · path tracing + BSDF físico + tonemapping ACES. Código da cena: <a href="gallery/gallery.rs"><code>docs/gallery/gallery.rs</code></a>.</sub>
 </p>
 
 <p align="center">

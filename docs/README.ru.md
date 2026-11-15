@@ -36,7 +36,7 @@
 </p>
 
 <p align="center">
-  <sub>Это не макет, а вывод движка: 1200×675 · 256 spp · трассировка лучей + физический BSDF + тональное отображение ACES · 4 потока, 158 с. Исходник сцены: <a href="gallery/gallery.rs"><code>docs/gallery/gallery.rs</code></a>.</sub>
+  <sub>Это не макет, а вывод движка: 1200×675 · 256 spp · трассировка лучей + физический BSDF + тональное отображение ACES. Исходник сцены: <a href="gallery/gallery.rs"><code>docs/gallery/gallery.rs</code></a>.</sub>
 </p>
 
 <p align="center">

@@ -36,7 +36,7 @@
 </p>
 
 <p align="center">
-  <sub>イメージ図ではなく、エンジンの出力そのもの：1200×675 · 256 spp · パストレーシング + 物理ベース BSDF + ACES トーンマッピング · 4 スレッドで 158 秒。シーンのソースは <a href="gallery/gallery.rs"><code>docs/gallery/gallery.rs</code></a>。</sub>
+  <sub>イメージ図ではなく、エンジンの出力そのもの：1200×675 · 256 spp · パストレーシング + 物理ベース BSDF + ACES トーンマッピング。シーンのソースは <a href="gallery/gallery.rs"><code>docs/gallery/gallery.rs</code></a>。</sub>
 </p>
 
 <p align="center">
