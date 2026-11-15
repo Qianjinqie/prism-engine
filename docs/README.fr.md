@@ -28,7 +28,7 @@
   <img src="https://img.shields.io/badge/backends-CPU%20%2B%20Vulkan-lightgrey.svg" alt="Backends">
   <img src="https://img.shields.io/badge/crates-29-blue.svg" alt="Crates">
   <img src="https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg" alt="Distribution">
-  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.1.1-blue.svg" alt="Release"></a>
+  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.1.2-blue.svg" alt="Release"></a>
 </p>
 
 <p align="center">
@@ -86,13 +86,13 @@ Le tableau ne liste que des capacités. Ce que chacune ne sait pas faire se trou
 
 ```bash
 # 1. Récupérer le paquet source et vérifier son SHA-256
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.1.1/prism-engine-v3.1.1-source.txt
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.1.1/SHA256SUMS.txt
-grep 'v3.1.1' SHA256SUMS.txt | sha256sum -c -
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.1.2/prism-engine-v3.1.2-source.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.1.2/SHA256SUMS.txt
+grep 'v3.1.2' SHA256SUMS.txt | sha256sum -c -
 
 # 2. Extraire le script de dépaquetage embarqué (Node 18+ seulement, sans npm install)
 awk '/^UNPACK SCRIPT BEGIN$/{f=1;next} /^UNPACK SCRIPT END$/{f=0} f' \
-  prism-engine-v3.1.1-source.txt > unpack.cjs
+  prism-engine-v3.1.2-source.txt > unpack.cjs
 node unpack.cjs                    # restaure 789 fichiers
 
 # 3. Compiler et lancer toute la suite de tests

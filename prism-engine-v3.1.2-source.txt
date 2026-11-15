@@ -1,7 +1,7 @@
-PRISM ENGINE — 源码合并（812 个文件）
+PRISM ENGINE — 源码合并（814 个文件）
 
 【还原成目录树：3 步】
-1. 把本文件保存为 prism-engine-v3.1.1-source.txt（UTF-8 编码）
+1. 把本文件保存为 prism-engine-v3.1.2-source.txt（UTF-8 编码）
 2. 把下方 UNPACK SCRIPT BEGIN / END 之间的代码，保存为同目录下的 unpack.cjs
 3. 运行: node unpack.cjs
    完成后在当前目录得到完整目录树（需 Node 18+）
@@ -26,7 +26,7 @@ PRISM ENGINE — 源码合并（812 个文件）
 
 UNPACK SCRIPT BEGIN
 const fs = require('fs'), path = require('path');
-const SRC = process.argv[2] || 'prism-engine-v3.1.1-source.txt';
+const SRC = process.argv[2] || 'prism-engine-v3.1.2-source.txt';
 const lines = fs.readFileSync(SRC, 'utf-8').split('\n');
 let cur = null, buf = [], count = 0, b64 = false, noEol = false, need = -1, seen = 0;
 const flush = () => {
@@ -23530,7 +23530,7 @@ mod tests {
 }
 ================================================================================
 === FILE: src/prism-audio/src/fx/compressor.rs ===
-=== LINES: 174 ===
+=== LINES: 265 ===
 //! 动态压缩器：阈值 / 比率 / 软拐点 / 起振-释放（包络跟随）。
 //!
 //! 增益缩减按**电平检测**计算。为避免跨调用状态，本实现用**前视逐样本包络**
@@ -23605,7 +23605,11 @@ impl MonoFx for Compressor {
         let a_att = coeff(self.attack_secs, sr);
         let a_rel = coeff(self.release_secs, sr);
         let make_gain = db_to_lin(self.makeup_db);
-        let mut env_db = -120.0_f32; // 增益缩减包络（dB），初值最小
+        // 增益缩减包络（dB，语义域为**缩减量**，不是电平；≥0，0 = 不压缩）。
+        // 初值必须是 0.0：首样本增益 = db_to_lin(-env_db) = db_to_lin(0) = 1.0（直通）。
+        // 若误用「电平」的最小值（如 -120）作初值，首样本增益会变成
+        // db_to_lin(120) = 1e6，在 t=0 处产生百万倍放大的爆音瞬态。
+        let mut env_db = 0.0_f32;
         let mut out = Vec::with_capacity(input.len());
         for &x in input {
             let level_db = lin_to_db(x.abs().max(1e-6));
@@ -23703,6 +23707,93 @@ mod tests {
             let back = lin_to_db(lin);
             assert!((back - db).abs() < 1e-3, "db={db} back={back}");
         }
+    }
+
+    // ---- 反向断言：钉死「增益缩减包络初值 = 0 dB 缩减」的语义，防爆音瞬态回归 ----
+
+    /// 回归锚点：默认参数下，阈下（不压缩）输入的**首样本增益必须恰为 1.0**。
+    ///
+    /// 这直接钉死 `env_db` 的初值语义：`g[0] = db_to_lin(-env_db_0)`，
+    /// 只有 `env_db_0 == 0.0` 才有 `g[0] == db_to_lin(0.0) == 1.0`。
+    /// 反证：若把初值改回 `-120.0`，`g[0]` 会变成 `db_to_lin(117.03) ≈ 7.1e5`，
+    /// 本断言随即报红。
+    #[test]
+    fn first_sample_gain_is_unity_for_unity_reduction() {
+        let sr = 8_000_u32;
+        // 0.001（≈ −60 dB）远低于阈值 − knee/2 = −23 dB ⇒ 目标缩减恒 0 dB，
+        // 包络无需起振，增益应逐样本恒为 1.0（仅受初值影响）。
+        let input = vec![0.001_f32; 64];
+        let comp = Compressor::default(); // attack_secs = 0.005
+        let out = comp.process(&input, sr);
+
+        let g0 = out[0] / input[0];
+        let want = db_to_lin(0.0);
+        assert!((want - 1.0).abs() < 1e-6, "db_to_lin(0.0) 应为 1.0，实为 {want}");
+        assert!(
+            (g0 - want).abs() < 1e-6,
+            "首样本增益应≈db_to_lin(0.0)=1.0（容差 1e-6），实为 {g0}"
+        );
+        // 无压缩 ⇒ 整段直通（包络不该从任何非零初值缓慢爬升）。
+        for (i, (&y, &x)) in out.iter().zip(input.iter()).enumerate() {
+            assert!((y - x).abs() < 1e-6, "样本 {i} 未被直通：in={x} out={y}");
+        }
+    }
+
+    /// 回归锚点：默认参数 + 满幅起播信号，t=0 处**不得出现爆音瞬态**。
+    ///
+    /// 三条独立判据：
+    /// 1. 首样本输出幅度 ≤ 输入首样本幅度 × 2；
+    /// 2. 前 1 ms 窗口内任一样本幅度 ≤ 输入峰值 × 2；
+    /// 3. 前 1 ms 窗口 RMS ≤ 输入峰值 × 2（压缩器只会衰减，不该放大）。
+    #[test]
+    fn no_onset_burst_with_default_params() {
+        let sr = 8_000_u32;
+        // 起播即满幅（cos(0) = 1），复现用户实测的 t=0 瞬态场景。
+        let input: Vec<f32> = (0..2_000).map(|i| 0.83 * (i as f32 * 0.1).cos()).collect();
+        let in_peak = input.iter().fold(0.0_f32, |m, &x| m.max(x.abs()));
+        let in_first = input[0].abs();
+        assert!(in_first > 0.5, "构造失败：首样本应满幅，实为 {in_first}");
+
+        let comp = Compressor::default(); // attack_secs = 0.005
+        let out = comp.process(&input, sr);
+
+        // 判据 1：首样本不得被放大。
+        let out_first = out[0].abs();
+        assert!(
+            out_first <= in_first * 2.0,
+            "t=0 处出现放大瞬态：in={in_first} out={out_first}（增益 {}）",
+            out_first / in_first
+        );
+
+        // 判据 2：前 1 ms 窗口内无幅度尖峰。
+        let win = ((sr as f32 * 0.001).round() as usize).max(1); // 8 样本
+        let out_peak_win = out[..win].iter().fold(0.0_f32, |m, &x| m.max(x.abs()));
+        assert!(
+            out_peak_win <= in_peak * 2.0,
+            "前 1 ms 内出现幅度尖峰：in_peak={in_peak} out_peak={out_peak_win}"
+        );
+
+        // 判据 3：前 1 ms 窗口 RMS 不得明显高于输入峰值（压缩器只衰减）。
+        let rms_win = (out[..win].iter().map(|x| x * x).sum::<f32>() / win as f32).sqrt();
+        assert!(
+            rms_win <= in_peak * 2.0,
+            "前 1 ms 内 RMS 尖峰：in_peak={in_peak} rms={rms_win}"
+        );
+    }
+
+    /// 回归锚点：默认参数下全段输出无「百万倍放大」级别的样本（上界双向钳制）。
+    #[test]
+    fn output_stays_bounded_by_input_peak() {
+        let sr = 48_000_u32;
+        let input: Vec<f32> = (0..4_800).map(|i| 0.9 * (i as f32 * 0.05).cos()).collect();
+        let in_peak = input.iter().fold(0.0_f32, |m, &x| m.max(x.abs()));
+        let out = Compressor::default().process(&input, sr);
+        let out_peak = out.iter().fold(0.0_f32, |m, &x| m.max(x.abs()));
+        assert!(
+            out_peak <= in_peak * 2.0,
+            "输出峰值异常放大：in_peak={in_peak} out_peak={out_peak}"
+        );
+        assert!(out.iter().all(|x| x.is_finite()), "输出不应含 Inf/NaN");
     }
 }
 ================================================================================
@@ -64570,7 +64661,7 @@ pub mod v3 {
 }
 ================================================================================
 === FILE: src/prism-dsl/src/codegen.rs ===
-=== LINES: 3885 ===
+=== LINES: 3896 ===
 //! codegen：AST → 引擎产物。
 //!
 //! v1（M0/M1）路径逐字保留：`codegen(&DocumentAst) -> CompileOutput`；
@@ -66867,11 +66958,22 @@ fn build_material(b: &mut V2Builder, mat: &MaterialV2Ast, si: usize) -> Result<N
 /// 绝不静默忽略、绝不登记后丢掉。`environment` 在 `prism_rt` 是 W2 占位
 /// （不参与任何计算），因此显式拒绝并给出可用灯型建议。
 ///
-/// # 缺省（写进 docs/v3.1.1-DSL-接线.md）
+/// # 缺省（写进 docs/v3.1.1-接线与语法.md）
 ///
 /// `kind` 缺省 `directional`（向后兼容）；`direction` (1,-1,-0.5)、`color`
 /// #ffffff、`intensity` 1.0、`position` (0,2,0)、`radius` 1.0、
 /// `edge_u` (1,0,0)、`edge_v` (0,0,1)。
+///
+/// # `rect` 的 `edge_u` / `edge_v` 是**半边**向量（V3.1.2 明确定义）
+///
+/// DSL 侧不做任何隐式倍数换算，逐分量透传到 `prism_rt::Light::Rect`——那里的
+/// 语义就是**半边**（中心 → 边中点）：发光区 `{ position + a·edge_u + b·edge_v :
+/// a, b ∈ [−1, 1] }`，面积 `A = 4|edge_u × edge_v|`，双面发光，
+/// 总功率 `P = 2π·L·A`（`L = color × intensity × π`）。
+///
+/// 因此"2.4 m 见方"要写成 `edge_u(1.2,0,0) edge_v(0,0,1.2)`（边长 = `2|edge|`）。
+/// **没有 `size` 字段**：写 `size 2.4` 会按 P1002 报「非法字段」，不会被静默
+/// 折算成边长或半边——含糊的字段名比缺字段更容易埋出「暗 4×」的面光。
 fn build_light(b: &mut V2Builder, light: &LightV2Ast, si: usize) -> Result<NodeId, DslError> {
     // 先定株 kind（白名单按 kind 分流），再逐字段解析与落地。
     let mut kind: &str = "directional";
@@ -66913,7 +67015,7 @@ fn build_light(b: &mut V2Builder, light: &LightV2Ast, si: usize) -> Result<NodeI
         return Err(err_at(
             f.line,
             format!(
-                "[P1002] light 块中字段 '{}' 对 kind '{}' 非法（允许：{}）\n  建议：direction(1,-1,-0.5) color #fff4e6 intensity 3 position(0,2,0) radius 1 edge_u(1,0,0) edge_v(0,0,1)",
+                "[P1002] light 块中字段 '{}' 对 kind '{}' 非法（允许：{}）\n  建议：direction(1,-1,-0.5) color #fff4e6 intensity 3 position(0,2,0) radius 1 edge_u(1.2,0,0) edge_v(0,0,1.2)（edge_* 是半边：2.4 m 见方 = 1.2）",
                 f.name,
                 kind,
                 allowed.join(" / ")
@@ -66984,7 +67086,7 @@ fn build_light(b: &mut V2Builder, light: &LightV2Ast, si: usize) -> Result<NodeI
     if kind == "rect" && (position.is_none() || edge_u.is_none() || edge_v.is_none()) {
         return Err(err_at(
             light.line,
-            "[P1027] light kind rect 需要 position / edge_u / edge_v\n  建议：position(0,2,0) edge_u(1,0,0) edge_v(0,0,1)".to_string(),
+            "[P1027] light kind rect 需要 position / edge_u / edge_v\n  建议：position(0,3,0) edge_u(1.2,0,0) edge_v(0,0,1.2)（edge_* 是半边向量，边长 = 2|edge|；上式 = 2.4 m 见方）".to_string(),
         ));
     }
     if let Some(r) = radius {
@@ -283583,7 +283685,7 @@ fn npr_effects_are_pure() {
 }
 ================================================================================
 === FILE: src/prism-postfx/tests/qa_adaptive.rs ===
-=== LINES: 1079 ===
+=== LINES: 1091 ===
 //! W6 部分（A5 逐像素自适应采样）：判据 V1–V6（选型报告 §6.3 的表，阈值照抄）。
 //!
 //! | # | 判据 | 方法 | 阈值 |
@@ -283802,11 +283904,23 @@ fn scene() -> Scene {
     ));
     // 1.2 × 1.2 矩形面光（双面发光），悬空在 z = 2.35：离地面 2.35、
     // 离挡板顶 1.15、离球面 ≥ 1.35 —— 没有任何 `1/d²` 尖峰。
+    //
+    // # V3.1.2：radiance 70 → 17.5（夹具**功率守恒**重标定，不是调参过测）
+    //
+    // `edge_u/edge_v` 是**半边**向量，故本夹具的发光面积一直是 1.2 × 1.2
+    // = 1.44 m²（与上一行注释一致）。V3.1.2 前 `sample_nee` 按 ±½·edge 采样
+    // ⇒ 真实面积只有 0.36 m²、功率只有注释意图的 1/4；修好采样域后同一
+    // `radiance` 会让功率×4，白盒多次弹射的方差随之暴涨（4096 spp 参考图
+    // 自身变噪，38 dB 交点判据失去意义——实测 V3/V4/V5 三条全部判不出交点）。
+    //
+    // 保持**总功率**不变即 `P = 2πLA` 守恒：`70 × 0.36 = 17.5 × 1.44 = 25.2`。
+    // 于是场景的光照量级与本判据的历史标定（注释里的方差/增益表）一致，
+    // 判据阈值（38 dB、≤0.6×）一个字未动。
     s.lights.push(Light::Rect {
         center: Vec3::new(-0.4, 0.6, 2.35),
         edge_u: Vec3::new(0.6, 0.0, 0.0),
         edge_v: Vec3::new(0.0, 0.6, 0.0),
-        radiance: Vec3::splat(70.0),
+        radiance: Vec3::splat(17.5),
     });
     // 悬浮挡板：在地面投出宽半影。
     s.boxes.push((
@@ -289933,6 +290047,359 @@ prism-geometry = { path = "../prism-geometry" }
 # prism-anim → {prism-math, prism-noise}，无环回 prism-render。
 [dev-dependencies]
 prism-anim = { path = "../prism-anim" }
+================================================================================
+=== FILE: src/prism-render/examples/rect_light_probe.rs ===
+=== LINES: 350 ===
+//! 诊断探针：矩形面光（`Light::Rect`）的**口径与采样权重**定量对照。
+//!
+//! 这不是判据（判据在 `tests/qa_v312_rect_area_light.rs`），只是把数字打出来：
+//! 修复前后各跑一次，就能逐项看到「面积口径少 4×」如何变成用户看到的暗帧。
+//!
+//! ```text
+//! cargo run -p prism-render --example rect_light_probe --release
+//! ```
+//!
+//! 输出三段：
+//! 1. **判据指标**——pdf 口径、NEE 估计器 vs 解析求积、rect vs 方向光、受光覆盖率；
+//! 2. **对照矩阵**——灯型 / 强度 / 面积 / 距离 / 单双面，逐组只改一个变量；
+//! 3. **DSL 可表达性**——`size` 字段是否被接受、`w2d_showcase` 第 10 帧用哪类灯。
+
+use prism_core::EvalCtx;
+use prism_dsl::compile_v2;
+use prism_math::Vec3;
+use prism_render::movie::render_movie;
+use prism_render::rt_backend::{translate_lights, RtBackend};
+use prism_rt::camera::Camera;
+use prism_rt::integrator::{Light, MaterialKind, RenderParams, Scene, Sphere};
+use prism_rt::light::{rect_area, sample_nee};
+
+const PI: f32 = std::f32::consts::PI;
+
+// ---------------------------------------------------------------------------
+// 灯与统计
+// ---------------------------------------------------------------------------
+
+fn rect_light(center: Vec3, half: f32, intensity: f32) -> Light {
+    Light::Rect {
+        center,
+        edge_u: Vec3::new(half, 0.0, 0.0),
+        edge_v: Vec3::new(0.0, 0.0, half),
+        radiance: Vec3::splat(intensity * PI),
+    }
+}
+
+fn dir_light(intensity: f32) -> Light {
+    Light::Directional {
+        direction: Vec3::new(0.0, 1.0, 0.0),
+        radiance: Vec3::splat(intensity * PI),
+        cos_theta_max: 1.0,
+    }
+}
+
+/// 线性辐亮度口径的球面均值（完整路径追踪，跳过 8-bit / tone map 出口）。
+fn linear_sphere(light: Light) -> (f64, usize) {
+    let mut scene: Scene = Scene::default();
+    scene.spheres.push((
+        Sphere { center: Vec3::splat(0.0), radius: 1.0 },
+        MaterialKind::Lambert { albedo: Vec3::splat(0.8) },
+    ));
+    scene.lights.push(light);
+    let cam = Camera::new(
+        Vec3::new(0.0, 0.0, 5.0),
+        Vec3::splat(0.0),
+        Vec3::new(0.0, 1.0, 0.0),
+        35.0,
+        0.0,
+        5.0,
+        0.0,
+        0.0,
+    );
+    let ctx = EvalCtx::new(0, 0, 0);
+    let params = RenderParams::new(8, 1);
+    let res: u32 = 48;
+    let (mut sum, mut n) = (0.0f64, 0usize);
+    for y in 0..res {
+        for x in 0..res {
+            let px =
+                prism_rt::integrator::render_pixel(&scene, &cam, &ctx, (x, y), (res, res), &params);
+            let v = (px[0] as f64 + px[1] as f64 + px[2] as f64) / 3.0;
+            if v > 0.0 {
+                sum += v;
+                n += 1;
+            }
+        }
+    }
+    (sum / n.max(1) as f64, n)
+}
+
+/// 8-bit 产品链路（DSL → `render_movie` → `RtBackend`）的整帧统计。
+struct Frame {
+    mean: f64,
+    max: u8,
+    lit: usize,
+}
+
+fn dsl_src(light: &str) -> String {
+    format!(
+        "// prism-dsl 1\nmovie \"probe\" {{ duration 0.5s fps 2 resolution 96x96 }}\n\
+         theme {{ teal-orange contrast 1.08 filmic }}\n\
+         scene \"s\" {{\n  stage3d {{\n\
+             camera main {{ orbit {{ center 0,0,0 radius 5 }} fov 40 }}\n\
+             sdf ball {{ kind sphere radius 1 }}\n\
+             material hero {{ albedo #cccccc roughness 0.8 metalness 0 }}\n\
+             {light}\n  }}\n}}\n"
+    )
+}
+
+/// 同一份 DSL 走 `--fast` 档（`CpuRefBackend`，Lambert 单弹射 + 伪造 0.08 平光）。
+fn render_frame_fast(light: &str) -> Frame {
+    let c = compile_v2(&dsl_src(light)).expect("探针 DSL 必须编译");
+    let mut dev = prism_gpu::CpuRefBackend;
+    let d = render_movie(&c, &mut dev).expect("必须可渲染");
+    stats(&d.frames[0])
+}
+
+fn stats(fb: &prism_gpu::Framebuffer) -> Frame {
+    let (mut sum, mut max, mut lit) = (0.0f64, 0u8, 0usize);
+    let px = fb.pixels.len() / 4;
+    for p in fb.pixels.chunks_exact(4) {
+        sum += (p[0] as f64 + p[1] as f64 + p[2] as f64) / 3.0;
+        max = max.max(p[0].max(p[1]).max(p[2]));
+        if (p[0] as f64 + p[1] as f64 + p[2] as f64) / 3.0 > 12.75 {
+            lit += 1;
+        }
+    }
+    Frame { mean: sum / px as f64, max, lit }
+}
+
+fn render_frame(light: &str) -> Frame {
+    let c = compile_v2(&dsl_src(light)).expect("探针 DSL 必须编译");
+    let mut dev = RtBackend::new(16, 6);
+    let d = render_movie(&c, &mut dev).expect("必须可渲染");
+    stats(&d.frames[0])
+}
+
+// ---------------------------------------------------------------------------
+// ① 判据指标
+// ---------------------------------------------------------------------------
+
+fn nee_irradiance(light: &Light, p: Vec3, n: Vec3) -> f64 {
+    let side: u32 = 64;
+    let mut acc = 0.0f64;
+    for k in 0..side * side {
+        let u1 = ((k % side) as f32 + 0.5) / side as f32;
+        let u2 = ((k / side) as f32 + 0.5) / side as f32;
+        if let Some(s) = sample_nee(light, p, u1, u2) {
+            let cos_s = n.dot(&s.wi).max(0.0) as f64;
+            let l = (s.radiance.x as f64 + s.radiance.y as f64 + s.radiance.z as f64) / 3.0;
+            acc += l * cos_s / s.pdf_w as f64;
+        }
+    }
+    acc / (side * side) as f64
+}
+
+/// 按「半边」语义对 ±eu × ±ev 求积：`E = ∫ L·cosθ_s·cosθ_l/d² dA`。
+fn quadrature(center: Vec3, eu: Vec3, ev: Vec3, radiance: f64, p: Vec3, n: Vec3) -> f64 {
+    let normal = eu.cross(&ev).normalize();
+    let area = 4.0 * eu.cross(&ev).length() as f64;
+    let m: i32 = 256;
+    let da = area / (m * m) as f64;
+    let mut acc = 0.0;
+    for i in 0..m {
+        for j in 0..m {
+            let a = ((i as f32 + 0.5) / m as f32) * 2.0 - 1.0;
+            let b = ((j as f32 + 0.5) / m as f32) * 2.0 - 1.0;
+            let q = center + eu * a + ev * b;
+            let to = q - p;
+            let d2 = to.dot(&to);
+            if d2 <= 1e-12 {
+                continue;
+            }
+            let d = d2.sqrt();
+            let w = to * (1.0 / d);
+            let cos_s = n.dot(&w);
+            if cos_s <= 0.0 {
+                continue;
+            }
+            acc += radiance * cos_s as f64 * w.dot(&normal).abs() as f64 / d2 as f64 * da;
+        }
+    }
+    acc
+}
+
+fn criteria() {
+    println!("================ ① 判据指标 ================");
+    // (a) pdf 口径分裂
+    let l = rect_light(Vec3::new(0.0, 3.0, 0.0), 1.2, 12.0);
+    let area = rect_area(Vec3::new(1.2, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.2));
+    let s = sample_nee(&l, Vec3::new(0.0, 1.0, 0.0), 0.37, 0.81).expect("有样本");
+    let cos_l = s.wi.dot(&Vec3::new(0.0, 1.0, 0.0)).abs();
+    let implied = s.pdf_w * cos_l / (s.dist * s.dist);
+    println!(
+        "(a) 面积口径   A=4|eu×ev|={area:.4}  1/A={:.5}  pdf_w·cos/d²={implied:.5}  比={:.3}",
+        1.0 / area,
+        implied * area
+    );
+
+    // (b) NEE 估计器 vs 解析求积（近场 2.4 m 面板，球顶着色点）
+    for (name, half, y) in [("y=2.4 近场", 1.2f32, 2.4f32), ("y=5 中场", 1.2, 5.0), ("y=20 远场", 1.2, 20.0)] {
+        let light = rect_light(Vec3::new(0.0, y, 0.0), half, 12.0);
+        let p = Vec3::new(0.0, 1.0, 0.0);
+        let n = Vec3::new(0.0, 1.0, 0.0);
+        let mc = nee_irradiance(&light, p, n);
+        let quad = quadrature(
+            Vec3::new(0.0, y, 0.0),
+            Vec3::new(half, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, half),
+            12.0 * PI as f64,
+            p,
+            n,
+        );
+        println!("(b) NEE vs 求积 {name:<10} mc={mc:8.4}  quad={quad:8.4}  ratio={:.4}", mc / quad);
+    }
+
+    // (c) rect vs 同 intensity 方向光（8-bit 产品链路）
+    let d = render_frame("light key { direction(0,1,0) color #ffffff intensity 12 }");
+    let r = render_frame(
+        "light key { kind rect position(0,2.4,0) edge_u(1.2,0,0) edge_v(0,0,1.2) color #ffffff intensity 12 }",
+    );
+    let r_far = render_frame(
+        "light key { kind rect position(0,5,0) edge_u(1.2,0,0) edge_v(0,0,1.2) color #ffffff intensity 12 }",
+    );
+    println!(
+        "(c) rect vs 方向光（i=12, 8-bit 整帧均值）dir={:.3}  rect@y2.4={:.3} (ratio {:.3})  rect@y5={:.3} (ratio {:.3})",
+        d.mean,
+        r.mean,
+        r.mean / d.mean,
+        r_far.mean,
+        r_far.mean / d.mean
+    );
+    println!(
+        "(d) 受光覆盖率（lit px / 方向光 lit px）rect@y5={}/{} = {:.3}；峰值 {}/255",
+        r_far.lit,
+        d.lit,
+        r_far.lit as f64 / d.lit as f64,
+        r_far.max
+    );
+
+    // (e) `--fast` 档：不消费 `prism_rt::Light`，故本修复改不动它；
+    //     它的面光模型是 `area/(d²+area)` 衰减（`prism_gpu::resolve_cpu_light`），
+    //     面积口径本来就是 4|eu×ev|。列出来只为解释"三档观感一致"里
+    //     `--fast` 那一档的形态来自几何（小面板 ⇒ 球顶一片亮），不是 4× 缺陷。
+    let fd = render_frame_fast("light key { direction(0,1,0) color #ffffff intensity 12 }");
+    let fr = render_frame_fast(
+        "light key { kind rect position(0,2.4,0) edge_u(1.2,0,0) edge_v(0,0,1.2) color #ffffff intensity 12 }",
+    );
+    println!(
+        "(e) --fast 档（不受本修复影响）dir={:.3}  rect@y2.4={:.3} (ratio {:.3})  lit {}/{}",
+        fd.mean,
+        fr.mean,
+        fr.mean / fd.mean,
+        fr.lit,
+        fd.lit
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ② 对照矩阵
+// ---------------------------------------------------------------------------
+
+fn matrix() {
+    println!("================ ② 对照矩阵（球 r=1 albedo 0.8，线性辐亮度）================");
+    let row = |name: &str, light: Light| {
+        let (lin, n) = linear_sphere(light);
+        println!("{name:<32} sphere_lin={lin:10.5}  px={n}");
+    };
+    println!("-- 1. 灯型（intensity 12）--");
+    row("directional i=12", dir_light(12.0));
+    row("rect 2.4m i=12 @y=2.4", rect_light(Vec3::new(0.0, 2.4, 0.0), 1.2, 12.0));
+    row("rect 2.4m i=12 @y=5", rect_light(Vec3::new(0.0, 5.0, 0.0), 1.2, 12.0));
+
+    println!("-- 2. 强度线性（rect 2.4m @y=5）--");
+    for i in [1.0f32, 12.0, 100.0] {
+        row(&format!("rect i={i}"), rect_light(Vec3::new(0.0, 5.0, 0.0), 1.2, i));
+    }
+
+    println!("-- 3a. 面积（用户矩阵口径：边长 0.24 / 2.4 / 24 m，@y=5，i=12）--");
+    for side in [0.24f32, 2.4, 24.0] {
+        row(
+            &format!("rect 边长 {side} m"),
+            rect_light(Vec3::new(0.0, 5.0, 0.0), side * 0.5, 12.0),
+        );
+    }
+    println!("   ↑ 24 m 面板在 5 m 处已把球包住（近场），平板近似失效，故次线性是几何真值而不是缺陷");
+    println!("-- 3b. 面积（远场 regime：边长 0.1 / 0.2 / 0.4 m，@y=10）--");
+    for side in [0.1f32, 0.2, 0.4] {
+        row(
+            &format!("rect 边长 {side} m"),
+            rect_light(Vec3::new(0.0, 10.0, 0.0), side * 0.5, 12.0),
+        );
+    }
+
+    println!("-- 4a. 距离（2.4 m 面板 i=12，y=5/10/20）--");
+    for y in [5.0f32, 10.0, 20.0] {
+        row(&format!("rect 2.4m y={y}"), rect_light(Vec3::new(0.0, y, 0.0), 1.2, 12.0));
+    }
+    println!("-- 4b. 距离（远场 regime：0.5 m 面板 i=60，y=10/20/40）--");
+    for y in [10.0f32, 20.0, 40.0] {
+        row(&format!("rect 0.5m y={y}"), rect_light(Vec3::new(0.0, y, 0.0), 0.25, 60.0));
+    }
+
+    println!("-- 5. 单/双面（rect 1m 面板 @y=3，上下对称点）--");
+    let l = rect_light(Vec3::new(0.0, 3.0, 0.0), 0.5, 12.0);
+    let above = nee_irradiance(&l, Vec3::new(0.0, 2.0, 0.0), Vec3::new(0.0, 1.0, 0.0));
+    let below = nee_irradiance(&l, Vec3::new(0.0, 4.0, 0.0), Vec3::new(0.0, -1.0, 0.0));
+    println!(
+        "   E(面板上方 p=(0,2,0)) = {above:.5}   E(面板下方 p=(0,4,0)) = {below:.5}   比 = {:.5}",
+        above / below
+    );
+    println!("   （单面发光会让下方为 0；比 = 1 ⇒ 双面同值发光）");
+}
+
+// ---------------------------------------------------------------------------
+// ③ DSL 可表达性 + w2d 第 10 帧
+// ---------------------------------------------------------------------------
+
+fn dsl_checks() {
+    println!("================ ③ DSL 可表达性 / w2d 第 10 帧 ================");
+    match compile_v2(&dsl_src(
+        "light key { kind rect position(0,2.4,0) size 2.4 color #ffffff intensity 12 }",
+    )) {
+        Ok(_) => println!("size 字段：被接受（与预期不符）"),
+        Err(e) => println!("size 字段：被拒 → {}", e.message.lines().next().unwrap_or("")),
+    }
+    let text = std::fs::read_to_string("examples/w2d_showcase.prism").expect("读 w2d_showcase");
+    println!("w2d_showcase 含 rect 灯：{}", text.contains("kind rect"));
+    let c = compile_v2(&text).expect("w2d 应编译");
+    let mut dev = RtBackend::new(16, 6);
+    let d = render_movie(&c, &mut dev).expect("w2d 应可渲染");
+    for (i, f) in d.frames.iter().enumerate() {
+        if i == 9 {
+            let px = f.pixels.len() / 4;
+            let mut sum = 0.0f64;
+            let mut max = 0u8;
+            let mut lit = 0usize;
+            for p in f.pixels.chunks_exact(4) {
+                sum += (p[0] as f64 + p[1] as f64 + p[2] as f64) / 3.0;
+                max = max.max(p[0].max(p[1]).max(p[2]));
+                if (p[0] as f64 + p[1] as f64 + p[2] as f64) / 3.0 > 12.75 {
+                    lit += 1;
+                }
+            }
+            println!(
+                "frame 9（第 10 帧）: mean={:.3}/255 max={max}/255 lit={lit}/{px}",
+                sum / px as f64
+            );
+        }
+    }
+}
+
+fn main() {
+    criteria();
+    matrix();
+    dsl_checks();
+    let _ = translate_lights(&[]);
+}
 ================================================================================
 === FILE: src/prism-render/examples/rt_bench.rs ===
 === LINES: 118 ===
@@ -306392,7 +306859,7 @@ mod tests {
 }
 ================================================================================
 === FILE: src/prism-render/src/rt_backend.rs ===
-=== LINES: 1029 ===
+=== LINES: 1057 ===
 //! `RtBackend` —— 把 [`GpuDevice`] 的渲染请求接到 `prism-rt` 完整路径追踪。
 //!
 //! 这是 **D-19 双轨**的默认档：`prism-app render` 默认走本后端，
@@ -306683,6 +307150,27 @@ impl GpuDevice for RtBackend {
 /// `translate_scene` 与 `movie.rs` 的 rt 波前路径共用本函数，保证「同一份
 /// DSL 灯声明，两条出片路径用同一组 `prism_rt::Light`」——旧缺陷正是两路
 /// 各写一份硬编码灯，导致 rt 路径少乘 π、`cos_theta_max` 也不一致。
+///
+/// # 强度口径：`intensity` 是**辐亮度标度**，不是总功率（V3.1.2 定型）
+///
+/// 所有灯型统一 `radiance = color × intensity × π`（[`RT_INTENSITY_TO_RADIANCE`]）。
+/// 对位置灯（`Sphere` / `Rect`）这意味着 `intensity` 描述的是**出射辐亮度**，
+/// 与方向光的辐亮度同口径：同一 `intensity` 下"入射到表面上的辐照度"才是
+/// 可比的量。
+///
+/// 面光的辐照度与功率由此**推导**（不是另乘系数）：
+///
+/// ```text
+/// E(p) ≈ L · A · cosθ_s · cosθ_l / d²          （A = 4|e_u×e_v|，半边语义）
+/// M    = π · L                                  （朗伯辐出度，单面）
+/// P    = 2 · M · A = 2·π·L·A                    （双面总功率，见 Light::rect_power）
+/// ```
+///
+/// 因此 `intensity` 保持不变时：面积 ×4 ⇒ 辐照度 ×4（功率 ×4），距离 ×2 ⇒
+/// 辐照度 ÷4，`intensity` ×k ⇒ 全部线性 ×k。V3.1.2 之前 `prism_rt::light`
+/// 按 ±½·edge 采样却按半边算面积（见 `prism_rt::light::rect_area` 文档），
+/// 使 DSL 声明 2.4 m 见方面板时实际只发 1.2 m 见方的光 —— 本函数现在在入口
+/// **显式算一次面积并跳过退化面板**，把口径钉在翻译边界上。
 pub fn translate_lights(req_lights: &[LightReq]) -> Vec<Light> {
     let mut out: Vec<Light> = Vec::with_capacity(req_lights.len());
     for l in req_lights {
@@ -306720,6 +307208,13 @@ pub fn translate_lights(req_lights: &[LightReq]) -> Vec<Light> {
             }
             LightKindReq::Rect { center, edge_u, edge_v } => {
                 if !is_finite_vec(center) || !is_finite_vec(edge_u) || !is_finite_vec(edge_v) {
+                    continue;
+                }
+                // 面积口径的唯一真值：A = 4|e_u×e_v|（`edge_*` 是半边向量）。
+                // 退化面板（零长 / 共线边）没有发光面积 —— NEE 对它恒返回
+                // None，此处显式跳过，免得把"永不发光的灯"塞进求解循环。
+                let area: f32 = prism_rt::light::rect_area(edge_u, edge_v);
+                if !(area.is_finite() && area > 0.0) {
                     continue;
                 }
                 out.push(Light::Rect { center, edge_u, edge_v, radiance });
@@ -318066,6 +318561,558 @@ fn v311_attach_capabilities_dsl_changes_pixels() {
     let d1 = render_movie(&c, &mut CpuRefBackend).expect("基线应可渲染");
     let d2 = render_movie(&c, &mut CpuRefBackend).expect("基线应可重渲染");
     assert_eq!(d1.frames[0].pixels, d2.frames[0].pixels, "同输入同输出");
+}
+================================================================================
+=== FILE: src/prism-render/tests/qa_v312_rect_area_light.rs ===
+=== LINES: 549 ===
+//! V3.1.2 判据：矩形面光（`Light::Rect`）的**采样权重**与**强度口径**。
+//!
+//! 用户实测症状（原文）：「白色漫反射球配一盏 2.4 m 见方、intensity 12 的面光，
+//! 全帧均值只有 0.67/255，只有球顶一条亮边」。本文件把症状拆成两条可判定命题：
+//!
+//! # A. 采样权重（pdf / cos / 面积换算）无偏
+//! [`rect_nee_matches_half_edge_quadrature`] 用 `sample_nee` 的**输出**
+//! （`radiance` / `pdf_w` / `wi` / `dist`）构造 NEE 辐照度估计器
+//! `E = mean(L·cosθ_s / pdf_w)`——与 `integrator::trace_one` 的
+//! `f·cosθ_s / pdf_w` 同构（`f = albedo/π` 是常数，提出不影响比值）——再与
+//! 「按文档语义（`edge_u/edge_v` 是**半边**向量）对 ±eu × ±ev 区域做面积求积」
+//! 的解析值对比。估计器只读 `sample_nee` 的返回值，故 pdf 与采样域任何一处
+//! 不自洽都会把比值拉离 1。
+//!
+//! # B. 强度口径（radiance ↔ 功率）
+//! 面光的总辐射功率与出射辐亮度的关系是 `P = 2·π·L·A`（双面；`A = 4|eu×ev|`）。
+//! [`rect_area_and_power_follow_half_edge_convention`] 钉住 `A` 与 `P` 的取值，
+//! [`rect_intensity_is_linear_in_radiance`] 钉住 `translate_lights` 的线性，
+//! [`rect_irradiance_is_linear_in_area`] / [`rect_irradiance_falls_off_inverse_square`]
+//! 钉住 `E ∝ A` 与 `E ∝ 1/d²`。
+//!
+//! # C. 端到端像素
+//! C1 走**产品链路**（DSL → `compile_v2` → `render_movie` → `RtBackend` 一致档）
+//! 的 8-bit 出口，断言用户读的那两个量：同 `intensity` 的 rect 与方向光同量级、
+//! 球面受光面积不是「一条边」。
+//!
+//! C2 走同一条路径追踪、只跳过 8-bit / filmic 出口（`x ↦ x/(1+x)` 会把
+//! `×12` 的输入压成远小于 12 的读数，用它判线性是用错尺子），在线性辐亮度上
+//! 断言强度线性、面积线性、距离平方反比。
+//!
+//! 全部断言在 V3.1.2 修复**前**为红（反证数据见 `CHANGELOG` 的
+//! R-2026-11-16 条目，可用 `cargo run -p prism-render --example
+//! rect_light_probe --release` 复现），修复后绿。
+
+use prism_core::EvalCtx;
+use prism_dsl::compile_v2;
+use prism_gpu::LightKindReq;
+use prism_math::Vec3;
+use prism_render::movie::render_movie;
+use prism_render::rt_backend::{translate_lights, RtBackend};
+use prism_rt::camera::Camera;
+use prism_rt::integrator::{Light, MaterialKind, RenderParams, Scene, Sphere};
+use prism_rt::light::sample_nee;
+
+const PI: f64 = std::f64::consts::PI;
+
+// ---------------------------------------------------------------------------
+// 灯具构造：与 `translate_lights` 同口径（radiance = intensity × π）
+// ---------------------------------------------------------------------------
+
+/// 方向光的辐亮度（`intensity` = 法向入射辐照度当量，见 `RT_INTENSITY_TO_RADIANCE`）。
+fn dir_radiance(intensity: f32) -> Vec3 {
+    Vec3::splat(intensity * std::f32::consts::PI)
+}
+
+/// 矩形面光：`half` 是**半边边长**（边长 = 2·half），出射辐亮度同方向光口径。
+fn rect_light(center: Vec3, half: f32, intensity: f32) -> Light {
+    Light::Rect {
+        center,
+        edge_u: Vec3::new(half, 0.0, 0.0),
+        edge_v: Vec3::new(0.0, 0.0, half),
+        radiance: dir_radiance(intensity),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A. 采样权重：NEE 估计器 vs 文档语义下的解析求积
+// ---------------------------------------------------------------------------
+
+/// NEE 辐照度估计器：`E = mean(L·cosθ_s / pdf_w)`，逐样本 0 贡献（被拒样本不重归一）。
+///
+/// `samples` 取完全平方数（`n×n` 网格扫掠，确定性、无 RNG）。
+fn nee_irradiance(light: &Light, p: Vec3, n: Vec3, samples: u32) -> f64 {
+    let side: u32 = (samples as f64).sqrt() as u32;
+    assert!(side * side == samples, "样本数必须是 n×n 网格：{samples}");
+    let mut acc: f64 = 0.0;
+    for k in 0..samples {
+        let u1: f32 = ((k % side) as f32 + 0.5) / side as f32;
+        let u2: f32 = ((k / side) as f32 + 0.5) / side as f32;
+        if let Some(s) = sample_nee(light, p, u1, u2) {
+            let cos_s: f64 = n.dot(&s.wi).max(0.0) as f64;
+            let l: f64 = (s.radiance.x as f64 + s.radiance.y as f64 + s.radiance.z as f64) / 3.0;
+            acc += l * cos_s / s.pdf_w as f64;
+        }
+    }
+    acc / samples as f64
+}
+
+/// 按**文档语义**（`edge_u/edge_v` 为半边向量 ⇒ 发光区 = c ± eu ± ev）求积：
+/// `E = ∫_A L·cosθ_s·cosθ_l/d² dA`。
+fn rect_quadrature(
+    center: Vec3,
+    eu: Vec3,
+    ev: Vec3,
+    radiance: f64,
+    p: Vec3,
+    n: Vec3,
+    m: i32,
+) -> f64 {
+    let normal: Vec3 = eu.cross(&ev).normalize();
+    let area: f64 = 4.0 * eu.cross(&ev).length() as f64;
+    let da: f64 = area / (m * m) as f64;
+    let mut acc: f64 = 0.0;
+    for i in 0..m {
+        for j in 0..m {
+            let a: f32 = ((i as f32 + 0.5) / m as f32) * 2.0 - 1.0;
+            let b: f32 = ((j as f32 + 0.5) / m as f32) * 2.0 - 1.0;
+            let q: Vec3 = center + eu * a + ev * b;
+            let to: Vec3 = q - p;
+            let d2: f32 = to.dot(&to);
+            if d2 <= 1e-12 {
+                continue;
+            }
+            let d: f32 = d2.sqrt();
+            let w: Vec3 = to * (1.0 / d);
+            let cos_s: f32 = n.dot(&w);
+            if cos_s <= 0.0 {
+                continue;
+            }
+            let cos_l: f32 = w.dot(&normal).abs();
+            acc += radiance * cos_s as f64 * cos_l as f64 / d2 as f64 * da;
+        }
+    }
+    acc
+}
+
+/// 采样权重判据：估计器必须收敛到「半边语义」的解析值（容差 2%）。
+///
+/// 只改一个变量（面板尺寸 / 距离 / 强度），逐组核对。若 `pdf_w` 里的面积与
+/// 采样域不自洽（例如按 ±½·edge 采样却声明 ±1·edge），比值会稳定偏离 1
+/// ——这正是 V3.1.2 修复前的形态（实测比值 ≈ 0.33，即面积少 4×）。
+#[test]
+fn rect_nee_matches_half_edge_quadrature() {
+    // (标签, 半边边长, 面板高度 y, 强度, 采样点数)
+    let cases: [(&str, f32, f32, f32, u32); 5] = [
+        ("2.4m 见方 @ y=2.4", 1.2, 2.4, 12.0, 4096),
+        ("2.4m 见方 @ y=5", 1.2, 5.0, 12.0, 4096),
+        ("2.4m 见方 @ y=20", 1.2, 20.0, 12.0, 4096),
+        ("0.24m 见方 @ y=3", 0.12, 3.0, 12.0, 4096),
+        ("24m 见方 @ y=30", 12.0, 30.0, 12.0, 4096),
+    ];
+    for (name, half, y, intensity, spp) in cases {
+        let light: Light = rect_light(Vec3::new(0.0, y, 0.0), half, intensity);
+        // 着色点取球顶（法线 +Y，正对面板），位置固定不随面板变。
+        let p: Vec3 = Vec3::new(0.0, 1.0, 0.0);
+        let n: Vec3 = Vec3::new(0.0, 1.0, 0.0);
+        let mc: f64 = nee_irradiance(&light, p, n, spp);
+        let quad: f64 = rect_quadrature(
+            Vec3::new(0.0, y, 0.0),
+            Vec3::new(half, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, half),
+            (intensity as f64) * PI,
+            p,
+            n,
+            256,
+        );
+        assert!(quad > 0.0, "{name}：解析值必须为正");
+        let ratio: f64 = mc / quad;
+        assert!(
+            (ratio - 1.0).abs() < 0.02,
+            "{name}：NEE 估计器与「半边语义」解析求积不一致，ratio={ratio:.4}\
+             （mc={mc:.5} quad={quad:.5}）；pdf_w 里的面积与采样域必须覆盖 ±eu × ±ev"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// B. 口径：面积 / 功率 / 线性 / 平方反比
+// ---------------------------------------------------------------------------
+
+/// 面积与功率口径：`A = 4|eu×ev|`（半边），双面功率 `P = 2·π·L·A`。
+#[test]
+fn rect_area_and_power_follow_half_edge_convention() {
+    let light: Light = rect_light(Vec3::new(0.0, 3.0, 0.0), 1.2, 12.0); // 2.4 m 见方
+    let area: f32 = light.rect_area().expect("矩形必须给出面积");
+    assert!(
+        (area - 5.76).abs() < 1e-5,
+        "2.4 m 见方的面板面积应为 5.76 m²（半边 1.2 ⇒ A = 4|eu×ev|），实际 {area}"
+    );
+    // 功率：P = 2·π·L·A（双面出射）。逐分量核对。
+    let power: Vec3 = light.rect_power().expect("矩形必须给出功率");
+    let l: Vec3 = match light {
+        Light::Rect { radiance, .. } => radiance,
+        _ => unreachable!(),
+    };
+    for (i, got) in [power.x, power.y, power.z].iter().enumerate() {
+        let want: f32 = 2.0 * std::f32::consts::PI * [l.x, l.y, l.z][i] * area;
+        assert!(
+            (got - want).abs() / want.max(1e-6) < 1e-5,
+            "功率分量 {i} 应满足 P = 2πLA：{got} vs {want}"
+        );
+    }
+    // 退化面板：面积 0 ⇒ 无功率（不得 NaN / 负值）。
+    let degenerate: Light = Light::Rect {
+        center: Vec3::new(0.0, 3.0, 0.0),
+        edge_u: Vec3::new(1.0, 0.0, 0.0),
+        edge_v: Vec3::new(2.0, 0.0, 0.0),
+        radiance: Vec3::splat(1.0),
+    };
+    assert_eq!(degenerate.rect_area(), Some(0.0));
+
+    // 口径一致性（本条是 V3.1.2 的直接反证）：`sample_nee` 隐含的面积 pdf
+    // 必须等于 API 的 `1/A`，即 `pdf_w·cos_l/d² == 1/(4|eu×ev|)`。
+    let p: Vec3 = Vec3::new(0.0, 1.0, 0.0);
+    let s = sample_nee(&light, p, 0.37, 0.81).expect("面板外点必有样本");
+    let cos_l: f32 = s.wi.dot(&Vec3::new(0.0, 1.0, 0.0)).abs();
+    let pdf_a_implied: f32 = s.pdf_w * cos_l / (s.dist * s.dist);
+    let pdf_a_declared: f32 = 1.0 / area;
+    assert!(
+        (pdf_a_implied - pdf_a_declared).abs() / pdf_a_declared < 1e-4,
+        "采样域与面积口径分裂：pdf_w·cos/d² = {pdf_a_implied} 而 1/A = {pdf_a_declared}\
+         （A = {area}）；采样域必须覆盖 ±edge_u × ±edge_v"
+    );
+}
+
+/// `translate_lights` 的强度线性：intensity 1 / 12 / 100 的辐亮度与辐照度逐倍线性。
+#[test]
+fn rect_intensity_is_linear_in_radiance() {
+    let mk = |i: f32| {
+        translate_lights(&[prism_gpu::LightReq {
+            direction: Vec3::new(0.0, -1.0, 0.0),
+            color: Vec3::splat(1.0),
+            intensity: i,
+            kind: LightKindReq::Rect {
+                center: Vec3::new(0.0, 3.0, 0.0),
+                edge_u: Vec3::new(1.2, 0.0, 0.0),
+                edge_v: Vec3::new(0.0, 0.0, 1.2),
+            },
+        }])
+        .pop()
+        .expect("合法矩形灯必须被翻译")
+    };
+    let p: Vec3 = Vec3::new(0.0, 1.0, 0.0);
+    let n: Vec3 = Vec3::new(0.0, 1.0, 0.0);
+    let e1: f64 = nee_irradiance(&mk(1.0), p, n, 4096);
+    let e12: f64 = nee_irradiance(&mk(12.0), p, n, 4096);
+    let e100: f64 = nee_irradiance(&mk(100.0), p, n, 4096);
+    assert!(e1 > 0.0, "intensity 1 必须有光（实际 {e1}）");
+    assert!(
+        (e12 / e1 - 12.0).abs() < 0.05,
+        "intensity 1→12 应 12 倍线性，实际 {:.3}×",
+        e12 / e1
+    );
+    assert!(
+        (e100 / e1 - 100.0).abs() < 0.5,
+        "intensity 1→100 应 100 倍线性，实际 {:.3}×",
+        e100 / e1
+    );
+}
+
+/// 面积线性：辐亮度固定、半边 ×2 / ×4 ⇒ 辐照度 ×4 / ×16（远场，面板≪距离）。
+#[test]
+fn rect_irradiance_is_linear_in_area() {
+    let p: Vec3 = Vec3::new(0.0, 0.0, 0.0);
+    let n: Vec3 = Vec3::new(0.0, 1.0, 0.0);
+    let e = |half: f32| -> f64 {
+        nee_irradiance(&rect_light(Vec3::new(0.0, 10.0, 0.0), half, 12.0), p, n, 4096)
+    };
+    let (e1, e2, e4) = (e(0.05), e(0.10), e(0.20));
+    assert!(
+        (e2 / e1 - 4.0).abs() < 0.08,
+        "面积 ×4 应辐照度 ×4（远场），实际 {:.3}×",
+        e2 / e1
+    );
+    assert!(
+        (e4 / e1 - 16.0).abs() < 0.5,
+        "面积 ×16 应辐照度 ×16（远场），实际 {:.3}×",
+        e4 / e1
+    );
+}
+
+/// 距离平方反比：灯距球心 5 / 10 / 20 m（面板 ≪ 距离）⇒ 1 : 1/4 : 1/16。
+#[test]
+fn rect_irradiance_falls_off_inverse_square() {
+    let p: Vec3 = Vec3::new(0.0, 0.0, 0.0);
+    let n: Vec3 = Vec3::new(0.0, 1.0, 0.0);
+    let e = |h: f32| -> f64 {
+        nee_irradiance(&rect_light(Vec3::new(0.0, h, 0.0), 0.25, 12.0), p, n, 4096)
+    };
+    let (e5, e10, e20) = (e(5.0), e(10.0), e(20.0));
+    assert!(e5 > 0.0);
+    assert!(
+        (e10 / e5 - 0.25).abs() < 0.02,
+        "距离 ×2 应衰减 1/4，实际 {:.4}",
+        e10 / e5
+    );
+    assert!(
+        (e20 / e5 - 0.0625).abs() < 0.008,
+        "距离 ×4 应衰减 1/16，实际 {:.5}",
+        e20 / e5
+    );
+}
+
+// ---------------------------------------------------------------------------
+// C. 端到端像素（DSL → render_movie → RtBackend）
+// ---------------------------------------------------------------------------
+
+/// 与产品链路同样的 DSL 骨架：白色漫反射球（albedo ≈ 0.8）+ 一盏灯。
+fn dsl_src(light: &str) -> String {
+    format!(
+        "// prism-dsl 1\nmovie \"rect\" {{ duration 0.5s fps 2 resolution 64x64 }}\n\
+         theme {{ teal-orange contrast 1.08 filmic }}\n\
+         scene \"s\" {{\n  stage3d {{\n\
+             camera main {{ orbit {{ center 0,0,0 radius 5 }} fov 40 }}\n\
+             sdf ball {{ kind sphere radius 1 }}\n\
+             material hero {{ albedo #cccccc roughness 0.8 metalness 0 }}\n\
+             {light}\n  }}\n}}\n"
+    )
+}
+
+/// 一帧的亮度统计（8-bit 口径，与用户读数同一量）。
+struct Frame {
+    /// 整帧 RGB 均值（0–255）。
+    mean: f64,
+    /// 单像素最大通道值。
+    max: u8,
+    /// 亮度 > 12.75/255 的像素数。
+    lit: usize,
+}
+
+fn render_pixels(light: &str) -> Frame {
+    let c = compile_v2(&dsl_src(light)).expect("探针 DSL 必须编译成功");
+    let mut dev = RtBackend::new(16, 6);
+    let d = render_movie(&c, &mut dev).expect("影片必须可渲染");
+    let fb = &d.frames[0];
+    let (mut sum, mut max, mut lit) = (0.0f64, 0u8, 0usize);
+    let px: usize = fb.pixels.len() / 4;
+    for p in fb.pixels.chunks_exact(4) {
+        sum += (p[0] as f64 + p[1] as f64 + p[2] as f64) / 3.0;
+        max = max.max(p[0].max(p[1]).max(p[2]));
+        if (p[0] as f64 + p[1] as f64 + p[2] as f64) / 3.0 > 12.75 {
+            lit += 1;
+        }
+    }
+    Frame { mean: sum / px as f64, max, lit }
+}
+
+const DIR_12: &str = "light key { direction(0,1,0) color #ffffff intensity 12 }";
+
+/// 2.4 m 见方（半边 1.2）的矩形面光，悬于球顶上方 1.4 m。
+const RECT_24_12_CLOSE: &str =
+    "light key { kind rect position(0,2.4,0) edge_u(1.2,0,0) edge_v(0,0,1.2) color #ffffff intensity 12 }";
+
+/// 同参但灯更高（y=5）——远场、面板只占小立体角的形态。
+const RECT_24_12_FAR: &str =
+    "light key { kind rect position(0,5,0) edge_u(1.2,0,0) edge_v(0,0,1.2) color #ffffff intensity 12 }";
+
+/// 同 intensity 的 rect 与方向光必须**同量级**（1/2.5 – 2.5 倍以内）。
+///
+/// 物理依据：`E_dir = I·π·cosθ_s`，`E_rect ≈ I·π·A·cosθ_s·cosθ_l/d²`。
+/// 「2.4 m 见方、intensity 12、距球顶 1.4 m」处 `A/d² = 5.76/1.96 ≈ 2.9`，
+/// 即面光比方向光**更亮**；修复前实测比值 0.27（面积少 4× 再叠近场衰减）。
+#[test]
+fn rect_and_directional_same_intensity_are_same_magnitude() {
+    let d: Frame = render_pixels(DIR_12);
+    let r: Frame = render_pixels(RECT_24_12_CLOSE);
+    assert!(d.mean > 1.0, "方向光对照必须有效（实际 {}）", d.mean);
+    let ratio: f64 = r.mean / d.mean;
+    // 复现读数（`--nocapture`）：V3.1.2 修复前 6.156 / 22.621 = 0.272。
+    println!(
+        "[v312] rect@y2.4={:.3}/255  dir={:.3}/255  ratio={ratio:.3}",
+        r.mean, d.mean
+    );
+    assert!(
+        (0.4..=2.5).contains(&ratio),
+        "同 intensity 的 rect 与方向光必须同量级：rect={:.3}/255 dir={:.3}/255 ratio={ratio:.3}",
+        r.mean,
+        d.mean
+    );
+}
+
+// ---------------------------------------------------------------------------
+// C2. 线性辐亮度口径的端到端（跳过 8-bit / tone-map 出口）
+// ---------------------------------------------------------------------------
+
+/// 一盏矩形灯：走 `translate_lights`（翻译边界），再进路径追踪。
+fn rect_via_boundary(intensity: f32, half: f32, y: f32) -> Light {
+    let mut v: Vec<Light> = translate_lights(&[prism_gpu::LightReq {
+        direction: Vec3::new(0.0, -1.0, 0.0),
+        color: Vec3::splat(1.0),
+        intensity,
+        kind: LightKindReq::Rect {
+            center: Vec3::new(0.0, y, 0.0),
+            edge_u: Vec3::new(half, 0.0, 0.0),
+            edge_v: Vec3::new(0.0, 0.0, half),
+        },
+    }]);
+    assert_eq!(v.len(), 1, "合法矩形灯必须被翻译为一盏");
+    v.pop().expect("已判长度为 1")
+}
+
+/// 线性辐亮度口径的球面均值：`(球面平均辐亮度, 球面像素数)`。
+///
+/// 线性律必须在**线性空间**判：`RtBackend` 的 8-bit 出口经 filmic 压缩
+/// （`x ↦ x/(1+x)`）与 clamp，会把 `×12` 的输入压成远小于 12 的读数——
+/// 用 8-bit 判线性等于用错尺子。此处仍走完整路径追踪
+/// （`integrator::render_pixel`），只跳过 8-bit 出口。
+fn linear_sphere_mean(light: Light, bounces: u32) -> (f64, usize) {
+    let mut scene: Scene = Scene::default();
+    scene.spheres.push((
+        Sphere { center: Vec3::splat(0.0), radius: 1.0 },
+        MaterialKind::Lambert { albedo: Vec3::splat(0.8) },
+    ));
+    scene.lights.push(light);
+    let cam = Camera::new(
+        Vec3::new(0.0, 0.0, 5.0),
+        Vec3::splat(0.0),
+        Vec3::new(0.0, 1.0, 0.0),
+        35.0,
+        0.0,
+        5.0,
+        0.0,
+        0.0,
+    );
+    let ctx = EvalCtx::new(0, 0, 0);
+    let params = RenderParams::new(8, bounces);
+    let res: u32 = 48;
+    let (mut sum, mut n) = (0.0f64, 0usize);
+    for y in 0..res {
+        for x in 0..res {
+            let px = prism_rt::integrator::render_pixel(&scene, &cam, &ctx, (x, y), (res, res), &params);
+            let v: f64 = (px[0] as f64 + px[1] as f64 + px[2] as f64) / 3.0;
+            if v > 0.0 {
+                sum += v;
+                n += 1;
+            }
+        }
+    }
+    (sum / n.max(1) as f64, n)
+}
+
+/// 端到端强度线性（线性辐亮度）：intensity ×12 / ×100 ⇒ 球面亮度逐倍线性。
+///
+/// 判据可以钉得很紧：样本流只依赖 `(种子, 像素, 样本号)`，与 `intensity`
+/// 无关 ⇒ 三个变体走**完全相同**的样本路径，估计器对 `intensity` 是精确
+/// 线性映射（容差取 1e-2 只是给 f32 累加留余量）。
+#[test]
+fn rect_intensity_is_linear_end_to_end() {
+    let m = |i: f32| -> f64 { linear_sphere_mean(rect_via_boundary(i, 1.2, 5.0), 1).0 };
+    let (a, b, c) = (m(1.0), m(12.0), m(100.0));
+    assert!(a > 0.0, "intensity 1 必须有光（实际 {a}）");
+    assert!(
+        (b / a - 12.0).abs() < 0.12,
+        "intensity 1→12 应 12 倍线性，实际 {:.4}×（{a:.6} → {b:.6}）",
+        b / a
+    );
+    assert!(
+        (c / a - 100.0).abs() < 1.0,
+        "intensity 1→100 应 100 倍线性，实际 {:.4}×（{a:.6} → {c:.6}）",
+        c / a
+    );
+}
+
+/// 端到端面积线性（线性辐亮度）：半边 0.3 / 0.6 / 1.2 ⇒ 面积 ×4 ⇒ 亮度 ×4。
+///
+/// 面板置于 y=10（面板 ≪ 距离，远场），故 `E ∝ A` 可以紧判（容差 5%）。
+#[test]
+fn rect_area_is_linear_end_to_end() {
+    let m = |half: f32| -> f64 { linear_sphere_mean(rect_via_boundary(12.0, half, 10.0), 1).0 };
+    let (s, mid, l) = (m(0.15), m(0.3), m(0.6));
+    assert!(s > 0.0, "0.15 半边（0.3 m 见方）必须有光（实际 {s}）");
+    assert!(
+        (mid / s - 4.0).abs() < 0.12,
+        "面积 ×4（0.3 m → 0.6 m 见方）应亮度 ×4，实际 {:.4}×",
+        mid / s
+    );
+    assert!(
+        (l / mid - 4.0).abs() < 0.12,
+        "面积再 ×4（0.6 m → 1.2 m 见方）应亮度 ×4，实际 {:.4}×",
+        l / mid
+    );
+}
+
+/// 端到端距离平方反比（线性辐亮度）：灯高 5 / 10 / 20 m，面板 0.5 半边。
+#[test]
+fn rect_distance_falls_off_inverse_square_end_to_end() {
+    let m = |y: f32| -> f64 { linear_sphere_mean(rect_via_boundary(60.0, 0.5, y), 1).0 };
+    let (a, b, c) = (m(5.0), m(10.0), m(20.0));
+    assert!(a > 0.0);
+    assert!(
+        (b / a - 0.25).abs() < 0.02,
+        "距离 ×2 应衰减 1/4，实际 {:.4}",
+        b / a
+    );
+    assert!(
+        (c / b - 0.25).abs() < 0.02,
+        "距离再 ×2 应再衰减 1/4，实际 {:.4}",
+        c / b
+    );
+}
+
+/// 双面发光：面板上方与下方的对称着色点收到**相同**辐照度。
+///
+/// 单面发光时下方恒为 0；比值 = 1 证明 `sample_nee` 的 `|cosθ_l|` 双面约定
+/// 与 [`Light::rect_power`] 的 `P = 2πLA` 是同一件事（两面各发一份功率）。
+#[test]
+fn rect_emits_from_both_faces() {
+    let light: Light = rect_light(Vec3::new(0.0, 3.0, 0.0), 0.5, 12.0); // 1 m 见方
+    let above: f64 = nee_irradiance(
+        &light,
+        Vec3::new(0.0, 2.0, 0.0),
+        Vec3::new(0.0, 1.0, 0.0),
+        4096,
+    );
+    let below: f64 = nee_irradiance(
+        &light,
+        Vec3::new(0.0, 4.0, 0.0),
+        Vec3::new(0.0, -1.0, 0.0),
+        4096,
+    );
+    assert!(above > 0.0 && below > 0.0, "双面都必须发光：above={above} below={below}");
+    assert!(
+        (above / below - 1.0).abs() < 1e-4,
+        "对称点辐照度必须相等（双面同值）：{above} vs {below}"
+    );
+}
+
+/// 受光面积判据：面光的受光像素数必须接近方向光（**不是「一条边」**）。
+///
+/// 方向光（δ，全半球受光）的受光像素数是「球面全覆盖」的实测上界；
+/// 面光只被面板可见的那部分球面受光，故比值 < 1，但「球顶一条边」只有 0.2–0.3。
+#[test]
+fn rect_lights_the_sphere_not_just_a_rim() {
+    let d: Frame = render_pixels(DIR_12);
+    let r: Frame = render_pixels(RECT_24_12_FAR);
+    let cover: f64 = r.lit as f64 / d.lit as f64;
+    // 复现读数（`--nocapture`）：V3.1.2 修复前 252/525 = 0.480、峰值 95/255。
+    println!(
+        "[v312] rect@y5 受光 {}/{} = {cover:.3}  峰值 {}/255",
+        r.lit, d.lit, r.max
+    );
+    assert!(
+        d.lit > 200,
+        "方向光对照的受光像素过少（{}），判据失效",
+        d.lit
+    );
+    assert!(
+        cover > 0.6,
+        "面光受光面积只有方向光的 {cover:.3}（{} / {} 像素）——「一条亮边」形态未消除",
+        r.lit,
+        d.lit
+    );
+    // 同时球面最亮像素必须进入中高亮度区（不是一层灰边）。
+    assert!(
+        r.max > 120,
+        "面光的球面峰值只有 {}/255，说明能量仍被压到暗端",
+        r.max
+    );
 }
 ================================================================================
 === FILE: src/prism-render/tests/t0_product_path.rs ===
@@ -343400,7 +344447,7 @@ pub mod texture;
 pub mod wavefront;
 ================================================================================
 === FILE: src/prism-rt/src/light.rs ===
-=== LINES: 539 ===
+=== LINES: 635 ===
 //! 灯光族：方向光 / 球光 / 矩形面光 / 环境光 + NEE 采样与 MIS 权重。
 //!
 //! # 灯光语义与 MIS 契约（既有语义保持）
@@ -343412,6 +344459,11 @@ pub mod wavefront;
 //! - [`Light::Rect`]：矩形面光（双面发光），**非几何**（不进 Scene 求交列表）
 //!   ——BSDF 路径不可命中 → NEE 权重恒 1。契约：若未来矩形进入求交列表，
 //!   必须同步改为 power heuristic，否则双重计数。
+//!   **几何与功率**（V3.1.2）：`edge_u/edge_v` 是**半边**向量，发光面积
+//!   `A = 4|e_u×e_v|`（[`rect_area`] 唯一真值点），双面总功率 `P = 2πLA`
+//!   （[`Light::rect_power`]）。采样域与 `pdf_A = 1/A` 必须由同一个 `A` 推出
+//!   ——旧实现按全边域采样却按半边算面积，导致 2.4 m 面板实际只发半个边长
+//!   （面积、功率、辐照度各少 4×），是「矩形面光几乎不出光」的根因。
 //! - [`Light::Ambient`]：均匀环境光，仅作为**逃逸背景**贡献（BSDF 采样路径
 //!   miss 时由积分器经 [`ambient_background`] 全额取得）；NEE 不采样
 //!   （[`sample_nee`] 返回 None）→ 无重复计数，权重语义恒 1。
@@ -343453,13 +344505,26 @@ pub enum Light {
         /// 出射辐亮度。
         radiance: Vec3,
     },
-    /// 矩形面光：中心 + 两正交边向量定义平行四边形，双面发光，非几何。
+    /// 矩形面光：中心 + 两**半边**向量定义平行四边形，双面发光，非几何。
+    ///
+    /// # 几何与功率契约（V3.1.2 定型）
+    ///
+    /// - 发光区 = `{ center + a·edge_u + b·edge_v : a, b ∈ [−1, 1] }`
+    ///   ⇒ 面积 `A = 4·|edge_u × edge_v|`（[`rect_area`] 是唯一真值点）；
+    /// - `radiance` 是**出射辐亮度**（与面积无关，物理上就不该除面积）；
+    /// - 面是**双面**的（两面同值），故单面辐出度 `M = π·L`、总功率
+    ///   `P = 2·π·L·A`（[`Light::rect_power`]）。
+    /// - NEE 均匀采样整块面（`±edge_u × ±edge_v`），`pdf_A = 1/A`；
+    ///   "更大更亮"是 `P ∝ A` 的结果，不需要任何额外系数。
+    ///
+    /// 声明一块 2.4 m 见方的面板：`edge_u = (1.2, 0, 0)`、`edge_v = (0, 0, 1.2)`。
+    /// DSL 侧同样按半边解释（`docs/v3.1.1-接线与语法.md` §3.1）。
     Rect {
         /// 矩形中心。
         center: Vec3,
-        /// 半宽边向量（中心到边中点的向量，即半边）。
+        /// 半边向量 U（中心 → 边中点的向量；边长 = `2·|edge_u|`）。
         edge_u: Vec3,
-        /// 另一半边向量。
+        /// 另一半边向量 V（与 `edge_u` 张成发光面）。
         edge_v: Vec3,
         /// 出射辐亮度（双面同值）。
         radiance: Vec3,
@@ -343508,6 +344573,61 @@ const _: () = {
 const _: () = assert!(core::mem::size_of::<Light>() == 52);
 /// 对齐 4 B（全 f32/u32）。
 const _: () = assert!(core::mem::align_of::<Light>() == 4);
+
+/// 矩形面光的发光面积（m²）：`A = 4·|edge_u × edge_v|`。
+///
+/// # 为什么是 4 倍
+///
+/// [`Light::Rect`] 的 `edge_u` / `edge_v` 是**半边**向量（中心 → 边中点），
+/// 故发光区 = `{ c + a·eu + b·ev : a, b ∈ [−1, 1] }`，是"两倍边长"的平行四边形，
+/// 面积 = `(2|eu|)·(2|ev|)·sinθ = 4·|eu × ev|`。
+///
+/// 这是本仓库**唯一**的矩形面积定义点：[`Light::rect_area`]、
+/// [`Light::rect_power`] 与 [`sample_nee`] 的 `pdf_A = 1/A` 全部走这里，
+/// 避免"采样域按全边、pdf 按半边"这类只有对拍才抓得到的口径分裂
+/// （V3.1.2 的矩形面光暗 4× 缺陷正是此式缺席所致）。
+#[inline]
+pub fn rect_area(edge_u: Vec3, edge_v: Vec3) -> f32 {
+    4.0 * edge_u.cross(&edge_v).length()
+}
+
+impl Light {
+    /// 矩形面光的发光面积（m²，`None` = 不是矩形灯）。
+    ///
+    /// 定义见 [`rect_area`]：`A = 4·|edge_u × edge_v|`（`edge_*` 为半边向量）。
+    #[inline]
+    pub fn rect_area(&self) -> Option<f32> {
+        match self {
+            Light::Rect { edge_u, edge_v, .. } => Some(rect_area(*edge_u, *edge_v)),
+            _ => None,
+        }
+    }
+
+    /// 矩形面光的**双面**总辐射功率 `P = 2·π·L·A`（`None` = 不是矩形灯）。
+    ///
+    /// # 推导
+    ///
+    /// 单面朗伯面元的出射辐出度是 `M = π·L`，故单面功率 `P₁ = π·L·A`；
+    /// [`Light::Rect`] 双面同值发光 ⇒ `P = 2·P₁ = 2·π·L·A`。
+    ///
+    /// 这个关系是 `intensity ↔ radiance` 换算的物理锚：`radiance`（辐亮度，
+    /// 与面积无关）由 [`crate::light`] 的采样消费，`power`（功率，含面积与
+    /// 双面因子）是它的派生量。两者必须由**同一个** `A` 推出——否则场景里
+    /// 声明 2.4 m 见方、实际只发一半边长的光（V3.1.2 前的缺陷）。
+    ///
+    /// 注意 `radiance` 本身**不**除面积：它是辐亮度，物理上就与面积无关；
+    /// "更大更亮"是 `P ∝ A` 的结果，不是 radiance 变化。
+    #[inline]
+    pub fn rect_power(&self) -> Option<Vec3> {
+        match self {
+            Light::Rect { edge_u, edge_v, radiance, .. } => {
+                let a: f32 = rect_area(*edge_u, *edge_v);
+                Some(*radiance * (2.0 * PI * a))
+            }
+            _ => None,
+        }
+    }
+}
 
 /// NEE 采样结果：对着色点 `p` 采样灯光得到的一条入射辐射样本。
 #[derive(Debug, Clone, Copy)]
@@ -343632,15 +344752,22 @@ pub fn sample_nee(light: &Light, p: Vec3, u1: f32, u2: f32) -> Option<LightSampl
             })
         }
         Light::Rect { center, edge_u, edge_v, radiance } => {
-            // 面上均匀采样 q = c + (u1−½)e_u + (u2−½)e_v，
-            // 面积 pdf pdf_A = 1/|e_u×e_v|，换算立体角 pdf_w = pdf_A·d²/|cosθ_l|。
+            // 发光区 = { c + a·e_u + b·e_v : a, b ∈ [−1, 1] }（`edge_*` 是**半边**
+            // 向量）⇒ 面积 A = 4|e_u×e_v|，唯一真值在 [`rect_area`]。
+            // 面均匀采样 q = c + (2u₁−1)·e_u + (2u₂−1)·e_v，面积 pdf_A = 1/A，
+            // 换算立体角 pdf_w = pdf_A·d²/|cosθ_l|；双面发光 ⇒ cosθ_l 取 abs。
+            //
+            // V3.1.2：旧实现按 ±½·e（**全边**域）采样，却用 |e_u×e_v| 当面积 ⇒
+            // 声明"半边 1.2（2.4 m 见方）"实际只发 1.2 m 见方，功率与辐照度
+            // 各少 4×（用户实测「矩形面光几乎不出光」的直接来源）。采样域与
+            // pdf 里的面积必须由同一个 A 推出，这里一律走 [`rect_area`]。
             let cr = edge_u.cross(edge_v);
             let norm2 = cr.dot(&cr);
             if norm2 <= 1e-12 {
-                return None; // 退化矩形
+                return None; // 退化矩形（零长 / 共线边）：无发光面积
             }
-            let area = norm2.sqrt();
-            let q = *center + *edge_u * (u1 - 0.5) + *edge_v * (u2 - 0.5);
+            let area: f32 = rect_area(*edge_u, *edge_v);
+            let q = *center + *edge_u * (2.0 * u1 - 1.0) + *edge_v * (2.0 * u2 - 1.0);
             let to_q = q - p;
             let d2 = to_q.dot(&to_q);
             if d2 <= 1e-12 {
@@ -343648,7 +344775,7 @@ pub fn sample_nee(light: &Light, p: Vec3, u1: f32, u2: f32) -> Option<LightSampl
             }
             let d = d2.sqrt();
             let wi = to_q * (1.0 / d);
-            let n_l = cr * (1.0 / area);
+            let n_l = cr * (1.0 / norm2.sqrt());
             let cos_l = wi.dot(&n_l).abs(); // 双面发光
             if cos_l < 1e-6 {
                 return None; // 掠射：pdf_w 发散，样本放弃（贡献按 0 计）
@@ -343810,6 +344937,10 @@ mod tests {
     #[test]
     fn rect_pdf_conversion_identity() {
         // 面积↔立体角换算恒等：pdf_w·cos_l/d² == pdf_A（逐点，无 MC）。
+        // V3.1.2：`edge_*` 是半边 ⇒ A = 4|10×4| = 160（旧断言按全边写成 40，
+        // 与 `Light::Rect` 的文档语义不符；本处换成「半边面积」并把采样域的
+        // 覆盖范围也钉住，判据比旧版更强：不只看 pdf 自洽，还看采样是否
+        // 真的铺满 ±edge 区域）。
         let rect = Light::Rect {
             center: Vec3::new(0.0, 6.0, 0.0),
             edge_u: Vec3::new(10.0, 0.0, 0.0),
@@ -343818,7 +344949,19 @@ mod tests {
         };
         let p = Vec3::new(1.2, 0.0, -0.7);
         let n_l = rect_edge_normal(&rect);
-        let pdf_a = 1.0 / 40.0; // |10×4| = 40
+        let pdf_a = 1.0 / 160.0; // A = 4·|10×4| = 160
+        // 采样域覆盖：u1/u2 取端点附近 ⇒ |q−c| 应逼近 |edge_u| / |edge_v|。
+        let corners: [(f32, f32); 4] =
+            [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)];
+        for (u1, u2) in corners {
+            let s = sample_nee(&rect, p, u1, u2).expect("角点样本必须存在");
+            let q = p + s.wi * s.dist;
+            let rel = q - Vec3::new(0.0, 6.0, 0.0);
+            assert!(
+                (rel.x.abs() - 10.0).abs() < 1e-3 && (rel.z.abs() - 4.0).abs() < 1e-3,
+                "角点样本必须落在 ±edge 上（半边语义）：rel={rel:?}"
+            );
+        }
         let mut checked = 0u32;
         for k in 0..256usize {
             let u1 = grid_u(k, 16);
