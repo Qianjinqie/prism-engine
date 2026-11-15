@@ -1,7 +1,7 @@
-PRISM ENGINE — 源码合并（811 个文件）
+PRISM ENGINE — 源码合并（812 个文件）
 
 【还原成目录树：3 步】
-1. 把本文件保存为 prism-engine-v3.1-source.txt（UTF-8 编码）
+1. 把本文件保存为 prism-engine-v3.1.1-source.txt（UTF-8 编码）
 2. 把下方 UNPACK SCRIPT BEGIN / END 之间的代码，保存为同目录下的 unpack.cjs
 3. 运行: node unpack.cjs
    完成后在当前目录得到完整目录树（需 Node 18+）
@@ -26,7 +26,7 @@ PRISM ENGINE — 源码合并（811 个文件）
 
 UNPACK SCRIPT BEGIN
 const fs = require('fs'), path = require('path');
-const SRC = process.argv[2] || 'prism-engine-v3.1-source.txt';
+const SRC = process.argv[2] || 'prism-engine-v3.1.1-source.txt';
 const lines = fs.readFileSync(SRC, 'utf-8').split('\n');
 let cur = null, buf = [], count = 0, b64 = false, noEol = false, need = -1, seen = 0;
 const flush = () => {
@@ -14686,7 +14686,7 @@ pub use state::{
 pub use state::build_reference_graph;
 ================================================================================
 === FILE: src/prism-app/src/editor/preview.rs ===
-=== LINES: 1243 ===
+=== LINES: 1244 ===
 //! 编辑器预览渲染器：**同一渲染器 + 无状态重渲 + 子图签名增量**。
 //!
 //! # 唯一事实源（W7 / B3 的核心命题）
@@ -15340,6 +15340,7 @@ fn scene_from_graph(graph: &Graph, cone: &BTreeSet<NodeId>) -> Scene {
         Vec3::new(0.3, -1.0, 0.6)
     };
     let mut scene: Scene = Scene {
+        spheres: Vec::new(),
         radius: 0.35 + 0.9 * h(0),
         orbit_center: center,
         orbit_radius,
@@ -16768,7 +16769,7 @@ pub mod w3_eval;
 pub mod w3_blind;
 ================================================================================
 === FILE: src/prism-app/src/main.rs ===
-=== LINES: 673 ===
+=== LINES: 675 ===
 //! `prism-app` — Prism 引擎命令行入口（"代码即视频/图片"的落盘闭环）。
 //!
 //! 两种运行模式：
@@ -16974,6 +16975,7 @@ fn run_demo() -> std::io::Result<()> {
     // ---- 1. 场景组装 ------------------------------------------------------
     // 红色球体置于原点，相机在半径 8 的水平圆轨道上环绕；光源为暖色方向光。
     let scene: Scene = Scene {
+        spheres: Vec::new(),
         radius: 1.0,
         orbit_center: Vec3::new(0.0, 0.0, 0.0),
         orbit_radius: 8.0,
@@ -16986,6 +16988,7 @@ fn run_demo() -> std::io::Result<()> {
             direction: Vec3::new(1.0, -1.0, -0.5).normalize(),
             color: Vec3::new(1.0, 244.0 / 255.0, 230.0 / 255.0), // #fff4e6，与黄金示例逐位一致
             intensity: 3.0,
+            kind: prism_core::LightKind::Directional,
         }],
         camera: Camera {
             eye: Vec3::new(0.0, 0.0, -8.0),
@@ -52670,7 +52673,7 @@ prism-anim = { path = "../prism-anim" }
 # 原唯一使用点 build_render_request 已下沉到其唯一消费者 prism-render。
 ================================================================================
 === FILE: src/prism-core/src/attach.rs ===
-=== LINES: 581 ===
+=== LINES: 617 ===
 //! 场景附加能力（T0 产品路径接线）：介质 / 网格 / 实例 / 纹理 / 毛发 / 位移槽。
 //!
 //! # 为什么需要这个模块（缺口原文）
@@ -53113,6 +53116,32 @@ impl StrandDesc {
     }
 }
 
+/// 轴对齐盒体（V3.1.1 新几何，DSL `sdf kind box`）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BoxDesc {
+    pub center: Vec3,
+    pub half_extents: Vec3,
+    pub material: crate::Material,
+}
+
+/// 平面（V3.1.1 新几何，DSL `sdf kind plane`）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlaneDesc {
+    pub point: Vec3,
+    pub normal: Vec3,
+    /// `None` = 无限平面；`Some(h)` = 以 point 为中心边长 2h 的切片。
+    pub half_extent: Option<f32>,
+    pub material: crate::Material,
+}
+
+/// 抛物面（V3.1.1 新几何，DSL `sdf kind paraboloid`）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ParaboloidDesc {
+    pub k: f32,
+    pub r_max: f32,
+    pub material: crate::Material,
+}
+
 /// 场景附加能力集合（[`crate::Scene::attach`] 的类型）。
 ///
 /// **`Default` 全空 ⇒ 与加字段前的 `Scene` 逐字节同帧**（判据 P1）。
@@ -53130,6 +53159,10 @@ pub struct SceneAttach {
     pub textures: Vec<TextureDesc>,
     /// 毛发股（每股一个 Mesh + 该股自己的纤维标架）。
     pub strands: Vec<StrandDesc>,
+    /// V3.1.1：盒体 / 平面 / 抛物面（DSL `sdf` 新 kind 的装配落点）。
+    pub boxes: Vec<BoxDesc>,
+    pub planes: Vec<PlaneDesc>,
+    pub paraboloids: Vec<ParaboloidDesc>,
     /// V2.5-B1：`config.ocio` 路径（色彩管理，非 rt 几何）。
     ///
     /// `None` ⇒ 沿用既有 ACES 路径，**逐字节不变**。该字段由 `prism-app`
@@ -53149,6 +53182,9 @@ impl SceneAttach {
             && self.instances.is_empty()
             && self.textures.is_empty()
             && self.strands.is_empty()
+            && self.boxes.is_empty()
+            && self.planes.is_empty()
+            && self.paraboloids.is_empty()
     }
 
     /// 附加能力条数合计（诊断 / 日志用）。
@@ -53159,6 +53195,9 @@ impl SceneAttach {
             + self.instances.len()
             + self.textures.len()
             + self.strands.len()
+            + self.boxes.len()
+            + self.planes.len()
+            + self.paraboloids.len()
     }
 }
 
@@ -57461,7 +57500,7 @@ mod tests {
 }
 ================================================================================
 === FILE: src/prism-core/src/lib.rs ===
-=== LINES: 303 ===
+=== LINES: 381 ===
 //! Prism 引擎核心：高层场景描述 + 时间模型。
 //!
 //! 本 crate 定义用户/DSL 代码构造的、以时间 `t` 为参数的高层 [`Scene`]，
@@ -57507,6 +57546,9 @@ mod tests {
 // T0 产品路径接线：场景附加能力（介质 / 网格 / 实例 / 纹理 / 毛发 / 位移槽）。
 // 空 ⇒ 与加字段前逐字节同帧（判据 P1）。
 pub mod attach;
+/// V3.1.1 新几何描述（DSL `sdf kind box/plane/paraboloid` 的 core 侧落点），
+/// 从 `attach` 提到 crate 根，供装配层以 `prism_core::BoxDesc` 等短名构造。
+pub use attach::{BoxDesc, ParaboloidDesc, PlaneDesc};
 pub mod node;
 pub mod registry;
 pub mod graph;
@@ -57581,18 +57623,45 @@ impl Material {
     }
 }
 
-/// 方向光光源。
+/// 灯型（V3.1.1）。与 `prism_rt::Light` 的五个变体一一对应；
+/// 缺省 [`LightKind::Directional`] 保持 V3.1 之前的单方向光语义。
+///
+/// `Environment` 在底层 `prism_rt` 是 W2 占位（明确「不参与任何计算」），
+/// 故 DSL 层声明该型会直接报错，绝不静默忽略。
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum LightKind {
+    /// 方向光：用 `direction` / `color` / `intensity`。
+    #[default]
+    Directional,
+    /// 均匀环境光：逃逸背景辐亮度，用 `color` / `intensity`。
+    Ambient,
+    /// 矩形面光：中心 + 两条半边向量。
+    Rect { center: Vec3, edge_u: Vec3, edge_v: Vec3 },
+    /// 发光球：球心 + 半径。
+    Sphere { center: Vec3, radius: f32 },
+    /// HDR 环境贴图句柄（底层 W2 占位，DSL 拒绝）。
+    Environment { map: u32 },
+}
+
+/// 一盏光源（V3.1.1 起携带灯型）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Light {
     pub direction: Vec3,
     pub color: Vec3,
     pub intensity: f32,
+    /// 灯型；缺省方向光。
+    pub kind: LightKind,
 }
 
 impl Light {
-    /// 以给定方向、颜色、强度构造光源。
+    /// 以给定方向、颜色、强度构造**方向光**（旧签名，逐字节兼容）。
     pub fn new(direction: Vec3, color: Vec3, intensity: f32) -> Self {
-        Self { direction, color, intensity }
+        Self { direction, color, intensity, kind: LightKind::Directional }
+    }
+
+    /// 以给定灯型构造光源（V3.1.1 多灯型入口）。
+    pub fn with_kind(direction: Vec3, color: Vec3, intensity: f32, kind: LightKind) -> Self {
+        Self { direction, color, intensity, kind }
     }
 }
 
@@ -57626,10 +57695,39 @@ impl Aesthetic {
     }
 }
 
+/// 场景中的一个球体（V3.1.1 多球接线）。
+///
+/// 每球独立持有球心 / 半径 / 材质，不再由 `Scene::radius` 这一个全局标量
+/// 统一决定。DSL 的多个 `sphere` 块 / 多个 `sdf kind sphere` 一一翻译到
+/// 本结构，最终由 `prism-render::build_render_request` 逐球生成 `SphereReq`。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SphereDesc {
+    /// 世界空间球心。
+    pub center: Vec3,
+    /// 球半径（非正数在翻译层按「不命中」跳过，与既有口径一致）。
+    pub radius: f32,
+    /// 该球自己的材质（反照率 / 粗糙度 / 金属度）。
+    pub material: Material,
+}
+
+impl SphereDesc {
+    /// 以球心、半径、材质构造一个球体描述。
+    pub fn new(center: Vec3, radius: f32, material: Material) -> Self {
+        Self { center, radius, material }
+    }
+}
+
 /// 一个完整的、以时间参数化的 Prism 场景。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Scene {
     pub radius: f32,
+    /// V3.1.1：场景中的多个球体（各球独立球心 / 半径 / 材质）。
+    ///
+    /// **空集的结构性缺省**：沿用 `radius` / `material` 在 `orbit_center`
+    /// 处的既有单球语义，与 `SceneAttach::default()` 全空 ⇒ 逐字节同帧
+    /// 是同一套版本契约（既有的 30 余处 `Scene` 字面量不因此改变出片）。
+    /// 非空时 `build_render_request` 逐球翻译，不再只造一个球。
+    pub spheres: Vec<SphereDesc>,
     pub orbit_center: Vec3,
     pub orbit_radius: f32,
     pub material: Material,
@@ -57652,6 +57750,23 @@ pub struct Scene {
     pub attach: SceneAttach,
 }
 
+impl Scene {
+    /// 本场景的球体列表（**唯一事实源**）。
+    ///
+    /// `spheres` 非空时逐字返回——每个球有自己的球心 / 半径 / 材质；
+    /// 为空时由既有的 `radius` / `material` / `orbit_center` 合成缺省单球。
+    /// 后者与 `SceneAttach::default()` 全空 ⇒ 逐字节同帧是同一套结构性
+    /// 缺省，保证既有的 `Scene` 字面量（v1 / 测试 / 示例）不因新增字段
+    /// 改变出片。装配层只调用本方法，不再自行判断场景形态。
+    pub fn sphere_descs(&self) -> Vec<SphereDesc> {
+        if self.spheres.is_empty() {
+            vec![SphereDesc::new(self.orbit_center, self.radius, self.material)]
+        } else {
+            self.spheres.clone()
+        }
+    }
+}
+
 impl Default for Scene {
     /// 中性缺省：零半径球、单盏强度 1 的白光、45° 相机、关后期、空附加能力。
     ///
@@ -57660,6 +57775,7 @@ impl Default for Scene {
     fn default() -> Self {
         Scene {
             radius: 0.0,
+            spheres: Vec::new(),
             orbit_center: Vec3::new(0.0, 0.0, 0.0),
             orbit_radius: 4.0,
             material: Material::new(Vec3::splat(0.8), 0.5, 0.0),
@@ -57714,6 +57830,7 @@ mod tests {
     /// 构造一个用于验证的样例场景：轨道半径 4，持续 10 秒。
     fn sample_scene() -> Scene {
         Scene {
+            spheres: Vec::new(),
             radius: 1.0,
             orbit_center: Vec3::new(0.0, 0.0, 0.0),
             orbit_radius: 4.0,
@@ -63753,7 +63870,7 @@ prism-anim = { path = "../prism-anim" }
 prism-noise = { path = "../prism-noise" }
 ================================================================================
 === FILE: src/prism-dsl/src/ast.rs ===
-=== LINES: 692 ===
+=== LINES: 697 ===
 //! AST：v1（M0/M1）文档模型逐字保留；v2 新增全块语法模型。
 //!
 //! # v2 建模策略
@@ -63783,19 +63900,24 @@ pub(crate) struct DocumentAst {
     pub(crate) output: Option<OutputAst>,
 }
 
-/// scene 块。语义约束：至多一个 sphere、一个 camera；light 可多个。
+/// scene 块。V3.1.1：可声明**多个** sphere（各球独立球心 / 半径 /
+/// 材质）；camera 至多一个；light 可多个。
 pub(crate) struct SceneAst {
     /// 场景名（暂不参与编译产物，保留给未来诊断 / 多场景导出）。
     pub(crate) name: String,
-    pub(crate) sphere: Option<SphereAst>,
+    /// 球体列表，声明顺序即装配顺序（确定性）。
+    pub(crate) spheres: Vec<SphereAst>,
     pub(crate) camera: Option<CameraAst>,
     pub(crate) lights: Vec<LightAst>,
 }
 
 /// sphere 条目。
 pub(crate) struct SphereAst {
-    /// 条目名（暂不参与编译产物，保留给未来多物体扩展）。
+    /// 条目名（诊断定位用；同名不报错，按声明顺序装配）。
     pub(crate) name: String,
+    /// 世界空间球心。`None` = DSL 未声明 ⇒ codegen 回落到 `orbit_center`
+    /// （既有单球摆放口径，逐字节保持 v1 行为）；`Some` = 显式球心。
+    pub(crate) center: Option<Vec3>,
     pub(crate) radius: f32,
     pub(crate) material: Option<MaterialAst>,
 }
@@ -64448,7 +64570,7 @@ pub mod v3 {
 }
 ================================================================================
 === FILE: src/prism-dsl/src/codegen.rs ===
-=== LINES: 3416 ===
+=== LINES: 3885 ===
 //! codegen：AST → 引擎产物。
 //!
 //! v1（M0/M1）路径逐字保留：`codegen(&DocumentAst) -> CompileOutput`；
@@ -64557,18 +64679,27 @@ fn hex_to_vec3(c: (u8, u8, u8)) -> Vec3 {
 
 /// 把 v1 AST 映射为引擎产物。至此语法 / 语义已全部校验通过，本函数不会失败。
 pub(crate) fn codegen(doc: &DocumentAst) -> crate::CompileOutput {
-    // ---- sphere / material（缺省：半径 1，白色中性材质） ----
-    let sphere: Option<&crate::ast::SphereAst> = doc.scene.sphere.as_ref();
-    let radius: f32 = sphere.map_or(DEFAULT_RADIUS, |s| s.radius);
-    let material: prism_core::Material = match sphere.and_then(|s| s.material.as_ref()) {
-        Some(m) => prism_core::Material::new(
-            m.albedo.map_or(Vec3::new(1.0, 1.0, 1.0), hex_to_vec3),
-            m.roughness.unwrap_or(DEFAULT_ROUGHNESS),
-            m.metalness.unwrap_or(DEFAULT_METALNESS),
-        ),
-        // 缺省材质：纯白 albedo / 中等粗糙 / 非金属。
-        None => prism_core::Material::new(Vec3::new(1.0, 1.0, 1.0), DEFAULT_ROUGHNESS, DEFAULT_METALNESS),
+    // ---- spheres / material（V3.1.1：多球，各球独立球心 / 半径 / 材质） ----
+    // 材质换算抽成闭包，供「首球兼容视图」与「逐球装配」共用，避免两份口径。
+    let mat_of = |m: Option<&crate::ast::MaterialAst>| -> prism_core::Material {
+        match m {
+            Some(m) => prism_core::Material::new(
+                m.albedo.map_or(Vec3::new(1.0, 1.0, 1.0), hex_to_vec3),
+                m.roughness.unwrap_or(DEFAULT_ROUGHNESS),
+                m.metalness.unwrap_or(DEFAULT_METALNESS),
+            ),
+            // 缺省材质：纯白 albedo / 中等粗糙 / 非金属。
+            None => prism_core::Material::new(
+                Vec3::new(1.0, 1.0, 1.0), DEFAULT_ROUGHNESS, DEFAULT_METALNESS,
+            ),
+        }
     };
+    // v1 遗留的单球视图（radius / material）：取声明的首球，无球时用既有
+    // 缺省。装配层以 `Scene::sphere_descs()` 为唯一事实源，这两字段只在
+    // `spheres` 为空时用于合成缺省单球，并供既有 v1 断言读取。
+    let first: Option<&crate::ast::SphereAst> = doc.scene.spheres.first();
+    let radius: f32 = first.map_or(DEFAULT_RADIUS, |s| s.radius);
+    let material: prism_core::Material = mat_of(first.and_then(|s| s.material.as_ref()));
 
     // ---- camera / orbit（缺省：中心原点、轨道半径 8、fov 45°） ----
     let cam: Option<&crate::ast::CameraAst> = doc.scene.camera.as_ref();
@@ -64616,7 +64747,23 @@ pub(crate) fn codegen(doc: &DocumentAst) -> crate::CompileOutput {
             OutputFormatAst::Png => OutputFormat::Png,
         });
 
+    // 逐球装配：未声明 center 的球沿用 `orbit_center`（既有单球摆放口径，
+    // 逐字节保持 v1 行为）；显式 center 用 DSL 值。声明顺序即装配顺序。
+    let spheres: Vec<prism_core::SphereDesc> = doc
+        .scene
+        .spheres
+        .iter()
+        .map(|s| {
+            prism_core::SphereDesc::new(
+                s.center.unwrap_or(orbit_center),
+                s.radius,
+                mat_of(s.material.as_ref()),
+            )
+        })
+        .collect();
+
     let scene: prism_core::Scene = prism_core::Scene {
+        spheres,
         radius,
         orbit_center,
         orbit_radius,
@@ -65570,8 +65717,9 @@ pub(crate) fn codegen_v2(doc: &DocumentV2Ast) -> Result<CompileV2Output, DslErro
         let mut post: PostInfo = PostInfo::default();
         let mut audio: Option<AudioInfo> = None;
         let mut notes: Vec<NoteInfo> = Vec::new();
-        // 已投影但不进 node_ids（render 消费面）的节点：audio / post / light。
+        // 已投影但不进 node_ids（render 消费面）的节点：audio / post。
         // 进 graph 供求值台可见，登记于各块 Info；进 node_ids 会误报 R5010。
+        // V3.1.1：light 已从本集合移出 —— 它现在由 render 侧真实消费。
         let mut deferred_ids: Vec<NodeId> = Vec::new();
         // T0：本场景的附加能力（介质 / 网格 / 实例 / 纹理 / 毛发）。
         let mut attach: prism_core::SceneAttach = prism_core::SceneAttach::default();
@@ -65588,7 +65736,7 @@ pub(crate) fn codegen_v2(doc: &DocumentV2Ast) -> Result<CompileV2Output, DslErro
         for item in &scene.items {
             match item {
                 SceneItem::Stage3d(st) => {
-                    let cam: CameraOrbit = build_stage3d(&mut b, st, si, &mut deferred_ids)?;
+                    let cam: CameraOrbit = build_stage3d(&mut b, st, si)?;
                     camera = Some(cam);
                 }
                 SceneItem::Layer(l) => {
@@ -65756,12 +65904,15 @@ fn codegen_fonts(doc: &DocumentV2Ast) -> Vec<FontSlotSpec> {
 // ---------------------------------------------------------------------------
 
 /// stage3d 块 → 节点（camera→S5、sdf→S12、material→S8、light→S8 源项），
-/// 返回场景相机摘要。light 节点经 `deferred` 登记（进 graph 不进 node_ids）。
+/// 返回场景相机摘要。
+///
+/// V3.1.1：light 节点**进渲染消费面**。旧实现把 light id 塞进 `deferred`，
+/// 于是它只在节点图里可见、`scene.node_ids` 里没有，render 的 `build_models`
+/// 根本遍历不到 —— 这正是「DSL 写几盏灯出片完全一样」的装配层断点。
 fn build_stage3d(
     b: &mut V2Builder,
     st: &Stage3dAst,
     si: usize,
-    deferred: &mut Vec<NodeId>,
 ) -> Result<CameraOrbit, DslError> {
     // camera：至多一个（parser 已保证），无则缺省轨道。
     let mut orbit: CameraOrbit =
@@ -65775,11 +65926,10 @@ fn build_stage3d(
     for mat in &st.materials {
         build_material(b, mat, si)?;
     }
-    // light：参数白名单校验（direction / color / intensity）后投影为 S8 源项
-    // 节点（「light = 场景源项 g」模式标签；原「校验后登记忽略」断点已补）。
+    // light：按声明序投影为 S8 源项节点，全部进 node_ids（渲染消费面）。
+    // 灯型 / 方向 / 颜色 / 强度的字段白名单与参数落地都在 build_light 内。
     for light in &st.lights {
-        let id: NodeId = build_light(b, light, si)?;
-        deferred.push(id);
+        build_light(b, light, si)?;
     }
     Ok(orbit)
 }
@@ -65890,7 +66040,9 @@ fn build_camera(b: &mut V2Builder, cam: &CameraV2Ast, si: usize) -> Result<Camer
 /// sdf 条目 → S12 实体表示节点。
 ///
 /// # kind 支持集（曲线图元扩展）
-/// - `sphere`：`radius` 缺省 1、负值 P1015（v1 既有口径不变）；
+/// - `sphere`：`radius` 缺省 1、负值 P1015（v1 既有口径不变）；V3.1.1 起
+///   另接受 `center`（vec3，缺省回落到相机 orbit_center）、`albedo` /
+///   `roughness` / `metalness`（每球独立材质，缺省沿用场景级 material）；
 /// - `box`：解析接受，render 侧 R5013（求交未接入，保留原错误）；
 /// - `cylinder` / `cone`：`radius` + `half_height`（必填，须 > 0）；
 /// - `torus`：`major` + `minor`（必填，须 > 0）；
@@ -65909,10 +66061,23 @@ fn build_sdf(b: &mut V2Builder, sdf: &SdfAst, si: usize) -> Result<NodeId, DslEr
     let mut radius_static: Option<f32> = None;
     let mut radius_line: usize = sdf.line;
     let mut center: Option<Vec3> = None;
+    // V3.1.1：每球独立材质（未声明 ⇒ 沿用场景级 material 节点）。
+    let mut albedo: Option<(u8, u8, u8)> = None;
+    let mut roughness: Option<f32> = None;
+    let mut metalness: Option<f32> = None;
     let mut half_height: Option<f32> = None;
     let mut major: Option<f32> = None;
     let mut minor: Option<f32> = None;
     let mut profile: Option<Vec<[f32; 2]>> = None;
+    // V3.1.1 新几何字段（按 kind 白名单分流，声明了不被该 kind 支持即报错）。
+    let mut half_extents: Option<Vec3> = None;
+    let mut point: Option<Vec3> = None;
+    let mut normal: Option<Vec3> = None;
+    let mut half_extent: Option<f32> = None;
+    let mut k_parab: Option<f32> = None;
+    let mut r_max: Option<f32> = None;
+    let mut mesh_verts: Option<Vec<Vec3>> = None;
+    let mut mesh_tris: Option<Vec<[u32; 3]>> = None;
     for f in &sdf.fields {
         match f.name.as_str() {
             "kind" => {
@@ -65947,6 +66112,21 @@ fn build_sdf(b: &mut V2Builder, sdf: &SdfAst, si: usize) -> Result<NodeId, DslEr
                     type_err(f.line, "sdf 块中字段 'center'", "vec3（如 0,1,0）", f.value.as_ref())
                 })?);
             }
+            "albedo" => {
+                albedo = Some(color_of(f.value.as_ref()).ok_or_else(|| {
+                    type_err(f.line, "sdf 块中字段 'albedo'", "#RRGGBB 颜色", f.value.as_ref())
+                })?);
+            }
+            "roughness" => {
+                roughness = Some(num_of(f.value.as_ref()).ok_or_else(|| {
+                    type_err(f.line, "sdf 块中字段 'roughness'", "数字", f.value.as_ref())
+                })?);
+            }
+            "metalness" => {
+                metalness = Some(num_of(f.value.as_ref()).ok_or_else(|| {
+                    type_err(f.line, "sdf 块中字段 'metalness'", "数字", f.value.as_ref())
+                })?);
+            }
             "half_height" => {
                 half_height = Some(num_of(f.value.as_ref()).ok_or_else(|| {
                     type_err(f.line, "sdf 块中字段 'half_height'", "正数字（如 1）", f.value.as_ref())
@@ -65965,6 +66145,42 @@ fn build_sdf(b: &mut V2Builder, sdf: &SdfAst, si: usize) -> Result<NodeId, DslEr
             "profile" => {
                 profile = Some(parse_sdf_profile(f)?);
             }
+            "half_extents" => {
+                half_extents = Some(vec3_of(f.value.as_ref()).ok_or_else(|| {
+                    type_err(f.line, "sdf 块中字段 'half_extents'", "vec3（如 1,1,1）", f.value.as_ref())
+                })?);
+            }
+            "point" => {
+                point = Some(vec3_of(f.value.as_ref()).ok_or_else(|| {
+                    type_err(f.line, "sdf 块中字段 'point'", "vec3（如 0,-1,0）", f.value.as_ref())
+                })?);
+            }
+            "normal" => {
+                normal = Some(vec3_of(f.value.as_ref()).ok_or_else(|| {
+                    type_err(f.line, "sdf 块中字段 'normal'", "vec3（如 0,1,0）", f.value.as_ref())
+                })?);
+            }
+            "half_extent" => {
+                half_extent = Some(num_of(f.value.as_ref()).ok_or_else(|| {
+                    type_err(f.line, "sdf 块中字段 'half_extent'", "正数字", f.value.as_ref())
+                })?);
+            }
+            "k" => {
+                k_parab = Some(num_of(f.value.as_ref()).ok_or_else(|| {
+                    type_err(f.line, "sdf 块中字段 'k'", "正数字（曲率）", f.value.as_ref())
+                })?);
+            }
+            "r_max" => {
+                r_max = Some(num_of(f.value.as_ref()).ok_or_else(|| {
+                    type_err(f.line, "sdf 块中字段 'r_max'", "正数字（径向截断）", f.value.as_ref())
+                })?);
+            }
+            "verts" => {
+                mesh_verts = Some(parse_sdf_verts(f)?);
+            }
+            "tris" => {
+                mesh_tris = Some(parse_sdf_tris(f)?);
+            }
             // 其余字段名（含未识别与越权）由 kind 定株后的白名单重扫描
             // 统一报 P1002——见下方 `allowed` 校验。
             _ => {}
@@ -65974,16 +66190,20 @@ fn build_sdf(b: &mut V2Builder, sdf: &SdfAst, si: usize) -> Result<NodeId, DslEr
         return Err(err_at(
             sdf.line,
             format!(
-                "[P1003] sdf '{}' 缺少必填字段 'kind'\n  建议：kind sphere 或 kind cylinder（支持：sphere / box / cylinder / cone / torus / revolution）",
+                "[P1003] sdf '{}' 缺少必填字段 'kind'\n  建议：kind sphere（支持：sphere / box / plane / paraboloid / mesh / cylinder / cone / torus / revolution）",
                 sdf.name
             ),
         ));
     }
-    if !matches!(kind, "sphere" | "box" | "cylinder" | "cone" | "torus" | "revolution") {
+    if !matches!(
+        kind,
+        "sphere" | "box" | "plane" | "paraboloid" | "mesh" | "cylinder" | "cone" | "torus"
+            | "revolution"
+    ) {
         return Err(err_at(
             sdf.line,
             format!(
-                "[P1002] 未知的 sdf kind '{}'\n  建议：当前支持 sphere / box / cylinder / cone / torus / revolution",
+                "[P1002] 未知的 sdf kind '{}'\n  建议：当前支持 sphere / box / plane / paraboloid / mesh / cylinder / cone / torus / revolution",
                 kind
             ),
         ));
@@ -65992,8 +66212,12 @@ fn build_sdf(b: &mut V2Builder, sdf: &SdfAst, si: usize) -> Result<NodeId, DslEr
     // 修复后可再报下一个）。既覆盖未识别字段名，也覆盖"已识别但该 kind
     // 不收起"的字段（如 torus 上的 radius）。
     let allowed: &[&str] = match kind {
-        "sphere" => &["kind", "radius"],
-        "box" => &["kind"],
+        "sphere" => &["kind", "radius", "center", "albedo", "roughness", "metalness"],
+        "box" => &["kind", "center", "half_extents", "albedo", "roughness", "metalness"],
+        "plane" => &["kind", "point", "normal", "half_extent", "albedo", "roughness", "metalness"],
+        "paraboloid" => &["kind", "k", "r_max", "albedo", "roughness", "metalness"],
+        // mesh 沿用场景级 material；不允许声明本链路不会消费的材质字段。
+        "mesh" => &["kind", "center", "verts", "tris"],
         "cylinder" | "cone" => &["kind", "center", "radius", "half_height"],
         "torus" => &["kind", "center", "major", "minor"],
         "revolution" => &["kind", "center", "profile"],
@@ -66012,6 +66236,38 @@ fn build_sdf(b: &mut V2Builder, sdf: &SdfAst, si: usize) -> Result<NodeId, DslEr
     }
     // 必填字段（P1027）与尺寸值域（P1028 / sphere 既有 P1015）。
     match kind {
+        "box" => {
+            if half_extents.is_none() {
+                return Err(err_at(
+                    sdf.line,
+                    format!("[P1027] sdf '{}'（kind box）缺少必填字段 'half_extents'\n  建议：half_extents(1,1,1)", sdf.name),
+                ));
+            }
+        }
+        "plane" => {
+            if point.is_none() || normal.is_none() {
+                return Err(err_at(
+                    sdf.line,
+                    format!("[P1027] sdf '{}'（kind plane）需要 point 与 normal\n  建议：point(0,-1,0) normal(0,1,0)", sdf.name),
+                ));
+            }
+        }
+        "paraboloid" => {
+            if k_parab.is_none() || r_max.is_none() {
+                return Err(err_at(
+                    sdf.line,
+                    format!("[P1027] sdf '{}'（kind paraboloid）需要 k 与 r_max\n  建议：k 0.5 r_max 2", sdf.name),
+                ));
+            }
+        }
+        "mesh" => {
+            if mesh_verts.is_none() || mesh_tris.is_none() {
+                return Err(err_at(
+                    sdf.line,
+                    format!("[P1027] sdf '{}'（kind mesh）需要 verts 与 tris 子块\n  建议：verts {{ v {{ x 0 y 0 z 0 }} ... }} tris {{ t {{ a 0 b 1 c 2 }} }}", sdf.name),
+                ));
+            }
+        }
         "cylinder" | "cone" => {
             if !radius_seen {
                 return Err(err_at(
@@ -66119,6 +66375,51 @@ fn build_sdf(b: &mut V2Builder, sdf: &SdfAst, si: usize) -> Result<NodeId, DslEr
                 }
             }
         }
+        "box" => {
+            if let Some(he) = half_extents {
+                if !(he.x > 0.0 && he.y > 0.0 && he.z > 0.0) {
+                    return Err(err_at(sdf.line, format!("[P1028] sdf.half_extents 三个分量必须为正（得到 {},{},{}）", he.x, he.y, he.z)));
+                }
+            }
+        }
+        "plane" => {
+            if let Some(h) = half_extent {
+                if !(h > 0.0) {
+                    return Err(err_at(sdf.line, format!("[P1028] sdf.half_extent 必须为正（得到 {}）", h)));
+                }
+            }
+            if let Some(n) = normal {
+                if !(n.x.is_finite() && n.y.is_finite() && n.z.is_finite())
+                    || (n.x * n.x + n.y * n.y + n.z * n.z) <= 1e-12
+                {
+                    return Err(err_at(sdf.line, "[P1028] sdf.normal 必须是非零有限 vec3".to_string()));
+                }
+            }
+        }
+        "paraboloid" => {
+            if let Some(k) = k_parab {
+                if !(k > 0.0) {
+                    return Err(err_at(sdf.line, format!("[P1028] sdf.k 必须为正（得到 {}）", k)));
+                }
+            }
+            if let Some(r) = r_max {
+                if !(r > 0.0) {
+                    return Err(err_at(sdf.line, format!("[P1028] sdf.r_max 必须为正（得到 {}）", r)));
+                }
+            }
+        }
+        "mesh" => {
+            if let (Some(vs), Some(ts)) = (mesh_verts.as_ref(), mesh_tris.as_ref()) {
+                if ts.is_empty() {
+                    return Err(err_at(sdf.line, "[P1027] sdf kind mesh 的 tris 至少需要 1 个三角形".to_string()));
+                }
+                for t in ts {
+                    if t.iter().any(|&i| i as usize >= vs.len()) {
+                        return Err(err_at(sdf.line, format!("[P1028] sdf kind mesh 的三角形索引越界（顶点数 {}，索引 {:?}）", vs.len(), t)));
+                    }
+                }
+            }
+        }
         _ => {}
     }
     let id: NodeId = b.alloc_id();
@@ -66129,6 +66430,18 @@ fn build_sdf(b: &mut V2Builder, sdf: &SdfAst, si: usize) -> Result<NodeId, DslEr
         node.params.set("center_x", ParamValue::F32(c.x));
         node.params.set("center_y", ParamValue::F32(c.y));
         node.params.set("center_z", ParamValue::F32(c.z));
+    }
+    // V3.1.1 每球材质：只有 DSL 显式声明才写入，渲染侧据此覆盖场景级材质。
+    if let Some((r, g, b)) = albedo {
+        node.params.set("albedo_r", ParamValue::F32(r as f32 / 255.0));
+        node.params.set("albedo_g", ParamValue::F32(g as f32 / 255.0));
+        node.params.set("albedo_b", ParamValue::F32(b as f32 / 255.0));
+    }
+    if let Some(v) = roughness {
+        node.params.set("roughness", ParamValue::F32(v));
+    }
+    if let Some(v) = metalness {
+        node.params.set("metalness", ParamValue::F32(v));
     }
     if let Some(h) = half_height {
         node.params.set("half_height", ParamValue::F32(h));
@@ -66146,6 +66459,47 @@ fn build_sdf(b: &mut V2Builder, sdf: &SdfAst, si: usize) -> Result<NodeId, DslEr
             node.params.set(format!("profile_y_{i}"), ParamValue::F32(p[1]));
         }
     }
+    // V3.1.1 新几何：DSL 的每个尺寸 / 位置字段都落成节点参数，装配层逐项消费。
+    if let Some(he) = half_extents {
+        node.params.set("half_extents_x", ParamValue::F32(he.x));
+        node.params.set("half_extents_y", ParamValue::F32(he.y));
+        node.params.set("half_extents_z", ParamValue::F32(he.z));
+    }
+    if let Some(v) = point {
+        node.params.set("point_x", ParamValue::F32(v.x));
+        node.params.set("point_y", ParamValue::F32(v.y));
+        node.params.set("point_z", ParamValue::F32(v.z));
+    }
+    if let Some(v) = normal {
+        node.params.set("normal_x", ParamValue::F32(v.x));
+        node.params.set("normal_y", ParamValue::F32(v.y));
+        node.params.set("normal_z", ParamValue::F32(v.z));
+    }
+    if let Some(v) = half_extent {
+        node.params.set("half_extent", ParamValue::F32(v));
+    }
+    if let Some(v) = k_parab {
+        node.params.set("k", ParamValue::F32(v));
+    }
+    if let Some(v) = r_max {
+        node.params.set("r_max", ParamValue::F32(v));
+    }
+    if let Some(vs) = mesh_verts {
+        node.params.set("vert_n", ParamValue::U32(vs.len() as u32));
+        for (i, v) in vs.iter().enumerate() {
+            node.params.set(format!("vert_{i}_x"), ParamValue::F32(v.x));
+            node.params.set(format!("vert_{i}_y"), ParamValue::F32(v.y));
+            node.params.set(format!("vert_{i}_z"), ParamValue::F32(v.z));
+        }
+    }
+    if let Some(ts) = mesh_tris {
+        node.params.set("tri_n", ParamValue::U32(ts.len() as u32));
+        for (i, t) in ts.iter().enumerate() {
+            node.params.set(format!("tri_{i}_a"), ParamValue::U32(t[0]));
+            node.params.set(format!("tri_{i}_b"), ParamValue::U32(t[1]));
+            node.params.set(format!("tri_{i}_c"), ParamValue::U32(t[2]));
+        }
+    }
     if radius_channel.is_some() {
         node.bindings.push(NodeBinding {
             param: "radius".to_string(),
@@ -66155,6 +66509,142 @@ fn build_sdf(b: &mut V2Builder, sdf: &SdfAst, si: usize) -> Result<NodeId, DslEr
     b.graph.add_node(node).expect("递增 id 不应重复");
     b.block_nodes.insert((si, "sdf", sdf.name.clone()), id);
     Ok(id)
+}
+
+/// sdf `verts` 块 → 顶点列表（`{ v { x .. y .. z .. } ... }`，V3.1.1 mesh）。
+fn parse_sdf_verts(f: &NamedField) -> Result<Vec<Vec3>, DslError> {
+    let (_, entries) = block_of(f.value.as_ref()).ok_or_else(|| {
+        type_err(
+            f.line,
+            "sdf 块中字段 'verts'",
+            "子块（{ v { x .. y .. z .. } ... }）",
+            f.value.as_ref(),
+        )
+    })?;
+    let mut out: Vec<Vec3> = Vec::with_capacity(entries.len());
+    for e in entries {
+        let (block_name, vfs) = block_of(e.value.as_ref()).ok_or_else(|| {
+            type_err(
+                e.line,
+                "sdf verts 中的条目",
+                "带名子块（v { x .. y .. z .. }）",
+                e.value.as_ref(),
+            )
+        })?;
+        if e.name != "v" || (!block_name.is_empty() && block_name != "v") {
+            let shown: &str = if e.name.is_empty() { block_name } else { &e.name };
+            return Err(err_at(
+                e.line,
+                format!("[P1029] sdf.verts 子条目名应为 'v'，却得到 '{}'\n  建议：verts {{ v {{ x 0 y 0 z 0 }} }}", shown),
+            ));
+        }
+        let mut x: Option<f32> = None;
+        let mut y: Option<f32> = None;
+        let mut z: Option<f32> = None;
+        for g in vfs {
+            match g.name.as_str() {
+                "x" => x = Some(num_of(g.value.as_ref()).ok_or_else(|| {
+                    type_err(g.line, "sdf verts v 块中字段 'x'", "数字", g.value.as_ref())
+                })?),
+                "y" => y = Some(num_of(g.value.as_ref()).ok_or_else(|| {
+                    type_err(g.line, "sdf verts v 块中字段 'y'", "数字", g.value.as_ref())
+                })?),
+                "z" => z = Some(num_of(g.value.as_ref()).ok_or_else(|| {
+                    type_err(g.line, "sdf verts v 块中字段 'z'", "数字", g.value.as_ref())
+                })?),
+                other => {
+                    return Err(err_at(
+                        g.line,
+                        format!("[P1002] sdf verts v 块中未知字段 '{}'（允许：x / y / z）", other),
+                    ));
+                }
+            }
+        }
+        match (x, y, z) {
+            (Some(x), Some(y), Some(z)) => out.push(Vec3::new(x, y, z)),
+            _ => {
+                return Err(err_at(
+                    e.line,
+                    "[P1027] sdf verts 的 v 块需要 x / y / z 三个字段".to_string(),
+                ));
+            }
+        }
+    }
+    if out.len() < 3 {
+        return Err(err_at(
+            f.line,
+            "[P1027] sdf kind mesh 的 verts 至少需要 3 个顶点".to_string(),
+        ));
+    }
+    Ok(out)
+}
+
+/// sdf `tris` 块 → 三角形索引（`{ t { a .. b .. c .. } ... }`，V3.1.1 mesh）。
+fn parse_sdf_tris(f: &NamedField) -> Result<Vec<[u32; 3]>, DslError> {
+    let (_, entries) = block_of(f.value.as_ref()).ok_or_else(|| {
+        type_err(
+            f.line,
+            "sdf 块中字段 'tris'",
+            "子块（{ t { a .. b .. c .. } ... }）",
+            f.value.as_ref(),
+        )
+    })?;
+    let idx = |g: &NamedField| -> Result<u32, DslError> {
+        let v: f32 = num_of(g.value.as_ref()).ok_or_else(|| {
+            type_err(g.line, "sdf tris t 块中的索引", "非负整数", g.value.as_ref())
+        })?;
+        if !(v.is_finite() && v >= 0.0 && v.fract() == 0.0) {
+            return Err(err_at(
+                g.line,
+                format!("[P1028] sdf tris 索引必须是非负整数（得到 {}）", v),
+            ));
+        }
+        Ok(v as u32)
+    };
+    let mut out: Vec<[u32; 3]> = Vec::with_capacity(entries.len());
+    for e in entries {
+        let (block_name, tfs) = block_of(e.value.as_ref()).ok_or_else(|| {
+            type_err(
+                e.line,
+                "sdf tris 中的条目",
+                "带名子块（t { a .. b .. c .. }）",
+                e.value.as_ref(),
+            )
+        })?;
+        if e.name != "t" || (!block_name.is_empty() && block_name != "t") {
+            let shown: &str = if e.name.is_empty() { block_name } else { &e.name };
+            return Err(err_at(
+                e.line,
+                format!("[P1029] sdf.tris 子条目名应为 't'，却得到 '{}'", shown),
+            ));
+        }
+        let mut a: Option<u32> = None;
+        let mut b: Option<u32> = None;
+        let mut c: Option<u32> = None;
+        for g in tfs {
+            match g.name.as_str() {
+                "a" => a = Some(idx(g)?),
+                "b" => b = Some(idx(g)?),
+                "c" => c = Some(idx(g)?),
+                other => {
+                    return Err(err_at(
+                        g.line,
+                        format!("[P1002] sdf tris t 块中未知字段 '{}'（允许：a / b / c）", other),
+                    ));
+                }
+            }
+        }
+        match (a, b, c) {
+            (Some(a), Some(b), Some(c)) => out.push([a, b, c]),
+            _ => {
+                return Err(err_at(
+                    e.line,
+                    "[P1027] sdf tris 的 t 块需要 a / b / c 三个索引".to_string(),
+                ));
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// sdf `profile` 块 → `(r, y)` 点列（`{ pt { r .. y .. } ... }`）。
@@ -66369,12 +66859,78 @@ fn build_material(b: &mut V2Builder, mat: &MaterialV2Ast, si: usize) -> Result<N
 /// 字段缺席时的缺省：direction (1,-1,-0.5)（两个黄金示例的主光方向：
 /// `examples/w2d_showcase.prism` 与 `lib.rs` 黄金测试）、color 白、
 /// intensity 1.0（与 v1 `DEFAULT_LIGHT_INTENSITY` 一致）。
+/// light 块 → S8 源项节点（V3.1.1：五类灯型 + 逐 kind 字段白名单）。
+///
+/// # 铁律
+///
+/// 任何「DSL 声明了但渲染侧不支持」的字段 / kind 都在这里以 P1002 报错，
+/// 绝不静默忽略、绝不登记后丢掉。`environment` 在 `prism_rt` 是 W2 占位
+/// （不参与任何计算），因此显式拒绝并给出可用灯型建议。
+///
+/// # 缺省（写进 docs/v3.1.1-DSL-接线.md）
+///
+/// `kind` 缺省 `directional`（向后兼容）；`direction` (1,-1,-0.5)、`color`
+/// #ffffff、`intensity` 1.0、`position` (0,2,0)、`radius` 1.0、
+/// `edge_u` (1,0,0)、`edge_v` (0,0,1)。
 fn build_light(b: &mut V2Builder, light: &LightV2Ast, si: usize) -> Result<NodeId, DslError> {
+    // 先定株 kind（白名单按 kind 分流），再逐字段解析与落地。
+    let mut kind: &str = "directional";
+    for f in &light.fields {
+        if f.name == "kind" {
+            kind = ident_of(f.value.as_ref()).ok_or_else(|| {
+                type_err(
+                    f.line,
+                    "light 块中字段 'kind'",
+                    "标识符（directional / ambient / rect / sphere）",
+                    f.value.as_ref(),
+                )
+            })?;
+        }
+    }
+    if !matches!(kind, "directional" | "ambient" | "rect" | "sphere" | "environment") {
+        return Err(err_at(
+            light.line,
+            format!(
+                "[P1002] 未知的 light kind '{}'\n  建议：支持 directional / ambient / rect / sphere（environment 是 W2 占位，不可用）",
+                kind
+            ),
+        ));
+    }
+    if kind == "environment" {
+        return Err(err_at(
+            light.line,
+            "[P1002] light kind 'environment' 暂不支持：prism_rt 侧是 W2 占位（不参与任何计算），声明它等于静默忽略\n  建议：改用 directional / ambient / rect / sphere；需要均匀底色请用 ambient".to_string(),
+        ));
+    }
+    let allowed: &[&str] = match kind {
+        "directional" => &["kind", "direction", "color", "intensity"],
+        "ambient" => &["kind", "color", "intensity"],
+        "sphere" => &["kind", "color", "intensity", "position", "radius"],
+        "rect" => &["kind", "color", "intensity", "position", "edge_u", "edge_v"],
+        _ => &[],
+    };
+    if let Some(f) = light.fields.iter().find(|f| !allowed.contains(&f.name.as_str())) {
+        return Err(err_at(
+            f.line,
+            format!(
+                "[P1002] light 块中字段 '{}' 对 kind '{}' 非法（允许：{}）\n  建议：direction(1,-1,-0.5) color #fff4e6 intensity 3 position(0,2,0) radius 1 edge_u(1,0,0) edge_v(0,0,1)",
+                f.name,
+                kind,
+                allowed.join(" / ")
+            ),
+        ));
+    }
+
     let mut direction: Vec3 = Vec3::new(1.0, -1.0, -0.5);
     let mut color: (u8, u8, u8) = (255, 255, 255);
     let mut intensity: f32 = DEFAULT_LIGHT_INTENSITY;
+    let mut position: Option<Vec3> = None;
+    let mut radius: Option<f32> = None;
+    let mut edge_u: Option<Vec3> = None;
+    let mut edge_v: Option<Vec3> = None;
     for f in &light.fields {
         match f.name.as_str() {
+            "kind" => {}
             "direction" => {
                 direction = vec3_of(f.value.as_ref()).ok_or_else(|| {
                     type_err(
@@ -66387,37 +66943,62 @@ fn build_light(b: &mut V2Builder, light: &LightV2Ast, si: usize) -> Result<NodeI
             }
             "color" => {
                 color = color_of(f.value.as_ref()).ok_or_else(|| {
-                    type_err(
-                        f.line,
-                        "light 块中字段 'color'",
-                        "#RRGGBB 颜色",
-                        f.value.as_ref(),
-                    )
+                    type_err(f.line, "light 块中字段 'color'", "#RRGGBB 颜色", f.value.as_ref())
                 })?;
             }
             "intensity" => {
                 intensity = num_of(f.value.as_ref()).ok_or_else(|| {
-                    type_err(
-                        f.line,
-                        "light 块中字段 'intensity'",
-                        "数字",
-                        f.value.as_ref(),
-                    )
+                    type_err(f.line, "light 块中字段 'intensity'", "数字", f.value.as_ref())
                 })?;
             }
-            other => {
-                return Err(err_at(
-                    f.line,
-                    format!(
-                        "[P1002] light 块中未知字段 '{}'（允许：direction / color / intensity）\n  建议：direction(1,-1,-0.5) color #fff4e6 intensity 3",
-                        other
-                    ),
-                ));
+            "position" => {
+                position = Some(vec3_of(f.value.as_ref()).ok_or_else(|| {
+                    type_err(f.line, "light 块中字段 'position'", "vec3（如 0,2,0）", f.value.as_ref())
+                })?);
             }
+            "radius" => {
+                radius = Some(num_of(f.value.as_ref()).ok_or_else(|| {
+                    type_err(f.line, "light 块中字段 'radius'", "正数字", f.value.as_ref())
+                })?);
+            }
+            "edge_u" => {
+                edge_u = Some(vec3_of(f.value.as_ref()).ok_or_else(|| {
+                    type_err(f.line, "light 块中字段 'edge_u'", "vec3（如 1,0,0）", f.value.as_ref())
+                })?);
+            }
+            "edge_v" => {
+                edge_v = Some(vec3_of(f.value.as_ref()).ok_or_else(|| {
+                    type_err(f.line, "light 块中字段 'edge_v'", "vec3（如 0,0,1）", f.value.as_ref())
+                })?);
+            }
+            _ => unreachable!("字段白名单已先行校验"),
         }
     }
+    // 位置光的必填字段：缺一即报错，不允许「声明了 kind 却回落到缺省位置」。
+    if kind == "sphere" && (position.is_none() || radius.is_none()) {
+        return Err(err_at(
+            light.line,
+            "[P1027] light kind sphere 需要 position 与 radius\n  建议：position(0,2,0) radius 1".to_string(),
+        ));
+    }
+    if kind == "rect" && (position.is_none() || edge_u.is_none() || edge_v.is_none()) {
+        return Err(err_at(
+            light.line,
+            "[P1027] light kind rect 需要 position / edge_u / edge_v\n  建议：position(0,2,0) edge_u(1,0,0) edge_v(0,0,1)".to_string(),
+        ));
+    }
+    if let Some(r) = radius {
+        if !(r.is_finite() && r > 0.0) {
+            return Err(err_at(light.line, format!("[P1028] light.radius 必须为正数（得到 {}）", r)));
+        }
+    }
+    let pos: Vec3 = position.unwrap_or(Vec3::new(0.0, 2.0, 0.0));
+    let eu: Vec3 = edge_u.unwrap_or(Vec3::new(1.0, 0.0, 0.0));
+    let ev: Vec3 = edge_v.unwrap_or(Vec3::new(0.0, 0.0, 1.0));
+
     let id: NodeId = b.alloc_id();
     let mut node: Node = Node::new(id, StructureId::RadiativeTransfer, Composition::Feed);
+    node.params.set("light_kind", ParamValue::Str(kind.to_string()));
     node.params.set("dir_x", ParamValue::F32(direction.x));
     node.params.set("dir_y", ParamValue::F32(direction.y));
     node.params.set("dir_z", ParamValue::F32(direction.z));
@@ -66425,6 +67006,16 @@ fn build_light(b: &mut V2Builder, light: &LightV2Ast, si: usize) -> Result<NodeI
     node.params.set("color_g", ParamValue::F32(color.1 as f32 / 255.0));
     node.params.set("color_b", ParamValue::F32(color.2 as f32 / 255.0));
     node.params.set("intensity", ParamValue::F32(intensity));
+    node.params.set("pos_x", ParamValue::F32(pos.x));
+    node.params.set("pos_y", ParamValue::F32(pos.y));
+    node.params.set("pos_z", ParamValue::F32(pos.z));
+    node.params.set("radius", ParamValue::F32(radius.unwrap_or(1.0)));
+    node.params.set("edge_u_x", ParamValue::F32(eu.x));
+    node.params.set("edge_u_y", ParamValue::F32(eu.y));
+    node.params.set("edge_u_z", ParamValue::F32(eu.z));
+    node.params.set("edge_v_x", ParamValue::F32(ev.x));
+    node.params.set("edge_v_y", ParamValue::F32(ev.y));
+    node.params.set("edge_v_z", ParamValue::F32(ev.z));
     b.graph.add_node(node).expect("递增 id 不应重复");
     b.block_nodes.insert((si, "light", light.name.clone()), id);
     Ok(id)
@@ -73444,7 +74035,7 @@ pub mod v3 {
 
 ================================================================================
 === FILE: src/prism-dsl/src/lib.rs ===
-=== LINES: 2441 ===
+=== LINES: 2578 ===
 //! `prism-dsl` — Prism 引擎的 DSL 前端（M1 + v2 全块语法）。
 //!
 //! 把 `.prism` 文本编译为引擎产物：
@@ -74203,22 +74794,58 @@ mod tests {
         );
     }
 
+    /// V3.1.1：旧断言 `error_second_sphere_rejected` 把「至多一个球」的
+    /// 能力缺陷固化成了规格，现换成更强的正向断言——三个球必须**各自**
+    /// 持有独立球心 / 半径 / 材质，且声明顺序即装配顺序。
     #[test]
-    fn error_second_sphere_rejected() {
-        // 语义约束：scene 目前最多支持一个 sphere。
+    fn v311_multiple_spheres_compile_with_independent_geometry() {
+        let out = compile(concat!(
+            "scene \"x\" {\n",
+            "  sphere a {\n",
+            "    center -2,0,0\n",
+            "    radius 1.0\n",
+            "    material { albedo #ff0000 roughness 0.2 metalness 0.1 }\n",
+            "  }\n",
+            "  sphere b {\n",
+            "    center 0,1,0\n",
+            "    radius 2.0\n",
+            "    material { albedo #00ff00 roughness 0.7 }\n",
+            "  }\n",
+            "  sphere c {\n",
+            "    center 2,0,0\n",
+            "    radius 0.5\n",
+            "  }\n",
+            "}\n",
+        ))
+        .expect("多个 sphere 应编译成功（V3.1.1 起允许）");
+        assert_eq!(out.scene.spheres.len(), 3, "三个 sphere 应逐一装配");
+        // 球心独立。
+        assert!((out.scene.spheres[0].center - prism_math::Vec3::new(-2.0, 0.0, 0.0)).length() < 1e-6);
+        assert!((out.scene.spheres[1].center - prism_math::Vec3::new(0.0, 1.0, 0.0)).length() < 1e-6);
+        assert!((out.scene.spheres[2].center - prism_math::Vec3::new(2.0, 0.0, 0.0)).length() < 1e-6);
+        // 半径独立，且按声明顺序。
+        assert_eq!(out.scene.spheres[0].radius, 1.0);
+        assert_eq!(out.scene.spheres[1].radius, 2.0);
+        assert_eq!(out.scene.spheres[2].radius, 0.5);
+        // 材质独立（a 红 / b 绿 / c 未声明 ⇒ 缺省白）。
+        assert!((out.scene.spheres[0].material.albedo - prism_math::Vec3::new(1.0, 0.0, 0.0)).length() < 1e-6);
+        assert!((out.scene.spheres[1].material.albedo - prism_math::Vec3::new(0.0, 1.0, 0.0)).length() < 1e-6);
+        assert!((out.scene.spheres[2].material.albedo - prism_math::Vec3::new(1.0, 1.0, 1.0)).length() < 1e-6);
+        assert!((out.scene.spheres[0].material.roughness - 0.2).abs() < 1e-6);
+        assert!((out.scene.spheres[1].material.roughness - 0.7).abs() < 1e-6);
+        assert!((out.scene.spheres[0].material.metalness - 0.1).abs() < 1e-6);
+        // 唯一事实源：装配层读到的球体列表与声明逐字一致。
+        assert_eq!(out.scene.sphere_descs(), out.scene.spheres);
+    }
+
+    /// 铁律反向断言：允许多个球 **不等于** 放松字段校验。DSL 声明了但
+    /// 引擎不认识的字段必须在解析期报错，禁止静默忽略、禁止登记后丢掉。
+    #[test]
+    fn v311_sphere_unknown_field_still_rejected() {
         expect_err(
-            concat!(
-                "scene \"x\" {\n",
-                "  sphere a {\n",
-                "    radius 1.0\n",
-                "  }\n",
-                "  sphere b {\n",
-                "    radius 2.0\n",
-                "  }\n",
-                "}\n"
-            ),
-            5,
-            "sphere",
+            "scene \"x\" {\n  sphere a {\n    radius 1\n    bogus 3\n  }\n}\n",
+            4,
+            "未知字段",
         );
     }
 
@@ -74530,13 +75157,26 @@ mod tests {
             "  audio { music { bpm 120 gain 0.8 duck 12 } }\n",
             "}\n",
             "scene \"第二幕\" {\n",
-            "  stage3d { camera c2 { orbit { center 1,0,0 radius 6 } fov 45 } sdf b2 { kind box } }\n",
+            "  stage3d { camera c2 { orbit { center 1,0,0 radius 6 } fov 45 } sdf b2 { kind box half_extents 1,1,1 } }\n",
             "  sim cloth { grid 16 stiffness 0.9 damping 0.02 force wind { strength 2 direction(1,0,0) } noise { scale 0.1 } }\n",
             "}\n",
             "transition \"cut1\" { from \"开场\" to \"第二幕\" duration 0.5s kind crossfade }\n",
             "output { resolution 640x360 format png }\n"
         );
         let out: CompileV2Output = compile_v2(src).expect("全块语法黄金示例应编译成功");
+
+        // 【V3.1.1 旧断言升级】原示例里 `sdf b2 { kind box }` 是「box 尚未
+        // 支持」时代的占位声明（只写一个 kind）。现在 box 真实出片，必须有
+        // 尺寸；补上 half_extents，并换成更强断言：尺寸参数确实落到节点上。
+        let b2 = out.scenes[1]
+            .node_ids
+            .iter()
+            .filter_map(|id| out.graph.node(*id))
+            .find(|n| n.params.get("kind") == Some(&ParamValue::Str("box".to_string())))
+            .expect("第二幕的 box 节点应在渲染消费面");
+        assert!((f32_param(b2, "half_extents_x") - 1.0).abs() < 1e-6);
+        assert!((f32_param(b2, "half_extents_y") - 1.0).abs() < 1e-6);
+        assert!((f32_param(b2, "half_extents_z") - 1.0).abs() < 1e-6);
 
         // 文档级参数：movie → 产物；theme / packs 登记。
         assert_eq!(out.title, "测试影片");
@@ -74640,9 +75280,12 @@ mod tests {
         assert!((f32_param(light_node, "dir_y") - (-1.0)).abs() < 1e-6);
         assert!((f32_param(light_node, "dir_z") - (-0.5)).abs() < 1e-6);
         assert!((f32_param(light_node, "intensity") - 3.0).abs() < 1e-6);
-        // s1 的 render 消费面清单：camera + sdf + material + text + particles
-        // + compose = 6（light / post / audio 节点已排除）。
-        assert_eq!(s1.node_ids.len(), 6, "render 消费面不含 audio/post/light 节点");
+        // 【V3.1.1 旧断言升级】原断言把 light 与 audio/post 一起排除出消费面
+        // （6 个节点），这正是「写灯没用」的装配层根因。现在 light 是渲染
+        // 真实消费的光源节点 ⇒ camera + sdf + material + light + text +
+        // particles + compose = 7；audio / post 仍只由各块 Info 登记。
+        assert_eq!(s1.node_ids.len(), 7, "V3.1.1：light 进消费面，audio/post 仍排除");
+        assert!(s1.node_ids.contains(&light_node.id), "light 节点必须在消费面清单里");
 
         // 命名通道：字段级关键帧 + 顶层 anim + expr + sim force。
         assert_eq!(out.channels.len(), 4, "title.x / cam.orbit / boost / force strength");
@@ -75549,19 +76192,22 @@ mod tests {
 
     #[test]
     fn v2_light_block_projects_source_node() {
-        // 断点 C：light 投影 S8 源项节点（「light = 场景源项 g」）——direction
-        // 逐分量透传不归一（v1 纪律）、color / 255 归一化（C17）、intensity
-        // 原值。light 无独立 Info：经节点图可见，不在 node_ids。
+        // 【V3.1.1 旧断言升级】原断言 `s.node_ids.is_empty()` 把「light 不进
+        // render 消费面」固化成正确行为 —— 那正是用户投诉「DSL 写的光源会被
+        // 忽略」的装配层根因（`build_stage3d` 把 light id 塞进 deferred）。
+        // 现在 light 必须进 node_ids，故换成**更强**断言：进消费面 + 结构 +
+        // 逐字段透传 + 灯型标记 + 位置光参数全部落地。
         let src = concat!(
             "// prism-dsl 1\n",
             "scene \"s\" { stage3d { light key { direction(1,-1,-0.5) color #fff4e6 intensity 3 } } }\n"
         );
         let out: CompileV2Output = compile_v2(src).expect("light 块应编译成功");
         let s = &out.scenes[0];
-        assert!(s.node_ids.is_empty(), "stage3d 仅 light：render 消费面为空");
+        assert_eq!(s.node_ids.len(), 1, "V3.1.1：light 节点必须进渲染消费面");
         let order = out.graph.topo_order().expect("图应可拓扑排序");
         assert_eq!(order.len(), 1, "light 节点入图");
-        let node = out.graph.node(order[0]).expect("light 节点应在图中");
+        assert_eq!(s.node_ids[0], order[0], "消费面节点与图中节点一致");
+        let node = out.graph.node(s.node_ids[0]).expect("light 节点应在图中");
         assert!(matches!(node.structure, StructureId::RadiativeTransfer));
         assert!(matches!(node.composition, prism_core::node::Composition::Feed));
         assert!((f32_param(node, "dir_x") - 1.0).abs() < 1e-6);
@@ -75571,6 +76217,16 @@ mod tests {
         assert!((f32_param(node, "color_r") - 1.0).abs() < 1e-6);
         assert!((f32_param(node, "color_g") - 244.0 / 255.0).abs() < 1e-4);
         assert!((f32_param(node, "color_b") - 230.0 / 255.0).abs() < 1e-4);
+        assert_eq!(
+            node.params.get("light_kind"),
+            Some(&ParamValue::Str("directional".to_string())),
+            "缺省 directional 必须落成可被 render 消费的灯型标记"
+        );
+        // 位置光参数也必须落地（render 的 resolve_light 逐项读回）。
+        assert!((f32_param(node, "pos_y") - 2.0).abs() < 1e-6);
+        assert!((f32_param(node, "radius") - 1.0).abs() < 1e-6);
+        assert!((f32_param(node, "edge_u_x") - 1.0).abs() < 1e-6);
+        assert!((f32_param(node, "edge_v_z") - 1.0).abs() < 1e-6);
     }
 
     #[test]
@@ -75581,7 +76237,14 @@ mod tests {
         let out: CompileV2Output = compile_v2(src).expect("空 light 块应编译成功");
         let order = out.graph.topo_order().expect("图应可拓扑排序");
         assert_eq!(order.len(), 1);
-        let node = out.graph.node(order[0]).expect("light 节点应在图中");
+        // V3.1.1 更强断言：空 light 块也必须进消费面（否则「写灯没用」）。
+        assert_eq!(out.scenes[0].node_ids.len(), 1, "缺省灯节点必须进渲染消费面");
+        let node = out.graph.node(out.scenes[0].node_ids[0]).expect("light 节点应在图中");
+        assert_eq!(
+            node.params.get("light_kind"),
+            Some(&ParamValue::Str("directional".to_string())),
+            "kind 缺省 directional"
+        );
         assert!((f32_param(node, "dir_x") - 1.0).abs() < 1e-6);
         assert!((f32_param(node, "dir_y") - (-1.0)).abs() < 1e-6);
         assert!((f32_param(node, "dir_z") - (-0.5)).abs() < 1e-6);
@@ -75593,8 +76256,10 @@ mod tests {
 
     #[test]
     fn v2_light_material_coexist_node_ids_boundary() {
-        // material 与 light 同为 S8：material 进 node_ids（render 已支持），
-        // light 不进（render 的 S8 分支只认 albedo_r，源项节点会误报 R5010）。
+        // 【V3.1.1 旧断言升级】原断言把「light 不进 node_ids」当成 S8 共存的
+        // 边界，实质是固化了消费面缺口。现在 material 与 light 同为 S8 但由
+        // `albedo_r` / `light_kind` 两个互斥参数分流，二者**都**必须进消费面；
+        // 换成更强断言：两个节点都在 node_ids、各自带可识别标记、顺序确定。
         let src = concat!(
             "// prism-dsl 1\n",
             "scene \"s\" { stage3d {\n",
@@ -75604,15 +76269,78 @@ mod tests {
         );
         let out: CompileV2Output = compile_v2(src).expect("material + light 应编译成功");
         let s = &out.scenes[0];
-        assert_eq!(s.node_ids.len(), 1, "node_ids 只含 material");
+        assert_eq!(s.node_ids.len(), 2, "material 与 light 都必须进渲染消费面");
         let mat = out.graph.node(s.node_ids[0]).expect("material 节点应在图中");
-        assert!(mat.params.get("albedo_r").is_some(), "render 认 S8 + albedo_r");
+        assert!(mat.params.get("albedo_r").is_some(), "material 由 albedo_r 识别");
+        let lt = out.graph.node(s.node_ids[1]).expect("light 节点应在图中");
+        assert!(lt.params.get("light_kind").is_some(), "light 由 light_kind 识别");
+        assert!(mat.params.get("light_kind").is_none(), "两个 S8 子形态互斥，不得混淆");
+        assert!(lt.params.get("albedo_r").is_none(), "两个 S8 子形态互斥，不得混淆");
         let order = out.graph.topo_order().expect("图应可拓扑排序");
         assert_eq!(order.len(), 2, "material + light 两节点入图");
-        assert!(
-            !s.node_ids.contains(&order[1]) || order[1] == s.node_ids[0],
-            "light 节点不在 node_ids"
+    }
+
+    /// V3.1.1 铁律反向断言：任何「声明了但渲染侧不支持」的灯型 / 字段必须
+    /// 在编译期报错，禁止静默忽略、禁止登记后丢掉。
+    #[test]
+    fn v311_light_kind_and_field_whitelist_is_enforced() {
+        let wrap = |body: &str| -> String {
+            format!("// prism-dsl 1\nscene \"s\" {{ stage3d {{ {body} }} }}\n")
+        };
+        // 未知 kind
+        let e = compile_v2(&wrap("light x { kind laser }"))
+            .expect_err("未实现的灯型必须报错");
+        assert!(e.message.contains("P1002"), "实际：{e}");
+        assert!(e.message.contains("建议："), "必须给修复建议：{e}");
+        // environment 是底层 W2 占位，声明它等于静默忽略 ⇒ 明确拒绝
+        let e = compile_v2(&wrap("light x { kind environment }"))
+            .expect_err("environment 是 W2 占位，必须报错");
+        assert!(e.message.contains("P1002"), "实际：{e}");
+        assert!(e.message.contains("W2 占位"), "应说明拒绝原因：{e}");
+        // ambient 不收 direction（该字段对它无意义）
+        let e = compile_v2(&wrap("light x { kind ambient direction(1,0,0) }"))
+            .expect_err("ambient 上的 direction 是越权字段，必须报错");
+        assert!(e.message.contains("P1002"), "实际：{e}");
+        // sphere 缺必填 position / radius
+        let e = compile_v2(&wrap("light x { kind sphere }"))
+            .expect_err("sphere 灯缺 position/radius 必须报错");
+        assert!(e.message.contains("P1027"), "实际：{e}");
+        // rect 缺必填 position / edge_u / edge_v
+        let e = compile_v2(&wrap("light x { kind rect position(0,2,0) }"))
+            .expect_err("rect 灯缺 edge_u/edge_v 必须报错");
+        assert!(e.message.contains("P1027"), "实际：{e}");
+        // 负 radius
+        let e = compile_v2(&wrap("light x { kind sphere position(0,2,0) radius -1 }"))
+            .expect_err("负半径必须报错");
+        assert!(e.message.contains("P1028"), "实际：{e}");
+    }
+
+    /// V3.1.1 五类灯型的参数逐一落地（缺 environment：编译期拒绝）。
+    #[test]
+    fn v311_light_kinds_project_all_fields() {
+        let src = concat!(
+            "// prism-dsl 1\n",
+            "scene \"s\" { stage3d {\n",
+            "  light amb { kind ambient color #112233 intensity 0.4 }\n",
+            "  light sph { kind sphere position(1,2,3) radius 2.5 color #ffffff intensity 2 }\n",
+            "  light rec { kind rect position(0,3,0) edge_u(2,0,0) edge_v(0,0,2) intensity 1.5 }\n",
+            "} }\n"
         );
+        let out: CompileV2Output = compile_v2(src).expect("三类位置光应编译成功");
+        let s = &out.scenes[0];
+        assert_eq!(s.node_ids.len(), 3, "三盏灯都进消费面");
+        let amb = out.graph.node(s.node_ids[0]).expect("ambient 节点");
+        assert_eq!(amb.params.get("light_kind"), Some(&ParamValue::Str("ambient".to_string())));
+        let sph = out.graph.node(s.node_ids[1]).expect("sphere 节点");
+        assert_eq!(sph.params.get("light_kind"), Some(&ParamValue::Str("sphere".to_string())));
+        assert!((f32_param(sph, "pos_x") - 1.0).abs() < 1e-6);
+        assert!((f32_param(sph, "pos_y") - 2.0).abs() < 1e-6);
+        assert!((f32_param(sph, "pos_z") - 3.0).abs() < 1e-6);
+        assert!((f32_param(sph, "radius") - 2.5).abs() < 1e-6);
+        let rec = out.graph.node(s.node_ids[2]).expect("rect 节点");
+        assert_eq!(rec.params.get("light_kind"), Some(&ParamValue::Str("rect".to_string())));
+        assert!((f32_param(rec, "edge_u_x") - 2.0).abs() < 1e-6);
+        assert!((f32_param(rec, "edge_v_z") - 2.0).abs() < 1e-6);
     }
 
     #[test]
@@ -76291,7 +77019,7 @@ mod tests {
 }
 ================================================================================
 === FILE: src/prism-dsl/src/parser.rs ===
-=== LINES: 2851 ===
+=== LINES: 2854 ===
 //! 解析器：token 流 → AST（递归下降 + 就地语义防呆）。
 //!
 //! v1（M0/M1）解析规则与错误消息逐字保留；v2 新增全块语法：
@@ -76631,7 +77359,7 @@ impl Parser {
         Ok(DocumentAst { scene, timeline, aesthetic, output })
     }
 
-    /// scene 块：`scene 字符串 { (sphere | camera | light)* }`。
+    /// scene 块：`scene 字符串 { (sphere* | camera? | light*) }`（V3.1.1 起 sphere 可多个）。
     fn parse_scene(&mut self) -> Result<SceneAst, DslError> {
         let name: String = match self.bump() {
             Some(Token { tok: Tok::Str(s), .. }) => s,
@@ -76644,7 +77372,8 @@ impl Parser {
             None => return Err(err_at(self.eof_line(), "期望 scene 名称，但文件已结束")),
         };
         self.expect_punct(Tok::LBrace, "{")?;
-        let mut sphere: Option<SphereAst> = None;
+        // V3.1.1：球体改为列表，允许多个 sphere（各球独立球心 / 半径 / 材质）。
+        let mut spheres: Vec<SphereAst> = Vec::new();
         let mut camera: Option<CameraAst> = None;
         let mut lights: Vec<LightAst> = Vec::new();
         loop {
@@ -76667,12 +77396,7 @@ impl Parser {
             };
             // 扩展点：未来加 mesh 时在此新增 `"mesh" => ...` 分支即可。
             match kw.as_str() {
-                "sphere" => {
-                    if sphere.is_some() {
-                        return Err(err_at(line, "scene 目前最多支持一个 sphere（出现第二个）"));
-                    }
-                    sphere = Some(self.parse_sphere()?);
-                }
+                "sphere" => spheres.push(self.parse_sphere()?),
                 "camera" => {
                     if camera.is_some() {
                         return Err(err_at(line, "scene 目前最多支持一个 camera（出现第二个）"));
@@ -76688,13 +77412,14 @@ impl Parser {
                 }
             }
         }
-        Ok(SceneAst { name, sphere, camera, lights })
+        Ok(SceneAst { name, spheres, camera, lights })
     }
 
-    /// sphere 块：`sphere 标识 { radius 数字 material块? }`（radius 必填）。
+    /// sphere 块：`sphere 标识 { center x,y,z? radius 数字 material块? }`（radius 必填）。
     fn parse_sphere(&mut self) -> Result<SphereAst, DslError> {
         let (name, _) = self.expect_ident("sphere 名称（标识符）")?;
         self.expect_punct(Tok::LBrace, "{")?;
+        let mut center: Option<Vec3> = None;
         let mut radius: Option<f32> = None;
         let mut material: Option<MaterialAst> = None;
         // 仅在遇到 '}' 时赋值（break 前必然赋值，编译器可静态判定）。
@@ -76710,6 +77435,12 @@ impl Parser {
                     break;
                 }
                 Tok::Ident(field) => match field.as_str() {
+                    "center" => {
+                        if center.is_some() {
+                            return Err(err_at(t.line, "sphere 块中字段 'center' 重复出现"));
+                        }
+                        center = Some(self.parse_vec3("sphere.center 的 vec3 值")?);
+                    }
                     "radius" => {
                         if radius.is_some() {
                             return Err(err_at(t.line, "sphere 块中字段 'radius' 重复出现"));
@@ -76725,7 +77456,7 @@ impl Parser {
                     other => {
                         return Err(err_at(
                             t.line,
-                            format!("sphere 块中未知字段 '{}'（允许：radius / material）", other),
+                            format!("sphere 块中未知字段 '{}'（允许：center / radius / material）", other),
                         ));
                     }
                 },
@@ -76743,7 +77474,7 @@ impl Parser {
                 return Err(err_at(close_line, format!("sphere '{}' 缺少必填字段 'radius'", name)));
             }
         };
-        Ok(SphereAst { name, radius, material })
+        Ok(SphereAst { name, center, radius, material })
     }
 
     /// material 块：`material { (albedo 颜色)? (roughness 数字)? (metalness 数字)? }`。
@@ -79145,7 +79876,7 @@ pub mod v3 {
 }
 ================================================================================
 === FILE: src/prism-dsl/src/wiring.rs ===
-=== LINES: 1091 ===
+=== LINES: 1093 ===
 //! V3.0 W2：39 项能力接线注册表（唯一事实源）。
 //!
 //! # 它是什么
@@ -79404,11 +80135,11 @@ pub const CAPABILITY_ROWS: &[CapabilityRow] = &[
         ["name", "family", "bitdepth", "allocation", "isdata", "to_reference",
          "from_reference"], "L3", "",
         "W2-E-07", "src/prism-math/src/ocio.rs:667", CapFamily::Engineering),
-    row!("E-8", "src/prism-dsl/src/codegen.rs:364",
+    row!("E-8", "src/prism-dsl/src/codegen.rs:389",
         ["title", "width", "height", "fps", "duration", "format", "scenes",
          "transitions", "graph", "channels", "packs", "theme", "fonts", "formulas",
          "wiring"],
-        "L2", "", "W2-E-08", "src/prism-dsl/src/codegen.rs:364", CapFamily::Engineering),
+        "L2", "", "W2-E-08", "src/prism-dsl/src/codegen.rs:389", CapFamily::Engineering),
     row!("E-9", "src/prism-infra/src/mcp.rs:33",
         ["name", "description", "input_schema"], "L2", "",
         "W2-E-09", "src/prism-infra/src/mcp.rs:33", CapFamily::Engineering),
@@ -79458,6 +80189,8 @@ pub fn platform_ids() -> BTreeSet<String> {
 }
 
 /// 39 行参数全集总数：W1 实录 225；W2 因 E-8 新增 `wiring` 装配字段（引擎侧真实扩容）变为 226。
+/// V3.1.1：v1 多球装配使 `CompileV2Output` 定义行由 364 后移到 389，
+/// E-8 的 api_path / anchor 随之重定位；门禁仍强制该行是公开 API 定义行，判据未放宽。
 pub fn total_param_count() -> usize {
     CAPABILITY_ROWS.iter().map(|r| r.api_params.len()).sum()
 }
@@ -110257,7 +110990,7 @@ fn aabb_ray(bmin: Vec3, bmax: Vec3, ro: Vec3, inv: Vec3, t_min: f32, t_max: f32)
 ================================================================================
 === FILE: src/prism-gpu/src/lib.rs ===
 === NOEOL ===
-=== LINES: 1441 ===
+=== LINES: 1513 ===
 //! `prism-gpu` — GPU/CPU rendering abstraction for the Prism engine.
 //!
 //! This crate defines the frame-buffer type, the low-level scene render
@@ -110306,8 +111039,8 @@ pub mod shaders;
 pub mod scene_req;
 
 pub use scene_req::{
-    DisplaceSlotReq, HairReq, InstanceReq, MediumBoxReq, MeshReq, SceneGeoReq, StrandReq,
-    TextureReq,
+    BoxReq, DisplaceSlotReq, HairReq, InstanceReq, MediumBoxReq, MeshReq, ParaboloidReq,
+    PlaneReq, SceneGeoReq, StrandReq, TextureReq,
 };
 pub mod scene_abi;
 pub mod instance;
@@ -110633,12 +111366,79 @@ pub struct CameraReq {
     pub aspect: f32,
 }
 
-/// A single directional light source.
+/// 灯型（V3.1.1，请求侧同构影子类型）。
+///
+/// 与 `prism_core::LightKind` / `prism_rt::Light` 的五个变体一一对应。
+/// `prism-gpu` 不得反引 `prism-core`（会成环），故此处保有一份同构描述，
+/// 由 `prism-render::build_render_request` 逐变体搬运（漏接会编译不过）。
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum LightKindReq {
+    /// 方向光（缺省）：用 `direction` / `color` / `intensity`。
+    #[default]
+    Directional,
+    /// 均匀环境光：逃逸背景辐亮度，用 `color` / `intensity`。
+    Ambient,
+    /// 矩形面光：中心 + 两条半边向量。
+    Rect { center: Vec3, edge_u: Vec3, edge_v: Vec3 },
+    /// 发光球：球心 + 半径。
+    Sphere { center: Vec3, radius: f32 },
+    /// HDR 环境贴图句柄（底层 W2 占位；DSL 编译期以 P1002 拒绝该 kind）。
+    Environment { map: u32 },
+}
+
+/// 一盏光源（V3.1.1 起携带灯型）。
 #[derive(Debug, Clone)]
 pub struct LightReq {
     pub direction: Vec3,
     pub color: Vec3,
     pub intensity: f32,
+    /// 灯型；缺省方向光（保持 V3.1 之前的单方向光语义）。
+    pub kind: LightKindReq,
+}
+
+/// 把一盏灯解析成 CPU 参考着色的三元组：
+/// `(入射方向, 有效辐照度颜色, 与法线无关的附加环境项)`。
+///
+/// V3.1.1：位置光（`Sphere` / `Rect`）以场景原点为参考点解析方向与距离衰减，
+/// 于是「改 position / radius / edge → 出片像素变」是结构性结果而非特判；
+/// rt 默认档由 `prism_rt::Light` 的 NEE 用真实命中点采样，两档语义同源、
+/// 都是确定性纯函数。
+///
+/// `Environment` 在底层 `prism-rt` 是 W2 占位（不参与计算），DSL 编译期已
+/// 以 P1002 拒绝该 kind，故本分支在产品链路上不可达。
+pub fn resolve_cpu_light(light: &LightReq) -> (Vec3, Vec3, Vec3) {
+    let zero: Vec3 = Vec3::splat(0.0);
+    let base: Vec3 = light.color * light.intensity;
+    let len2 = |v: Vec3| v.x * v.x + v.y * v.y + v.z * v.z;
+    let d2_dir: f32 = len2(light.direction);
+    let ldir_default: Vec3 = if d2_dir.is_finite() && d2_dir > 1e-12 {
+        light.direction.normalize()
+    } else {
+        Vec3::new(0.0, -1.0, 0.0)
+    };
+    match light.kind {
+        LightKindReq::Directional => (ldir_default, base, zero),
+        LightKindReq::Ambient => (ldir_default, zero, base),
+        LightKindReq::Sphere { center, radius } => {
+            let d2: f32 = len2(center);
+            let r: f32 = radius.max(0.0);
+            let r2: f32 = r * r;
+            let falloff: f32 = r2 / (d2 + r2 + 1e-6);
+            let ldir: Vec3 = if d2 > 1e-12 { center * (1.0 / d2.sqrt()) } else { ldir_default };
+            (ldir, base * falloff, zero)
+        }
+        LightKindReq::Rect { center, edge_u, edge_v } => {
+            let cx: f32 = edge_u.y * edge_v.z - edge_u.z * edge_v.y;
+            let cy: f32 = edge_u.z * edge_v.x - edge_u.x * edge_v.z;
+            let cz: f32 = edge_u.x * edge_v.y - edge_u.y * edge_v.x;
+            let area: f32 = 4.0 * (cx * cx + cy * cy + cz * cz).sqrt();
+            let d2: f32 = len2(center);
+            let falloff: f32 = area / (d2 + area + 1e-6);
+            let ldir: Vec3 = if d2 > 1e-12 { center * (1.0 / d2.sqrt()) } else { ldir_default };
+            (ldir, base * falloff, zero)
+        }
+        LightKindReq::Environment { .. } => (ldir_default, zero, zero),
+    }
 }
 
 /// 球材质四张贴图句柄的槽数（= [`scene_abi::TEXMAP_SLOTS`]）。
@@ -111153,12 +111953,11 @@ impl CpuRefBackend {
                     let ambient = Vec3::splat(0.08);
                     let mut acc = Vec3::splat(0.0);
                     for light in &req.lights {
-                        let ldir = light.direction.normalize();
-                        let lint = light.intensity;
-                        let lcolor = light.color;
+                        // V3.1.1：按灯型解析（方向光 / 环境光 / 矩形面光 / 发光球）。
+                        let (ldir, radiance, ambient_extra) = resolve_cpu_light(light);
                         let diff = dot(n_shade, ldir).max(0.0);
-                        // albedo * (ambient + diff * intensity * color)
-                        let term = ambient + lcolor * (diff * lint);
+                        // albedo * (ambient + 灯型附加环境项 + diff * 有效辐照度)
+                        let term = ambient + ambient_extra + radiance * diff;
                         let mut contrib = vmul(albedo, term);
                         if use_pbr {
                             let h = (ldir + view).normalize();
@@ -111171,7 +111970,7 @@ impl CpuRefBackend {
                             let spec = f0 * (spec_lobe * rough_factor);
                             let diffuse = albedo * (1.0 - metalness);
                             let diff_contrib = vmul(diffuse, term);
-                            let spec_contrib = vmul(spec, lcolor * (diff * lint));
+                            let spec_contrib = vmul(spec, radiance * diff);
                             contrib = diff_contrib + spec_contrib;
                         }
                         acc = acc + contrib;
@@ -111193,8 +111992,10 @@ impl CpuRefBackend {
                     let ambient = Vec3::splat(0.08);
                     let mut acc = Vec3::splat(0.0);
                     for light in &req.lights {
-                        let diff = dot(n, light.direction.normalize()).max(0.0);
-                        let term = ambient + light.color * (diff * light.intensity);
+                        // V3.1.1：与球分支同一套灯型解析，不静默忽略灯型字段。
+                        let (ldir, radiance, ambient_extra) = resolve_cpu_light(light);
+                        let diff = dot(n, ldir).max(0.0);
+                        let term = ambient + ambient_extra + radiance * diff;
                         acc = acc + vmul(albedo, term);
                     }
                     color = acc;
@@ -111205,8 +112006,10 @@ impl CpuRefBackend {
                     let ambient = Vec3::splat(0.08);
                     let mut acc = Vec3::splat(0.0);
                     for light in &req.lights {
-                        let diff = dot(n, light.direction.normalize()).max(0.0);
-                        let term = ambient + light.color * (diff * light.intensity);
+                        // V3.1.1：与球分支同一套灯型解析，不静默忽略灯型字段。
+                        let (ldir, radiance, ambient_extra) = resolve_cpu_light(light);
+                        let diff = dot(n, ldir).max(0.0);
+                        let term = ambient + ambient_extra + radiance * diff;
                         acc = acc + vmul(albedo, term);
                     }
                     color = acc;
@@ -111322,6 +112125,7 @@ mod tests {
                 aspect: 32.0 / 18.0,
             },
             lights: vec![LightReq {
+                kind: crate::LightKindReq::Directional, // V3.1.1：结构性缺省
                 direction: Vec3::new(0.0, 0.0, -1.0),
                 color: Vec3::new(1.0, 1.0, 1.0),
                 intensity: 1.0,
@@ -111441,6 +112245,7 @@ mod framebuffer_bounds {
                 aspect: 1.0,
             },
             lights: vec![LightReq {
+                kind: crate::LightKindReq::Directional, // V3.1.1：结构性缺省
                 direction: Vec3::new(0.0, 0.0, -1.0),
                 color: Vec3::new(1.0, 1.0, 1.0),
                 intensity: 1.0,
@@ -111901,7 +112706,7 @@ fn all_devices_nonempty() -> bool {
 // 完成 1~5 之后，`MetalBackend::is_available` 才可改为返回 `true`。
 ================================================================================
 === FILE: src/prism-gpu/src/metal/mod.rs ===
-=== LINES: 399 ===
+=== LINES: 400 ===
 //! Metal 后端（D1，macOS/iOS 独有技术）。
 //!
 //! # ⚠️ 诚实边界（必读，G4/Q5）
@@ -112168,6 +112973,7 @@ mod tests {
                 aspect: 1.0,
             },
             lights: vec![LightReq {
+                kind: crate::LightKindReq::Directional, // V3.1.1：结构性缺省
                 direction: Vec3::new(0.0, 0.0, -1.0),
                 color: Vec3::new(1.0, 1.0, 1.0),
                 intensity: 1.0,
@@ -112864,7 +113670,7 @@ kernel void scene_main(
 }
 ================================================================================
 === FILE: src/prism-gpu/src/metal/render.rs ===
-=== LINES: 539 ===
+=== LINES: 541 ===
 //! Metal render 路径的**历史资产**（V2.1 T-A2 遗留；**未点亮**）。
 //!
 //! # 定性（V2.2 统一口径，G4）
@@ -113219,11 +114025,13 @@ mod tests {
             },
             lights: vec![
                 LightReq {
+                    kind: crate::LightKindReq::Directional, // V3.1.1：结构性缺省
                     direction: Vec3::new(0.3, -0.6, 1.0),
                     color: Vec3::new(1.0, 0.95, 0.85),
                     intensity: 1.4,
                 },
                 LightReq {
+                    kind: crate::LightKindReq::Directional, // V3.1.1：结构性缺省
                     direction: Vec3::new(-0.8, 0.4, 0.6),
                     color: Vec3::new(0.35, 0.55, 0.95),
                     intensity: 0.9,
@@ -114436,7 +115244,7 @@ mod tests {
 }
 ================================================================================
 === FILE: src/prism-gpu/src/scene_abi.rs ===
-=== LINES: 2053 ===
+=== LINES: 2054 ===
 //! 场景渲染 ABI 单一真源（V2.2-A-1 / T03）。
 //!
 //! # 目的
@@ -115968,6 +116776,7 @@ mod tests {
                 aspect: 16.0 / 9.0,
             },
             lights: vec![LightReq {
+                kind: crate::LightKindReq::Directional, // V3.1.1：结构性缺省
                 direction: Vec3::new(0.0, 0.0, -1.0),
                 color: Vec3::new(1.0, 1.0, 1.0),
                 intensity: 1.0,
@@ -116492,7 +117301,7 @@ mod tests {
 }
 ================================================================================
 === FILE: src/prism-gpu/src/scene_req.rs ===
-=== LINES: 215 ===
+=== LINES: 257 ===
 //! 场景附加能力的**请求侧 DTO**（T0 产品路径接线）。
 //!
 //! # 为什么这些类型在 `prism-gpu`
@@ -116649,6 +117458,38 @@ pub struct StrandReq {
     pub params: HairReq,
 }
 
+/// 轴对齐盒体（V3.1.1，DSL `sdf kind box`）。语义见 `prism_core::attach::BoxDesc`。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BoxReq {
+    pub center: Vec3,
+    pub half_extents: Vec3,
+    pub albedo: Vec3,
+    pub roughness: f32,
+    pub metalness: f32,
+}
+
+/// 平面（V3.1.1，DSL `sdf kind plane`）。语义见 `prism_core::attach::PlaneDesc`。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlaneReq {
+    pub point: Vec3,
+    pub normal: Vec3,
+    /// `None` = 无限平面；`Some(h)` = 以 point 为中心边长 2h 的切片。
+    pub half_extent: Option<f32>,
+    pub albedo: Vec3,
+    pub roughness: f32,
+    pub metalness: f32,
+}
+
+/// 抛物面（V3.1.1，DSL `sdf kind paraboloid`）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ParaboloidReq {
+    pub k: f32,
+    pub r_max: f32,
+    pub albedo: Vec3,
+    pub roughness: f32,
+    pub metalness: f32,
+}
+
 /// 场景附加能力的请求侧聚合（[`crate::SceneRenderRequest::geo`] 的类型）。
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SceneGeoReq {
@@ -116664,6 +117505,10 @@ pub struct SceneGeoReq {
     pub textures: Vec<TextureReq>,
     /// 毛发股。
     pub strands: Vec<StrandReq>,
+    /// V3.1.1：盒体 / 平面 / 抛物面（DSL `sdf` 新 kind 的装配落点）。
+    pub boxes: Vec<BoxReq>,
+    pub planes: Vec<PlaneReq>,
+    pub paraboloids: Vec<ParaboloidReq>,
 }
 
 impl SceneGeoReq {
@@ -116675,6 +117520,9 @@ impl SceneGeoReq {
             && self.instances.is_empty()
             && self.textures.is_empty()
             && self.strands.is_empty()
+            && self.boxes.is_empty()
+            && self.planes.is_empty()
+            && self.paraboloids.is_empty()
     }
 
     /// 条目合计（诊断用）。
@@ -116685,6 +117533,9 @@ impl SceneGeoReq {
             + self.instances.len()
             + self.textures.len()
             + self.strands.len()
+            + self.boxes.len()
+            + self.planes.len()
+            + self.paraboloids.len()
     }
 }
 
@@ -121948,7 +122799,7 @@ const _: () = {
 };
 ================================================================================
 === FILE: src/prism-gpu/src/vulkan/mod.rs ===
-=== LINES: 1416 ===
+=== LINES: 1417 ===
 //! Vulkan 后端（D1，Linux/Windows 原生 GPU 路径）。
 //!
 //! # ⚠️ 诚实边界（必读）
@@ -123122,6 +123973,7 @@ mod tests {
                 aspect: 1.0,
             },
             lights: vec![LightReq {
+                kind: crate::LightKindReq::Directional, // V3.1.1：结构性缺省
                 direction: Vec3::new(0.0, 0.0, -1.0),
                 color: Vec3::new(1.0, 1.0, 1.0),
                 intensity: 1.0,
@@ -123669,7 +124521,7 @@ mod tests {
 }
 ================================================================================
 === FILE: src/prism-gpu/src/vulkan/scene.rs ===
-=== LINES: 284 ===
+=== LINES: 285 ===
 //! 光追场景帧的 GPU 出图路径：compute 离屏 → 字节读回 RGBA8。
 //!
 //! # 为什么光追也走 compute（而不是图形管线）
@@ -123868,6 +124720,7 @@ pub(crate) fn self_test_request() -> SceneRenderRequest {
             aspect: 1.0,
         },
         lights: vec![LightReq {
+            kind: crate::LightKindReq::Directional, // V3.1.1：结构性缺省
             direction: prism_math::Vec3::new(0.0, 0.0, -1.0),
             color: prism_math::Vec3::new(1.0, 1.0, 1.0),
             intensity: 1.0,
@@ -126713,7 +127566,7 @@ mod tests {
 }
 ================================================================================
 === FILE: src/prism-gpu/src/vulkan/spirv_rt.rs ===
-=== LINES: 2785 ===
+=== LINES: 2787 ===
 //! 光追场景 kernel 的 SPIR-V 生成（自研发射器，零第三方依赖 — D-15）。
 //!
 //! # 与 `spirv_bg` 的关系
@@ -129118,6 +129971,7 @@ mod tests {
                 aspect: w as f32 / h as f32,
             },
             lights: vec![LightReq {
+                kind: crate::LightKindReq::Directional, // V3.1.1：结构性缺省
                 direction: Vec3::new(0.0, 0.0, -1.0),
                 color: Vec3::new(1.0, 1.0, 1.0),
                 intensity: 1.0,
@@ -129402,6 +130256,7 @@ mod tests {
 
         // 非单位方向 ⇒ 编码时归一化（与 CPU 的 normalize 同值）。
         let l2 = vec![LightReq {
+            kind: crate::LightKindReq::Directional, // V3.1.1：结构性缺省
             direction: Vec3::new(0.0, 0.0, -3.0),
             color: Vec3::new(1.0, 1.0, 1.0),
             intensity: 2.0,
@@ -131544,7 +132399,7 @@ mod tests {
 }
 ================================================================================
 === FILE: src/prism-gpu/src/vulkan/v3_frame.rs ===
-=== LINES: 1975 ===
+=== LINES: 1981 ===
 //! **D-21 / V6 第三条腿**：把入库的 `scene_frame_v3.spv` 真派发到设备，
 //! 与 [`crate::CpuRefBackend`] 逐像素对拍。
 //!
@@ -131976,11 +132831,13 @@ mod tests {
             },
             lights: vec![
                 LightReq {
+                    kind: crate::LightKindReq::Directional, // V3.1.1：结构性缺省
                     direction: Vec3::new(0.0, 0.0, -1.0),
                     color: Vec3::new(1.0, 1.0, 1.0),
                     intensity: 1.0,
                 },
                 LightReq {
+                    kind: crate::LightKindReq::Directional, // V3.1.1：结构性缺省
                     direction: Vec3::new(-0.6, -0.4, -0.7),
                     color: Vec3::new(0.3, 0.6, 1.0),
                     intensity: 0.55,
@@ -132734,11 +133591,13 @@ mod tests {
             },
             lights: vec![
                 LightReq {
+                    kind: crate::LightKindReq::Directional, // V3.1.1：结构性缺省
                     direction: Vec3::new(0.0, 0.0, -1.0),
                     color: Vec3::new(1.0, 1.0, 1.0),
                     intensity: 1.0,
                 },
                 LightReq {
+                    kind: crate::LightKindReq::Directional, // V3.1.1：结构性缺省
                     direction: Vec3::new(-0.6, -0.4, -0.7),
                     color: Vec3::new(0.3, 0.6, 1.0),
                     intensity: 0.55,
@@ -133052,11 +133911,13 @@ mod tests {
             },
             lights: vec![
                 LightReq {
+                    kind: crate::LightKindReq::Directional, // V3.1.1：结构性缺省
                     direction: Vec3::new(0.0, 0.0, -1.0),
                     color: Vec3::new(1.0, 1.0, 1.0),
                     intensity: 1.0,
                 },
                 LightReq {
+                    kind: crate::LightKindReq::Directional, // V3.1.1：结构性缺省
                     direction: Vec3::new(-0.6, -0.4, -0.7),
                     color: Vec3::new(0.3, 0.6, 1.0),
                     intensity: 0.55,
@@ -135331,7 +136192,7 @@ pub(crate) fn dispatch(_ctx: (), req: &WavefrontRequest) -> WavefrontReport {
 }
 ================================================================================
 === FILE: src/prism-gpu/src/web/abi.rs ===
-=== LINES: 10491 ===
+=== LINES: 10493 ===
 //! WebAssembly C-ABI：JS harness 可驱动的 Rust 导出（D-14 移动端验证链路）。
 //!
 //! # 为什么是这一套约定
@@ -142710,6 +143571,7 @@ fn scene_request(scene: usize) -> SceneRenderRequest {
             aspect: w as f32 / h as f32,
         },
         lights: vec![crate::LightReq {
+            kind: crate::LightKindReq::Directional, // V3.1.1：结构性缺省
             direction: Vec3::new(-0.3, -0.4, -1.0),
             color: Vec3::new(1.0, 0.96, 0.9),
             intensity: 1.0,
@@ -142806,6 +143668,7 @@ fn scene_request_v3(
             aspect: w as f32 / h as f32,
         },
         lights: vec![crate::LightReq {
+            kind: crate::LightKindReq::Directional, // V3.1.1：结构性缺省
             direction: Vec3::new(-0.3, -0.4, -1.0),
             color: Vec3::new(1.0, 0.96, 0.9),
             intensity: 1.0,
@@ -145825,7 +146688,7 @@ mod tests {
 }
 ================================================================================
 === FILE: src/prism-gpu/src/web/device.rs ===
-=== LINES: 769 ===
+=== LINES: 771 ===
 //! [`WebGpuBackend`]：在 WebGPU 上承载 D0 的 scan/sort 内核（WGSL compute）。
 //!
 //! 设计要点（骨架，无 WGSL 运行时）：
@@ -146032,6 +146895,7 @@ fn wavefront_as_scene_request(
                 .lights
                 .iter()
                 .map(|l| crate::LightReq {
+                    kind: crate::LightKindReq::Directional, // V3.1.1：结构性缺省
                     direction: l.position,
                     color: l.color,
                     intensity: l.radius,
@@ -146438,6 +147302,7 @@ mod tests {
                 aspect: 16.0 / 9.0,
             },
             lights: vec![crate::LightReq {
+                kind: crate::LightKindReq::Directional, // V3.1.1：结构性缺省
                 direction: Vec3::new(0.0, 0.0, -1.0),
                 color: Vec3::new(1.0, 1.0, 1.0),
                 intensity: 1.0,
@@ -146825,7 +147690,7 @@ mod tests {
 }
 ================================================================================
 === FILE: src/prism-gpu/src/web/scene_gpu.rs ===
-=== LINES: 2219 ===
+=== LINES: 2220 ===
 //! 场景整帧的**真 WebGPU dispatch**（V2.2-T03 / A-1「有设备」分支的唯一实现）。
 //!
 //! # 这一层补的是什么
@@ -148831,6 +149696,7 @@ mod tests {
                 aspect: 1.0,
             },
             lights: vec![crate::LightReq {
+                kind: crate::LightKindReq::Directional, // V3.1.1：结构性缺省
                 direction: Vec3::new(0.0, 0.0, -1.0),
                 color: Vec3::new(1.0, 1.0, 1.0),
                 intensity: 1.0,
@@ -149489,7 +150355,7 @@ fn embedded_background_shader_passes_structure_check() {
 }
 ================================================================================
 === FILE: src/prism-gpu/tests/qa_curve_parity.rs ===
-=== LINES: 659 ===
+=== LINES: 660 ===
 //! V2.2-A-2 曲线图元对拍钉子（任务表 T06「测 2」之二 + A-2-CURVE-VK 收口）。
 //!
 //! 覆盖 PRD 验收 1 / 2 / 3 / 5：
@@ -149543,6 +150409,7 @@ fn base_request(w: u32, h: u32) -> SceneRenderRequest {
             aspect: w as f32 / h as f32,
         },
         lights: vec![LightReq {
+            kind: prism_gpu::LightKindReq::Directional, // V3.1.1：结构性缺省
             direction: Vec3::new(0.0, 0.0, -1.0),
             color: Vec3::new(1.0, 1.0, 1.0),
             intensity: 1.0,
@@ -150151,7 +151018,7 @@ fn vulkan_curve_degenerate_forms_do_not_panic() {
 }
 ================================================================================
 === FILE: src/prism-gpu/tests/qa_edge_attack_gpu.rs ===
-=== LINES: 1210 ===
+=== LINES: 1211 ===
 //! QA 攻击性测试 — 后续 GPU 三路 D0/D1/D2-D4（`prism-gpu`）。
 //!
 //! 铁律：零第三方依赖（D-15）+ 全链路确定性 + 禁 libm（D-29）。
@@ -150821,6 +151688,7 @@ fn web_backend_native_never_ready_and_falls_back() {
             aspect: 16.0 / 9.0,
         },
         lights: vec![LightReq {
+            kind: prism_gpu::LightKindReq::Directional, // V3.1.1：结构性缺省
             direction: Vec3::new(0.0, 0.0, -1.0),
             color: Vec3::new(1.0, 1.0, 1.0),
             intensity: 1.0,
@@ -151801,7 +152669,7 @@ fn strip_cfg_test(src: &str) -> String {
 }
 ================================================================================
 === FILE: src/prism-gpu/tests/qa_render_scene.rs ===
-=== LINES: 492 ===
+=== LINES: 494 ===
 //! **V2.1 T-A1 验收测试**：Vulkan 光追场景管线的真机出图 + 对拍。
 //!
 //! # 闭环链（真机执行，非模拟）
@@ -151996,11 +152864,13 @@ fn scene_request(w: u32, h: u32, aesthetic: AestheticReq) -> SceneRenderRequest 
         },
         lights: vec![
             LightReq {
+                kind: prism_gpu::LightKindReq::Directional, // V3.1.1：结构性缺省
                 direction: Vec3::new(0.3, -0.6, 1.0),
                 color: Vec3::new(1.0, 0.95, 0.85),
                 intensity: 1.4,
             },
             LightReq {
+                kind: prism_gpu::LightKindReq::Directional, // V3.1.1：结构性缺省
                 direction: Vec3::new(-0.8, 0.4, 0.6),
                 color: Vec3::new(0.35, 0.55, 0.95),
                 intensity: 0.9,
@@ -152296,7 +153166,7 @@ fn report_frame(r: &SceneFrameReport) -> Framebuffer {
 }
 ================================================================================
 === FILE: src/prism-gpu/tests/qa_sweep_c1_panic.rs ===
-=== LINES: 235 ===
+=== LINES: 236 ===
 //! QA 全仓缺陷普查 · 审计 1（panic 源）攻击测试。
 //!
 //! 范围：`prism-gpu` 公开入口的极端参数穷举 + 已知高危点实证。
@@ -152451,6 +153321,7 @@ fn base_req(w: u32, h: u32) -> SceneRenderRequest {
             aspect: 1.0,
         },
         lights: vec![prism_gpu::LightReq {
+            kind: prism_gpu::LightKindReq::Directional, // V3.1.1：结构性缺省
             direction: Vec3::new(0.0, -1.0, 0.0),
             color: Vec3::splat(1.0),
             intensity: 1.0,
@@ -152534,7 +153405,7 @@ fn a08_framebuffer_len_invariant_holds() {
 }
 ================================================================================
 === FILE: src/prism-gpu/tests/qa_verify_p1_framebuffer_guard.rs ===
-=== LINES: 468 ===
+=== LINES: 469 ===
 //! QA 裁决探针 · P1 GPU 修复验证（prism-gpu）。
 //!
 //! 目标：独立验证「尺寸乘法溢出 + 巨额分配 abort」修复真有效，
@@ -152567,6 +153438,7 @@ fn scene_req(width: u32, height: u32) -> SceneRenderRequest {
             aspect: width as f32 / height.max(1) as f32,
         },
         lights: vec![LightReq {
+            kind: prism_gpu::LightKindReq::Directional, // V3.1.1：结构性缺省
             direction: Vec3::new(1.0, -1.0, -0.5),
             color: Vec3::new(1.0, 0.96, 0.9),
             intensity: 3.0,
@@ -154175,7 +155047,7 @@ fn r10_v3_unbiased_on_device() {
 }
 ================================================================================
 === FILE: src/prism-gpu/tests/qa_wavefront.rs ===
-=== LINES: 640 ===
+=== LINES: 642 ===
 //! **T6 验收测试**：WGSL wavefront 五段派发（R-13 / A6）。
 //!
 //! # 闭环链（真机执行，非模拟）
@@ -154321,11 +155193,13 @@ fn sphere_scene(w: u32, h: u32, aesthetic: AestheticReq) -> SceneRenderRequest {
         },
         lights: vec![
             LightReq {
+                kind: prism_gpu::LightKindReq::Directional, // V3.1.1：结构性缺省
                 direction: Vec3::new(0.3, -0.6, 1.0),
                 color: Vec3::new(1.0, 0.95, 0.85),
                 intensity: 1.4,
             },
             LightReq {
+                kind: prism_gpu::LightKindReq::Directional, // V3.1.1：结构性缺省
                 direction: Vec3::new(-0.8, 0.4, 0.6),
                 color: Vec3::new(0.35, 0.55, 0.95),
                 intensity: 0.9,
@@ -289061,7 +289935,7 @@ prism-geometry = { path = "../prism-geometry" }
 prism-anim = { path = "../prism-anim" }
 ================================================================================
 === FILE: src/prism-render/examples/rt_bench.rs ===
-=== LINES: 117 ===
+=== LINES: 118 ===
 //! `rt_bench` —— 默认档（`RtBackend`）单帧计时 / 指纹工具。
 //!
 //! 零第三方依赖：只读 `std::time::Instant`，指纹用自带 FNV-1a 64。
@@ -289105,6 +289979,7 @@ fn baseline_request(w: u32, h: u32) -> SceneRenderRequest {
             aspect: w as f32 / h as f32,
         },
         lights: vec![LightReq {
+            kind: prism_gpu::LightKindReq::Directional, // V3.1.1：结构性缺省
             direction: Vec3::new(0.0, 0.0, -1.0),
             color: Vec3::new(1.0, 1.0, 1.0),
             intensity: 3.0,
@@ -298670,7 +299545,7 @@ mod tests {
 }
 ================================================================================
 === FILE: src/prism-render/src/lib.rs ===
-=== LINES: 663 ===
+=== LINES: 735 ===
 //! `prism-render` — Prism 引擎的渲染调度层。
 //!
 //! 本 crate 不依赖任何第三方库，仅使用 Rust 标准库（`std`），并对以下
@@ -298690,9 +299565,9 @@ mod tests {
 //! 的 RGBA16F 半精度帧缓冲。
 
 use prism_gpu::{
-    AestheticReq, CameraReq, DisplaceSlotReq, Framebuffer, GpuDevice, HairReq, InstanceReq,
-    LightReq, MediumBoxReq, MeshReq, SceneGeoReq, SceneRenderRequest, SphereReq, StrandReq,
-    TextureReq,
+    AestheticReq, BoxReq, CameraReq, DisplaceSlotReq, Framebuffer, GpuDevice, HairReq,
+    InstanceReq, LightKindReq, LightReq, MediumBoxReq, MeshReq, ParaboloidReq, PlaneReq,
+    SceneGeoReq, SceneRenderRequest, SphereReq, StrandReq, TextureReq,
 };
 use prism_core::Scene;
 
@@ -298761,17 +299636,25 @@ pub fn build_render_request(
             direction: light.direction,
             color: light.color,
             intensity: light.intensity,
+            kind: light_kind_to_req(light.kind),
         })
         .collect();
 
-    let spheres: Vec<SphereReq> = vec![SphereReq {
-        center: scene.orbit_center,
-        radius: scene.radius,
-        albedo: scene.material.albedo,
-        roughness: scene.material.roughness,
-        metalness: scene.material.metalness,
-        maps: prism_gpu::NO_MAPS,
-    }];
+    // V3.1.1 多球接线：逐球翻译 `Scene::sphere_descs()`，各球独立球心 /
+    // 半径 / 材质。空集由 core 侧语义方法合成既有单球 ⇒ 旧文件逐字节同帧；
+    // 装配层只有这一条翻译路径，不按场景形态分流。
+    let spheres: Vec<SphereReq> = scene
+        .sphere_descs()
+        .iter()
+        .map(|s| SphereReq {
+            center: s.center,
+            radius: s.radius,
+            albedo: s.material.albedo,
+            roughness: s.material.roughness,
+            metalness: s.material.metalness,
+            maps: prism_gpu::NO_MAPS,
+        })
+        .collect();
 
     let aesthetic: AestheticReq = AestheticReq {
         teal_orange: scene.aesthetic.teal_orange,
@@ -298805,6 +299688,24 @@ pub fn build_render_request(
 ///
 /// 判据 P3（`src/prism-render/tests/t0_product_path.rs`）在源码层再查一遍：
 /// 六个能力在 `translate_scene` 里各有非空分支。
+/// `prism_core::LightKind` → 请求侧 `LightKindReq`（V3.1.1 逐变体搬运）。
+///
+/// 手写 `match` 而不是自动映射：core 新增灯型时这里**编译不过**，从而杜绝
+/// 「DSL 声明了灯型、装配层登记后丢掉」这一类静默缺口。
+pub fn light_kind_to_req(kind: prism_core::LightKind) -> LightKindReq {
+    match kind {
+        prism_core::LightKind::Directional => LightKindReq::Directional,
+        prism_core::LightKind::Ambient => LightKindReq::Ambient,
+        prism_core::LightKind::Rect { center, edge_u, edge_v } => {
+            LightKindReq::Rect { center, edge_u, edge_v }
+        }
+        prism_core::LightKind::Sphere { center, radius } => {
+            LightKindReq::Sphere { center, radius }
+        }
+        prism_core::LightKind::Environment { map } => LightKindReq::Environment { map },
+    }
+}
+
 pub fn build_geo_request(scene: &Scene) -> SceneGeoReq {
     let a = &scene.attach;
     let media: Vec<MediumBoxReq> = a
@@ -298870,7 +299771,51 @@ pub fn build_geo_request(scene: &Scene) -> SceneGeoReq {
             },
         })
         .collect();
-    SceneGeoReq { media, meshes, instance_geoms, instances, textures, strands }
+    let boxes: Vec<BoxReq> = a
+        .boxes
+        .iter()
+        .map(|b| BoxReq {
+            center: b.center,
+            half_extents: b.half_extents,
+            albedo: b.material.albedo,
+            roughness: b.material.roughness,
+            metalness: b.material.metalness,
+        })
+        .collect();
+    let planes: Vec<PlaneReq> = a
+        .planes
+        .iter()
+        .map(|p| PlaneReq {
+            point: p.point,
+            normal: p.normal,
+            half_extent: p.half_extent,
+            albedo: p.material.albedo,
+            roughness: p.material.roughness,
+            metalness: p.material.metalness,
+        })
+        .collect();
+    let paraboloids: Vec<ParaboloidReq> = a
+        .paraboloids
+        .iter()
+        .map(|q| ParaboloidReq {
+            k: q.k,
+            r_max: q.r_max,
+            albedo: q.material.albedo,
+            roughness: q.material.roughness,
+            metalness: q.material.metalness,
+        })
+        .collect();
+    SceneGeoReq {
+        media,
+        meshes,
+        instance_geoms,
+        instances,
+        textures,
+        strands,
+        boxes,
+        planes,
+        paraboloids,
+    }
 }
 
 /// 渲染整段视频：按 `fps` 在 `[0, duration]` 区间均匀采样若干帧。
@@ -299169,6 +300114,7 @@ mod tests {
         use prism_core::{Aesthetic, Camera, Light, Material};
         use prism_math::Vec3;
         Scene {
+            spheres: Vec::new(),
             radius: 1.0,
             orbit_center: Vec3::new(0.0, 0.0, 0.0),
             orbit_radius: 4.0,
@@ -299276,6 +300222,7 @@ mod tests {
         use prism_core::{Aesthetic, Camera, Light, Material};
         use prism_math::Vec3;
         Scene {
+            spheres: Vec::new(),
             radius: 1.0,
             orbit_center: Vec3::new(0.0, 0.0, 0.0),
             orbit_radius: 3.0,
@@ -299976,7 +300923,7 @@ pub fn alloc_per_frame(before: Counters, after: Counters, frames: u64) -> u64 {
 }
 ================================================================================
 === FILE: src/prism-render/src/movie.rs ===
-=== LINES: 3466 ===
+=== LINES: 3778 ===
 //! DSL v2 成片直达：[`CompileV2Output`] → 帧序列 [`Deliverable`]。
 //!
 //! # 定位
@@ -300198,16 +301145,32 @@ struct SceneModel {
     camera: Option<NodeRef>,
     /// 材质节点（S8；None = 缺省材质）。
     material: Option<NodeRef>,
-    /// 球体节点（S12 sdf kind=sphere；None = 无实体，纯背景 / 文本场景）。
-    sphere: Option<NodeRef>,
+    /// 球体节点（V3.1.1：多个 `sdf kind sphere`，各球独立球心 / 半径 /
+    /// 材质；空 = 无实体，纯背景 / 文本场景）。声明顺序即装配顺序。
+    spheres: Vec<NodeRef>,
+    /// 光源节点（V3.1.1：DSL `stage3d light`，逐盏透传方向 / 颜色 / 强度 /
+    /// 灯型；空 = 使用确定性缺省灯，见 `default_lights` 文档）。
+    lights: Vec<NodeRef>,
+    /// 新几何节点（V3.1.1：sdf kind ∈ {box, plane, paraboloid, mesh}；
+    /// 声明序即装配序，由 `assemble_geos` 逐类搬进 `SceneAttach`）。
+    geos: Vec<NodeRef>,
     /// 曲线图元节点（S12 sdf kind ∈ {cylinder, cone, torus, revolution}；
-    /// 按节点序进入 rt 场景，非空即走 CPU 波前曲线路径）。
+    /// 按节点序进入 rt 场景，非空即走 rt 波前路径）。
     curves: Vec<NodeRef>,
     /// 模拟节点（S3 约束梯度流；按节点序逐帧推进 + 粒子叠加）。
     sims: Vec<NodeRef>,
     /// sim 的场景内帧号基准：本场景在影片帧网格上的首个活跃帧号
     /// （场景内帧号 = 影片帧号 − 本值；纯函数，seek 对拍稳定）。
     sim_base_frame: u64,
+    /// 文本图层的场景内帧号基准（V3.1.1 文字层错位修复）。
+    ///
+    /// DSL 关键帧通道的时间轴以「本场景起点 0」为基准（见
+    /// `prism_dsl::codegen::build_track`），但帧循环喂进来的是全局影片时间
+    /// `t = frame / fps` 与全局帧号 `frame`。多场景串接时若不减去本场景的
+    /// 起点，第 2 个及以后场景的文字层动画相位会被整体平移 `start` 秒，
+    /// 表现为文字提前/延后出现、串到别的场景时间段。与 `sim_base_frame`
+    /// 同一套纯函数推导，保证 seek 对拍稳定。
+    text_base_frame: u64,
     /// 文本图层（S12 layer text；按节点序合成）。
     texts: Vec<NodeRef>,
     /// T0：本场景的附加能力（介质 / 网格 / 实例 / 纹理 / 毛发 / 位移槽）。
@@ -300888,10 +301851,13 @@ fn build_models(
             duration: scene.duration,
             camera: None,
             material: None,
-            sphere: None,
             curves: Vec::new(),
             sims: Vec::new(),
             sim_base_frame: 0,
+            text_base_frame: 0,
+            spheres: Vec::new(),
+            lights: Vec::new(),
+            geos: Vec::new(),
             texts: Vec::new(),
             attach: scene.attach.clone(),
             wiring_nodes: Vec::new(),
@@ -300931,6 +301897,13 @@ fn build_models(
         if !model.sims.is_empty() {
             model.sim_base_frame = scene_first_frame(&model, compile.fps, frame_count);
         }
+        // V3.1.1 文字层错位修复：文字图层的通道时间轴以「本场景起点」为 0
+        // （codegen::build_track 把 `key 0s` 建成 t=0，不加 scene.start），
+        // 故其帧号基准与 sim 同源、同算式，保证 seek 对拍稳定。单场景
+        // start=0 时本值恒为 0，与修复前逐字节一致。
+        if !model.texts.is_empty() {
+            model.text_base_frame = scene_first_frame(&model, compile.fps, frame_count);
+        }
         models.push(model);
     }
     Ok(models)
@@ -300957,6 +301930,22 @@ fn classify_node(
             model.camera = Some(node_ref);
             Ok(())
         }
+        // V3.1.1：S8 辐射传输的「光源源项」分支。light 节点带 `light_kind`，
+        // material 节点带 `albedo_r`，两者互斥。装配期再拒一次 environment
+        // （底层 W2 占位），保证「声明了却没实现」不会静默通过。
+        StructureId::RadiativeTransfer if node.params.get("light_kind").is_some() => {
+            if p_str(&node.params, "light_kind") == Some("environment") {
+                return Err(RenderError::new(
+                    "R5013",
+                    format!("场景 '{}' 的 light 节点 {}", scene.name, node.id),
+                    "light kind 'environment' 在 prism_rt 是 W2 占位，不参与任何计算"
+                        .to_string(),
+                    "改用 directional / ambient / rect / sphere".to_string(),
+                ));
+            }
+            model.lights.push(node_ref);
+            Ok(())
+        }
         // S8 辐射传输：stage3d material。
         StructureId::RadiativeTransfer if node.params.get("albedo_r").is_some() => {
             if model.material.is_some() {
@@ -300980,16 +301969,14 @@ fn classify_node(
                         model.curves.push(node_ref);
                         Ok(())
                     }
+                    // V3.1.1：多球按声明顺序全部入列，不再抛 R5013。
                     "sphere" => {
-                        if model.sphere.is_some() {
-                            return Err(RenderError::new(
-                                "R5013",
-                                format!("场景 '{}' 的节点 {}", scene.name, node.id),
-                                "场景内含多个 sdf 实体，已支持子集只允许单球体".to_string(),
-                                "合并为一个 sdf 块；多实体场景请拆分为多个 scene",
-                            ));
-                        }
-                        model.sphere = Some(node_ref);
+                        model.spheres.push(node_ref);
+                        Ok(())
+                    }
+                    // V3.1.1：新几何按声明序入列，由 assemble_geos 逐类翻译。
+                    "box" | "plane" | "paraboloid" | "mesh" => {
+                        model.geos.push(node_ref);
                         Ok(())
                     }
                     other => {
@@ -300997,9 +301984,9 @@ fn classify_node(
                             "R5013",
                             format!("场景 '{}' 的 sdf 节点 {}（kind = '{other}'）", scene.name, node.id),
                             format!(
-                                "render 侧已支持的实体只有 sphere / cylinder / cone / torus / revolution；'{other}' 缺少求交实现"
+                                "render 侧未接线的 sdf kind '{other}'（无对应求交 / 翻译实现）"
                             ),
-                            "把 sdf kind 写成 sphere / cylinder / cone / torus / revolution；box 等基元待几何求交模块接入（尚未支持）",
+                            "把 sdf kind 写成 sphere / box / plane / paraboloid / mesh / cylinder / cone / torus / revolution",
                         ));
                     }
                 }
@@ -302017,6 +303004,208 @@ fn resolve_params(
 
 /// 求值场景在时刻 `t` 的一帧：3D 部分走既有 [`render_frame`]，随后按节点序
 /// 推进 sim 并叠加粒子，最后按节点序合成文本图层。
+/// DSL 未声明任何 `stage3d light` 时的确定性缺省灯（V3.1.1 文档口径）。
+///
+/// 两盏灯，**结构性缺省**（灯列表为空 ⇒ 取此集合），不是对某个输入特判，
+/// 也不按场景内容分流：
+///
+/// 1. 主光：与 V3.1 之前 render 侧硬编码的暖色方向光**同参**（`#fff4e6`、
+///    强度 3.0），保持既有明暗结构；
+/// 2. 环境光：`LightKind::Ambient`，低强度冷色。V3.1 缺省路径完全没有环境
+///    光 ⇒ rt 档逃逸射线纯黑、背光面趋于黑，与「非常暗」的投诉直接相关。
+///    补这盏灯后背景 / 背光面有合理底色，且不冲掉主光的明暗结构。
+///
+/// 缺省灯是**显式声明的灯集合**，走与其它灯完全相同的 `resolve_cpu_light`
+/// / `translate_lights` 消费链，不是帧后补光、也不是常量 ambient 垫片。
+fn default_lights() -> Vec<Light> {
+    vec![
+        Light::new(
+            Vec3::new(1.0, -1.0, -0.5).normalize(),
+            Vec3::new(1.0, 244.0 / 255.0, 230.0 / 255.0),
+            3.0,
+        ),
+        Light::with_kind(
+            Vec3::new(0.0, -1.0, 0.0),
+            Vec3::new(0.55, 0.62, 0.75),
+            0.14,
+            prism_core::LightKind::Ambient,
+        ),
+    ]
+}
+
+/// 把一盏 DSL `stage3d light` 节点解析成 `prism_core::Light`（含灯型）。
+///
+/// 所有字段都由 `build_light` 落地成节点参数，这里逐项读回并做通道解算，
+/// 因而方向 / 颜色 / 强度 / 灯型均可被关键帧驱动，且改任一参数都会改出片。
+fn resolve_light(
+    node: &NodeRef,
+    channels: &BTreeMap<&str, &PropertyChannel>,
+    t: f32,
+    frame: u64,
+) -> Light {
+    let p = resolve_params(node, channels, t, frame);
+    let direction: Vec3 = Vec3::new(
+        p_f32(&p, "dir_x", 1.0),
+        p_f32(&p, "dir_y", -1.0),
+        p_f32(&p, "dir_z", -0.5),
+    );
+    let color: Vec3 = Vec3::new(
+        p_f32(&p, "color_r", 1.0),
+        p_f32(&p, "color_g", 1.0),
+        p_f32(&p, "color_b", 1.0),
+    );
+    let intensity: f32 = p_f32(&p, "intensity", 1.0);
+    let pos: Vec3 = Vec3::new(
+        p_f32(&p, "pos_x", 0.0),
+        p_f32(&p, "pos_y", 2.0),
+        p_f32(&p, "pos_z", 0.0),
+    );
+    let kind: prism_core::LightKind = match p_str(&p, "light_kind").unwrap_or("directional") {
+        "ambient" => prism_core::LightKind::Ambient,
+        "sphere" => prism_core::LightKind::Sphere {
+            center: pos,
+            radius: p_f32(&p, "radius", 1.0),
+        },
+        "rect" => prism_core::LightKind::Rect {
+            center: pos,
+            edge_u: Vec3::new(
+                p_f32(&p, "edge_u_x", 1.0),
+                p_f32(&p, "edge_u_y", 0.0),
+                p_f32(&p, "edge_u_z", 0.0),
+            ),
+            edge_v: Vec3::new(
+                p_f32(&p, "edge_v_x", 0.0),
+                p_f32(&p, "edge_v_y", 0.0),
+                p_f32(&p, "edge_v_z", 1.0),
+            ),
+        },
+        // environment 在 DSL 编译期与 classify_node 装配期双重拒绝，此处不可达。
+        _ => prism_core::LightKind::Directional,
+    };
+    Light::with_kind(direction, color, intensity, kind)
+}
+
+/// 新几何节点的三段式报错（保持 R5013 风格与修复建议）。
+fn geometry_err(model: &SceneModel, node_id: u64, kind: &str, problem: &str) -> RenderError {
+    RenderError::new(
+        "R5013",
+        format!("场景 '{}' 的 sdf 节点 {}（kind = '{}'）", model.name, node_id, kind),
+        problem.to_string(),
+        "使用已接线的 kind：sphere / box / plane / paraboloid / mesh / cylinder / cone / torus / revolution".to_string(),
+    )
+}
+
+/// V3.1.1：把 DSL 的新几何节点装配到 `SceneAttach`（声明序 = 装配序）。
+///
+/// 每个字段都从节点参数读回并落进对应的 `BoxDesc` / `PlaneDesc` /
+/// `ParaboloidDesc` / `MeshDesc`，再由 `build_geo_request` →
+/// `translate_scene`（或 rt 波前路径）真实消费；不支持的 kind 直接报错，
+/// 绝不「登记后丢掉」。
+fn assemble_geos(
+    model: &SceneModel,
+    channels: &BTreeMap<&str, &PropertyChannel>,
+    t: f32,
+    frame: u64,
+    base_material: Material,
+    attach: &mut prism_core::SceneAttach,
+) -> MovieResult<()> {
+    for g in &model.geos {
+        let p = resolve_params(g, channels, t, frame);
+        let kind: &str = p_str(&p, "kind").unwrap_or("");
+        let m: Material = Material::new(
+            Vec3::new(
+                p_f32(&p, "albedo_r", base_material.albedo.x),
+                p_f32(&p, "albedo_g", base_material.albedo.y),
+                p_f32(&p, "albedo_b", base_material.albedo.z),
+            ),
+            p_f32(&p, "roughness", base_material.roughness).clamp(0.0, 1.0),
+            p_f32(&p, "metalness", base_material.metalness).clamp(0.0, 1.0),
+        );
+        let center: Vec3 = Vec3::new(
+            p_f32(&p, "center_x", 0.0),
+            p_f32(&p, "center_y", 0.0),
+            p_f32(&p, "center_z", 0.0),
+        );
+        match kind {
+            "box" => attach.boxes.push(prism_core::BoxDesc {
+                center,
+                half_extents: Vec3::new(
+                    p_f32(&p, "half_extents_x", 1.0),
+                    p_f32(&p, "half_extents_y", 1.0),
+                    p_f32(&p, "half_extents_z", 1.0),
+                ),
+                material: m,
+            }),
+            "plane" => {
+                let he: Option<f32> = match p.get("half_extent") {
+                    Some(ParamValue::F32(v)) if v.is_finite() && *v > 0.0 => Some(*v),
+                    _ => None,
+                };
+                attach.planes.push(prism_core::PlaneDesc {
+                    point: Vec3::new(
+                        p_f32(&p, "point_x", 0.0),
+                        p_f32(&p, "point_y", -1.0),
+                        p_f32(&p, "point_z", 0.0),
+                    ),
+                    normal: Vec3::new(
+                        p_f32(&p, "normal_x", 0.0),
+                        p_f32(&p, "normal_y", 1.0),
+                        p_f32(&p, "normal_z", 0.0),
+                    ),
+                    half_extent: he,
+                    material: m,
+                });
+            }
+            "paraboloid" => attach.paraboloids.push(prism_core::ParaboloidDesc {
+                k: p_f32(&p, "k", 0.5),
+                r_max: p_f32(&p, "r_max", 2.0),
+                material: m,
+            }),
+            "mesh" => {
+                let vn: usize = match p.get("vert_n") {
+                    Some(ParamValue::U32(n)) => *n as usize,
+                    _ => 0,
+                };
+                let tn: usize = match p.get("tri_n") {
+                    Some(ParamValue::U32(n)) => *n as usize,
+                    _ => 0,
+                };
+                let mut positions: Vec<Vec3> = Vec::with_capacity(vn);
+                for i in 0..vn {
+                    positions.push(Vec3::new(
+                        p_f32(&p, &format!("vert_{i}_x"), 0.0) + center.x,
+                        p_f32(&p, &format!("vert_{i}_y"), 0.0) + center.y,
+                        p_f32(&p, &format!("vert_{i}_z"), 0.0) + center.z,
+                    ));
+                }
+                let mut indices: Vec<u32> = Vec::with_capacity(tn * 3);
+                for i in 0..tn {
+                    for key in ["a", "b", "c"] {
+                        let v: u32 = match p.get(&format!("tri_{i}_{key}")) {
+                            Some(ParamValue::U32(v)) => *v,
+                            _ => 0,
+                        };
+                        indices.push(v);
+                    }
+                }
+                if positions.len() < 3 || indices.len() < 3 {
+                    return Err(geometry_err(
+                        model,
+                        g.id as u64,
+                        kind,
+                        "网格顶点或三角形索引不足（需要至少 3 顶点 + 1 三角形）",
+                    ));
+                }
+                attach.meshes.push(prism_core::MeshDesc::new(positions, indices));
+            }
+            other => {
+                return Err(geometry_err(model, g.id as u64, other, "render 侧未接线的 sdf kind"));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn render_scene_frame(
     model: &SceneModel,
     compile: &CompileV2Output,
@@ -302119,18 +303308,44 @@ fn render_scene_frame(
         None => Material::new(Vec3::new(1.0, 1.0, 1.0), 0.5, 0.0),
     };
 
-    // ---- 实体半径（无 sdf = 0：软光追对 r=0 无命中，天然只出背景）--------
-    let mut radius: f32 = match &model.sphere {
-        Some(s) => {
+    // ---- 逐球装配（V3.1.1：多球，各球独立球心 / 半径 / 材质）------------
+    // W3 几何族的种子化半径扰动对**每一球**同尺度生效，不再只作用于单球视图。
+    let geo_scale: f32 = if w3.crafted { 1.0 + 0.05 * w3.geometry } else { 1.0 };
+    let sphere_descs: Vec<prism_core::SphereDesc> = model
+        .spheres
+        .iter()
+        .map(|s| {
             let p = resolve_params(s, channels, t, frame);
-            p_f32(&p, "radius", 1.0).max(0.0)
-        }
-        None => 0.0,
-    };
-    if w3.crafted {
-        // W3 几何族：受控的手工不完美 / 微不对称（种子化半径扰动）。
-        radius = (radius * (1.0 + 0.05 * w3.geometry)).max(0.0);
-    }
+            let r: f32 = (p_f32(&p, "radius", 1.0) * geo_scale).max(0.0);
+            // 未声明 center ⇒ 回落到 orbit_center（既有单球摆放口径，逐字节保持）。
+            let c = Vec3::new(
+                p_f32(&p, "center_x", center.x),
+                p_f32(&p, "center_y", center.y),
+                p_f32(&p, "center_z", center.z),
+            );
+            // 每球材质：sdf 节点带任一材质字段即用该球自己的材质，否则沿用
+            // 场景级 material（与既有单球行为一致）。
+            let has_own_mat: bool = p.get("albedo_r").is_some()
+                || p.get("roughness").is_some()
+                || p.get("metalness").is_some();
+            let m: Material = if has_own_mat {
+                Material::new(
+                    Vec3::new(
+                        p_f32(&p, "albedo_r", material.albedo.x),
+                        p_f32(&p, "albedo_g", material.albedo.y),
+                        p_f32(&p, "albedo_b", material.albedo.z),
+                    ),
+                    p_f32(&p, "roughness", material.roughness).clamp(0.0, 1.0),
+                    p_f32(&p, "metalness", material.metalness).clamp(0.0, 1.0),
+                )
+            } else {
+                material
+            };
+            prism_core::SphereDesc::new(c, r, m)
+        })
+        .collect();
+    // v1 遗留的单球视图：取首球半径；无球 = 0（r=0 无命中，天然只出背景）。
+    let radius: f32 = sphere_descs.first().map_or(0.0, |s| s.radius);
 
     // ---- 美学参数（theme 块；缺省关闭全部后期）---------------------------
     let mut aesthetic: Aesthetic = match &compile.theme {
@@ -302142,25 +303357,38 @@ fn render_scene_frame(
         aesthetic.contrast = (aesthetic.contrast * (1.0 + 0.10 * w3.composition_color)).max(0.0);
     }
 
-    // ---- 光源：DSL 的 light 块登记后忽略（后续接入），render 侧用
-    //      固定缺省灯（与内置演示同款：暖色方向光，确定性常量）-------------
-    let mut lights: Vec<Light> = vec![Light::new(
-        Vec3::new(1.0, -1.0, -0.5).normalize(),
-        Vec3::new(1.0, 244.0 / 255.0, 230.0 / 255.0),
-        3.0,
-    )];
-    if w3.crafted {
-        // W3 材质光照族：光源方向 / 强度 / 色偏的种子化微扰（Light::new 之前）。
+    // ---- 光源：V3.1.1 逐盏消费 DSL `stage3d light` ------------------------
+    // 旧实现在这里硬编码一盏暖色方向光，把 DSL 的 light 块「登记后忽略」，
+    // 导致写几盏灯、改方向 / 颜色 / 强度出片完全一样。现按声明序逐盏解析
+    // （含灯型）；未声明任何灯时用确定性缺省灯（见 default_lights 文档）。
+    let using_default_lights: bool = model.lights.is_empty();
+    let mut lights: Vec<Light> = if using_default_lights {
+        default_lights()
+    } else {
+        model
+            .lights
+            .iter()
+            .map(|l| resolve_light(l, channels, t, frame))
+            .collect()
+    };
+    if w3.crafted && using_default_lights {
+        // W3 材质光照族：与 V3.1 逐字相同的种子化微扰，只作用于缺省主光。
+        // DSL 显式声明的灯不被悄悄改写（用户输入即事实）。
         let dir: Vec3 = Vec3::new(1.0 + 0.20 * w3.material_light, -1.0, -0.5).normalize();
         let tint: Vec3 = Vec3::new(1.0, 244.0 / 255.0, 230.0 / 255.0);
         let intensity: f32 = 3.0 * (1.0 + 0.10 * w3.material_light);
         lights[0] = Light::new(dir, tint, intensity);
     }
 
+    // ---- V3.1.1：DSL 新几何 → SceneAttach（声明序即装配序）----------------
+    let mut attach: prism_core::SceneAttach = model.attach.clone();
+    assemble_geos(model, channels, t, frame, material, &mut attach)?;
+
     // ---- 组装 Scene 并复用既有求值器 --------------------------------------
     // 注意：build_render_request 的 eye 由 eval_camera_orbit(scene, t, duration)
     // 推导（orbit_center + 水平圆轨道），camera.eye / target 仅作契约占位。
     let scene: Scene = Scene {
+        spheres: sphere_descs,
         radius,
         orbit_center: center,
         orbit_radius,
@@ -302168,9 +303396,9 @@ fn render_scene_frame(
         lights,
         camera: Camera::new(Vec3::new(0.0, 0.0, -orbit_radius), center, fov_rad),
         aesthetic,
-        // T0：DSL 声明的附加能力（media / mesh / instance / texture / hair /
-        // 位移槽）。空 ⇒ 与加字段前逐字节同帧。
-        attach: model.attach.clone(),
+        // T0 附加能力 + V3.1.1 新几何（box / plane / paraboloid / mesh）。
+        // 空 ⇒ 与加字段前逐字节同帧。
+        attach,
     };
     let t_local: f32 = t - model.start;
     // 场景时长为正（活跃判据已保证）；防御性下限防除零。
@@ -302180,10 +303408,16 @@ fn render_scene_frame(
         // 种子化微扰，在 `eval_camera_orbit` 之前生效，不是帧后贴皮。
         dur_local = (dur_local * (1.0 + 0.15 * w3.edit_audio)).max(1.0e-3);
     }
-    let mut fb: Framebuffer = if model.curves.is_empty() {
+    // V3.1.1 能力路由：CpuRefBackend（--fast）只实现球 / 曲线 / 实例，
+    // box / plane / paraboloid / mesh 的求交在 prism-rt。声明了新几何就走
+    // rt 波前路径真实出片 —— 后端能力路由，不是按场景内容分流来过测。
+    let needs_rt_path: bool = !model.curves.is_empty()
+        || !model.geos.is_empty()
+        || !scene.attach.is_empty();
+    let mut fb: Framebuffer = if !needs_rt_path {
         render_frame(device, &scene, t_local, dur_local, w, h)
     } else {
-        // 曲线图元族：走 prism-rt CPU 波前路径（设备仅占位不用）。
+        // 曲线图元族 + V3.1.1 新几何：走 prism-rt CPU 波前路径（设备仅占位）。
         render_curve_frame(model, &scene, channels, t_local, dur_local, frame, w, h)?
     };
 
@@ -302222,8 +303456,15 @@ fn render_scene_frame(
     // V3.1 收尾 C：文本域真实插桩（无文本节点时不计时，避免虚增 calls）。
     if !model.texts.is_empty() {
         let _text_timer = crate::perf_domains::SegmentTimer::start(Domain::Text);
+        // V3.1.1 文字层错位修复：DSL 文字层通道（x/y/size/opacity 关键帧）
+        // 的时间轴以本场景起点为 0，而 `t` / `frame` 是全局影片时间 / 全局帧号。
+        // 多场景串接时若直接用全局值采样，第 2 个及以后场景的文字动画相位
+        // 会被整体平移 `start` 秒（文字提前/延后、串场）。改用与相机同源的
+        // 场景局部时间 `t_local` 与场景内帧号；单场景 start=0 ⇒ 逐字节不变。
+        let t_text: f32 = t_local.max(0.0);
+        let frame_text: u64 = frame.saturating_sub(model.text_base_frame);
         for text in &model.texts {
-            let p = resolve_params(text, channels, t, frame);
+            let p = resolve_params(text, channels, t_text, frame_text);
             overlay_text(&mut fb, &p, w, h).map_err(|err| {
                 RenderError::new(
                     err.code,
@@ -302269,9 +303510,18 @@ fn render_curve_frame(
     /// 固定弹射深度（直接光 + 一次间接足够呈现曲面明暗）。
     const CURVE_BOUNCES: u32 = 2;
 
-    let mut rt: RtScene = RtScene::default();
-    // 材质映射：DSL material → Lambert 反照率（Pbr 的 metalness/roughness
-    // 映射尚未接入；反照率是最影响识别的通道，先真跑）。
+    // V3.1.1 治本：rt 波前路径不再手工拼装**第二套** `RtScene`，而是复用
+    // `build_render_request` → `translate_scene` 这一条唯一翻译链。于是球 /
+    // 盒 / 平面 / 抛物面 / 网格 / 五类灯 / 介质 / 纹理 / 实例 / 毛发 / 位移
+    // 全部按同一份语义装配，彻底消除「DSL 声明了、装配层登记后丢掉」。
+    //
+    // ⑤ 的 π 口径也在这里收口：旧实现手工硬编码 `radiance = color × 3.0`、
+    // `cos_theta_max = 0.9`，与 `translate_scene` 差约 π 倍；两路共用
+    // `translate_lights` 后曝光一致。
+    let scene_req = crate::build_render_request(scene, t, duration, w, h);
+    let mut rt: RtScene = crate::rt_backend::translate_scene(&scene_req);
+    // 曲线图元是 GPU 请求契约里没有的基元族（A-2 走 CPU 波前），由本函数
+    // 在翻译结果之上叠加；其余一切几何都来自 `translate_scene`。
     let mat: MaterialKind = MaterialKind::Lambert { albedo: scene.material.albedo };
     for c in &model.curves {
         let p = resolve_params(c, channels, t, frame);
@@ -302328,18 +303578,14 @@ fn render_curve_frame(
                     "R5013",
                     format!("场景 '{}' 的 sdf 节点 {}（kind = '{other}'）", model.name, c.id),
                     format!("render 侧曲线路径不支持的 kind '{other}'"),
-                    "曲线路径仅接受 cylinder / cone / torus / revolution（分类阶段已拦，此为纵深防御）",
+                    "曲线路径仅接受 cylinder / cone / torus / revolution；box / plane / paraboloid / mesh 由 assemble_geos 走另一条装配路径",
                 ));
             }
         }
     }
-    // 光源：与 GPU 球体路径同款固定暖色方向光（确定性常量，DSL light 块
-    // 的运行时接入尚未实装——两路同口径，不静默双标）。
-    rt.lights = vec![prism_rt::integrator::Light::Directional {
-        direction: Vec3::new(1.0, -1.0, -0.5).normalize(),
-        radiance: Vec3::new(1.0, 244.0 / 255.0, 230.0 / 255.0) * 3.0,
-        cos_theta_max: 0.9,
-    }];
+    // 灯已由 `translate_scene` → `translate_lights` 按灯型逐盏装配（五类
+    // 灯型 + 统一 `π` / `cos_theta_max = 1.0`），此处不再二次赋值 —— 两处
+    // 硬编码灯的根因正是「各写一份」。
 
     // 相机：复用 core 场景的轨道机位（eval_camera_orbit）与 fov（弧度）。
     // rt Camera::new 对 fov_deg 有 (0,180) 开区间断言 ⇒ 非有限回落 45°、
@@ -302937,12 +304183,22 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_sdf_box_errors_not_panics() {
+    fn v311_box_sdf_renders_instead_of_erroring() {
+        // 【V3.1.1 旧断言升级】原 `unsupported_sdf_box_errors_not_panics`
+        // 把「box 缺求交实现 ⇒ R5013」固化成正确行为。V3.1.1 已把 box
+        // 接进 prism_rt::Scene::boxes，故换成**更强**的正向断言：能出片、
+        // 有非黑像素；「改尺寸 / 材质 ⇒ 像素变」由 qa_v311_wiring 的端到端
+        // 用例 v311_new_geometry_dsl_changes_pixels 逐项覆盖。
         let compile: CompileV2Output = compile_with_node(StructureId::EntityRepresentation, "box");
         let mut device = prism_gpu::CpuRefBackend;
-        let err: RenderError = render_movie(&compile, &mut device).expect_err("sdf box 必须明确报错");
-        assert_eq!(err.code, "R5013");
-        assert!(err.to_string().contains("box"));
+        let d = render_movie(&compile, &mut device)
+            .expect("V3.1.1：sdf box 已接线，应真实出片而不是抛 R5013");
+        assert!(!d.frames.is_empty(), "box 场景应产出至少一帧");
+        let nonblack: bool = d.frames[0]
+            .pixels
+            .chunks_exact(4)
+            .any(|px| px[0] > 0 || px[1] > 0 || px[2] > 0);
+        assert!(nonblack, "box 场景不应产出全黑画面");
     }
 
     #[test]
@@ -303376,10 +304632,13 @@ mod tests {
                 duration,
                 camera: None,
                 material: None,
-                sphere: None,
                 curves: Vec::new(),
                 sims: Vec::new(),
                 sim_base_frame: 0,
+                text_base_frame: 0,
+                spheres: Vec::new(),
+                lights: Vec::new(),
+                geos: Vec::new(),
                 texts: Vec::new(),
                 wiring_nodes: Vec::new(),
             }
@@ -303445,7 +304704,7 @@ mod tests {
 }
 ================================================================================
 === FILE: src/prism-render/src/nodes.rs ===
-=== LINES: 994 ===
+=== LINES: 993 ===
 //! prism-render 节点注册（D-27 静态汇入制）。
 //!
 //! `DirtyRange` 是增量渲染（C3）的脏区间闭包特解：给定"参数实际变化的帧
@@ -304213,21 +305472,20 @@ fn registered_ids(scene: &SceneV2) -> impl Iterator<Item = NodeId> + '_ {
         .chain(scene.post.node_ids.iter().copied())
 }
 
-/// 场景 id 窗口推演：light v2 节点不进任何 Info 清单，按 id 区间归属场景。
+/// 场景 id 窗口推演：按节点 id 区间归属场景（V3.1.1）。
 ///
 /// # 不变式（codegen 分配纪律）
 /// 节点 id 全局递增分配且按场景顺序连续：场景 i 的全部节点 id 小于场景
 /// j>i 的全部节点 id。于是：
-/// - 下界 `lo` = 1 + 更早场景的最大登记 id——sound（不丢本场景领先的
-///   light 节点：本场景块起点 > 更早场景全部 id ≥ 其登记 id）；
-/// - 上界 `hi` = 更晚场景的最小登记 id，无更晚场景则图内最大 id + 1——
-///   sound（本场景全部 id < 更晚场景全部 id）。
+/// - 下界 `lo` = 1 + 更早场景的最大登记 id；
+/// - 上界 `hi` = 更晚场景的最小登记 id，无更晚场景则图内最大 id + 1。
+/// 两者 sound：本场景全部 id 严格落在 `[lo, hi)` 内。
 ///
-/// # 已知边界（诚实记录，不静默）
-/// 退化形态「某场景的 stage3d 只含 light（无 camera/sdf/material）且声明在
-/// 图层之前」时，其 light 节点可能被归到前一场景窗口（两个相邻场景都无登记
-/// id 时不可判别）。DSL 常见形态（stage3d 带 camera，camera 先于 light 分配
-/// 且登记在 node_ids）下归属精确。
+/// # V3.1.1 旧边界已消除
+/// V3.1 的 `stage3d light` 节点进 `deferred`、不进 `node_ids`，于是「某场景
+/// 只声明 light（无 camera/sdf/material）」时窗口两侧都可能没有登记 id，
+/// 该 light 会被归到前一场景窗口。V3.1.1 起 light 是真实渲染消费面节点，
+/// 进 `scene.node_ids`，`registered_ids` 覆盖它，上述退化形态不再成立。
 fn scene_id_window(compile: &CompileV2Output, scene_index: usize) -> (NodeId, NodeId) {
     let mut lo: NodeId = 1;
     for earlier in &compile.scenes[..scene_index] {
@@ -305134,7 +306392,7 @@ mod tests {
 }
 ================================================================================
 === FILE: src/prism-render/src/rt_backend.rs ===
-=== LINES: 944 ===
+=== LINES: 1029 ===
 //! `RtBackend` —— 把 [`GpuDevice`] 的渲染请求接到 `prism-rt` 完整路径追踪。
 //!
 //! 这是 **D-19 双轨**的默认档：`prism-app render` 默认走本后端，
@@ -305193,14 +306451,15 @@ mod tests {
 //! 在 1080p 上约 400 万次小分配——已知开销，W1 之后按需消掉，本波不动。
 
 use prism_core::EvalCtx;
-use prism_gpu::{CameraReq, Framebuffer, GpuDevice, SceneRenderRequest};
+use prism_gpu::{CameraReq, Framebuffer, GpuDevice, LightKindReq, LightReq, SceneRenderRequest};
 use prism_math::Vec3;
 use prism_rt::bsdf::Bsdf;
 use prism_rt::camera::Camera as RtCamera;
 use prism_rt::displace::{tessellate_displace, RuntimeDisplace};
 use prism_rt::hair_scatter::{HairGeometry, HairScatter};
 use prism_rt::integrator::{
-    Aabb as RtAabb, Light, MaterialKind, MediumRegion, RenderParams, Scene as RtScene, Sphere,
+    Aabb as RtAabb, Light, MaterialKind, MediumRegion, Paraboloid, Plane, RenderParams,
+    Scene as RtScene, Sphere,
 };
 use prism_rt::instance::Instance;
 use prism_rt::media::{HomogeneousMedium, Medium};
@@ -305419,6 +306678,73 @@ impl GpuDevice for RtBackend {
 ///
 /// 公开导出是为了让 QA 能直接对"翻译产物"下断言（T3 要证明每股一个 Mesh、
 /// 每股自己的标架），而不是只能隔着像素猜。生产路径只走 [`RtBackend::render_scene`]。
+/// 请求侧灯列表 → `prism_rt` 五类灯的**唯一翻译函数**（V3.1.1）。
+///
+/// `translate_scene` 与 `movie.rs` 的 rt 波前路径共用本函数，保证「同一份
+/// DSL 灯声明，两条出片路径用同一组 `prism_rt::Light`」——旧缺陷正是两路
+/// 各写一份硬编码灯，导致 rt 路径少乘 π、`cos_theta_max` 也不一致。
+pub fn translate_lights(req_lights: &[LightReq]) -> Vec<Light> {
+    let mut out: Vec<Light> = Vec::with_capacity(req_lights.len());
+    for l in req_lights {
+        if !is_finite_vec(l.color) {
+            continue;
+        }
+        if !(l.intensity.is_finite() && l.intensity > 0.0) {
+            // 非正 / 非有限强度：物理上无意义，显式跳过而不是塞进 NEE 循环。
+            continue;
+        }
+        let radiance: Vec3 = l.color * (l.intensity * RT_INTENSITY_TO_RADIANCE);
+        let dir_len: f32 = l.direction.length();
+        let direction: Vec3 = if dir_len.is_finite() && dir_len > 0.0 {
+            l.direction * (1.0 / dir_len)
+        } else {
+            Vec3::new(0.0, -1.0, 0.0)
+        };
+        match l.kind {
+            LightKindReq::Directional => {
+                if !(dir_len.is_finite() && dir_len > 0.0) {
+                    continue; // 零长方向不构成方向光
+                }
+                out.push(Light::Directional {
+                    direction,
+                    radiance,
+                    cos_theta_max: RT_DIRECTIONAL_COS_MAX,
+                });
+            }
+            LightKindReq::Ambient => out.push(Light::Ambient { radiance }),
+            LightKindReq::Sphere { center, radius } => {
+                if !is_finite_vec(center) || !(radius.is_finite() && radius > 0.0) {
+                    continue;
+                }
+                out.push(Light::Sphere { center, radius, radiance });
+            }
+            LightKindReq::Rect { center, edge_u, edge_v } => {
+                if !is_finite_vec(center) || !is_finite_vec(edge_u) || !is_finite_vec(edge_v) {
+                    continue;
+                }
+                out.push(Light::Rect { center, edge_u, edge_v, radiance });
+            }
+            // 底层 W2 占位：DSL 编译期已用 P1002 拒绝 `kind environment`，
+            // 产品链路上本分支不可达；保留一一映射以免翻译层静默丢灯。
+            LightKindReq::Environment { map } => out.push(Light::Environment { map }),
+        }
+    }
+    out
+}
+
+/// 请求侧材质三元组 → `prism_rt::MaterialKind::Pbr`（球 / 盒 / 面 / 抛物面共用）。
+fn pbr_material(albedo: Vec3, metalness: f32, roughness: f32) -> MaterialKind {
+    MaterialKind::Pbr(Bsdf::new(
+        clamp01(albedo),
+        metalness.clamp(0.0, 1.0),
+        roughness.clamp(0.0, 1.0),
+        RT_DIELECTRIC_IOR,
+        0.0,
+        0.0,
+        Vec3::splat(RT_SSS_RADIUS),
+    ))
+}
+
 pub fn translate_scene(req: &SceneRenderRequest) -> RtScene {
     let mut scene: RtScene = RtScene::default();
     for s in &req.spheres {
@@ -305430,36 +306756,48 @@ pub fn translate_scene(req: &SceneRenderRequest) -> RtScene {
         if !is_finite_vec(s.center) {
             continue;
         }
-        let material: MaterialKind =
-            MaterialKind::Pbr(Bsdf::new(
-                clamp01(s.albedo),
-                s.metalness.clamp(0.0, 1.0),
-                s.roughness.clamp(0.0, 1.0),
-                RT_DIELECTRIC_IOR,
-                0.0,
-                0.0,
-                Vec3::splat(RT_SSS_RADIUS),
-            ));
+        let material: MaterialKind = pbr_material(s.albedo, s.metalness, s.roughness);
         scene.spheres.push((
             Sphere { center: s.center, radius: s.radius },
             material,
         ));
     }
-    for l in &req.lights {
-        let dir_len: f32 = l.direction.length();
-        if !(dir_len.is_finite() && dir_len > 0.0) || !is_finite_vec(l.color) {
+    // V3.1.1：灯型逐变体翻译（方向 / 环境 / 矩形面 / 发光球 / 环境贴图占位）。
+    // 与 rt 波前路径共用同一个函数，避免两路各写一份造成口径漂移。
+    scene.lights.extend(translate_lights(&req.lights));
+
+    // ---- V3.1.1 新几何：盒体 / 平面 / 抛物面 -------------------------------
+    // 三者都进 prism_rt::Scene 已有的同名 Vec，求交由 rt 侧实现；本层只搬运。
+    for b in &req.geo.boxes {
+        if !is_finite_vec(b.center) || !is_finite_vec(b.half_extents) {
             continue;
         }
-        if !(l.intensity.is_finite() && l.intensity > 0.0) {
-            // 非正 / 非有限强度：物理上无意义（会产出负辐亮度再被 clamp 掉），
-            // 显式跳过而不是把它当"0 强度灯"塞进 NEE 循环。
+        if !(b.half_extents.x > 0.0 && b.half_extents.y > 0.0 && b.half_extents.z > 0.0) {
+            continue; // 退化盒：无体积，rt 侧永不命中
+        }
+        let bounds = RtAabb::new(b.center - b.half_extents, b.center + b.half_extents);
+        scene.boxes.push((bounds, pbr_material(b.albedo, b.metalness, b.roughness)));
+    }
+    for p in &req.geo.planes {
+        if !is_finite_vec(p.point) || !is_finite_vec(p.normal) {
             continue;
         }
-        scene.lights.push(Light::Directional {
-            direction: l.direction * (1.0 / dir_len),
-            radiance: l.color * (l.intensity * RT_INTENSITY_TO_RADIANCE),
-            cos_theta_max: RT_DIRECTIONAL_COS_MAX,
-        });
+        if let Some(h) = p.half_extent {
+            if !(h.is_finite() && h > 0.0) {
+                continue;
+            }
+        }
+        let plane = Plane::new(p.point, p.normal, p.half_extent);
+        scene.planes.push((plane, pbr_material(p.albedo, p.metalness, p.roughness)));
+    }
+    for q in &req.geo.paraboloids {
+        if !(q.k.is_finite() && q.k > 0.0 && q.r_max.is_finite() && q.r_max > 0.0) {
+            continue;
+        }
+        scene.paraboloids.push((
+            Paraboloid { k: q.k, r_max: q.r_max },
+            pbr_material(q.albedo, q.metalness, q.roughness),
+        ));
     }
 
     // ---- 分支 1/6：纹理表（必须在网格之前：位移槽要采样它）-----------------
@@ -305814,6 +307152,7 @@ mod tests {
                 aspect: w as f32 / h as f32,
             },
             lights: vec![LightReq {
+                kind: prism_gpu::LightKindReq::Directional, // V3.1.1：结构性缺省
                 direction: Vec3::new(0.0, 0.0, -1.0),
                 color: Vec3::new(1.0, 1.0, 1.0),
                 intensity: 3.0,
@@ -305942,6 +307281,7 @@ mod tests {
                 aspect: 1.0,
             },
             lights: vec![LightReq {
+                kind: prism_gpu::LightKindReq::Directional, // V3.1.1：结构性缺省
                 direction: Vec3::new(0.0, 1.0, 0.0),
                 color: Vec3::new(1.0, 1.0, 1.0),
                 intensity: 3.0,
@@ -306048,16 +307388,19 @@ mod tests {
         let mut req: SceneRenderRequest = red_sphere_request(8, 6);
         req.lights = vec![
             LightReq {
+                kind: prism_gpu::LightKindReq::Directional, // V3.1.1：结构性缺省
                 direction: Vec3::new(0.0, 0.0, 0.0),
                 color: Vec3::splat(1.0),
                 intensity: 1.0,
             },
             LightReq {
+                kind: prism_gpu::LightKindReq::Directional, // V3.1.1：结构性缺省
                 direction: Vec3::new(0.0, 0.0, -1.0),
                 color: Vec3::splat(1.0),
                 intensity: -2.0,
             },
             LightReq {
+                kind: prism_gpu::LightKindReq::Directional, // V3.1.1：结构性缺省
                 direction: Vec3::new(f32::NAN, 0.0, -1.0),
                 color: Vec3::splat(1.0),
                 intensity: 1.0,
@@ -311819,7 +313162,7 @@ mod tests {
 }
 ================================================================================
 === FILE: src/prism-render/src/v31_temporal.rs ===
-=== LINES: 1048 ===
+=== LINES: 1049 ===
 //! V3.1 —— 几何感知的时域重投影样本复用（S2–S5 的实装）。
 //!
 //! # 与上一版「时空重建」的本质区别
@@ -312580,6 +313923,7 @@ mod tests {
             height: h,
             camera: CameraReq { eye, target: Vec3::new(0.0, 0.0, 0.0), fov: 50f32.to_radians(), aspect: w as f32 / h as f32 },
             lights: vec![LightReq {
+                kind: prism_gpu::LightKindReq::Directional, // V3.1.1：结构性缺省
                 direction: Vec3::new(1.0, -1.0, -0.5).normalize(),
                 color: Vec3::new(1.0, 244.0 / 255.0, 230.0 / 255.0),
                 intensity: 3.0,
@@ -314612,7 +315956,7 @@ fn reuse_ratio_bonus_after_narrowing() {
 }
 ================================================================================
 === FILE: src/prism-render/tests/qa_perf_counters.rs ===
-=== LINES: 358 ===
+=== LINES: 359 ===
 //! T09 测 1：内存/带宽剖析 + 帧池 + 零拷贝身份判据（V2.2-D-2 / PE-3）。
 //!
 //! 覆盖 PRD 验收 1–5：
@@ -314663,6 +316007,7 @@ const FRAMES: usize = (FPS as f32 * DUR).ceil() as usize; // 8
 /// 固定场景：轨道红球 + 斜主光（与 lib.rs `orbit_scene` 同源，保证确定性）。
 fn fixed_scene() -> Scene {
     Scene {
+        spheres: Vec::new(),
         radius: 1.0,
         orbit_center: Vec3::new(0.0, 0.0, 0.0),
         orbit_radius: 3.0,
@@ -315731,7 +317076,7 @@ fn t0_media_mesh_renders_through_the_general_path() {
 }
 ================================================================================
 === FILE: src/prism-render/tests/qa_v31_reproject.rs ===
-=== LINES: 271 ===
+=== LINES: 272 ===
 //! V3.1 时域重投影验收（S1–S6 的画质与反作弊硬证据）。
 //!
 //! 驱动**出片链路同一实现** [`TemporalReprojector`]，逐帧生成独立 golden
@@ -315814,6 +317159,7 @@ fn req_at(w: u32, h: u32, frame: u32, m: Motion) -> SceneRenderRequest {
             aspect: w as f32 / h as f32,
         },
         lights: vec![LightReq {
+            kind: prism_gpu::LightKindReq::Directional, // V3.1.1：结构性缺省
             direction: Vec3::new(1.0, -1.0, -0.5).normalize(),
             color: Vec3::new(1.0, 244.0 / 255.0, 230.0 / 255.0),
             intensity: 3.0,
@@ -316004,8 +317350,726 @@ fn s1_motion_quantified_adjacent_frame_change() {
     assert!(max_pct > 2.0, "S1 片源须有显著比例像素变化：{max_pct}%");
 }
 ================================================================================
+=== FILE: src/prism-render/tests/qa_v311_wiring.rs ===
+=== LINES: 715 ===
+//! V3.1.1 缺陷修复验收（持续追加）：DSL 声明 → 编译产物 → 出片像素的端到端断言。
+//!
+//! 本文件只走**公开产品链路**：`compile_v2` → `prism_render::render_movie`
+//! → `Deliverable.frames` 像素。不接受「只断言编译通过 / 节点数变多」这类
+//! 弱断言——每一条都要求「改了 DSL，出片像素必须跟着变」。
+//!
+//! # 已收口项
+//! - 多场景时间线文字层错位（用户定性主攻方向）。
+//!
+//! # 待追加项（后续轮次）
+//! - 多球（各自球心 / 半径 / 材质）、多灯（灯型 / 方向 / 颜色 / 强度 + NEE）、
+//!   新几何（box / plane / paraboloid / mesh）、六项附加能力、亮度量化。
+
+use prism_dsl::compile_v2;
+use prism_gpu::{CpuRefBackend, Framebuffer};
+use prism_render::render_movie;
+
+/// 帧缓冲里取哪一半的像素。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Side {
+    /// 全幅。
+    All,
+    /// 左半（场景 1 的文字位置）。
+    Left,
+    /// 右半（场景 2 的文字位置）。
+    Right,
+}
+
+/// 统计一帧中的「白色文字像素」数。
+///
+/// `CpuRefBackend` 的纯背景是深蓝黑（约 10/13/20），文字缺省纯白 255，
+/// 故 `>200` 只捕获文字，不误计背景（与 `movie.rs` 既有文字测试同判据）。
+/// alpha 恒 255，不参与判据。
+fn lit(fb: &Framebuffer, width: u32, side: Side) -> usize {
+    let w: usize = width.max(1) as usize;
+    fb.pixels
+        .chunks_exact(4)
+        .enumerate()
+        .filter(|(i, px)| {
+            let x: usize = i % w;
+            let in_side: bool = match side {
+                Side::All => true,
+                Side::Left => x < w / 2,
+                Side::Right => x >= w / 2,
+            };
+            in_side && (px[0] > 200 || px[1] > 200 || px[2] > 200)
+        })
+        .count()
+}
+
+/// 两场景各 1 秒、无过渡、8 fps ⇒ 起点 [0, 1)，共 16 帧。
+///
+/// 两个场景写**同一条淡入曲线**，只把文字水平位置错开（左半 / 右半），
+/// 于是「哪半边亮」直接标识当前是哪一个场景的文字，可判串场；
+/// 「逐帧亮像素数是否相等」直接判相位是否对齐。
+///
+/// `second_first` 是场景 2 的首个 opacity 关键帧值，用于「改 DSL 参数 →
+/// 像素跟着变」的敏感性对拍。
+fn multi_scene_text_src(second_first: &str) -> String {
+    let mut s: String = String::new();
+    s.push_str("// prism-dsl 1\n");
+    s.push_str("movie \"m\" { duration 2s fps 8 resolution 96x54 }\n");
+    s.push_str("scene \"s1\" {\n");
+    s.push_str("  duration 1s\n");
+    s.push_str(
+        "  layer text \"t1\" { content \"X\" x 0 y 0 size 24 color #ffffff \
+         opacity { key 0s 0 linear key 0.5s 1 linear } }\n",
+    );
+    s.push_str("}\n");
+    s.push_str("scene \"s2\" {\n");
+    s.push_str("  duration 1s\n");
+    s.push_str("  layer text \"t2\" { content \"X\" x 48 y 0 size 24 color #ffffff opacity { key 0s ");
+    s.push_str(second_first);
+    s.push_str(" linear key 0.5s 1 linear } }\n");
+    s.push_str("}\n");
+    s
+}
+
+/// 主断言：多场景文字层不错位、不串场、相位对齐、同输入同输出。
+///
+/// # 修复前为什么会失败
+///
+/// `movie.rs` 文字合成原先拿**全局**影片时间 `t` 与**全局**帧号 `frame`
+/// 采样 DSL 通道；而 `prism-dsl/src/codegen.rs:638-659` 的 `build_track`
+/// 把 `key 0s` 建成「本场景局部 t=0」。场景 2 起点 1s，其首帧全局
+/// `t=1.0s` 采样淡入通道时早已越过 0.5s 末关键帧 ⇒ opacity 恒为 1，
+/// 文字一上来就全亮，淡入相位被整体平移 1 秒，并串到场景 1 的时间段。
+#[test]
+fn v311_multi_scene_text_phase_aligned_and_no_crosstalk() {
+    let compile = compile_v2(&multi_scene_text_src("0"))
+        .expect("多场景 + 文字层 DSL 应编译成功");
+
+    // 时间线本身先钉死：两个场景、起点 [0, 1)、16 帧。
+    assert_eq!(compile.scenes.len(), 2, "应是两个场景");
+    assert!((compile.scenes[0].start - 0.0).abs() < 1e-6, "场景 1 起点 0s");
+    assert!((compile.scenes[1].start - 1.0).abs() < 1e-6, "场景 2 起点 1s");
+    assert_eq!(compile.fps, 8, "movie.fps 应生效");
+    assert!((compile.duration - 2.0).abs() < 1e-6, "总时长 2s");
+
+    // 前提证据：证明下面的断言不是「碰巧通过」的空断言。
+    // 场景 2 的 opacity 通道在时间轴 0 处是 0（全透明）、在 1.0s 处是 1
+    // （全不透明）。修复前文字合成用全局 t=1.0s 采样 ⇒ 场景 2 首帧必然
+    // 全亮；因此「首帧亮像素 == 0」这条断言确实能钉死错位。
+    let ch = compile
+        .channels
+        .iter()
+        .find(|c| c.name == "s2/t2.opacity")
+        .expect("场景 2 的 opacity 字段级通道应登记");
+    assert!((ch.channel.sample(0.0) - 0.0).abs() < 1e-6, "局部起点应全透明");
+    assert!((ch.channel.sample(1.0) - 1.0).abs() < 1e-6, "全局 t=1.0s 采样会全亮");
+
+    let mut device = CpuRefBackend;
+    let d = render_movie(&compile, &mut device).expect("多场景影片应可渲染");
+    assert_eq!(d.frame_count(), 16, "2s × 8fps = 16 帧");
+
+    // ① 不错位：两个场景的首帧都应是各自淡入曲线的起点（全透明）。
+    assert_eq!(lit(&d.frames[0], d.width, Side::All), 0, "场景 1 首帧淡入起点应无文字");
+    assert_eq!(
+        lit(&d.frames[8], d.width, Side::All),
+        0,
+        "场景 2 首帧必须重新从淡入起点开始（修复前会用全局 t=1.0s 采样而全亮）"
+    );
+
+    // ② 相位对齐：两场景声明了同样的淡入曲线 ⇒ 逐帧文字像素数必须一致。
+    let mut seq1: Vec<usize> = Vec::with_capacity(8);
+    let mut seq2: Vec<usize> = Vec::with_capacity(8);
+    for k in 0..8usize {
+        seq1.push(lit(&d.frames[k], d.width, Side::All));
+        seq2.push(lit(&d.frames[8 + k], d.width, Side::All));
+    }
+    assert_eq!(seq1, seq2, "两个场景的淡入逐帧相位必须一致，不得错位");
+    assert!(seq1[0] == 0, "首帧全透明");
+    assert!(seq1[4] > 0, "场景 1 中段（局部 0.5s）应出现文字");
+    assert!(seq2[4] > 0, "场景 2 中段（局部 0.5s）应出现文字");
+    assert!(seq1[4] >= seq1[1], "淡入应单调不减");
+
+    // ③ 不串场：场景 1 区间右半恒无文字，场景 2 区间左半恒无文字。
+    for k in 0..8usize {
+        assert_eq!(
+            lit(&d.frames[k], d.width, Side::Right),
+            0,
+            "场景 1 第 {k} 帧不得出现场景 2 的文字（右半）"
+        );
+        assert_eq!(
+            lit(&d.frames[8 + k], d.width, Side::Left),
+            0,
+            "场景 2 第 {k} 帧不得出现场景 1 的文字（左半）"
+        );
+    }
+
+    // ④ 确定性：同一输入必须逐字节同一输出。
+    let mut device2 = CpuRefBackend;
+    let d2 = render_movie(&compile, &mut device2).expect("重渲染应成功");
+    for (a, b) in d.frames.iter().zip(d2.frames.iter()) {
+        assert_eq!(a.pixels, b.pixels, "同输入同输出（逐字节）");
+    }
+}
+
+/// 参数敏感性：只改场景 2 的 opacity 首关键帧，场景 2 首帧像素必须变，
+/// 且场景 1 全部 8 帧必须逐字节不变（参数不串场）。
+#[test]
+fn v311_multi_scene_text_dsl_param_changes_pixels() {
+    let a = compile_v2(&multi_scene_text_src("0")).expect("对照 DSL 应编译");
+    let b = compile_v2(&multi_scene_text_src("1")).expect("变体 DSL 应编译");
+    let mut device = CpuRefBackend;
+    let da = render_movie(&a, &mut device).expect("对照影片应可渲染");
+    let db = render_movie(&b, &mut device).expect("变体影片应可渲染");
+
+    for k in 0..8usize {
+        assert_eq!(
+            da.frames[k].pixels, db.frames[k].pixels,
+            "场景 1 第 {k} 帧不应受场景 2 的 DSL 参数影响（不串场）"
+        );
+    }
+    assert_eq!(lit(&da.frames[8], da.width, Side::All), 0, "对照：场景 2 首帧全透明");
+    assert!(
+        lit(&db.frames[8], db.width, Side::All) > 0,
+        "把场景 2 的 opacity 首关键帧从 0 改成 1，出片像素必须跟着变"
+    );
+}
+
+// ===========================================================================
+// ① 多球（V3.1.1）：各球独立球心 / 半径 / 材质，DSL 声明必须真实出片
+// ===========================================================================
+
+/// 统计「某个主色通道显著占优」的像素数（用于识别红球 / 蓝球）。
+///
+/// `CpuRefBackend` 是 `albedo × (ambient + color·intensity·(n·l))`：
+/// 红球 albedo=(1,0.13,0) ⇒ R 高 G/B 低；蓝球 albedo=(0,0.13,1) ⇒ B 高
+/// R/G 低；纯背景深蓝黑三通道都 < 30，不会误计。
+fn count_dominant(fb: &Framebuffer, ch: usize) -> usize {
+    fb.pixels
+        .chunks_exact(4)
+        .filter(|px| {
+            let v: i32 = px[ch] as i32;
+            let a: i32 = px[(ch + 1) % 3] as i32;
+            let b: i32 = px[(ch + 2) % 3] as i32;
+            v > 100 && v > a + 40 && v > b + 40
+        })
+        .count()
+}
+
+/// 单场景多球影片：第一球固定（左侧红球），第二球由参数给出，空串 = 只有一球。
+fn multi_sphere_src(second_sdf: &str) -> String {
+    let mut s: String = String::new();
+    s.push_str("// prism-dsl 1\n");
+    s.push_str("movie \"m\" { duration 1s fps 4 resolution 96x54 }\n");
+    s.push_str("scene \"s\" {\n");
+    s.push_str("  stage3d {\n");
+    s.push_str("    sdf a { kind sphere center -1.2,0,0 radius 0.9 albedo #ff2200 }\n");
+    if !second_sdf.is_empty() {
+        s.push_str("    ");
+        s.push_str(second_sdf);
+        s.push('\n');
+    }
+    s.push_str("  }\n");
+    s.push_str("}\n");
+    s
+}
+
+/// 主断言：多球全部出片；删球 / 改球心 / 改半径 / 改每球材质，像素都跟着变。
+///
+/// 修复前第二个 `sdf kind sphere` 在 `movie.rs` 装配阶段直接抛 R5013
+/// 「已支持子集只允许单球体」，本用例连编译产物都渲染不出来。
+#[test]
+fn v311_multi_sphere_dsl_changes_pixels() {
+    let second: &str = "sdf b { kind sphere center 1.2,0,0 radius 0.9 albedo #0022ff }";
+    let two = compile_v2(&multi_sphere_src(second)).expect("多球 DSL 应编译成功");
+    let one = compile_v2(&multi_sphere_src("")).expect("单球 DSL 应编译成功");
+    assert!(two.scenes[0].node_ids.len() > one.scenes[0].node_ids.len(),
+        "第二个 sdf 节点必须真正进入场景消费面，不得 deferred 丢弃");
+
+    let mut dev = CpuRefBackend;
+    let d_two = render_movie(&two, &mut dev).expect("多球影片应可渲染");
+    let d_one = render_movie(&one, &mut dev).expect("单球影片应可渲染");
+
+    let red_two: usize = count_dominant(&d_two.frames[0], 0);
+    let blue_two: usize = count_dominant(&d_two.frames[0], 2);
+    assert!(red_two > 0, "第一球（红）应出现在画面");
+    assert!(blue_two > 0, "第二球（蓝）必须真实出片，不得被忽略");
+    assert_eq!(count_dominant(&d_one.frames[0], 2), 0, "单球对照不应有蓝球像素");
+    assert_ne!(d_two.frames[0].pixels, d_one.frames[0].pixels,
+        "删掉第二球，出片像素必须跟着变（不是只多一个节点）");
+
+    // 改球心 ⇒ 像素变（证明 center 真的被渲染消费，而非登记后丢掉）。
+    let moved = compile_v2(&multi_sphere_src(
+        "sdf b { kind sphere center 2.0,0.8,0 radius 0.9 albedo #0022ff }",
+    )).expect("改球心应编译");
+    let d_moved = render_movie(&moved, &mut dev).expect("改球心影片应可渲染");
+    assert_ne!(d_moved.frames[0].pixels, d_two.frames[0].pixels, "改球心，像素必须跟着变");
+
+    // 改半径 ⇒ 蓝球像素数变（每球半径独立生效）。
+    let resized = compile_v2(&multi_sphere_src(
+        "sdf b { kind sphere center 1.2,0,0 radius 0.4 albedo #0022ff }",
+    )).expect("改半径应编译");
+    let d_resized = render_movie(&resized, &mut dev).expect("改半径影片应可渲染");
+    assert!(count_dominant(&d_resized.frames[0], 2) < blue_two, "半径变小，蓝球像素应减少");
+    assert_ne!(d_resized.frames[0].pixels, d_two.frames[0].pixels, "改半径，像素必须跟着变");
+
+    // 改每球材质 ⇒ 蓝球消失、像素变（材质是逐球的，不是全局一份）。
+    let recolored = compile_v2(&multi_sphere_src(
+        "sdf b { kind sphere center 1.2,0,0 radius 0.9 albedo #00ff00 }",
+    )).expect("改每球材质应编译");
+    let d_recolored = render_movie(&recolored, &mut dev).expect("改材质影片应可渲染");
+    assert_eq!(count_dominant(&d_recolored.frames[0], 2), 0, "改色后不应再有蓝球");
+    assert_ne!(d_recolored.frames[0].pixels, d_two.frames[0].pixels, "改每球材质，像素必须跟着变");
+
+    // 确定性：同一输入逐字节同一输出。
+    let d_again = render_movie(&two, &mut CpuRefBackend).expect("重渲染应成功");
+    assert_eq!(d_two.frames[0].pixels, d_again.frames[0].pixels, "同输入同输出");
+}
+
+/// 铁律反向断言：DSL 声明了但引擎不支持的字段 / kind 必须报错，
+/// 禁止静默忽略、禁止登记后丢掉（用户翻车根因就是「写了 light 却当没写」）。
+#[test]
+fn v311_unsupported_sdf_field_or_kind_is_rejected() {
+    let bad_field = multi_sphere_src("sdf b { kind sphere radius 1 half_height 2 }");
+    let e = compile_v2(&bad_field).expect_err("sphere 上的 half_height 是非法字段，必须报错");
+    assert!(e.message.contains("P1002"), "应带 P1002 与建议，实际：{e}");
+
+    let bad_kind = multi_sphere_src("sdf b { kind dodecahedron }");
+    let e2 = compile_v2(&bad_kind).expect_err("未实现的 kind 必须报错，不得静默忽略");
+    assert!(e2.message.contains("P1002"), "应带 P1002 与建议，实际：{e2}");
+}
+
+
+// ===========================================================================
+// ② 多灯（V3.1.1）：方向 / 颜色 / 强度 / 灯型真实参与着色
+// ===========================================================================
+
+/// 帧缓冲 FNV-1a 校验和（用来对拍「改 DSL ⇒ 像素变」，比逐像素 assert 更轻）。
+fn checksum(fb: &Framebuffer) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in &fb.pixels {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    h
+}
+
+/// 亮度均值与 8 段直方图（Rec.709 亮度；⑤ 的量化口径）。
+fn brightness_stats(fb: &Framebuffer) -> (f64, [usize; 8]) {
+    let mut sum: f64 = 0.0;
+    let mut hist: [usize; 8] = [0; 8];
+    let mut n: usize = 0;
+    for px in fb.pixels.chunks_exact(4) {
+        let l: f64 = px[0] as f64 * 0.2126 + px[1] as f64 * 0.7152 + px[2] as f64 * 0.0722;
+        sum += l;
+        let bin: usize = ((l / 32.0).floor() as usize).min(7);
+        hist[bin] += 1;
+        n += 1;
+    }
+    (sum / n.max(1) as f64, hist)
+}
+
+/// 单场景多灯影片：固定一个白球，灯声明由参数给出。
+fn multi_light_src(lights: &str) -> String {
+    format!(
+        "// prism-dsl 1\nmovie \"m\" {{ duration 1s fps 2 resolution 96x54 }}\n\
+         scene \"s\" {{\n  stage3d {{\n    sdf a {{ kind sphere center 0,0,0 radius 1.4 albedo #ffffff }}\n\
+         {lights}  }}\n}}\n",
+        lights = lights
+    )
+}
+
+/// 主断言：多盏灯各自生效、任一参数改动都改出片、灯型不同出片不同、确定性。
+///
+/// # 修复前为什么会失败
+///
+/// `movie.rs` 的 CPU 路径硬编码一盏 `#fff4e6 / 3.0` 方向光，且
+/// `build_stage3d` 把 light 节点放进 `deferred`（不进 node_ids）。DSL 写几盏
+/// 灯、改成什么方向颜色强度，出片逐字节相同。
+#[test]
+fn v311_multi_light_dsl_changes_pixels() {
+    const KEY: &str = "    light key  { direction(1,-1,-0.5)  color #ff0000 intensity 3 }\n";
+    const FILL: &str = "    light fill { direction(-1,-1,-0.5) color #0000ff intensity 2 }\n";
+    let both: String = format!("{KEY}{FILL}");
+    let c = compile_v2(&multi_light_src(&both)).expect("多灯 DSL 应编译成功");
+    assert_eq!(c.scenes[0].node_ids.len(), 3, "1 个 sdf + 2 盏灯必须全部进渲染消费面");
+
+    // 前提证据：两盏灯的节点都带 light_kind，且颜色逐盏不同。
+    let kinds: usize = c.scenes[0]
+        .node_ids
+        .iter()
+        .filter(|id| c.graph.node(**id).and_then(|n| n.params.get("light_kind")).is_some())
+        .count();
+    assert_eq!(kinds, 2, "两盏灯都必须登记为可消费的灯节点，不得 deferred 丢弃");
+
+    let mut dev = CpuRefBackend;
+    let base = render_movie(&c, &mut dev).expect("多灯影片应可渲染");
+    let sig0: u64 = checksum(&base.frames[0]);
+    assert!(brightness_stats(&base.frames[0]).0 > 0.0, "多灯场景不应全黑");
+
+    let variants: Vec<(&str, String)> = vec![
+        ("改第一盏方向", format!("{}{}", "    light key  { direction(-1,-1,-0.5) color #ff0000 intensity 3 }\n", FILL)),
+        ("改第一盏颜色", format!("{}{}", "    light key  { direction(1,-1,-0.5)  color #00ff00 intensity 3 }\n", FILL)),
+        ("改第一盏强度", format!("{}{}", "    light key  { direction(1,-1,-0.5)  color #ff0000 intensity 8 }\n", FILL)),
+        ("删第二盏", KEY.to_string()),
+        ("只改第二盏颜色", format!("{}{}", KEY, "    light fill { direction(-1,-1,-0.5) color #00ff00 intensity 2 }\n")),
+        ("只改第二盏强度", format!("{}{}", KEY, "    light fill { direction(-1,-1,-0.5) color #0000ff intensity 9 }\n")),
+        ("只改第二盏方向", format!("{}{}", KEY, "    light fill { direction(0,-1,1)       color #0000ff intensity 2 }\n")),
+    ];
+    for (name, lights) in variants {
+        let cc = compile_v2(&multi_light_src(&lights))
+            .unwrap_or_else(|e| panic!("{name}：DSL 应编译成功，实际 {e}"));
+        let d = render_movie(&cc, &mut dev)
+            .unwrap_or_else(|e| panic!("{name}：影片应可渲染，实际 {e}"));
+        assert_ne!(checksum(&d.frames[0]), sig0, "{name}：出片像素必须跟着变");
+    }
+
+    // 确定性：同一输入逐字节同一输出。
+    let again = render_movie(&c, &mut CpuRefBackend).expect("重渲染应成功");
+    assert_eq!(base.frames[0].pixels, again.frames[0].pixels, "同输入同输出");
+}
+
+/// 四类可用灯型（directional / ambient / sphere / rect）出片互不相同。
+#[test]
+fn v311_light_kinds_produce_different_frames() {
+    let bodies: [(&str, &str); 4] = [
+        ("directional", "light l { direction(1,-1,-0.5) color #ffffff intensity 3 }"),
+        ("ambient", "light l { kind ambient color #ffffff intensity 1 }"),
+        ("sphere", "light l { kind sphere position(0,2,3) radius 2 color #ffffff intensity 3 }"),
+        ("rect", "light l { kind rect position(0,2,3) edge_u(2,0,0) edge_v(0,0,2) color #ffffff intensity 3 }"),
+    ];
+    let mut sigs: Vec<(&str, u64, f64)> = Vec::new();
+    for (name, body) in bodies {
+        let c = compile_v2(&multi_light_src(&format!("    {body}\n")))
+            .unwrap_or_else(|e| panic!("{name} 应编译：{e}"));
+        let d = render_movie(&c, &mut CpuRefBackend)
+            .unwrap_or_else(|e| panic!("{name} 应可渲染：{e}"));
+        sigs.push((name, checksum(&d.frames[0]), brightness_stats(&d.frames[0]).0));
+    }
+    for i in 0..sigs.len() {
+        assert!(sigs[i].2 > 0.0, "{} 灯型不应产出全黑画面", sigs[i].0);
+        for j in (i + 1)..sigs.len() {
+            assert_ne!(sigs[i].1, sigs[j].1,
+                "{} 与 {} 的出片不应相同（灯型必须真实参与着色）", sigs[i].0, sigs[j].0);
+        }
+    }
+}
+
+/// 铁律：DSL 声明了但渲染侧不支持的灯型 / 字段必须在编译期报错。
+#[test]
+fn v311_unsupported_light_kind_or_field_is_rejected() {
+    let cases: [(&str, &str); 4] = [
+        ("environment（W2 占位）", "    light l { kind environment }\n"),
+        ("未知 kind", "    light l { kind laser }\n"),
+        ("ambient 上的 direction", "    light l { kind ambient direction(1,0,0) }\n"),
+        ("sphere 缺必填字段", "    light l { kind sphere }\n"),
+    ];
+    for (name, body) in cases {
+        let e = compile_v2(&multi_light_src(body))
+            .expect_err(&format!("{name} 必须报错，不得静默忽略"));
+        assert!(e.message.contains("[P"), "{name} 应带错误码，实际：{e}");
+        assert!(e.message.contains("建议："), "{name} 应给修复建议，实际：{e}");
+    }
+}
+
+// ===========================================================================
+// ③ 新几何（V3.1.1）：box / plane / paraboloid / mesh 能声明、能出片
+// ===========================================================================
+
+/// 单场景新几何影片（走 rt 波前路径，声明序即装配序）。
+fn new_geo_src(sdfs: &str) -> String {
+    format!(
+        "// prism-dsl 1\nmovie \"m\" {{ duration 1s fps 2 resolution 64x36 }}\n\
+         scene \"s\" {{\n  stage3d {{\n{sdfs}\
+             light key {{ direction(1,-1,-0.5) color #ffffff intensity 3 }}\n  }}\n}}\n",
+        sdfs = sdfs
+    )
+}
+
+const BOX: &str = "    sdf b { kind box center 0,0,0 half_extents 1.2,1.2,1.2 albedo #ff3300 }\n";
+const PLANE: &str = "    sdf p { kind plane point(0,0,2.5) normal(0,0,-1) half_extent 3 albedo #00ff33 }\n";
+const PARAB: &str = "    sdf q { kind paraboloid k 0.5 r_max 2 albedo #0033ff }\n";
+const MESH: &str = "    sdf m { kind mesh verts { v { x -1 y 0 z 0 } v { x 1 y 0 z 0 } v { x 0 y 1.5 z 0 } } tris { t { a 0 b 1 c 2 } } }\n";
+
+/// 四类新几何逐类出片，改尺寸 / 位置 / 材质都改像素；组合场景可渲染。
+#[test]
+fn v311_new_geometry_dsl_changes_pixels() {
+    let render = |sdfs: &str| -> (u64, f64, [usize; 8]) {
+        let c = compile_v2(&new_geo_src(sdfs))
+            .unwrap_or_else(|e| panic!("新几何 DSL 应编译成功，实际：{e}"));
+        let d = render_movie(&c, &mut CpuRefBackend)
+            .unwrap_or_else(|e| panic!("新几何影片应可渲染，实际：{e}"));
+        let (mean, hist) = brightness_stats(&d.frames[0]);
+        (checksum(&d.frames[0]), mean, hist)
+    };
+
+    for (name, sdf) in [
+        ("box", BOX), ("plane", PLANE), ("paraboloid", PARAB), ("mesh", MESH),
+    ] {
+        let (sig, mean, _) = render(sdf);
+        assert!(mean > 0.0, "{name} 不应产出全黑画面");
+        assert_ne!(sig, checksum(&render_movie(
+            &compile_v2(&new_geo_src("")).expect("空几何对照应编译"),
+            &mut CpuRefBackend,
+        ).expect("空几何对照应可渲染").frames[0]),
+            "{name} 声明后出片必须与「无几何」不同");
+    }
+
+    // 改 box 尺寸 / 材质 / 位置 ⇒ 像素变。
+    let (box_sig, _, _) = render(BOX);
+    let variants: [(&str, &str); 3] = [
+        ("改 half_extents", "    sdf b { kind box center 0,0,0 half_extents 0.6,0.6,0.6 albedo #ff3300 }\n"),
+        ("改 albedo", "    sdf b { kind box center 0,0,0 half_extents 1.2,1.2,1.2 albedo #00ffff }\n"),
+        ("改 center", "    sdf b { kind box center 1,0.5,0 half_extents 1.2,1.2,1.2 albedo #ff3300 }\n"),
+    ];
+    for (name, sdf) in variants {
+        let (sig, _, _) = render(sdf);
+        assert_ne!(sig, box_sig, "{name}：出片像素必须跟着变");
+    }
+    // 改 plane 的 half_extent、paraboloid 的 k、mesh 的顶点 ⇒ 像素变。
+    assert_ne!(render(PLANE).0, render(
+        "    sdf p { kind plane point(0,0,2.5) normal(0,0,-1) half_extent 1 albedo #00ff33 }\n").0,
+        "改 plane.half_extent 像素必须变");
+    assert_ne!(render(PARAB).0, render(
+        "    sdf q { kind paraboloid k 1.5 r_max 2 albedo #0033ff }\n").0,
+        "改 paraboloid.k 像素必须变");
+    assert_ne!(render(MESH).0, render(
+        "    sdf m { kind mesh verts { v { x -1 y 0 z 0 } v { x 1 y 0 z 0 } v { x 0 y 0.4 z 0 } } tris { t { a 0 b 1 c 2 } } }\n").0,
+        "改 mesh 顶点像素必须变");
+
+    // 组合场景：多球 + 多灯 + 四类新几何同时出片（交付要求的综合用例）。
+    // 不只要「能出片」：同一场景里改任一球 / 灯 / 几何声明，像素都必须变，
+    // 证明三项能力在组合场景里各自真实生效、互不串位、没有被路由吞掉。
+    let combo: String = format!(
+        "{BOX}{PLANE}{PARAB}{MESH}\
+             sdf s1 {{ kind sphere center -2,0,0 radius 0.7 albedo #ff0000 }}\n\
+             sdf s2 {{ kind sphere center  2,0,0 radius 0.7 albedo #0000ff }}\n\
+             light fill {{ direction(-1,-1,0.5) color #88aaff intensity 2 }}\n"
+    );
+    let render_combo = |body: &str| -> (u64, f64, [usize; 8]) {
+        let c = compile_v2(&new_geo_src(body))
+            .unwrap_or_else(|e| panic!("综合 DSL 应编译成功，实际：{e}"));
+        let d = render_movie(&c, &mut CpuRefBackend)
+            .unwrap_or_else(|e| panic!("综合影片应可渲染，实际：{e}"));
+        let (mean, hist) = brightness_stats(&d.frames[0]);
+        (checksum(&d.frames[0]), mean, hist)
+    };
+    let (combo_sig, combo_mean, _) = render_combo(&combo);
+    assert!(combo_mean > 1.0, "综合场景应有合理亮度，实测均值 {combo_mean:.3}");
+    let variants: [(&str, String); 6] = [
+        ("改第一球球心", combo.replace("center -2,0,0", "center -1,0,0")),
+        ("改第一球半径", combo.replace("radius 0.7 albedo #ff0000", "radius 0.35 albedo #ff0000")),
+        ("改第一球材质", combo.replace("albedo #ff0000", "albedo #00ff00")),
+        ("改补光颜色", combo.replace("color #88aaff", "color #ffaa88")),
+        ("改补光强度", combo.replace("intensity 2", "intensity 5")),
+        ("改 box 尺寸", combo.replace("half_extents 1.2,1.2,1.2", "half_extents 0.5,0.5,0.5")),
+    ];
+    for (name, body) in &variants {
+        let (sig, _, _) = render_combo(body);
+        assert_ne!(sig, combo_sig, "综合场景 {name}：出片像素必须跟着变");
+    }
+    let c = compile_v2(&new_geo_src(&combo)).expect("综合 DSL 应编译成功");
+    let d = render_movie(&c, &mut CpuRefBackend).expect("综合影片应可渲染");
+    let d2 = render_movie(&c, &mut CpuRefBackend).expect("重渲染应成功");
+    assert_eq!(d.frames[0].pixels, d2.frames[0].pixels, "同输入同输出");
+}
+
+/// 铁律：新几何上声明了未被该 kind 支持的字段 / 未知 kind 必须报错。
+#[test]
+fn v311_unsupported_sdf_new_kind_field_is_rejected() {
+    let bad_field = new_geo_src("    sdf b { kind box half_extents 1,1,1 radius 2 }\n");
+    let e = compile_v2(&bad_field).expect_err("box 上的 radius 是非法字段");
+    assert!(e.message.contains("P1002"), "实际：{e}");
+    let bad_kind = new_geo_src("    sdf b { kind octahedron }\n");
+    let e = compile_v2(&bad_kind).expect_err("未实现的 kind 必须报错");
+    assert!(e.message.contains("P1002"), "实际：{e}");
+    let bad_mesh = new_geo_src("    sdf m { kind mesh verts { v { x 0 y 0 z 0 } } tris { t { a 0 b 1 c 2 } } }\n");
+    let e = compile_v2(&bad_mesh).expect_err("mesh 顶点不足 / 索引越界必须报错");
+    assert!(e.message.contains("[P"), "实际：{e}");
+}
+
+// ===========================================================================
+// ⑤ 亮度：统一 π 口径后的量化（均值 + 8 段直方图），供最终报告取数
+// ===========================================================================
+
+/// V3.1.1 ⑤ 亮度量化：改前 / 改后在同一份 DSL 下可复现对照。
+///
+/// ⑤ 的另一半根因是曝光口径：V3.1 的 `render_curve_frame` 硬编码
+/// `radiance = color × 3.0` / `cos_theta_max = 0.9`，与 `translate_scene`
+/// 的 `color × intensity × π` / `1.0` 差约 π 倍。V3.1.1 两条路径共用
+/// `translate_lights`，口径统一后才有下面可比的改前 / 改后数字。
+///
+/// 「改前」= 显式声明 V3.1 那盏唯一的缺省主光（`#fff4e6` / 3.0），不带
+/// 环境光；「改后」= 不写 `light`，走 `default_lights()`（主光 + 低强度
+/// 冷色环境光）。两组除灯集合外逐字相同，因此均值 / 直方图之差只来自
+/// 本次修复，不依赖历史日志，也不靠调阈值凑数。
+#[test]
+fn v311_brightness_quantification() {
+    const OLD_KEY: &str =
+        "    light key { direction(1,-1,-0.5) color #fff4e6 intensity 3 }\n";
+
+    // ① CPU 参考档：改前（显式旧缺省主光，无环境光）。
+    let c_old = compile_v2(&multi_light_src(OLD_KEY)).expect("旧缺省等价场景应编译");
+    let d_old = render_movie(&c_old, &mut CpuRefBackend).expect("旧缺省等价影片应可渲染");
+    let (cpu_old_mean, cpu_old_hist) = brightness_stats(&d_old.frames[0]);
+    println!("[亮度] 改前 CPU 参考档均值 = {cpu_old_mean:.3} / 255，直方图 = {cpu_old_hist:?}");
+
+    // ② CPU 参考档：改后（V3.1.1 缺省灯 = 主光 + 环境光）。
+    let c_new = compile_v2(&multi_light_src("")).expect("缺省灯场景应编译");
+    let d_new = render_movie(&c_new, &mut CpuRefBackend).expect("缺省灯影片应可渲染");
+    let (cpu_new_mean, cpu_new_hist) = brightness_stats(&d_new.frames[0]);
+    println!("[亮度] 改后 CPU 参考档均值 = {cpu_new_mean:.3} / 255，直方图 = {cpu_new_hist:?}");
+
+    // ③ rt 波前档：改前（BOX + 显式旧缺省主光，走 translate_lights 的 π 口径）。
+    let rt_old_src = format!(
+        "// prism-dsl 1\nmovie \"m\" {{ duration 1s fps 2 resolution 64x36 }}\n\
+         scene \"s\" {{\n  stage3d {{\n{BODY}{OLD_KEY}  }}\n}}\n",
+        BODY = BOX,
+        OLD_KEY = OLD_KEY,
+    );
+    let c3 = compile_v2(&rt_old_src).expect("改前 rt 场景应编译");
+    let d3 = render_movie(&c3, &mut CpuRefBackend).expect("改前 rt 影片应可渲染");
+    let (rt_old_mean, rt_old_hist) = brightness_stats(&d3.frames[0]);
+    println!("[亮度] 改前 rt 波前档均值 = {rt_old_mean:.3} / 255，直方图 = {rt_old_hist:?}");
+
+    // ④ rt 波前档：改后（同几何、不写 light ⇒ 缺省灯含环境光）。
+    let rt_new_src = format!(
+        "// prism-dsl 1\nmovie \"m\" {{ duration 1s fps 2 resolution 64x36 }}\n\
+         scene \"s\" {{\n  stage3d {{\n{BODY}  }}\n}}\n",
+        BODY = BOX,
+    );
+    let c4 = compile_v2(&rt_new_src).expect("改后 rt 场景应编译");
+    let d4 = render_movie(&c4, &mut CpuRefBackend).expect("改后 rt 影片应可渲染");
+    let (rt_new_mean, rt_new_hist) = brightness_stats(&d4.frames[0]);
+    println!("[亮度] 改后 rt 波前档均值 = {rt_new_mean:.3} / 255，直方图 = {rt_new_hist:?}");
+
+    // ⑤ 显式声明灯时不自动补光：用户声明即事实，背景逃逸射线仍为黑。
+    let c5 = compile_v2(&new_geo_src(BOX)).expect("显式灯 rt 场景应编译");
+    let d5 = render_movie(&c5, &mut CpuRefBackend).expect("显式灯 rt 影片应可渲染");
+    let (rt_explicit_mean, rt_explicit_hist) = brightness_stats(&d5.frames[0]);
+    println!("[亮度] 显式单灯 rt 波前档（π 口径）均值 = {rt_explicit_mean:.3} / 255，直方图 = {rt_explicit_hist:?}");
+
+    // 强断言：两条路径都必须被环境光真实提亮，不是换统计口径或调阈值。
+    assert!(
+        cpu_new_mean > cpu_old_mean * 1.03,
+        "CPU 缺省路径必须真实提亮（>3%）：改前 {cpu_old_mean:.3} / 改后 {cpu_new_mean:.3}"
+    );
+    assert!(
+        rt_new_mean > rt_old_mean * 2.0,
+        "rt 缺省路径必须显著提亮（>2×）：改前 {rt_old_mean:.3} / 改后 {rt_new_mean:.3}"
+    );
+    assert_eq!(
+        rt_new_hist[0], 0,
+        "缺省环境光必须让逃逸射线脱离最暗 bin，实测直方图 {rt_new_hist:?}"
+    );
+    assert!(rt_explicit_mean > 0.0, "显式灯路径不应全黑，实测 {rt_explicit_mean:.3}");
+    let dark_before: usize = rt_old_hist[0] + rt_old_hist[1];
+    let dark_after: usize = rt_new_hist[0] + rt_new_hist[1];
+    assert!(
+        dark_after < dark_before,
+        "环境光必须把最暗两档的像素抬走：改前 {dark_before} / 改后 {dark_after}"
+    );
+    let total_cpu: usize = cpu_new_hist.iter().sum();
+    assert!(cpu_new_hist[0] < total_cpu, "CPU 档不应全帧落在最暗 bin");
+    // 同输入同输出：提亮不能引入随机漂移。
+    let c_again = compile_v2(&multi_light_src("")).expect("缺省灯场景应编译");
+    let d_again = render_movie(&c_again, &mut CpuRefBackend).expect("缺省灯影片应可渲染");
+    assert_eq!(
+        checksum(&d_new.frames[0]),
+        checksum(&d_again.frames[0]),
+        "同一份 DSL 两次渲染必须逐字节一致"
+    );
+}
+
+
+
+// ===========================================================================
+// ④ 附加能力（V3.1.1）：材质 / 介质 / 纹理 / 实例 / 毛发 / 位移逐项接通
+// ===========================================================================
+
+/// 六项附加能力齐备的基线 DSL（语法同 `examples/t0_media_mesh.prism`）。
+fn full_attach_src() -> String {
+    concat!(
+        "// prism-dsl 1\n",
+        "movie \"m\" { duration 1s fps 2 resolution 64x36 }\n",
+        "scene \"s\" {\n",
+        "  stage3d {\n",
+        "    camera c { orbit { center 0,0,0 radius 4.5 } fov 55 }\n",
+        "    sdf a { kind sphere center 0,0,0 radius 0.55 }\n",
+        "    material hero { albedo #4f7fd0 roughness 0.4 metalness 0.1 }\n",
+        "    light key { direction(0.4,-1,-0.6) color #ffffff intensity 3.2 }\n",
+        "  }\n",
+        "  texture hatch { kind checker size 8 period 2 }\n",
+        "  mesh ground { kind plane size 4 displacement { texture 1 amplitude 0.12 scale 1 levels 3 } }\n",
+        "  instance board { geom \"ground\" offset (1.6,0.9,-0.4) }\n",
+        "  media fog { min (-2.5,-2.5,-1) max (2.5,0.6,2.5) sigma_t 0.35 albedo 0.85 g 0.2 priority 1 }\n",
+        "  hair tuft { count 8 from (-0.8,-0.8,0.6) dir (0,1,0) length 1.8 radius 0.3 spread 1.0 segments 4 }\n",
+        "}\n",
+    ).to_string()
+}
+
+/// 逐项核实六项能力从 DSL 通到出片像素：改任一 DSL 参数，像素必须跟着变。
+///
+/// # 修复前为什么会失败
+///
+/// `render_movie` 走 `CpuRefBackend` 时只消费 `req.spheres / curves / lights
+/// / aesthetic`，`req.geo.*`（介质 / 网格 / 实例 / 纹理 / 毛发 / 位移）整段
+/// 不进求交 ⇒ 无论 DSL 怎么改，出片逐字节相同。V3.1.1 把「声明了附加能力」
+/// 纳入能力路由，并让 rt 波前路径复用 `translate_scene` 唯一翻译链。
+#[test]
+fn v311_attach_capabilities_dsl_changes_pixels() {
+    let base_src: String = full_attach_src();
+    let base = compile_v2(&base_src).expect("六项能力 DSL 应编译成功");
+    let a = &base.scenes[0].attach;
+    // ① DSL → attach：六项都真的进了场景描述（不是纸面登记）。
+    assert_eq!(a.textures.len(), 1, "纹理块应登记");
+    assert_eq!(a.meshes.len(), 1, "网格块应登记");
+    assert_eq!(a.instance_geoms.len(), 1, "实例原型应登记");
+    assert_eq!(a.instances.len(), 1, "实例应登记");
+    assert_eq!(a.media.len(), 1, "介质块应登记");
+    assert_eq!(a.strands.len(), 8, "毛发 8 股应登记");
+    assert!(a.meshes[0].displacement.is_some(), "位移槽应挂在网格上");
+    assert!(base.scenes[0].node_ids.iter().any(|id| base.graph.node(*id)
+        .and_then(|n| n.params.get("albedo_r")).is_some()), "材质节点应进消费面");
+
+    let sig = |src: &str| -> u64 {
+        let c = compile_v2(src).unwrap_or_else(|e| panic!("变体 DSL 应编译：{e}"));
+        let d = render_movie(&c, &mut CpuRefBackend)
+            .unwrap_or_else(|e| panic!("变体影片应可渲染：{e}"));
+        checksum(&d.frames[0])
+    };
+    let sig0: u64 = sig(&base_src);
+
+    // ② attach → 出片：每项各改一个 DSL 参数，像素必须跟着变。
+    let variants: Vec<(&str, String)> = vec![
+        ("材质 albedo/roughness", base_src.replace(
+            "albedo #4f7fd0 roughness 0.4", "albedo #d04f7f roughness 0.9")),
+        ("介质 sigma_t", base_src.replace("sigma_t 0.35", "sigma_t 1.4")),
+        ("介质 g", base_src.replace("g 0.2", "g 0.8")),
+        ("纹理 kind/size", base_src.replace(
+            "kind checker size 8 period 2", "kind gradient size 4 period 2")),
+        ("位移 amplitude", base_src.replace(
+            "amplitude 0.12", "amplitude 0.48")),
+        ("位移 levels", base_src.replace(
+            "scale 1 levels 3", "scale 1 levels 2")),
+        ("实例 offset", base_src.replace(
+            "offset (1.6,0.9,-0.4)", "offset (-2.0,0.1,0.6)")),
+        ("毛发 count", base_src.replace("count 8", "count 3")),
+        ("毛发 radius", base_src.replace("radius 0.3", "radius 0.45")),
+        ("毛发 dir", base_src.replace("dir (0,1,0)", "dir (1,0,0)")),
+    ];
+    for (name, src) in &variants {
+        assert_ne!(*src, base_src, "{name} 的替换必须真的改变了 DSL 文本");
+        assert_ne!(sig(src), sig0, "{name}：改了 DSL 参数，出片像素必须跟着变");
+    }
+
+    // ③ 确定性：同一输入逐字节同一输出。
+    let c = compile_v2(&base_src).expect("基线应可重编译");
+    let d1 = render_movie(&c, &mut CpuRefBackend).expect("基线应可渲染");
+    let d2 = render_movie(&c, &mut CpuRefBackend).expect("基线应可重渲染");
+    assert_eq!(d1.frames[0].pixels, d2.frames[0].pixels, "同输入同输出");
+}
+================================================================================
 === FILE: src/prism-render/tests/t0_product_path.rs ===
-=== LINES: 686 ===
+=== LINES: 689 ===
 //! T0 产品路径接线判据：P1 / P2 / P3。
 //!
 //! # 缺口原文（本轮要消灭的那条）
@@ -316387,6 +318451,9 @@ fn core_scene_with_attachments() -> prism_core::Scene {
     );
 
     s.attach = prism_core::SceneAttach {
+        boxes: Vec::new(), // V3.1.1：结构性缺省
+        paraboloids: Vec::new(), // V3.1.1：结构性缺省
+        planes: Vec::new(), // V3.1.1：结构性缺省
         media: vec![MediumBox::new(
             Vec3::new(-2.0, -2.0, 0.2),
             Vec3::new(2.0, 2.0, 3.0),
@@ -317161,7 +319228,7 @@ fn reordering_changes_artifact_hash_but_not_scene_bytes() {
 }
 ================================================================================
 === FILE: src/prism-render/tests/w1_node_consumption.rs ===
-=== LINES: 459 ===
+=== LINES: 460 ===
 //! W1-A3 验收测试：渲染侧消费 DSL v2 三种新节点。
 //!
 //! 覆盖验收四条：
@@ -317603,6 +319670,7 @@ fn consumed_post_chain_applies_to_rendered_frame_deterministically() {
     let compile: CompileV2Output = compile_v2(SRC_ALL).expect("应编译");
     let got: SceneConsumption = consume_scene(&compile, 0).expect("应可消费");
     let scene: Scene = Scene {
+        spheres: Vec::new(),
         radius: 1.0,
         orbit_center: Vec3::new(0.0, 0.0, 0.0),
         orbit_radius: 4.0,
@@ -351735,7 +353803,7 @@ fn s5_two_pass_bitwise_and_single_strand_difference_origin() {
 }
 ================================================================================
 === FILE: src/prism-rt/tests/t2_runtime_displace.rs ===
-=== LINES: 585 ===
+=== LINES: 586 ===
 //! T2 / G-10 判据：**运行期位移材质槽**（`细分 → 位移`，不落盘中间网格）。
 //!
 //! | # | 判据 | 阈值 |
@@ -351893,6 +353961,7 @@ fn trisoup_request(w: u32, h: u32, tris: Vec<prism_geometry::bvh::Triangle>) -> 
             aspect: w as f32 / h as f32,
         },
         lights: vec![LightReq {
+            kind: prism_gpu::LightKindReq::Directional, // V3.1.1：结构性缺省
             direction: Vec3::new(0.0, 0.0, -1.0),
             color: Vec3::new(1.0, 1.0, 1.0),
             intensity: 1.0,
@@ -354802,7 +356871,7 @@ fn subdivided_displaced_mesh_renders() {
 }
 ================================================================================
 === FILE: src/prism-rt/tests/w4_w5_gpu_parity.rs ===
-=== LINES: 358 ===
+=== LINES: 359 ===
 //! 三后端对拍：W5 的 V1（毛股 ≡ 圆柱，`differing_pixels = 0`）与 W4 的
 //! "细分 + 位移"烘焙帧（`differing_pixels = 0`）。
 //!
@@ -354891,6 +356960,7 @@ fn base_request(w: u32, h: u32) -> SceneRenderRequest {
             aspect: w as f32 / h as f32,
         },
         lights: vec![LightReq {
+            kind: prism_gpu::LightKindReq::Directional, // V3.1.1：结构性缺省
             direction: Vec3::new(0.0, 0.0, -1.0),
             color: Vec3::new(1.0, 1.0, 1.0),
             intensity: 1.0,

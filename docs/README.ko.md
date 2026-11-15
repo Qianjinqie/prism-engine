@@ -28,7 +28,7 @@
   <img src="https://img.shields.io/badge/backends-CPU%20%2B%20Vulkan-lightgrey.svg" alt="Backends">
   <img src="https://img.shields.io/badge/crates-29-blue.svg" alt="Crates">
   <img src="https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg" alt="Distribution">
-  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.1-blue.svg" alt="Release"></a>
+  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.1.1-blue.svg" alt="Release"></a>
 </p>
 
 <p align="center">
@@ -86,13 +86,13 @@ Rust로 작성된 프로시저럴 미디어 엔진. 입력은 `.prism` 장면 �
 
 ```bash
 # 1. 단일 파일 소스 패키지를 받고 SHA-256 검증
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.1/prism-engine-v3.1-source.txt
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.1/SHA256SUMS.txt
-grep 'v3.1' SHA256SUMS.txt | sha256sum -c -
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.1.1/prism-engine-v3.1.1-source.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.1.1/SHA256SUMS.txt
+grep 'v3.1.1' SHA256SUMS.txt | sha256sum -c -
 
 # 2. 패키지에 들어 있는 언팩 스크립트 추출 (Node 18+ 만 필요, npm install 불필요)
 awk '/^UNPACK SCRIPT BEGIN$/{f=1;next} /^UNPACK SCRIPT END$/{f=0} f' \
-  prism-engine-v3.1-source.txt > unpack.cjs
+  prism-engine-v3.1.1-source.txt > unpack.cjs
 node unpack.cjs                    # 789개 파일 복원
 
 # 3. 빌드하고 전체 테스트 실행

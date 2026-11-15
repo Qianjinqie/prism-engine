@@ -28,7 +28,7 @@
   <img src="https://img.shields.io/badge/backends-CPU%20%2B%20Vulkan-lightgrey.svg" alt="Backends">
   <img src="https://img.shields.io/badge/crates-29-blue.svg" alt="Crates">
   <img src="https://img.shields.io/badge/distribution-single--file%20TXT-lightgrey.svg" alt="Distribution">
-  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.1-blue.svg" alt="Release"></a>
+  <a href="https://github.com/Qianjinqie/prism-engine/releases"><img src="https://img.shields.io/badge/release-v3.1.1-blue.svg" alt="Release"></a>
 </p>
 
 <p align="center">
@@ -86,13 +86,13 @@ Rust で書かれたプロシージャル・メディアエンジン。入力は
 
 ```bash
 # 1. 単一ファイルのソースパッケージを取得し、SHA-256 を検証
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.1/prism-engine-v3.1-source.txt
-curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.1/SHA256SUMS.txt
-grep 'v3.1' SHA256SUMS.txt | sha256sum -c -
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.1.1/prism-engine-v3.1.1-source.txt
+curl -L -O https://github.com/Qianjinqie/prism-engine/releases/download/v3.1.1/SHA256SUMS.txt
+grep 'v3.1.1' SHA256SUMS.txt | sha256sum -c -
 
 # 2. パッケージに埋め込まれた展開スクリプトを取り出す（Node 18+ のみ、npm install 不要）
 awk '/^UNPACK SCRIPT BEGIN$/{f=1;next} /^UNPACK SCRIPT END$/{f=0} f' \
-  prism-engine-v3.1-source.txt > unpack.cjs
+  prism-engine-v3.1.1-source.txt > unpack.cjs
 node unpack.cjs                    # 789 ファイルを復元
 
 # 3. ビルドして全テストを実行
